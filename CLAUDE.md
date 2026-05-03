@@ -7,6 +7,7 @@
 ## Tech Stack
 - FastAPI (Python 3.12)
 - TaskIQ + Redis Sentinel
+- Haystack 2.x
 - MariaDB 10.6
 - Elasticsearch 9.2.3
 - Neo4j 5.2.6
@@ -14,6 +15,10 @@
   - Embedding API
   - LLM API
   - Rerank API
+- Observability
+  - OpenTelemetry
+  - Grafana
+  - Prometheus 
 
 ---
 
