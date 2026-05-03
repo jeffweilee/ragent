@@ -17,7 +17,41 @@ Whenever team start to work or user says "go" or "continue", follow these steps 
 5.  **Verification**: Run test, lint, format.
 6.  **Progress**: Mark the test as complete `[x]` in `plan.md`.
 7.  **Commit**: Git commit with `[BEHAVIORAL]` or `[STRUCTURAL]` prefix.
-8.  **Wait**: Stop and wait for the next "go" command.
+8.  **Documentation**: Follow "RESOURCES" Section to update each document accordingly.
+9.  **Next**: Start new round and repeat the workflow until all plans matches successful criteria.
+
+---
+
+
+## TIDY FIRST APPROACH
+
+Separate all changes into two distinct types:
+
+### 1. STRUCTURAL CHANGES
+
+Rearranging code without changing behavior:
+
+- Renaming variables, methods, or classes for clarity
+- Extracting methods or functions
+- Moving code to more appropriate locations
+- Reorganizing imports or dependencies
+- Reformatting code
+
+### 2. BEHAVIORAL CHANGES
+
+Adding or modifying actual functionality:
+
+- Implementing new features
+- Fixing bugs that change program behavior
+- Modifying algorithms or logic
+- Adding new dependencies that change behavior
+
+### Critical Rules:
+
+- **Never mix structural and behavioral changes in the same commit**
+- **Always make structural changes first** when both are needed
+- Validate structural changes do not alter behavior by running tests before and after
+- If a structural change breaks tests, revert and investigate
 
 ---
 
