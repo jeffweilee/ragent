@@ -6,6 +6,19 @@
 * Use rag agent team to execute the workflow.
 ---
 
+## Tech Stack
+- FastAPI (Python 3.12)
+- TaskIQ + Redis Sentinel
+- MariaDB 10.6
+- Elasticsearch 9.2.3
+- Neo4j 5.2.6
+- Third-Party Customized API
+  - Embedding API
+  - LLM API
+  - Rerank API
+
+---
+
 ## THE TDD WORKFLOW
 
 Whenever team start to work or user says "go" or "continue", follow these steps precisely:
