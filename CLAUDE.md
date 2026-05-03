@@ -1,0 +1,72 @@
+# CLAUDE.md - Project Guidelines & TDD Workflow
+
+* This document defines the development standards and mandatory workflow for this project. 
+* Strict adherence to **TDD (Test-Driven Development)** and **Minimalism** is required.
+* Strict adherence to `plan.md`, **Honestly** verify each delivery exactly matches reasonable requirement.
+* Use rag agent team to execute the workflow.
+---
+
+## THE TDD WORKFLOW
+
+Whenever team start to work or user says "go" or "continue", follow these steps precisely:
+
+1.  **Read `plan.md`**: Find the next unmarked test item `[ ]`.
+2.  **Red Phase**: Implement the failing test first. Verify it fails.
+3.  **Green Phase**: Write the **minimum** code necessary to make the test pass.
+4.  **Refactor Phase**: Clean up the code while ensuring tests remain green.
+5.  **Verification**: Run test, lint, format.
+6.  **Progress**: Mark the test as complete `[x]` in `plan.md`.
+7.  **Commit**: Git commit with `[BEHAVIORAL]` or `[STRUCTURAL]` prefix.
+8.  **Wait**: Stop and wait for the next "go" command.
+
+---
+
+## CORE DEVELOPMENT PHILOSOPHY
+
+### 1. Think Before Coding
+*   **Surface Trade-offs**: If multiple solutions exist, present them. Never pick silently.
+*   **No Assumptions**: Explicitly state assumptions. If a requirement is vague, **stop and ask**.
+*   **Push Back**: If a simpler approach exists, suggest it. Avoid over-engineering.
+
+### 2. Simplicity First (YAGNI)
+*   **Minimum Viable Code**: No speculative features or "future-proofing."
+*   **No Abstractions**: Avoid abstractions for single-use logic.
+*   **Refinement**: If 50 lines can do what 200 lines do, rewrite it.
+
+### 3. Surgical Changes
+*   **Scope Control**: Touch only what is necessary. Do not "improve" adjacent code or formatting.
+*   **Style Matching**: Match existing patterns and idioms, even if you prefer others.
+*   **Orphan Cleanup**: Only remove imports/variables made unused by **your** changes.
+
+---
+
+## CODE QUALITY STANDARDS
+IMPORTANT: Quality is non-negotiable. Every line of code must be traceable to a test and a specific requirement.
+
+*   **DRY (Don't Repeat Yourself)**: Eliminate duplication ruthlessly.
+*   **SRP (Single Responsibility)**: Keep methods small and focused.
+*   **Explicit Dependencies**: No hidden coupling or global state side effects.
+*   **Documentation**: Explain *why* something is done, not *what* (the code should be self-explanatory).
+
+---
+
+## TESTING STRATEGY
+
+### The Test Pyramid
+*   **Unit Tests (80%)**: Focus on individual functions. Must be fast (<1s) with no external I/O (use mocks for S3, JWT, etc.).
+*   **Integration Tests (15%)**: Test component interactions (Router + Auth + Storage).
+*   **E2E Tests (5%)**: Full-stack workflows with real MinIO. Mark with `#[ignore]` for manual runs.
+
+### Organization
+```text
+tests/
+├── unit/           # Fast unit logic
+├── integration/    # Component orchestration
+└── e2e/            # Full proxy/system flows
+```
+
+## RESOURCES
+* README.md: Quick start and overview.
+* spec.md: Full technical specification.
+* plan.md: The master TDD implementation checklist.
+
