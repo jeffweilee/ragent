@@ -1,6 +1,8 @@
 # Rule
 
-## `docs/spec.md`: Specification Standards
+**Always** check/update following documents before/after delivery.
+
+## `docs/00_spec.md`: Specification Standards
 
 | Section | Inclusion | Exclusion |
 | :--- | :--- | :--- |
