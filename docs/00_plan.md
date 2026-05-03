@@ -25,14 +25,15 @@
 | 2.2 | Green | Implement `src/ragent/plugins/protocol.py` with `runtime_checkable` `Protocol`. | [x] | Dev |
 | 2.3 | Red | `test_stub_graph_extractor_is_noop` — `extract` returns None, `health` True, no side effects. | [x] | QA |
 | 2.4 | Green | Implement `src/ragent/plugins/stub_graph.py`. | [x] | Dev |
-| 2.5 | Refactor | Extract `BaseExtractor` if `VectorExtractor` shares boilerplate; otherwise leave duplicated (YAGNI). | [ ] | Reviewer |
+| 2.5 | Refactor | Extract `BaseExtractor` if `VectorExtractor` shares boilerplate; otherwise leave duplicated (YAGNI). | [x] | Reviewer |
+| 2.5-note | Decision | Reviewed: no shared boilerplate (Stub is no-op, Vector has DI + bulk/delete). Kept duplicated per YAGNI. | [x] | Reviewer |
 
 ### W3 — Vector Extractor + Ingest Pipeline
 
 | # | Category | Task | Status | Owner |
 |---|---|---|:---:|---|
-| 3.1 | Red | `test_vector_extractor_batch_indexes_to_es` — given chunks, calls embedder once, ES `bulk` once, idempotent on rerun. | [ ] | QA |
-| 3.2 | Green | Implement `src/ragent/plugins/vector.py` (mock embedder + ES client at unit level). | [ ] | Dev |
+| 3.1 | Red | `test_vector_extractor_batch_indexes_to_es` — given chunks, calls embedder once, ES `bulk` once, idempotent on rerun. | [x] | QA |
+| 3.2 | Green | Implement `src/ragent/plugins/vector.py` (mock embedder + ES client at unit level). | [x] | Dev |
 | 3.3 | Red | `test_ingest_pipeline_happy_path` (integration) — Converter→Cleaner→LanguageRouter→Splitter→Embedder→write chunks. | [ ] | QA |
 | 3.4 | Green | Implement Haystack ingest pipeline assembly in `src/ragent/pipelines/ingest.py`. | [ ] | Dev |
 | 3.5 | Refactor | Pull pipeline factory into `pipelines/factory.py` if reused by tests. | [ ] | Reviewer |
