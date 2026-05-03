@@ -114,6 +114,7 @@ tests/
 
 ## RESOURCES
 * README.md: Quick start and overview.
+* `docs/00_rule.md`: Project Rule.
 * `docs/00_spec.md`: Full technical specification.
 * `docs/00_plan.md`: The master TDD implementation checklist.
 * `docs/00_journal.md`: Team reflection that prevents the same mistake from happening again. Create blameless, actionable, and documented guidelines by **DOMAIN**.
