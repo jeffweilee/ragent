@@ -1,8 +1,14 @@
 # Rule
 
-**Always** check/update following documents before/after delivery.
+- **Always** Check and Update following documents Before and After planning and delivery.
+   - `docs/00_spec.md`: Specification Standards
+   - `docs/00_plan.md`: Master TDD Implementation Checklist
+   - `docs/00_journal.md` (Blameless Team Reflection)
+- **Always** execute commands before commit
+- **Always** use "Agent Team Member" and follow workflow.
 
-## `docs/00_spec.md`: Specification Standards
+
+### `docs/00_spec.md`: Specification Standards
 
 | Section | Inclusion | Exclusion |
 | :--- | :--- | :--- |
@@ -28,7 +34,7 @@
 | **Phase 2** | **Closure** | Sync all document updates and record lessons in `00_journal.md`. | [ ] | Master |
 
 
-#### `docs/00_journal.md` (Blameless Team Reflection)
+### `docs/00_journal.md` (Blameless Team Reflection)
 
 > **Goal:** Prevent recurrence through actionable, domain-specific guidelines rather than individual blame.
 
@@ -37,6 +43,15 @@
 | 2026-05-04 | **Architecture** | Race condition during high-concurrency wallet updates. | Missing atomicity at the DB transaction level. | **[Rule]** All balance-related mutations must use Pessimistic Locking and be wrapped in an atomic decorator. |
 | 2026-05-01 | **SRE** | Production downtime during schema migration. | Migration script lacked backward compatibility with the current API. | **[Rule]** Use "Expand and Contract" pattern for DB changes; never drop a column before the code reference is removed. |
 | 2026-04-25 | **QA** | Missed edge case in discount logic. | TDD Given-When-Then did not account for "Expired" status. | **[Rule]** All state-machine transitions must include a "Negative Path" test case in the Scenario Matrix. |
+
+---
+# Command
+**Always** run these commands before commit.
+
+## Python
+- Format: `uv run ruff format .`
+- Lint: `uv run ruff check . --fix`
+- Test: `uv run pytest`
 
 ---
 
