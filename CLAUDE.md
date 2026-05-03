@@ -1,9 +1,7 @@
 # CLAUDE.md - Project Guidelines & TDD Workflow
 
-* This document defines the development standards and mandatory workflow for this project. 
-* Strict adherence to **TDD (Test-Driven Development)** and **Minimalism** is required.
-* Strict adherence to `plan.md`, **Honestly** verify each delivery exactly matches reasonable requirement.
-* Use rag agent team to execute the workflow.
+* Read `docs/rule.md` and follow development standards and mandatory workflow for this project. 
+* Strict adherence to **TDD (Test-Driven Development)** and **Minimalism** and **Integrity** are required.
 ---
 
 ## Tech Stack
