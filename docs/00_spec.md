@@ -11,8 +11,8 @@
 - Pluggable extractor architecture: graph reasoning (P3) without pipeline rewrite.
 
 ### ⚠️ P1 OPEN Mode
-- Authentication **DISABLED** in P1. `X-User-Id` header trusted; recorded as `documents.create_user` (audit only, not authorization). JWT restored in a future phase.
-- Permission gating **DISABLED** in P1. The Permission Layer (§3.5) ships in a future phase, backed by OpenFGA, and stays out of the retrieval/ES path.
+- Authentication **DISABLED** in P1. `X-User-Id` header trusted; recorded as `documents.create_user` (audit only, not authorization). JWT restored in **P2**.
+- Permission gating **DISABLED** in P1. The Permission Layer (§3.5) ships in **P2**, backed by OpenFGA, and stays out of the retrieval/ES path.
 - Startup guard refuses to start unless `RAGENT_AUTH_DISABLED=true AND RAGENT_ENV=dev`.
 
 ---
@@ -111,8 +111,8 @@ FileTypeRouter → Converter → [RowMerger (CSV path only)] → DocumentCleaner
 ```mermaid
 flowchart LR
   A[FileTypeRouter] --> B["Converter\n(.txt/.md/.csv/...)"]
-  B --> M["RowMerger\n(CSV only, B24)"]
-  B --> C[DocumentCleaner]
+  B -->|"MIME == text/csv"| M["RowMerger\n(B24)"]
+  B -->|"MIME != text/csv"| C[DocumentCleaner]
   M --> C
   C --> D[LanguageRouter]
   D --> E1["cjk_splitter\n(sentence)"]
@@ -275,7 +275,7 @@ Two distinct concerns, kept architecturally separate from retrieval:
 
 **Design principle:** Elasticsearch (`chunks_v1`) carries **no auth fields** in any phase. Retrieval is permission-blind; the Permission Layer post-filters retrieved chunks by their `document_id`. This keeps ES schema stable across phases, avoids the "owner-filter on every chunk" duplication, and lets the permission model evolve (roles, sharing, groups) without re-indexing.
 
-**Permission Layer interface (future phase):**
+**Permission Layer interface (P2):**
 
 ```python
 class PermissionClient(Protocol):
@@ -285,7 +285,7 @@ class PermissionClient(Protocol):
 
 `PermissionClient` is the single integration point for OpenFGA. It is the only module that imports the OpenFGA SDK; everything else depends on the Protocol.
 
-**Chat retrieval gating (future phase):**
+**Chat retrieval gating (P2):**
 
 ```
 ES retrieval (top K' candidates)
@@ -295,7 +295,7 @@ PermissionClient.batch_check(user_id, candidate_doc_ids)
 filter to allowed → SourceHydrator → LLM
 ```
 
-Retrieval may over-fetch (`K' = K × overfetch_factor`) so that after permission filtering at least K results remain. Strategy and `overfetch_factor` are decided when the future phase ships; not P1 concerns.
+Retrieval may over-fetch (`K' = K × overfetch_factor`) so that after permission filtering at least K results remain. Strategy and `overfetch_factor` are decided when P2 ships; not P1 concerns.
 
 **P1 (current phase):**
 - No JWT — `X-User-Id` is a trusted string, used only for `documents.create_user` (audit) and OTEL span tags.
@@ -303,11 +303,11 @@ Retrieval may over-fetch (`K' = K × overfetch_factor`) so that after permission
 - Audit logs for destructive ops emitted at INFO with `auth_mode=open`.
 - **TokenManager (J1→J2) is active in P1** — used by Embedding/LLM/Rerank clients only (third-party API auth, unrelated to user auth).
 
-**Note on prior decision:** An earlier round declared OpenFGA out-of-scope across all phases (see `00_journal.md`). That decision is **superseded** here: OpenFGA returns as the Permission-Layer backend in a future phase, but is fully encapsulated behind `PermissionClient` and never reaches the retrieval / data layers. The original concern (no out-of-band ACL on every ES query) is preserved by routing permission checks through a post-retrieval gate, not an ES filter.
+**Note on prior decision:** An earlier round declared OpenFGA out-of-scope across all phases (see `00_journal.md`). That decision is **superseded** here: OpenFGA returns as the Permission-Layer backend in P2, but is fully encapsulated behind `PermissionClient` and never reaches the retrieval / data layers. The original concern (no out-of-band ACL on every ES query) is preserved by routing permission checks through a post-retrieval gate, not an ES filter.
 
 **BDD:**
 - **S9 token refresh at boundary** — Given `TokenManager` cache holds a J2 with `expiresAt = T0 + 60 min`, When the wall clock advances to `T0 + 55 min` (`expiresAt − 5 min`) and a caller asks for the J2 token, Then `TokenManager` issues exactly one J1→J2 refresh HTTP exchange and returns the new token; 100 concurrent callers around the boundary share that single refresh (single-flight, P-F).
-- Permission-gating BDD specified when that future phase plan is written.
+- Permission-gating BDD specified when the P2 plan is written.
 
 ---
 
@@ -329,7 +329,7 @@ Retrieval may over-fetch (`K' = K × overfetch_factor`) so that after permission
 - **S3** Given a `PENDING` document with `attempt > 5`, When the reconciler runs, Then status transitions to `FAILED`, partial output is cleaned, and a structured log line `event=ingest.failed` is emitted.
 - See also S24 (UPLOADED orphan), S26 (multi-READY repair), S30 (heartbeat).
 
-**Infrastructure:** Redis broker (TaskIQ) and Redis rate-limiter are **separate instances**.
+**Infrastructure (B27):** Redis broker (TaskIQ) and Redis rate-limiter are **separate logical instances**, each independently configurable as **standalone or Sentinel** via `REDIS_MODE` env (default `standalone` for dev/CI, set `sentinel` in prod). Sentinel mode shares a single sentinel quorum (`REDIS_SENTINEL_HOSTS`, ≥ 3 nodes) and resolves each instance by its master name (`REDIS_BROKER_SENTINEL_MASTER`, `REDIS_RATELIMIT_SENTINEL_MASTER`). Standalone mode reads direct URLs (`REDIS_BROKER_URL`, `REDIS_RATELIMIT_URL`). Connection layer uses `redis-py-sentinel` when mode=sentinel, plain `redis-py` when mode=standalone. The same code path is used by both the API process and the worker.
 
 ---
 
@@ -357,7 +357,7 @@ Retrieval may over-fetch (`K' = K × overfetch_factor`) so that after permission
 | POST   | `/chat/stream`          | `X-User-Id` | §3.4.1 schema | `text/event-stream` per §3.4.3 (`data: {type:delta\|done\|error}`) |
 | POST   | `/mcp/tools/rag`        | `X-User-Id` | `{ query: str }` | **501** (P1) |
 | GET    | `/livez`                | none        | — | `200 {"status":"ok"}` — process up; no dependency probes |
-| GET    | `/readyz`               | none        | — | `200` if MariaDB + ES + Redis + MinIO probes all OK; else `503 application/problem+json` listing failed deps |
+| GET    | `/readyz`               | none        | — | `200` if all dep probes pass; else `503 application/problem+json` listing failed deps. Probes: **MariaDB** (`SELECT 1`), **ES** (`GET /_cluster/health` + `analysis-icu` plugin loaded + every `resources/es/*.json` index exists; B26, I5), **Redis broker & rate-limiter** (`PING` against active topology per `REDIS_MODE`; B27), **MinIO** (`ListBuckets`). Each probe ≤ 2 s. |
 | GET    | `/metrics`              | none        | — | `200 text/plain; version=0.0.4` — Prometheus exposition (counters/histograms in §3.7) |
 
 Future-phase auth: JWT verify (auth) + `PermissionClient` post-retrieval gate (permission, OpenFGA-backed) — see §3.5. ES queries remain permission-blind in every phase.
@@ -382,6 +382,28 @@ All non-2xx responses use **RFC 9457 Problem Details** (`Content-Type: applicati
 - `trace_id` echoes the OTEL trace id when present.
 - 422 responses additionally include `errors: [{field, message}, …]` for field-level validation (e.g. missing `source_id`).
 - **`/livez`, `/readyz`, `/metrics` are the only endpoints whose 2xx body is NOT problem+json**; their non-2xx still uses problem+json.
+
+### 4.1.2 Error Code Catalog (I6)
+
+Inventory of every `error_code` emitted by P1 (API responses + log events). New codes MUST be added here in the same commit that introduces them.
+
+| `error_code` | HTTP / Surface | When | Origin |
+|---|---|---|---|
+| `INGEST_MIME_UNSUPPORTED`            | 415         | MIME outside the §4.2 P1 allow-list | Router T2.13 |
+| `INGEST_FILE_TOO_LARGE`              | 413         | Multipart body > 50 MB | Router T2.13 |
+| `INGEST_VALIDATION`                  | 422         | Missing/empty `source_id` / `source_app` / `source_title` (S23) — `errors[]` lists offending fields | Router T2.13 |
+| `INGEST_NOT_FOUND`                   | 404         | `GET /ingest/{id}` / `DELETE /ingest/{id}` on unknown id | Service T2.10 |
+| `CHAT_MESSAGES_MISSING`              | 422         | `messages` absent or empty | Schema T3.3 |
+| `CHAT_PROVIDER_UNSUPPORTED`          | 422         | `provider` outside `{"openai"}` allow-list (B22) | Schema T3.3 |
+| `CHAT_LLM_ERROR`                     | 502 / SSE-error | Pre-stream LLM failure (problem+json) or mid-stream LLM failure (`data: {type:error}`, B6) | Router T3.10/T3.12 |
+| `CHAT_RETRIEVER_ERROR`               | 502 / SSE-error | ES vector / BM25 retriever failure | Router T3.10/T3.12 |
+| `MCP_NOT_IMPLEMENTED`                | 501         | `POST /mcp/tools/rag` (S8) | Router T6.1 |
+| `ES_PLUGIN_MISSING`                  | 503 (`/readyz`) | ES cluster missing `analysis-icu` plugin (B26, T0.8g) | Bootstrap / readyz |
+| `ES_INDEX_MISSING`                   | 503 (`/readyz`) | A `resources/es/*.json` index is absent at boot | Bootstrap / readyz |
+| `SCHEMA_DRIFT`                       | 503 (`/readyz`) + log `event=schema.drift` | Live schema differs from `schema.sql` / `resources/es/` | Bootstrap |
+| `PIPELINE_TIMEOUT`                   | log `event=ingest.failed reason=pipeline_timeout` | Pipeline body exceeds `PIPELINE_TIMEOUT_SECONDS` (B18, S34) | Worker T3.2j |
+| `ES_BBQ_UNSUPPORTED`                 | log `event=es.bbq_unsupported` | Cluster rejected `bbq_hnsw`; bootstrap retried with standard HNSW (B26) | Bootstrap |
+| `RECONCILER_TICK_MISSING`            | Prometheus alert | `reconciler_tick_total` flat > 10 min (R8, S30) | Alerting rule T7.1a |
 
 ### 4.2 Supported Formats
 
@@ -432,7 +454,7 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | Variable | Default | Domain | Description |
 |---|---|---|---|
 | `RAGENT_ENV`                          | (none, required) | Bootstrap | `dev` \| `staging` \| `prod`. P1 startup guard (§7.5) refuses non-`dev`. |
-| `RAGENT_AUTH_DISABLED`                | `false`          | Bootstrap | Must be `true` in P1; future phases set `false` to enable JWT (§3.5). |
+| `RAGENT_AUTH_DISABLED`                | `false`          | Bootstrap | Must be `true` in P1; P2 sets `false` to enable JWT (§3.5). |
 | `WORKER_HEARTBEAT_INTERVAL_SECONDS`   | `30`             | Worker (B16) | How often the worker refreshes `documents.updated_at` during pipeline body. |
 | `PIPELINE_TIMEOUT_SECONDS`            | `1800`           | Worker (B18) | Overall pipeline-body wall-clock ceiling. |
 | `RECONCILER_STALE_AFTER_SECONDS`      | `300`            | Reconciler (§3.6) | Threshold for `updated_at` staleness; tied to heartbeat. |
@@ -446,6 +468,12 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `RAGENT_DEFAULT_LLM_MAX_TOKENS`       | `4096`           | Chat (§3.4.1) | |
 | `RAGENT_DEFAULT_SYSTEM_PROMPT`        | `You are a helpful assistant` | Chat (§3.4.1) | Auto-prepended when `messages` lacks a `system` entry. |
 | `MINIO_BUCKET`                        | `ragent-staging` | Storage (B10) | Single bucket for staging objects. |
+| `REDIS_MODE`                          | `standalone`     | Redis (B27)   | `standalone` \| `sentinel`. Applies to both broker and rate-limiter; per-instance master names below. |
+| `REDIS_BROKER_URL`                    | `redis://localhost:6379/0` | Redis (B27, mode=standalone) | TaskIQ broker URL. Ignored when `REDIS_MODE=sentinel`. |
+| `REDIS_RATELIMIT_URL`                 | `redis://localhost:6379/1` | Redis (B27, mode=standalone) | Rate-limiter URL. Ignored when `REDIS_MODE=sentinel`. |
+| `REDIS_SENTINEL_HOSTS`                | (required if mode=sentinel) | Redis (B27)   | Comma-separated `host:port` list (≥ 3 nodes recommended). |
+| `REDIS_BROKER_SENTINEL_MASTER`        | `ragent-broker`  | Redis (B27, mode=sentinel) | Master name registered with sentinels for the broker instance. |
+| `REDIS_RATELIMIT_SENTINEL_MASTER`     | `ragent-ratelimit` | Redis (B27, mode=sentinel) | Master name registered with sentinels for the rate-limiter instance. |
 | `AI_API_AUTH_URL`                     | (required)       | Clients (§4.5) | TokenManager J1→J2 endpoint. |
 | `EMBEDDING_API_URL`                   | (required)       | Clients (§4.5) | |
 | `LLM_API_URL`                         | (required)       | Clients (§4.5) | |
@@ -616,3 +644,4 @@ Two artefacts, **both versioned in git**, both consulted at boot:
 | **B24** | 2026-05-04 | Pipeline | CSV row scaling — naive 1 row → 1 chunk would be 1 M chunks for a 50 MB file | **`RowMerger`** SuperComponent on the CSV branch only (Haystack `ConditionalRouter` on MIME): pack consecutive rows joined by `\n` until buffered text reaches `CSV_CHUNK_TARGET_CHARS` (default 2 000 ≈ 512 tokens, well under bge-m3's 8 192). Result: 50 MB CSV → ~25 k chunks instead of ~1 M. Combined with B18 ceiling, large CSVs are bounded both in count and total wall-clock. | Per-file row cap (loses tail rows); skip CSV in P1 (regression vs spec); change every row's chunker to "passage" (loses sentence-level fidelity for non-CSV); dynamic per-row Haystack `DocumentSplitter(split_by="word")` (no row-grouping, defeats the "one logical record per chunk" property). | §3.2 / §4.2 / S35 |
 | **B25** | 2026-05-04 | Storage | `documents.storage_uri` stored full URI; bucket name is constant config | **Rename column to `object_key VARCHAR(256) NOT NULL`** (key only, format per B10). Bucket is read from `MINIO_BUCKET` env var (default `ragent-staging`); reconstruct full URI on demand. Saves ~20 bytes/row, decouples row from bucket-rename ops, and makes a future bucket migration a config flip. | Keep full URI (rigid); store bucket per-row (rotation hell); URL-encode in object key (key+bucket separation already does the job). | §5.1 / T2.5 / T2.6 |
 | **B26** | 2026-05-04 | ES | (a) BM25 analyzer; (b) vector index type; (c) where the index definition lives | **(a) `icu_text` custom analyzer** (`icu_tokenizer` + `icu_folding` + `lowercase`) on `text` and `title` — required for CJK tokenisation; `standard` analyzer collapses CJK to per-character or mega-tokens, breaking BM25. `analysis-icu` plugin is a hard ES dependency (verified at `/readyz`). **(b) `bbq_hnsw`** (Better Binary Quantization HNSW, ES 8.16+) on `embedding` — ~32× memory reduction at negligible recall cost; falls back to standard HNSW with `event=es.bbq_unsupported` log if cluster rejects. **(c) Source of truth = `resources/es/chunks_v1.json`** loaded by boot auto-init (§6.1) when the index does not exist; spec §5.2 mirrors the file in prose; CI drift test enforces equality. | Default `standard` analyzer (CJK becomes useless for BM25); `nori`/`smartcn` (per-language plugin sprawl, doesn't cover all CJK consistently); raw HNSW (4× more memory at our 1024 dims); inline mapping in Python code (every change is a code commit, no resource-file diffability). | §5.2 / §6.1 / T0.8d / T0.9 |
+| **B27** | 2026-05-04 | Infra | Redis topology — single-instance vs Sentinel HA | **Per-instance toggle via `REDIS_MODE` env (`standalone` \| `sentinel`)**. Both broker and rate-limiter share the mode; standalone reads `REDIS_BROKER_URL` / `REDIS_RATELIMIT_URL`; sentinel reads `REDIS_SENTINEL_HOSTS` (shared quorum) + `REDIS_*_SENTINEL_MASTER` (per-instance master name). Connection layer dispatches on mode (`redis-py-sentinel` vs `redis-py`). Default `standalone` for dev/CI; prod sets `sentinel`. | Hardcode Sentinel (broken local dev); hardcode standalone (no prod HA story); per-instance independent mode (config matrix doubles, no real-world need). | §3.6 / §4.6 / T0.9 |
