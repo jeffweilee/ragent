@@ -536,7 +536,7 @@ No physical FK. ORM-level cascade only.
 - **Methods:** ≤ 30 LOC, max 2-level nesting. Utilities in `utility/`.
 - **IDs:** UUIDv7 + Crockford Base32 (26 chars). **DateTime:** end-to-end UTC + `Z` suffix.
 - **DB:** no physical FK; index every `WHERE / JOIN / ORDER BY` field.
-- **Quality gate:** `uv run ruff format . && uv run ruff check . --fix && uv run pytest` before every commit.
+- **Quality gate:** `uv run ruff format . && uv run ruff check . --fix && uv run pytest --cov=src/ragent --cov-branch --cov-fail-under=92` before every commit. **Test coverage floor: 92% (line + branch)** — CI rejects drops; DoD requirement.
 - **TDD commits:** `[STRUCTURAL]` or `[BEHAVIORAL]` prefix; never mixed.
 - **JSON naming convention (B21):** within request/response bodies, **identifier and resource fields are `snake_case`** (`document_id`, `source_id`, `source_app`, `source_title`, `error_code`, `next_cursor`, `task_id`, `trace_id`); **LLM token/config knobs are `camelCase`** (`maxTokens`, `promptTokens`, `completionTokens`, `totalTokens`, `temperature`, `topP` if added later) — preserved to match upstream OpenAI-shape expectations. Within a single body both styles may coexist; the rule above resolves which to use for any new field.
 

@@ -21,7 +21,7 @@
 | # | Category | Task | Depends On | Status | Owner | Week |
 |---|---|---|---|:---:|---|:---:|
 | T0.1 | Structural | Scaffold project: `pyproject.toml`, `src/ragent/`, `tests/{unit,integration,e2e}/`. | — | [x] | Dev | W1 |
-| T0.2 | Structural | CI alias `make check` = `ruff format . && ruff check . --fix && pytest`. | T0.1 | [ ] | Dev | W1 |
+| T0.2 | Structural | CI alias `make check` = `ruff format . && ruff check . --fix && pytest --cov=src/ragent --cov-branch --cov-fail-under=92`. Coverage floor enforced (DoD); fails CI on drop. | T0.1 | [ ] | Dev | W1 |
 | T0.3 | Red | `tests/unit/test_id_gen.py` — `new_id()` returns 26-char Crockford base32; sortable across calls. | T0.1 | [ ] | QA | W2 |
 | T0.4 | Green | `src/ragent/utility/id_gen.py` (UUIDv7 → 16 bytes → base32; ≤ 30 LOC). | T0.3 | [ ] | Dev | W2 |
 | T0.5 | Red | `tests/unit/test_datetime_utility.py` — `utcnow()` tz-aware UTC; `to_iso` ends in `Z`; `from_db` attaches UTC. | T0.1 | [ ] | QA | W2 |
@@ -176,6 +176,7 @@
 - [ ] Every `[ ]` row in tracks T0–T7 is `[x]`.
 - [ ] T8 rows remain `[~]` (auth disabled by design); spec §3.5 and §4.5 still describe the P2 contract.
 - [ ] `uv run ruff format . && uv run ruff check . && uv run pytest` exits 0.
+- [ ] **TDD test coverage > 92%** — `uv run pytest --cov=src/ragent --cov-fail-under=92` passes; CI rejects PRs that drop below the floor. Coverage is line + branch.
 - [ ] Acceptance metrics T7.2 / T7.3 / T7.4 met.
 - [ ] Startup guard (T7.5) verified (`pytest tests/unit/test_bootstrap_startup_guard.py`).
 - [ ] Every BDD scenario in `00_spec.md` §3.X has a corresponding plan row whose test path matches.
