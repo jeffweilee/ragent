@@ -697,6 +697,81 @@ Two artefacts, **both versioned in git**, both consulted at boot:
 
 **Invariant:** `schema.sql` ≡ replaying `001 → NNN`. CI enforces this with `tests/integration/test_schema_drift.py` (apply both paths to two scratch DBs, `mysqldump` both, diff must be empty).
 
+### 6.2 Module Layout
+
+> Canonical project tree. Every file is produced by exactly one Green/Structural plan row; no file is written outside this layout. Layered dependency rule: **routers → services → repositories**; **plugins / clients / storage / pipelines** are leaf concerns injected via the composition root (B30). **Only `bootstrap/composition.py` reads env vars** — every other module receives its config via constructor argument (B17, B30).
+
+```
+ragent/
+├── pyproject.toml
+├── .env.example                                  # T0.11 (B30) — operator-facing config artifact
+├── Dockerfile.es-test                            # T0.9  — ES container with analysis-icu pre-installed
+├── deploy/k8s/reconciler-cronjob.yaml            # T5.2  (B9) — Reconciler CronJob manifest
+├── migrations/
+│   ├── schema.sql                                # T0.8a (B3) — consolidated snapshot
+│   └── 001_initial.sql                           # T0.8  (B3) — forward-only Alembic
+├── resources/es/chunks_v1.json                   # T0.8e (B26) — ES index source of truth
+├── src/ragent/
+│   ├── api.py                                    # T7.5d — `python -m ragent.api`     (uvicorn launcher)
+│   ├── worker.py                                 # T7.5e — `python -m ragent.worker`  (TaskIQ launcher)
+│   ├── reconciler.py                             # T5.2  — `python -m ragent.reconciler` (one-shot, B9)
+│   ├── bootstrap/
+│   │   ├── guard.py                              # T7.5  — RAGENT_ENV/AUTH/HOST/LOG_LEVEL guard
+│   │   ├── broker.py                             # T0.10 (B27/B30) — TaskIQ broker; sole `@broker.task` import
+│   │   ├── composition.py                        # T7.5a (B30) — composition root / DI Container; sole env-reader
+│   │   ├── init_schema.py                        # T0.8d (B3, B26) — CREATE IF NOT EXISTS / PUT index
+│   │   └── app.py                                # T7.5c — FastAPI `create_app()` + lifespan auto-init
+│   ├── routers/
+│   │   ├── ingest.py                             # T2.14 (B5) — /ingest CRUD + RFC 9457
+│   │   ├── chat.py                               # T3.10/T3.12 (B12, B6) — /chat + /chat/stream
+│   │   ├── mcp.py                                # T6.1  — /mcp/tools/rag (501 in P1)
+│   │   └── health.py                             # T7.8  (B4, C9) — /livez /readyz /metrics
+│   ├── services/
+│   │   └── ingest_service.py                     # T2.8 / T2.10 / T2.12 / T3.2d — create / delete / list / supersede
+│   ├── repositories/
+│   │   ├── document_repository.py                # T2.2  (B11/B14/B16/B25/B29) — CRUD + heartbeat + supersede helpers
+│   │   └── chunk_repository.py                   # T2.4
+│   ├── plugins/
+│   │   ├── protocol.py                           # T1.2  — `ExtractorPlugin` Protocol (frozen, §3.3)
+│   │   ├── registry.py                           # T1.7  — `PluginRegistry`, fan_out, per-plugin timeout
+│   │   ├── vector.py                             # T1.10 / T1.12 (B15/B17/B29) — VectorExtractor (DI)
+│   │   └── stub_graph.py                         # T1.4  — no-op P1 placeholder for §4.4 graph row
+│   ├── pipelines/
+│   │   ├── factory.py                            # T3.2 / T3.5a — ingest + chat factories (CHAT_JOIN_MODE dispatch)
+│   │   ├── ingest.py                             # T3.2  (B1/B24) — Haystack components + RowMerger
+│   │   └── chat.py                               # T3.6  (B23) — `build_retrieval_pipeline` + SourceHydrator
+│   ├── clients/
+│   │   ├── auth.py                               # T4.2  (P-F, S9) — TokenManager (J1→J2, single-flight)
+│   │   ├── embedding.py                          # T4.4  (C8) — bge-m3, batched, asymmetric timeouts
+│   │   ├── llm.py                                # T4.6 / T3.8 (B12) — chat + stream
+│   │   └── rerank.py                             # T4.8  — P1 unit only, P2 wired
+│   ├── storage/
+│   │   └── minio_client.py                       # T2.6  (B10/B25/B28) — key-only return; bucket from MINIO_BUCKET
+│   ├── workers/                                  # @broker.task modules — auto-imported by worker.py
+│   │   ├── ingest.py                             # T3.2b (B16/B18) — `ingest.pipeline` task
+│   │   └── supersede.py                          # T3.2d (P-C) — `ingest.supersede` task
+│   ├── schemas/
+│   │   └── chat.py                               # T3.4  (B12/B21/B22/B29) — Pydantic ChatRequest
+│   ├── errors/
+│   │   └── problem.py                            # T2.14 (B5) — RFC 9457 builder + error_code (§4.1.2)
+│   ├── utility/
+│   │   ├── id_gen.py                             # T0.4  — UUIDv7 → Crockford base32 (26 char)
+│   │   └── datetime.py                           # T0.6  — UTC + ISO-Z helpers
+│   └── state_machine.py                          # T0.7 (S10) — status transition rules; consumed by repo.update_status
+└── tests/
+    ├── conftest.py                               # T0.9 (B8) — testcontainers session fixtures
+    ├── unit/                                     # 80% per pyramid (CLAUDE.md)
+    ├── integration/                              # 15% — backed by testcontainers
+    └── e2e/                                      # 5%  — T7.2 quickstart, T7.3 golden, T7.4 chaos
+```
+
+**Module conventions:**
+- **No env reads outside `bootstrap/composition.py`.** Every other module receives config via constructor; this is what makes the composition root the single boot-time validation point and what lets unit tests mock dependencies cleanly.
+- **`@broker.task` decorators** import from `ragent.bootstrap.broker` only. The `workers/` package contains task definitions; `worker.py` imports both so decorators register on the canonical broker.
+- **Plugins** are constructed by `composition.py` with all dependencies (B17). They never import `pipelines/`, `routers/`, or HTTP layers.
+- **Routers** depend on services (FastAPI `Depends`); services depend on repositories; repositories depend on the SQLAlchemy engine (constructor-injected). Clients (`clients/`) and storage (`storage/`) are leaf adapters injected wherever needed.
+- **Migrations and ES resources** are data, not code. `bootstrap/init_schema.py` reads `migrations/schema.sql` + `resources/es/*.json` and applies them idempotently; never inlines DDL.
+
 ---
 
 ## 7. Decision Log
@@ -732,6 +807,6 @@ Two artefacts, **both versioned in git**, both consulted at boot:
 | **B25** | 2026-05-04 | Storage | `documents.storage_uri` stored full URI; bucket name is constant config | **Rename column to `object_key VARCHAR(256) NOT NULL`** (key only, format per B10). Bucket is read from `MINIO_BUCKET` env var (default `ragent`); reconstruct full URI on demand. Saves ~20 bytes/row, decouples row from bucket-rename ops, and makes a future bucket migration a config flip. | Keep full URI (rigid); store bucket per-row (rotation hell); URL-encode in object key (key+bucket separation already does the job). | §5.1 / T2.5 / T2.6 |
 | **B26** | 2026-05-04 | ES | (a) BM25 analyzer; (b) vector index type; (c) where the index definition lives | **(a) `icu_text` custom analyzer** (`icu_tokenizer` + `icu_folding` + `lowercase`) on `text` and `title` — required for CJK tokenisation; `standard` analyzer collapses CJK to per-character or mega-tokens, breaking BM25. `analysis-icu` plugin is a hard ES dependency (verified at `/readyz`). **(b) `bbq_hnsw`** (Better Binary Quantization HNSW, ES 8.16+) on `embedding` — ~32× memory reduction at negligible recall cost; falls back to standard HNSW with `event=es.bbq_unsupported` log if cluster rejects. **(c) Source of truth = `resources/es/chunks_v1.json`** loaded by boot auto-init (§6.1) when the index does not exist; spec §5.2 mirrors the file in prose; CI drift test enforces equality. | Default `standard` analyzer (CJK becomes useless for BM25); `nori`/`smartcn` (per-language plugin sprawl, doesn't cover all CJK consistently); raw HNSW (4× more memory at our 1024 dims); inline mapping in Python code (every change is a code commit, no resource-file diffability). | §5.2 / §6.1 / T0.8d / T0.9 |
 | **B27** | 2026-05-04 | Infra | Redis topology — single-instance vs Sentinel HA | **Per-instance toggle via `REDIS_MODE` env (`standalone` \| `sentinel`)**. Both broker and rate-limiter share the mode; standalone reads `REDIS_BROKER_URL` / `REDIS_RATELIMIT_URL`; sentinel reads `REDIS_SENTINEL_HOSTS` (shared quorum) + `REDIS_*_SENTINEL_MASTER` (per-instance master name). Connection layer dispatches on mode (`redis-py-sentinel` vs `redis-py`). Default `standalone` for dev/CI; prod sets `sentinel`. | Hardcode Sentinel (broken local dev); hardcode standalone (no prod HA story); per-instance independent mode (config matrix doubles, no real-world need). | §3.6 / §4.6 / T0.9 |
-| **B30** | 2026-05-04 | Operator UX | What does an operator have to do to bring up the system end-to-end? | **Two-command quickstart**: `cp .env.example .env` → fill required vars → `python -m ragent.api` (T7.5d) and `python -m ragent.worker` (T7.5e). All else is automatic: schema/index auto-init runs from FastAPI lifespan + worker startup (T0.8d, idempotent); composition root (T7.5a) wires every dependency from env vars, no per-module env reads; TaskIQ broker module (T0.10) is the single import point for `@broker.task` decorators; `.env.example` (T0.11) is symmetric with spec §4.6 (drift test T0.11a). Reconciler is K8s-only and not required for the local two-command path (recovery surface, not steady-state). E2E quickstart asserted by T7.2 launching the real entrypoint subprocesses, not internal scaffolding. | (a) Manual `alembic upgrade head` step before boot — adds an operator-facing migration command, defeats "two commands"; (b) per-module env reads — couples every module to env, blocks DI testing, rule J28 violation; (c) split broker module per task — multiple import paths, decorator misregistration risk; (d) no `.env.example` — operator reads spec §4.6 by hand, easy to miss required vars and discover at first failed request. | §1 / §3.1 / §6.1 / §4.6 / T0.10 / T0.11 / T7.5 / T7.5a–f / T7.2 |
+| **B30** | 2026-05-04 | Operator UX | What does an operator have to do to bring up the system end-to-end? | **Two-command quickstart**: `cp .env.example .env` → fill required vars → `python -m ragent.api` (T7.5d) and `python -m ragent.worker` (T7.5e). All else is automatic: schema/index auto-init runs from FastAPI lifespan + worker startup (T0.8d, idempotent); composition root (T7.5a) wires every dependency from env vars, no per-module env reads; TaskIQ broker module (T0.10) is the single import point for `@broker.task` decorators; `.env.example` (T0.11) is symmetric with spec §4.6 (drift test T0.11a). Project module layout fixed in §6.2 — every plan row produces exactly one file in that tree. Reconciler is K8s-only and not required for the local two-command path (recovery surface, not steady-state). E2E quickstart asserted by T7.2 launching the real entrypoint subprocesses, not internal scaffolding. | (a) Manual `alembic upgrade head` step before boot — adds an operator-facing migration command, defeats "two commands"; (b) per-module env reads — couples every module to env, blocks DI testing; (c) split broker module per task — multiple import paths, decorator misregistration risk; (d) no `.env.example` — operator reads spec §4.6 by hand, easy to miss required vars and discover at first failed request; (e) free-form module layout — names drift between plan and code, integration tests import wrong path. | §1 / §3.1 / §4.6 / §6.1 / §6.2 / T0.10 / T0.11 / T7.5 / T7.5a–f / T7.2 |
 | **B29** | 2026-05-04 | Chat API | Optional retrieval filter by `source_app` / `source_workspace` | **Filter in ES via denormalised keyword fields.** `chunks_v1` mapping gains two `keyword` fields (`source_app`, `source_workspace`) populated by `VectorExtractor` from `documents` at ingest. Chat request schema (§3.4.1) accepts both as optional fields; when present they apply as ES `term` filter in **both** retrievers' `filter` clause (kNN `filter`, BM25 `bool.filter`). AND semantics when both supplied. Empty string ⇒ 422 `CHAT_FILTER_INVALID`. These are scope metadata, not auth fields (B14 distinction preserved); permission gating remains a separate post-retrieval layer (§3.5). | Post-retrieval filter via document JOIN in SourceHydrator (forces over-fetch with unbounded `K' = K × overfetch_factor` — narrow workspaces silently truncate); filter on `documents` only, retrieve all chunks then drop (defeats kNN top-K semantics); add a third retriever per filter combination (mapping bloat, no win). Pre-existing `chunks_v1` data does not exist (still pre-implementation), so single-version mapping update is safe; would otherwise require `chunks_v2` + reindex. | §3.4 / §3.4.1 / §4.3 / §4.4 / §5.2 / `resources/es/chunks_v1.json` / T1.9 / T1.12 / T3.5 |
 | **B28** | 2026-05-04 | Config | Env-var inventory was incomplete — missing datastore connections (MariaDB/ES/MinIO host/creds), J1 client credentials, HTTP bind, OTEL exporter, retry/timeout policy knobs, upload limits, and log level; `RERANK_API_URL` was misspelled `REREANK_API_URL` | **Reorganise §4.6 into 8 subsections** (bootstrap, datastore, redis, third-party clients, worker/reconciler, pipeline/chat, per-call timeouts, observability). **Add 26 new vars** covering every previously implicit literal: `MARIADB_DSN`, `ES_HOSTS`/`ES_USERNAME`/`ES_PASSWORD`/`ES_API_KEY`/`ES_VERIFY_CERTS`, `MINIO_ENDPOINT`/`MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY`/`MINIO_SECURE`, `RAGENT_HOST`/`RAGENT_PORT`/`LOG_LEVEL`, `AI_API_CLIENT_ID`/`AI_API_CLIENT_SECRET`, `WORKER_MAX_ATTEMPTS`, `RECONCILER_PENDING_STALE_SECONDS`/`RECONCILER_UPLOADED_STALE_SECONDS`/`RECONCILER_DELETING_STALE_SECONDS`, `INGEST_MAX_FILE_SIZE_BYTES`, `INGEST_LIST_MAX_LIMIT`, the seven per-call timeouts (`EMBEDDER_INGEST/QUERY`, `ES_BULK/QUERY`, `MINIO_GET/PUT`, `LLM`, `PLUGIN_FAN_OUT`, `READYZ_PROBE`), plus four `OTEL_*` vars. **Fix typo** `REREANK_API_URL` → `RERANK_API_URL`. **Rename** ambiguous `RECONCILER_STALE_AFTER_SECONDS` to per-state `RECONCILER_PENDING_STALE_SECONDS` and add UPLOADED/DELETING siblings. **Change `MINIO_BUCKET` default** from `ragent-staging` → `ragent` (B10/B25 prose updated). Also adds an inventory rule: any literal value read by code that is not represented in §4.6 is a spec drift bug. | Leave datastore connections as "implicit per-environment overrides" (every operator reinvents the wheel; bootstrap module has no canonical names to read); expose only DSN-style strings for ES/MinIO too (forces credential concatenation in URLs, harder to rotate); keep timeouts as code constants only (violates J21 rule "every call site lists per-call timeout AND aggregate ceiling"); ship without J1 creds (TokenManager has a URL but no way to authenticate — boot succeeds but every embedder/LLM call fails on first request). | §1 / §3.1 / §3.6 / §3.7 / §4.5 / §4.6 / §6.1 / T0.8 |
