@@ -40,9 +40,12 @@
 
 **Storage model:** MinIO is **transient staging only** — needed because Router (API) and Worker may run on different hosts. The original file is deleted from MinIO after the pipeline reaches a terminal state (`READY` or `FAILED`). After ingest, only chunks (ES) + metadata (MariaDB) remain.
 
+**Supersede model (smart upsert):** Clients may pass an optional `source_id` (stable client-side identifier, e.g. URL hash or external ID). On `POST /ingest`, a new `document_id` is always created. When the new document reaches `READY`, the system enqueues a **supersede** task that cascade-deletes every prior `READY` document sharing the same `source_id` (created_at strictly earlier). This gives zero-downtime replacement: old chunks remain queryable until the new ones are indexed; if the new ingest fails, the old version is preserved.
+
 **Create flow:**
-1. `POST /ingest` → MIME/size validation → MinIO upload (staging) → `documents(UPLOADED)` → kiq `ingest.pipeline` → 202
-2. Worker: acquire(FOR UPDATE) → `PENDING`, attempt+1 → run pipeline → fan_out → on terminal state, delete MinIO object → `READY`; any required plugin error → stay `PENDING` (Reconciler retries; MinIO kept until terminal); attempt > 5 → delete MinIO + `FAILED` + structured-log alert
+1. `POST /ingest` (optional `source_id`) → MIME/size validation → MinIO upload (staging) → `documents(UPLOADED, source_id)` → kiq `ingest.pipeline` → 202
+2. Worker: acquire(FOR UPDATE) → `PENDING`, attempt+1 → run pipeline → fan_out → on terminal state, delete MinIO object → `READY`; on `READY` and `source_id IS NOT NULL`, kiq `ingest.supersede(document_id)` (idempotent); any required plugin error → stay `PENDING` (Reconciler retries; MinIO kept until terminal); attempt > 5 → delete MinIO + `FAILED` + structured-log alert
+3. `ingest.supersede` worker: `SELECT … WHERE source_id=? AND created_at < self.created_at AND status='READY' FOR UPDATE SKIP LOCKED` → cascade-delete each (same path as `DELETE /ingest/{id}`)
 
 **Delete flow:**
 1. `DELETE /ingest/{id}` → acquire(FOR UPDATE) → `DELETING` → `fan_out_delete` → delete chunks → delete row → 204
@@ -57,6 +60,9 @@
 - **S16** Pipeline reaches terminal state (`READY` or `FAILED`) → MinIO object deleted; subsequent re-processing not possible without re-upload.
 - **S14** Re-DELETE an already-deleted document → 204, no plugin calls.
 - **S15** `GET /ingest?limit=2` on 5 docs → ≤ 2 items + `next_cursor` continues.
+- **S17 supersede happy path** — Given a `READY` doc D1 with `source_id="X"`, When client POSTs another file with `source_id="X"`, Then a new doc D2 is created; while D2 is `PENDING`, queries still see D1 chunks; when D2 reaches `READY`, supersede task cascade-deletes D1; queries now see only D2 chunks.
+- **S18 supersede on failure preserves old** — Given D1 `READY` with `source_id="X"`, When new D2 with same `source_id` ends up `FAILED`, Then D1 remains `READY` and queryable; supersede task is **not** enqueued.
+- **S19 supersede idempotent** — Given supersede already ran for D2, When the task fires again, Then no further deletes occur (no prior `READY` rows match).
 
 ---
 
@@ -162,7 +168,7 @@ QueryEmbedder → {ESVectorRetriever ∥ ESBM25Retriever} → DocumentJoiner(RRF
 
 | Method | Path | P1 Auth | Request | Response |
 |---|---|---|---|---|
-| POST   | `/ingest`               | `X-User-Id` | `multipart/form-data: file` (≤ 50 MB, MIME ∈ §4.2) | `202 { task_id }` |
+| POST   | `/ingest`               | `X-User-Id` | `multipart/form-data: file` (≤ 50 MB, MIME ∈ §4.2), optional `source_id` (≤ 128 chars) | `202 { task_id }` |
 | GET    | `/ingest/{id}`          | `X-User-Id` | — | `200 { status, attempt, updated_at }` |
 | GET    | `/ingest?after=&limit=` | `X-User-Id` | — | `200 { items, next_cursor }` (limit ≤ 100) |
 | DELETE | `/ingest/{id}`          | `X-User-Id` | — | `204` idempotent |
@@ -223,12 +229,14 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 CREATE TABLE documents (
   document_id   CHAR(26)     PRIMARY KEY,
   owner_user_id VARCHAR(64)  NOT NULL,
+  source_id     VARCHAR(128) NULL,
   storage_uri   VARCHAR(512) NOT NULL,
   status        ENUM('UPLOADED','PENDING','READY','FAILED','DELETING') NOT NULL,
   attempt       INT          NOT NULL DEFAULT 0,
   created_at    DATETIME(6)  NOT NULL,
   updated_at    DATETIME(6)  NOT NULL,
-  INDEX idx_status_updated (status, updated_at)
+  INDEX idx_status_updated (status, updated_at),
+  INDEX idx_source_status_created (source_id, status, created_at)
 );
 
 CREATE TABLE chunks (
