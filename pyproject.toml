@@ -3,11 +3,14 @@ name = "ragent"
 version = "0.1.0"
 description = "Distributed RAG Agent System (Phase 1 skeleton)"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "uuid-utils>=0.9",
+]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=8",
+    "pytest-cov>=5",
     "ruff>=0.5",
 ]
 
@@ -29,4 +32,4 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
-addopts = "-q"
+addopts = "-q --tb=short"
