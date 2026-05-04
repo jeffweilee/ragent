@@ -86,13 +86,11 @@ def check_es_plugins(es_url: str) -> list[str]:
 
 
 def _strip_comments(sql: str) -> str:
-    """Remove leading -- comment lines from a SQL statement fragment."""
     lines = [ln for ln in sql.splitlines() if not ln.strip().startswith("--")]
     return "\n".join(lines).strip()
 
 
 def init_mariadb(engine) -> None:
-    """Execute schema.sql (CREATE IF NOT EXISTS) against a SQLAlchemy engine."""
     sql = (_MIGRATIONS / "schema.sql").read_text()
     with engine.begin() as conn:
         for raw in sql.split(";"):
@@ -102,11 +100,7 @@ def init_mariadb(engine) -> None:
 
 
 def init_es(es_url: str) -> None:
-    """PUT each resources/es/*.json index if it does not already exist.
-
-    Raises ESPluginMissingError when a required plugin is absent — the index
-    that depends on it is not created and the error propagates to /readyz.
-    """
+    """Raises ESPluginMissingError when a required plugin is absent — propagates to /readyz."""
     missing = check_es_plugins(es_url)
     if missing:
         raise ESPluginMissingError(missing)
@@ -125,7 +119,6 @@ def init_es(es_url: str) -> None:
 
 
 def auto_init(db_url: str, es_url: str) -> None:
-    """Full bootstrap: check ES plugins, init MariaDB tables, init ES indexes."""
     from sqlalchemy import create_engine
 
     engine = create_engine(db_url)

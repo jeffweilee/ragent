@@ -1,17 +1,17 @@
 """T0.8b — schema.sql and alembic upgrade head must produce identical schemas."""
 
 import os
+import re
 import subprocess
 
 import pytest
+
+from ragent.bootstrap.init_schema import _strip_comments
 
 pytestmark = pytest.mark.docker
 
 
 def _mysqldump(dsn: str) -> str:
-    """Run mysqldump --no-data and return the normalised schema string."""
-    # Extract host/port/user/password/db from DSN
-    # Format: mysql+pymysql://user:pass@host:port/db?...
     from urllib.parse import urlparse
 
     parsed = urlparse(dsn.replace("mysql+pymysql://", "mysql://"))
@@ -37,18 +37,10 @@ def _mysqldump(dsn: str) -> str:
         text=True,
         check=True,
     )
-    # Normalise: remove AUTO_INCREMENT counters, timestamps, version comments
-    import re
-
     schema = result.stdout
     schema = re.sub(r" AUTO_INCREMENT=\d+", "", schema)
     schema = re.sub(r"/\*![0-9]+ .*?\*/;?", "", schema, flags=re.DOTALL)
     return schema.strip()
-
-
-def _strip_sql_comments(fragment: str) -> str:
-    lines = [ln for ln in fragment.splitlines() if not ln.strip().startswith("--")]
-    return "\n".join(lines).strip()
 
 
 def _apply_schema_sql(dsn: str) -> None:
@@ -61,7 +53,7 @@ def _apply_schema_sql(dsn: str) -> None:
     engine = sqlalchemy.create_engine(dsn)
     with engine.begin() as conn:
         for raw in schema_sql.split(";"):
-            stmt = _strip_sql_comments(raw)
+            stmt = _strip_comments(raw)
             if stmt:
                 conn.execute(text(stmt))
 
