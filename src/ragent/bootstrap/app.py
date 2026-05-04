@@ -10,6 +10,7 @@ from fastapi.responses import Response
 
 from ragent.bootstrap.guard import enforce
 from ragent.bootstrap.init_schema import init_schema
+from ragent.bootstrap.telemetry import setup_tracing
 from ragent.errors.problem import problem
 from ragent.routers.chat import create_chat_router
 from ragent.routers.ingest import create_router as create_ingest_router
@@ -37,12 +38,18 @@ def create_app() -> FastAPI:
 
     container = get_container()
 
+    setup_tracing("ragent-api")
+
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         init_schema()
         yield
 
     app = FastAPI(title="ragent", lifespan=lifespan)
+
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+    FastAPIInstrumentor.instrument_app(app)
 
     ingest_svc = IngestService(
         repo=container.doc_repo,
