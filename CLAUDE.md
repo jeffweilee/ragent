@@ -1,6 +1,6 @@
 # CLAUDE.md - Project Guidelines & TDD Workflow
 
-* Read `docs/rule.md` and follow development standards and mandatory workflow for this project. 
+* Read `docs/00_rule.md` and follow development standards and mandatory workflow for this project. 
 * Strict adherence to **TDD (Test-Driven Development)** and **Minimalism** and **Integrity** are required.
 ---
 
@@ -120,5 +120,6 @@ tests/
 * `docs/00_rule.md`: Project Rule.
 * `docs/00_spec.md`: Full technical specification.
 * `docs/00_plan.md`: The master TDD implementation checklist.
+* `docs/00_agent_team.md`: RAGENT agent team and workflow.
 * `docs/00_journal.md`: Team reflection that prevents the same mistake from happening again. Create blameless, actionable, and documented guidelines by **DOMAIN**.
 
