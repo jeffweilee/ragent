@@ -13,6 +13,7 @@ from ragent.bootstrap.init_schema import init_schema
 from ragent.bootstrap.telemetry import setup_tracing
 from ragent.errors.problem import problem
 from ragent.routers.chat import create_chat_router
+from ragent.routers.health import create_health_router
 from ragent.routers.ingest import create_router as create_ingest_router
 from ragent.routers.mcp import create_mcp_router
 
@@ -68,6 +69,7 @@ def create_app() -> FastAPI:
         )
     )
     app.include_router(create_mcp_router())
+    app.include_router(create_health_router())
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception) -> Response:
