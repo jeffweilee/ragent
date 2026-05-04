@@ -4,6 +4,9 @@ version = "0.1.0"
 description = "Distributed RAG Agent System (Phase 1 skeleton)"
 requires-python = ">=3.12"
 dependencies = [
+    "alembic>=1.18.4",
+    "taskiq>=0.12.2",
+    "taskiq-redis>=1.2.2",
     "uuid-utils>=0.9",
 ]
 
@@ -33,3 +36,8 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 addopts = "-q --tb=short"
+
+[dependency-groups]
+dev = [
+    "testcontainers[elasticsearch,mariadb,minio,redis]>=4.14.2",
+]
