@@ -104,7 +104,7 @@ IMPORTANT: Quality is non-negotiable. Every line of code must be traceable to a 
 
 ### The Test Pyramid
 *   **Unit Tests (80%)**: Focus on individual functions. Must be fast (<1s) with no external I/O (use mocks for S3, JWT, etc.).
-*   **Integration Tests (15%)**: Test component interactions (Router + Auth + Storage).
+*   **Integration Tests (15%)**: Test component interactions (Router + Auth + Storage). Test Coverage > 90%.
 *   **E2E Tests (5%)**: Full-stack workflows with real MinIO. Mark with `#[ignore]` for manual runs.
 
 ### Organization
