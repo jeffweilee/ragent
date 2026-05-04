@@ -51,13 +51,13 @@
 | T2.2 | Green | `src/ragent/repositories/document_repository.py` (Repository layer; CRUD only). | T2.1 | [ ] | Dev | W3 |
 | T2.3 | Red  | `tests/unit/test_chunk_repository.py` — `bulk_insert / delete_by_document_id`. | T0.4 | [ ] | QA | W3 |
 | T2.4 | Green | `src/ragent/repositories/chunk_repository.py`. | T2.3 | [ ] | Dev | W3 |
-| T2.5 | Red  | `tests/unit/test_minio_client.py` — `put_object` returns `minio://...`; `delete_object` idempotent. | T0.1 | [ ] | QA | W3 |
+| T2.5 | Red  | `tests/unit/test_minio_client.py` — `put_object` returns `minio://...`; `delete_object` idempotent. MinIO is transient staging only — cleared on terminal pipeline state. | T0.1 | [ ] | QA | W3 |
 | T2.6 | Green | `src/ragent/storage/minio_client.py`. | T2.5 | [ ] | Dev | W3 |
 | T2.7 | Red  | `tests/unit/test_ingest_service_create.py` — MIME validate (≤50 MB, allow-list per spec §4.2) → put → repo.create → kiq dispatch; rolls back row if MinIO put fails. | T2.2, T2.6, T1.7 | [ ] | QA | W3 |
 | T2.8 | Green | `src/ragent/services/ingest_service.py::create` (≤ 30 LOC/method). | T2.7 | [ ] | Dev | W3 |
-| T2.9 | Red  | `tests/unit/test_ingest_service_delete.py` — cascade order (P1 OPEN: skip FGA → acquire→DELETING → fan_out_delete → chunks → MinIO → row); on MinIO failure row stays DELETING (S13); idempotent re-delete returns 204 (S14). | T2.8, T1.8 | [ ] | QA | W3 |
+| T2.9 | Red  | `tests/unit/test_ingest_service_delete.py` — cascade order (acquire→DELETING → fan_out_delete → chunks → row; MinIO already cleared at terminal state, deleted in cascade only if status is UPLOADED/PENDING); on any failure row stays DELETING (S13); idempotent re-delete returns 204 (S14). | T2.8, T1.8 | [ ] | QA | W3 |
 | T2.10 | Green | `src/ragent/services/ingest_service.py::delete`. | T2.9 | [ ] | Dev | W3 |
-| T2.11 | Red | `tests/unit/test_ingest_service_list.py` — cursor pagination by `document_id` ASC; `next_cursor` correctness (S15, P1 OPEN: no ACL pre-filter). | T2.2 | [ ] | QA | W3 |
+| T2.11 | Red | `tests/unit/test_ingest_service_list.py` — cursor pagination by `document_id` ASC; `next_cursor` correctness (S15, P1 OPEN: no ACL filter). | T2.2 | [ ] | QA | W3 |
 | T2.12 | Green | `src/ragent/services/ingest_service.py::list`. | T2.11 | [ ] | Dev | W3 |
 | T2.13 | Red | `tests/unit/test_ingest_router.py` — Router only parses/validates and delegates; 415 on bad MIME, 413 on >50 MB; `X-User-Id` required (P1 OPEN). | T2.8, T2.10, T2.12 | [ ] | QA | W3 |
 | T2.14 | Green | `src/ragent/routers/ingest.py` (declares all endpoints in spec §4.1). | T2.13 | [ ] | Dev | W3 |
@@ -68,7 +68,9 @@
 |---|---|---|---|:---:|---|:---:|
 | T3.1 | Red | `tests/integration/test_ingest_pipeline.py` — Haystack Convert→Clean→Lang→Split→Embed; mock embedder. | T2.4, T4.2 | [ ] | QA | W3 |
 | T3.2 | Green | `src/ragent/pipelines/factory.py` + `pipelines/ingest.py`. | T3.1 | [ ] | Dev | W3 |
-| T3.3 | Red | `tests/integration/test_chat_pipeline.py` — emits ≥1 `delta` then exactly one `done` with sources (S6); P1 OPEN: pre/post-filter no-op. | T4.4, T4.6 | [ ] | QA | W4 |
+| T3.2a | Red | `tests/integration/test_worker_minio_cleanup.py` — on terminal state (`READY` or `FAILED` after attempt > 5), MinIO object is deleted; on retry path (PENDING), object is retained (S16). | T3.2 | [ ] | QA | W3 |
+| T3.2b | Green | Worker task wraps pipeline; on terminal state calls `MinIOClient.delete_object`. | T3.2a | [ ] | Dev | W3 |
+| T3.3 | Red | `tests/integration/test_chat_pipeline.py` — emits ≥1 `delta` then exactly one `done` with sources (S6); P1 OPEN: ACL filter no-op. | T4.4, T4.6 | [ ] | QA | W4 |
 | T3.4 | Green | `src/ragent/pipelines/chat.py` (QueryEmbedder → {ESVector ∥ ESBM25} → DocumentJoiner(RRF) → LLM stream). | T3.3 | [ ] | Dev | W4 |
 
 ### Track T4 — Third-Party Clients
@@ -115,21 +117,17 @@
 
 ### Track T8 — Auth & Permission `[~] DISABLED IN P1 → P2`
 
-> P1 produces NO code in this track. Interfaces are documented in `00_spec.md` §3.5 and §4.5; implementation lands in P2.
+> P1 produces NO code in this track. **OpenFGA is out-of-scope across all phases.** Interface in `00_spec.md` §3.5; implementation lands in P2.
 
 | # | Category | Task | Depends On | Status | Owner | Phase |
 |---|---|---|---|:---:|---|:---:|
 | T8.1 | Red  | `tests/unit/test_jwt.py` — invalid → 401 on `/chat` and `/ingest`. | (P2 entry) | [~] | QA | P2 |
 | T8.2 | Green | `src/ragent/auth/jwt.py` (FastAPI dependency). | T8.1 | [~] | Dev | P2 |
-| T8.3 | Red  | `tests/unit/test_openfga_client.py` — `list_resource` and `check` request/response per `00_rule.md`. | (P2 entry) | [~] | QA | P2 |
-| T8.4 | Green | `src/ragent/clients/openfga.py`. | T8.3 | [~] | Dev | P2 |
-| T8.5 | Red  | `tests/unit/test_acl_filter.py` — `list_resource` becomes ES `terms` filter on `document_id`. | T8.4 | [~] | QA | P2 |
-| T8.6 | Green | `src/ragent/auth/acl.py::build_es_filter(user_id)`. | T8.5 | [~] | Dev | P2 |
-| T8.7 | Red  | `tests/integration/test_post_filter.py` — `check` drops leaked doc + audit log (S7). | T8.4 | [~] | QA | P2 |
-| T8.8 | Green | Post-filter wired into `pipelines/chat.py` and `services/ingest_service.py::delete`. | T8.7 | [~] | Dev | P2 |
-| T8.9 | Red  | `tests/integration/test_user_isolation.py` — user A cannot retrieve user B's private doc. | T8.6, T8.8 | [~] | QA | P2 |
-| T8.10 | Behavioral | Introduce `can_delete` OpenFGA relation; replace `can_view` for delete authorization. | T8.4 | [~] | Dev | P2 |
-| T8.11 | Behavioral | `HRClient` + JWT-subject → employee resolution; populate `documents.owner_user_id`. | T8.2 | [~] | Dev | P2 |
+| T8.3 | Red  | `tests/unit/test_owner_acl_filter.py` — `build_es_filter(user_id)` produces `terms(owner_user_id ∈ [user_id])`. | T8.2 | [~] | QA | P2 |
+| T8.4 | Green | `src/ragent/auth/acl.py::build_es_filter(user_id)` (owner-based, no external service). | T8.3 | [~] | Dev | P2 |
+| T8.5 | Red  | `tests/integration/test_user_isolation.py` — user A cannot retrieve user B's documents via `/chat` or `/ingest`. | T8.4 | [~] | QA | P2 |
+| T8.6 | Green | Wire owner-based pre-filter into `pipelines/chat.py` and `services/ingest_service.py::list/get/delete`. | T8.5 | [~] | Dev | P2 |
+| T8.7 | Behavioral | `HRClient` + JWT-subject → employee resolution; populate `documents.owner_user_id`. | T8.2 | [~] | Dev | P2 |
 
 ---
 
@@ -150,7 +148,7 @@
 | # | Category | Task | Status | Owner |
 |---|---|---|:---:|---|
 | P2.1 | Stability | SRE: HA verification, monitoring, alerting rules. | [ ] | SRE |
-| P2.2 | Security | Re-enable Auth & OpenFGA per Track T8 (all `[~]` rows → `[ ]` → `[x]`). Remove `RAGENT_AUTH_DISABLED` env knob. | [ ] | Dev |
+| P2.2 | Security | Re-enable JWT auth + owner-based ACL per Track T8 (all `[~]` rows → `[ ]` → `[x]`). Remove `RAGENT_AUTH_DISABLED` env knob. | [ ] | Dev |
 | P2.3 | Behavioral | Wire `RerankClient` into chat pipeline as `HybridRetrieverWithRerank` SuperComponent. | [ ] | Dev |
 | P2.4 | Behavioral | `ConditionalRouter` intent split (translate/summarize → Direct LLM). | [ ] | Dev |
 | P2.5 | Behavioral | MCP Tool real handler. | [ ] | Dev |

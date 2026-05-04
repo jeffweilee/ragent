@@ -11,7 +11,8 @@
 - Pluggable extractor architecture: graph reasoning (P3) without pipeline rewrite.
 
 ### ⚠️ P1 OPEN Mode
-- Auth and OpenFGA **DISABLED**. `X-User-Id` header for tracing only.
+- Auth **DISABLED** in P1. `X-User-Id` header for tracing only. JWT restored in P2.
+- **OpenFGA is out-of-scope across all phases.** ACL (if needed in P2) handled via owner-based filter.
 - Startup guard refuses to start unless `RAGENT_AUTH_DISABLED=true AND RAGENT_ENV=dev`.
 
 ---
@@ -20,12 +21,12 @@
 
 | In P1 | Deferred |
 |---|---|
-| Ingest CRUD (Create / Read / List / Delete) with cascade | JWT + OpenFGA → P2 |
+| Ingest CRUD (Create / Read / List / Delete) with cascade | JWT → P2 |
 | Indexing Pipeline (§3.2) + Chat Pipeline (§3.4) | AsyncPipeline → P2 |
 | Plugin Protocol v1, VectorExtractor, StubGraphExtractor | GraphExtractor → P3 |
 | Third-party clients: Embedding, LLM, Rerank, TokenManager | Rerank wiring → P2 |
-| Reconciler + locking | OCR → P2/P3 |
-| Observability: OTEL auto-trace | MCP real handler → P2 |
+| Reconciler + locking | MCP real handler → P2 |
+| Observability: OTEL auto-trace | — |
 
 ---
 
@@ -37,19 +38,23 @@
 
 **Locking:** `SELECT … FOR UPDATE` (Worker); `FOR UPDATE SKIP LOCKED` (Reconciler). `update_status` raises `IllegalStateTransition` on invalid transition.
 
+**Storage model:** MinIO is **transient staging only** — needed because Router (API) and Worker may run on different hosts. The original file is deleted from MinIO after the pipeline reaches a terminal state (`READY` or `FAILED`). After ingest, only chunks (ES) + metadata (MariaDB) remain.
+
 **Create flow:**
-1. `POST /ingest` → MIME/size validation → MinIO upload → `documents(UPLOADED)` → kiq `ingest.pipeline` → 202
-2. Worker: acquire(FOR UPDATE) → `PENDING`, attempt+1 → run pipeline → fan_out → `READY`; any required plugin error → stay `PENDING` (Reconciler retries); attempt > 5 → `FAILED` + structured-log alert
+1. `POST /ingest` → MIME/size validation → MinIO upload (staging) → `documents(UPLOADED)` → kiq `ingest.pipeline` → 202
+2. Worker: acquire(FOR UPDATE) → `PENDING`, attempt+1 → run pipeline → fan_out → on terminal state, delete MinIO object → `READY`; any required plugin error → stay `PENDING` (Reconciler retries; MinIO kept until terminal); attempt > 5 → delete MinIO + `FAILED` + structured-log alert
 
 **Delete flow:**
-1. `DELETE /ingest/{id}` → acquire(FOR UPDATE) → `DELETING` → `fan_out_delete` → delete chunks → delete MinIO → delete row → 204
-2. Any mid-cascade failure → row stays `DELETING`; Reconciler resumes idempotently
+1. `DELETE /ingest/{id}` → acquire(FOR UPDATE) → `DELETING` → `fan_out_delete` → delete chunks → delete row → 204
+2. (No MinIO step — object already cleared at terminal state. If status is still `PENDING`/`UPLOADED`, also delete MinIO object as part of cascade.)
+3. Any mid-cascade failure → row stays `DELETING`; Reconciler resumes idempotently
 
 **BDD:**
 - **S1** POST 1 MB `.txt` → 202 + 26-char task_id; status → `READY` within 60 s; chunks in ES.
 - **S10** Illegal transitions (e.g. `READY→PENDING`) raise `IllegalStateTransition`.
-- **S12** DELETE cascade → `DELETING` → all plugins called once → ES/MinIO/row cleared → 204.
-- **S13** MinIO failure mid-delete → row stays `DELETING`; Reconciler resumes ≤ 5 min.
+- **S12** DELETE cascade on `READY` doc → `DELETING` → all plugins called once → ES/row cleared → 204 (MinIO already cleared at READY).
+- **S13** Any failure mid-delete → row stays `DELETING`; Reconciler resumes ≤ 5 min.
+- **S16** Pipeline reaches terminal state (`READY` or `FAILED`) → MinIO object deleted; subsequent re-processing not possible without re-upload.
 - **S14** Re-DELETE an already-deleted document → 204, no plugin calls.
 - **S15** `GET /ingest?limit=2` on 5 docs → ≤ 2 items + `next_cursor` continues.
 
@@ -109,7 +114,7 @@ class ExtractorPlugin(Protocol):
 QueryEmbedder → {ESVectorRetriever ∥ ESBM25Retriever} → DocumentJoiner(RRF) → LLMClient.stream → SSE
 ```
 
-**P1 OPEN:** pre/post-filter are no-ops; `sources[]` unrestricted.
+**P1 OPEN:** ACL filter is a no-op; `sources[]` unrestricted. P2: owner-based `terms(owner_user_id)` pre-filter on ES queries.
 
 **Response:** SSE stream of `delta` events, closing with one `done { answer, sources[] }`.
 
@@ -119,17 +124,17 @@ QueryEmbedder → {ESVectorRetriever ∥ ESBM25Retriever} → DocumentJoiner(RRF
 
 ### 3.5 Auth & Permission — DISABLED IN P1 → P2
 
-- All JWT and OpenFGA layers are OFF.
-- `X-User-Id: <string>` validated non-empty; no JWT decode.
-- Audit logs for destructive ops emitted at INFO with `auth_mode=open`.
+- JWT layer OFF in P1. `X-User-Id: <string>` validated non-empty.
+- **OpenFGA is out-of-scope across all phases.** No external authorization service.
+- Audit logs for destructive ops emitted at INFO with `auth_mode=open` in P1.
 - **TokenManager (J1→J2) is active in P1** — used by Embedding/LLM/Rerank clients only.
 
-**P2 contract (interface published P1; implementation P2):**
-- JWT verify → `list_resource(user_id, can_view)` → ES `terms` pre-filter.
-- `check(user_id, can_view, document_id)` per chunk → post-filter; mismatch drops + audit log.
-- `can_delete` relation replaces `can_view` for delete authorization.
+**P2 contract:**
+- JWT verify → subject claim → `user_id`.
+- ACL: owner-based filter at the ES layer (`terms(owner_user_id ∈ [user_id])`) — single SQL/ES predicate, no out-of-band service.
+- Sharing model (group/role) deferred to a later phase if needed.
 
-**BDD (P2-gated):** S7 (OpenFGA dual-filter), S9 (token refresh at `expiresAt − 5 min`).
+**BDD (P2-gated):** S9 (token refresh at `expiresAt − 5 min`).
 
 ---
 
@@ -164,7 +169,7 @@ QueryEmbedder → {ESVectorRetriever ∥ ESBM25Retriever} → DocumentJoiner(RRF
 | POST   | `/chat`                 | `X-User-Id` | `{ query: str }` | `text/event-stream` (`delta`*, `done`) |
 | POST   | `/mcp/tools/rag`        | `X-User-Id` | `{ query: str }` | **501** (P1) |
 
-P2 auth: JWT + OpenFGA `check(can_view)` / `list_resource` / `check(can_delete)` per endpoint.
+P2 auth: JWT verify + owner-based ACL filter on ES queries.
 
 ### 4.2 Supported Formats
 
@@ -174,12 +179,12 @@ P2 auth: JWT + OpenFGA `check(can_view)` / `list_resource` / `check(can_delete)`
 | `.md`   | `MarkdownToDocument`     | front-matter stripped | **P1** |
 | `.html` | `HTMLToDocument`         | visible text, script/style stripped | **P1** |
 | `.csv`  | `CSVToDocument`          | row-as-document | **P1** |
-| `.pdf`  | `PyPDFToDocument`        | text-extractable only, no OCR | **P2** |
-| `.docx` | `DOCXToDocument`         | body + tables | **P2** |
-| `.pptx` | `PPTXToDocument`         | slide text + notes | **P2** |
+| `.pdf`  | `PyPDFToDocument`        | text-extractable only | P2 |
+| `.docx` | `DOCXToDocument`         | body + tables | P2 |
+| `.pptx` | `PPTXToDocument`         | slide text + notes | P2 |
 | `.xlsx` | `XLSXToDocument`         | active sheets | P2 |
 
-> 415 on unsupported MIME; 413 on > 50 MB.
+> 415 on unsupported MIME; 413 on > 50 MB. Image-only / scanned documents are not supported in any phase.
 
 ### 4.3 Pipeline Catalog
 
@@ -204,7 +209,6 @@ P2 auth: JWT + OpenFGA `check(can_view)` / `list_resource` / `check(can_delete)`
 | `EmbeddingClient` | `EMBEDDING_API_URL/text_embedding`              | J2 | **P1** |
 | `LLMClient`       | `LLM_API_URL/gpt_oss_120b/v1/chat/completions` | J2 | **P1** |
 | `RerankClient`    | `REREANK_API_URL/`                              | J2 | P1 unit / P2 wired |
-| `OpenFGAClient`   | `OPENFGA_API_URL/{list_resource,check}`         | `gam-key` | P2 |
 | `HRClient`        | `HR_API_URL/v3/employees`                       | `Authorization` | P2 |
 
 All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on client.
