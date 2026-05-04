@@ -9,10 +9,10 @@ class _GoodPlugin:
     required = False
     queue = "extract.good"
 
-    def extract(self, doc_id: str) -> None:
+    def extract(self, document_id: str) -> None:
         return None
 
-    def delete(self, doc_id: str) -> None:
+    def delete(self, document_id: str) -> None:
         return None
 
     def health(self) -> bool:
@@ -24,8 +24,8 @@ class _BadMissingHealth:
     required = False
     queue = "extract.bad"
 
-    def extract(self, doc_id: str) -> None: ...
-    def delete(self, doc_id: str) -> None: ...
+    def extract(self, document_id: str) -> None: ...
+    def delete(self, document_id: str) -> None: ...
 
 
 def test_protocol_accepts_conforming_class() -> None:

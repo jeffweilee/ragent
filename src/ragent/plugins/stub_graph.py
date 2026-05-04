@@ -10,10 +10,10 @@ class StubGraphExtractor:
     required = False
     queue = "extract.graph"
 
-    def extract(self, doc_id: str) -> None:
+    def extract(self, document_id: str) -> None:
         return None
 
-    def delete(self, doc_id: str) -> None:
+    def delete(self, document_id: str) -> None:
         return None
 
     def health(self) -> bool:

@@ -30,15 +30,15 @@ class _FakeES:
                 self.indexed_ids.add(a["_id"])
 
 
-def _chunks(doc_id: str) -> list[Chunk]:
+def _chunks(document_id: str) -> list[Chunk]:
     return [
-        Chunk(chunk_id=f"{doc_id}_0", doc_id=doc_id, ord=0, text="hello", lang="en"),
-        Chunk(chunk_id=f"{doc_id}_1", doc_id=doc_id, ord=1, text="world", lang="en"),
+        Chunk(chunk_id=f"{document_id}_0", document_id=document_id, ord=0, text="hello", lang="en"),
+        Chunk(chunk_id=f"{document_id}_1", document_id=document_id, ord=1, text="world", lang="en"),
     ]
 
 
-def _store(doc_id: str) -> dict[str, list[Chunk]]:
-    return {doc_id: _chunks(doc_id)}
+def _store(document_id: str) -> dict[str, list[Chunk]]:
+    return {document_id: _chunks(document_id)}
 
 
 def test_vector_extractor_conforms_to_protocol() -> None:
