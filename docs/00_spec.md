@@ -504,23 +504,48 @@ No physical FK. ORM-level cascade only.
 
 ### 5.2 Elasticsearch `chunks_v1`
 
+> **Source of truth (B26):** `resources/es/chunks_v1.json` — settings + mappings, checked into git. Bootstrap (§6.1) reads this file and `PUT /chunks_v1` if the index does not exist. The block below is the canonical content; any drift between this spec snippet and the resource file is a CI failure (`tests/integration/test_es_resource_drift.py`).
+
 ```json
 {
+  "settings": {
+    "analysis": {
+      "analyzer": {
+        "icu_text": {
+          "type": "custom",
+          "tokenizer": "icu_tokenizer",
+          "filter": ["icu_folding", "lowercase"]
+        }
+      }
+    }
+  },
   "mappings": {
     "properties": {
       "chunk_id":    { "type": "keyword" },
       "document_id": { "type": "keyword" },
       "lang":        { "type": "keyword" },
-      "title":       { "type": "text", "analyzer": "standard" },
-      "text":        { "type": "text", "analyzer": "standard" },
-      "embedding":   { "type": "dense_vector", "dims": 1024, "index": true, "similarity": "cosine" }
+      "title":       { "type": "text", "analyzer": "icu_text" },
+      "text":        { "type": "text", "analyzer": "icu_text" },
+      "embedding": {
+        "type": "dense_vector",
+        "dims": 1024,
+        "index": true,
+        "similarity": "cosine",
+        "index_options": { "type": "bbq_hnsw" }
+      }
     }
   }
 }
 ```
 
+**BM25 analyzer (B26):** `icu_text` (custom analyzer) uses the `icu_tokenizer` from the `analysis-icu` plugin instead of the default `standard` analyzer. Rationale: `standard` does whitespace/punctuation splitting only — Chinese/Japanese/Korean text (no whitespace separators) becomes single mega-tokens or per-character tokens, both useless for BM25. `icu_tokenizer` segments CJK by Unicode word boundaries, giving meaningful BM25 hits for multilingual content. `icu_folding` normalises Unicode (full-width ⇄ half-width, accented ⇄ ascii); `lowercase` normalises Latin script. The same analyzer covers `text` and `title` fields — consistent with `multi_match` ranking (B15).
+
+**Vector index (B26):** `embedding` uses `index_options.type = bbq_hnsw` (Better Binary Quantization HNSW, ES 8.16+). Quantises 1024-dim float vectors to 1-bit per dimension (~32× memory reduction) with negligible recall loss for `cosine` similarity at our scale. Falls back to standard HNSW if `bbq_hnsw` rejected by the cluster (e.g. dev cluster on older ES) — log `event=es.bbq_unsupported` and continue.
+
+**Plugin requirement:** the `analysis-icu` plugin MUST be installed on every ES node (dev / CI / prod). Boot-time `/readyz` probe (B4) refuses ready if the plugin is not loaded.
+
 **Title surface (B15):** `title` is denormalised onto every chunk row from `documents.source_title`. Two retrieval surfaces are derived from it:
-1. **Lexical** — BM25 retriever runs `multi_match` on `["text", "title^2"]` (title boosted 2× over body).
+1. **Lexical** — BM25 retriever runs `multi_match` on `["text", "title^2"]` (title boosted 2× over body) using the `icu_text` analyzer (B26).
 2. **Semantic** — `embedding` is computed as `embed(f"{source_title}\n\n{chunk_text}")` at ingest time, so every chunk vector already carries title semantics. No separate `title_embedding` field is stored.
 
 ### 5.3 ID / DateTime
@@ -550,8 +575,9 @@ Two artefacts, **both versioned in git**, both consulted at boot:
 | **Incremental migrations** | `migrations/NNN_<slug>.sql` (e.g. `001_initial.sql`, `002_add_workspace.sql`) | Forward-only ALTER scripts applied via Alembic (`alembic upgrade head`). Production / staging path. | Dev |
 
 **Boot-time auto-init (idempotent):**
-- On startup, the bootstrap module runs `CREATE TABLE IF NOT EXISTS … / CREATE INDEX IF NOT EXISTS …` against MariaDB derived from `schema.sql`, and `PUT /<index>` for ES if the index does not exist (with the `chunks_v1` mapping from §5.2). Existing tables/indexes are left untouched.
-- Auto-init is for dev/test bring-up convenience only; production migrations MUST go through Alembic. Boot-init refuses to run any `ALTER` — schema drift between `schema.sql` and the live DB is logged as `event=schema.drift` and surfaces in `/readyz` as a degraded state, not an automatic mutation.
+- On startup, the bootstrap module runs `CREATE TABLE IF NOT EXISTS … / CREATE INDEX IF NOT EXISTS …` against MariaDB derived from `migrations/schema.sql`, and `PUT /<index>` for ES if the index does not exist — **using the JSON body in `resources/es/<index>.json`** (e.g. `resources/es/chunks_v1.json`, B26). Existing tables/indexes are left untouched.
+- Resource files are the single source of truth for ES index definitions; spec §5.2 mirrors them in prose. `tests/integration/test_es_resource_drift.py` parses both and rejects drift.
+- Auto-init is for dev/test bring-up convenience only; production migrations MUST go through Alembic (DB) or a controlled `PUT /<index>-vN` + reindex flow (ES). Boot-init refuses to run any `ALTER` or ES mapping update — schema drift is logged as `event=schema.drift` and surfaces in `/readyz` as a degraded state, not an automatic mutation.
 
 **Invariant:** `schema.sql` ≡ replaying `001 → NNN`. CI enforces this with `tests/integration/test_schema_drift.py` (apply both paths to two scratch DBs, `mysqldump` both, diff must be empty).
 
@@ -588,3 +614,4 @@ Two artefacts, **both versioned in git**, both consulted at boot:
 | **B23** | 2026-05-04 | Chat API | Where `sources[].excerpt` is truncated | **Inside `SourceHydrator`**, single locus, `EXCERPT_MAX_CHARS` (default 512), append `…` if cut. Router never re-truncates. | Truncate in router (then chunks-as-LLM-context still see the long form, leak); truncate in retriever (couples retrieval to display concerns); leave to client (LLM gets full chunk for context, response surfaces full chunk to client — wasted bandwidth + risk of leaking text the operator intended to keep server-side). | §3.4.2 / T3.6 |
 | **B24** | 2026-05-04 | Pipeline | CSV row scaling — naive 1 row → 1 chunk would be 1 M chunks for a 50 MB file | **`RowMerger`** SuperComponent on the CSV branch only (Haystack `ConditionalRouter` on MIME): pack consecutive rows joined by `\n` until buffered text reaches `CSV_CHUNK_TARGET_CHARS` (default 2 000 ≈ 512 tokens, well under bge-m3's 8 192). Result: 50 MB CSV → ~25 k chunks instead of ~1 M. Combined with B18 ceiling, large CSVs are bounded both in count and total wall-clock. | Per-file row cap (loses tail rows); skip CSV in P1 (regression vs spec); change every row's chunker to "passage" (loses sentence-level fidelity for non-CSV); dynamic per-row Haystack `DocumentSplitter(split_by="word")` (no row-grouping, defeats the "one logical record per chunk" property). | §3.2 / §4.2 / S35 |
 | **B25** | 2026-05-04 | Storage | `documents.storage_uri` stored full URI; bucket name is constant config | **Rename column to `object_key VARCHAR(256) NOT NULL`** (key only, format per B10). Bucket is read from `MINIO_BUCKET` env var (default `ragent-staging`); reconstruct full URI on demand. Saves ~20 bytes/row, decouples row from bucket-rename ops, and makes a future bucket migration a config flip. | Keep full URI (rigid); store bucket per-row (rotation hell); URL-encode in object key (key+bucket separation already does the job). | §5.1 / T2.5 / T2.6 |
+| **B26** | 2026-05-04 | ES | (a) BM25 analyzer; (b) vector index type; (c) where the index definition lives | **(a) `icu_text` custom analyzer** (`icu_tokenizer` + `icu_folding` + `lowercase`) on `text` and `title` — required for CJK tokenisation; `standard` analyzer collapses CJK to per-character or mega-tokens, breaking BM25. `analysis-icu` plugin is a hard ES dependency (verified at `/readyz`). **(b) `bbq_hnsw`** (Better Binary Quantization HNSW, ES 8.16+) on `embedding` — ~32× memory reduction at negligible recall cost; falls back to standard HNSW with `event=es.bbq_unsupported` log if cluster rejects. **(c) Source of truth = `resources/es/chunks_v1.json`** loaded by boot auto-init (§6.1) when the index does not exist; spec §5.2 mirrors the file in prose; CI drift test enforces equality. | Default `standard` analyzer (CJK becomes useless for BM25); `nori`/`smartcn` (per-language plugin sprawl, doesn't cover all CJK consistently); raw HNSW (4× more memory at our 1024 dims); inline mapping in Python code (every change is a code commit, no resource-file diffability). | §5.2 / §6.1 / T0.8d / T0.9 |
