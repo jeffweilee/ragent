@@ -47,7 +47,7 @@
 
 | # | Category | Task | Depends On | Status | Owner | Week |
 |---|---|---|---|:---:|---|:---:|
-| T2.1 | Red  | `tests/unit/test_document_repository.py` — `create (with optional source_id) / get / acquire (FOR UPDATE) / update_status (state-machine guarded) / list_pending / list / delete / list_superseded(source_id, before_ts) FOR UPDATE SKIP LOCKED`. | T0.4, T0.6, T0.7 | [ ] | QA | W3 |
+| T2.1 | Red  | `tests/unit/test_document_repository.py` — `create (with optional source_id) / get / acquire (FOR UPDATE) / update_status (state-machine guarded) / list_pending / list / delete / list_ready_by_source(source_id) FOR UPDATE SKIP LOCKED` (returns all READY rows; service picks MAX(created_at) survivor). | T0.4, T0.6, T0.7 | [ ] | QA | W3 |
 | T2.2 | Green | `src/ragent/repositories/document_repository.py` (Repository layer; CRUD only). | T2.1 | [ ] | Dev | W3 |
 | T2.3 | Red  | `tests/unit/test_chunk_repository.py` — `bulk_insert / delete_by_document_id`. | T0.4 | [ ] | QA | W3 |
 | T2.4 | Green | `src/ragent/repositories/chunk_repository.py`. | T2.3 | [ ] | Dev | W3 |
@@ -68,10 +68,10 @@
 |---|---|---|---|:---:|---|:---:|
 | T3.1 | Red | `tests/integration/test_ingest_pipeline.py` — Haystack Convert→Clean→Lang→Split→Embed; mock embedder. | T2.4, T4.2 | [ ] | QA | W3 |
 | T3.2 | Green | `src/ragent/pipelines/factory.py` + `pipelines/ingest.py`. | T3.1 | [ ] | Dev | W3 |
-| T3.2a | Red | `tests/integration/test_worker_minio_cleanup.py` — on terminal state (`READY` or `FAILED` after attempt > 5), MinIO object is deleted; on retry path (PENDING), object is retained (S16). | T3.2 | [ ] | QA | W3 |
-| T3.2b | Green | Worker task wraps pipeline; on terminal state calls `MinIOClient.delete_object`. | T3.2a | [ ] | Dev | W3 |
-| T3.2c | Red | `tests/integration/test_supersede_task.py` — on `READY` with `source_id` set, kiq `ingest.supersede`; task cascade-deletes prior `READY` rows with same `source_id` and `created_at < self.created_at` (S17); FAILED never enqueues supersede (S18); idempotent re-run (S19). | T3.2b, T2.10 | [ ] | QA | W3 |
-| T3.2d | Green | `src/ragent/services/ingest_service.py::supersede(document_id)` + TaskIQ `ingest.supersede` worker; reuses cascade delete path. | T3.2c | [ ] | Dev | W3 |
+| T3.2a | Red | `tests/integration/test_worker_minio_cleanup.py` — terminal status (`READY` or `FAILED`) is committed **before** `MinIOClient.delete_object` is called; if the delete raises, the document still ends up in the terminal status and an `event=minio.orphan_object` log is emitted (S16, S21). On retry path (still `PENDING`), MinIO object is retained. | T3.2 | [ ] | QA | W3 |
+| T3.2b | Green | Worker task: commit terminal status first; then best-effort `MinIOClient.delete_object` (errors logged, not raised). | T3.2a | [ ] | Dev | W3 |
+| T3.2c | Red | `tests/integration/test_supersede_task.py` — on `READY` with `source_id` set, kiq `ingest.supersede`; task selects all `READY` rows with same `source_id`, keeps `MAX(created_at)`, cascade-deletes the rest (S17); out-of-order finish still converges to MAX(created_at) survivor (S20); FAILED never enqueues supersede (S18); idempotent re-run (S19). | T3.2b, T2.10 | [ ] | QA | W3 |
+| T3.2d | Green | `src/ragent/services/ingest_service.py::supersede(document_id)` + TaskIQ `ingest.supersede` worker; selects READY peers, keeps MAX(created_at), reuses cascade delete path for losers. | T3.2c | [ ] | Dev | W3 |
 | T3.3 | Red | `tests/integration/test_chat_pipeline.py` — emits ≥1 `delta` then exactly one `done` with sources (S6); P1 OPEN: ACL filter no-op. | T4.4, T4.6 | [ ] | QA | W4 |
 | T3.4 | Green | `src/ragent/pipelines/chat.py` (QueryEmbedder → {ESVector ∥ ESBM25} → DocumentJoiner(RRF) → LLM stream). | T3.3 | [ ] | Dev | W4 |
 
@@ -157,6 +157,7 @@
 | P2.6 | Quality | RAGAS eval in CI; large-file streaming; chaos drills. | [ ] | QA |
 | P2.7 | Behavioral | Switch ingest/chat to Haystack `AsyncPipeline`. | [ ] | Dev |
 | P2.8 | Closure | Sync docs + record lessons in `00_journal.md`. | [ ] | Master |
+| P2.9 | Stability | Orphan MinIO sweeper: TTL 24h on staging objects (`event=minio.orphan_object` audit). | [ ] | SRE |
 
 ## Phase 3 — Graph Enhancement (conditional, +4–6 weeks) — *gated*
 
