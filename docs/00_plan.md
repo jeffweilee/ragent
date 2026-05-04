@@ -102,8 +102,8 @@
 | T3.6 | Green | `src/ragent/pipelines/chat.py::build_retrieval_pipeline(join_mode)` + `SourceHydrator` component (calls `DocumentRepository.get_sources_by_document_ids`, C4 rename; truncates `excerpt` to `EXCERPT_MAX_CHARS`, B23). Factory dispatches on `CHAT_JOIN_MODE` env (C6). | T3.5, T3.5a | [x] | Dev | W4 |
 | T3.7 | Red | `tests/unit/test_llm_client_chat.py` — `LLMClient.chat(messages,...)` non-streaming returns `{content, usage:{promptTokens,completionTokens,totalTokens}}`; honours `model`, `temperature`, `maxTokens`; timeout `LLM_TIMEOUT_SECONDS` (B28, default 120). | T4.6 | [x] | QA | W4 |
 | T3.8 | Green | Add `LLMClient.chat()` non-streaming method to `src/ragent/clients/llm.py` (timeout from `LLM_TIMEOUT_SECONDS`); existing `stream()` already covered by T4.5/T4.6. Streaming path requests `stream_options.include_usage=true` so terminal `done` carries usage. | T3.7 | [x] | Dev | W4 |
-| T3.9 | Red | `tests/integration/test_chat_endpoint.py` — `POST /chat` (B12, S6a): returns `200 application/json` with §3.4.2 body (`content`, `usage`, `model`, `provider`, `sources[]`). Each `sources[]` entry has all 6 fields populated and `type="knowledge"` (S6e, B13). Empty retrieval → `sources: null` (S6d). On LLM error → RFC 9457 problem+json (B5). | T3.6, T3.8 | [ ] | QA | W4 |
-| T3.10 | Green | `src/ragent/routers/chat.py::POST /chat` (non-streaming). | T3.9 | [ ] | Dev | W4 |
+| T3.9 | Red | `tests/integration/test_chat_endpoint.py` — `POST /chat` (B12, S6a): returns `200 application/json` with §3.4.2 body (`content`, `usage`, `model`, `provider`, `sources[]`). Each `sources[]` entry has all 6 fields populated and `type="knowledge"` (S6e, B13). Empty retrieval → `sources: null` (S6d). On LLM error → RFC 9457 problem+json (B5). | T3.6, T3.8 | [x] | QA | W4 |
+| T3.10 | Green | `src/ragent/routers/chat.py::POST /chat` (non-streaming). | T3.9 | [x] | Dev | W4 |
 | T3.11 | Red | `tests/integration/test_chat_stream_endpoint.py` — `POST /chat/stream` (B12, S6): emits ≥1 `data: {"type":"delta","content":"..."}` then exactly one `data: {"type":"done", ...§3.4.2 body...}` (same shape as T3.9 response). Mid-stream LLM failure after first delta → single `data: {"type":"error","error_code","message"}` then close; no `event: error` named-event (B6). Pre-stream failure → RFC 9457 problem+json (B5). | T3.6, T3.8 | [x] | QA | W4 |
 | T3.12 | Green | `src/ragent/routers/chat.py::POST /chat/stream` — SSE writer with delta/done/error framing per §3.4.3. | T3.11 | [x] | Dev | W4 |
 | T3.13 | Red | `tests/unit/test_rate_limiter.py` — fixed-window per-key counter against testcontainer Redis (B31): `check(key, limit, window_seconds)` returns `RateLimitResult(allowed, remaining, reset_at)`. Under limit ⇒ allowed; at limit ⇒ blocked + `reset_at = now + remaining_window`; window expiry resets counter (subsequent call allowed). Uses `INCR` + `EXPIRE` against `REDIS_RATELIMIT_*` topology (B27); standalone vs sentinel both covered. | T0.10, T0.9 | [x] | QA | W4 |
@@ -147,8 +147,8 @@
 
 | # | Category | Task | Depends On | Status | Owner | Week |
 |---|---|---|---|:---:|---|:---:|
-| T6.1 | Structural | `src/ragent/routers/mcp.py` exposing `POST /mcp/tools/rag` that returns 501 `application/problem+json` with `error_code=MCP_NOT_IMPLEMENTED` (§4.1.2). Mounted by `create_app` (T7.5c). OpenAPI auto-generated from FastAPI signature. | T2.14 | [ ] | Dev | W6 |
-| T6.2 | Red | `tests/unit/test_mcp_endpoint.py` — returns 501 in P1 (S8). | T6.1 | [ ] | QA | W6 |
+| T6.1 | Structural | `src/ragent/routers/mcp.py` exposing `POST /mcp/tools/rag` that returns 501 `application/problem+json` with `error_code=MCP_NOT_IMPLEMENTED` (§4.1.2). Mounted by `create_app` (T7.5c). OpenAPI auto-generated from FastAPI signature. | T2.14 | [x] | Dev | W6 |
+| T6.2 | Red | `tests/unit/test_mcp_endpoint.py` — returns 501 in P1 (S8). | T6.1 | [x] | QA | W6 |
 
 ### Track T7 — Observability + Acceptance
 
