@@ -19,9 +19,23 @@
    - **Veto**: $\ge 4/6$ Reject.
    - **Tie (3:3)**: Master casts the deciding vote.
    - **Else**: Move to next round.
-5. **Output**: Decision summary + Trade-offs OR Pending items for next round. Update `docs/00_plan.md`, `docs/00 _spec.md`. 
-6. **Relfection**: Refine `docs/00_journal.md`, prevent error prone recurrence through actionable, domain-specific guidelines. Dedupicate required.
-7. **Next**: Enter next round until plan and spec and implementation matches and no todo items.
+5. **Output**: Decision summary + Trade-offs OR Pending items for next round. Update `docs/00_plan.md`, `docs/00_spec.md`.
+6. **Track Completion Gate** *(mandatory before claiming any track done)*:
+   - **Print to console** the full task table for the track being closed — every row with its current `[x]`/`[ ]`/`[~]` status.
+   - **Audit each `[x]` honestly**: confirm the backing test (a) exists, (b) actually **ran** in the current environment (not skipped, not mocked-away infrastructure), and (c) **passed**. A skipped test is `[ ]`, not `[x]`.
+   - **Zero `[ ]` required**: if any task remains `[ ]` (including Docker-gated tests that have never run green), the track is NOT done. State so explicitly.
+   - **Update `docs/00_plan.md`** to the verified state — revert any prematurely-set `[x]` back to `[ ]`.
+   - **Example console output** for T0:
+     ```
+     Track T0 — Completion Audit
+     T0.1  [x] Scaffold           — unit tests pass
+     T0.2  [x] Makefile/CI alias  — make check green
+     T0.8b [ ] Schema drift test  — SKIPPED (Docker not available, test never ran)
+     T0.8c [ ] Bootstrap auto-init— SKIPPED (Docker not available, test never ran)
+     ⚠  Track T0 NOT complete: 2 tasks remain [ ]
+     ```
+7. **Reflection**: Refine `docs/00_journal.md`, prevent error-prone recurrence through actionable, domain-specific guidelines. Deduplicate required.
+8. **Next**: Enter next round until plan and spec and implementation matches and no todo items.
 
 ---
 
