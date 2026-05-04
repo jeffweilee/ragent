@@ -44,6 +44,10 @@
 - Reconciler uses `FOR UPDATE SKIP LOCKED`.
 - `update_status` validates the state machine and raises `IllegalStateTransition` on invalid transitions.
 
+**Worker heartbeat (B16) — closes the no-lock-window race:** because the pipeline body holds no row lock, a naive Reconciler "PENDING > 5 min" sweep would happily re-dispatch a still-running worker and produce double processing. The worker therefore **updates `documents.updated_at = NOW()` every 30 s** during the pipeline body (background timer; one cheap PK-keyed `UPDATE`). The Reconciler's threshold becomes `WHERE status='PENDING' AND updated_at < NOW() - INTERVAL 5 MINUTE` — only **stale-heartbeat** rows are re-dispatched. Heartbeat interval is configured via `WORKER_HEARTBEAT_INTERVAL_SECONDS` (default 30).
+
+**Per-document pipeline timeout (B18):** the worker enforces an overall ceiling of `PIPELINE_TIMEOUT_SECONDS` (default 1800 s = 30 min) around the pipeline body. On overrun, the worker transitions the row to `FAILED` with `error_code=PIPELINE_TIMEOUT` and runs the §3.1 R5 cleanup path (`fan_out_delete` + `delete_by_document_id`). This bounds large-CSV / pathological-document worst case so the Reconciler never sees an infinitely-running worker (heartbeat would also catch it after 5 min, but the ceiling makes the failure deterministic).
+
 **Storage model:** MinIO is **transient staging only** — needed because Router (API) and Worker may run on different hosts. The original file is deleted from MinIO after the pipeline reaches a terminal state (`READY` or `FAILED`). After ingest, only chunks (ES) + metadata (MariaDB) remain.
 
 **Object key convention (B10):** `{source_app}_{source_id}_{document_id}` (single bucket `ragent-staging`). `source_app` and `source_id` are sanitized to `[A-Za-z0-9._-]` (other chars percent-encoded) to satisfy MinIO key constraints. The `document_id` suffix guarantees uniqueness even when the same `(source_app, source_id)` is re-POSTed before supersede converges.
@@ -56,7 +60,8 @@
 1. `POST /ingest` (`source_id`, `source_app`, `source_title`, optional `source_workspace`) → MIME/size validation → MinIO upload (staging) → `documents(UPLOADED, source_id, source_app, source_title, source_workspace)` → kiq `ingest.pipeline` → 202.
 2. Worker `ingest.pipeline`:
    - **TX-A:** `acquire FOR UPDATE NOWAIT`. On lock contention → re-kiq self with backoff and exit (no attempt increment). On success → `PENDING`, `attempt+1`, **commit**.
-   - **Pipeline body (no DB tx):** `delete_by_document_id` (idempotency) → run §3.2 → `fan_out` → all required ok ⇒ outcome=`READY`; any required error ⇒ outcome=`PENDING_RETRY` (no terminal commit; Reconciler resumes); attempt > 5 ⇒ outcome=`FAILED`.
+   - **Heartbeat (B16):** start a background timer that issues `UPDATE documents SET updated_at=NOW() WHERE document_id=?` every `WORKER_HEARTBEAT_INTERVAL_SECONDS` (default 30) for the lifetime of the pipeline body. Cancelled in `finally` before TX-B.
+   - **Pipeline body (no DB tx, wall-clock-bounded by `PIPELINE_TIMEOUT_SECONDS`, default 1800):** `delete_by_document_id` (idempotency) → run §3.2 → `fan_out` → all required ok ⇒ outcome=`READY`; any required error ⇒ outcome=`PENDING_RETRY` (no terminal commit; Reconciler resumes); attempt > 5 ⇒ outcome=`FAILED`; ceiling exceeded ⇒ outcome=`FAILED` with `error_code=PIPELINE_TIMEOUT` (B18).
    - **TX-B (terminal only):** commit `READY` or `FAILED`. **On `FAILED`, also call `fan_out_delete` + `delete_by_document_id` to clean partial output before commit.**
    - **Post-commit (best-effort, no tx):** `MinIOClient.delete_object` (errors swallowed → log `event=minio.orphan_object`); on `READY`, kiq `ingest.supersede(document_id)` (idempotent).
 3. Worker `ingest.supersede`:
@@ -91,19 +96,24 @@
 - **S30 reconciler heartbeat (R8)** — Given the Reconciler tick runs, Then a metric `reconciler_tick_total` is incremented and a structured-log `event=reconciler.tick` line is emitted; absence > 10 min triggers Prometheus alert.
 - **S31 supersede single-loser-per-tx (P-C)** — Given supersede must delete K=10 losers, When the task runs, Then each loser is deleted in its own committed transaction (loop), not one transaction holding K row-locks.
 - **S32 ES freshness window (P-G)** — Given a chunk just indexed, When chat queries within 1 s, Then it may not yet be visible (acceptable per default `refresh_interval=1s`); within 60 s it is queryable (S1 acceptance).
+- **S33 worker heartbeat (B16)** — Given a worker has been running the pipeline body for 4 min, When the Reconciler ticks at 5 min, Then it sees `updated_at` was refreshed < 30 s ago and **does not** re-dispatch the row. Conversely, when a worker dies and `updated_at` ages past 5 min, the Reconciler re-dispatches exactly once.
+- **S34 pipeline timeout (B18)** — Given a pipeline body runs longer than `PIPELINE_TIMEOUT_SECONDS`, When the ceiling fires, Then the worker transitions the row to `FAILED` with `error_code=PIPELINE_TIMEOUT`, runs cleanup (`fan_out_delete` + `delete_by_document_id`), and emits `event=ingest.failed reason=pipeline_timeout`.
+- **S35 CSV row packing (B24)** — Given a CSV with 10 000 short rows (~50 chars each), When ingested, Then `chunks` row count is bounded by `ceil(total_chars / CSV_CHUNK_TARGET_CHARS)` (≈ 250 for the example), not 10 000. Non-CSV formats are unaffected.
 
 ---
 
 ### 3.2 Indexing Pipeline
 
 ```
-FileTypeRouter → Converter → DocumentCleaner → LanguageRouter → {cjk_splitter | en_splitter} → EmbeddingClient → ChunkRepository → PluginRegistry.fan_out()
+FileTypeRouter → Converter → [RowMerger (CSV path only)] → DocumentCleaner → LanguageRouter → {cjk_splitter | en_splitter} → EmbeddingClient → ChunkRepository → PluginRegistry.fan_out()
 ```
 
 ```mermaid
 flowchart LR
-  A[FileTypeRouter] --> B["Converter\n(.txt/.md/...)"]
+  A[FileTypeRouter] --> B["Converter\n(.txt/.md/.csv/...)"]
+  B --> M["RowMerger\n(CSV only, B24)"]
   B --> C[DocumentCleaner]
+  M --> C
   C --> D[LanguageRouter]
   D --> E1["cjk_splitter\n(sentence)"]
   D --> E2["en_splitter\n(sentence, default)"]
@@ -116,10 +126,13 @@ flowchart LR
 
 Pluggable points: (a) per-format converter, (b) per-language splitter, (c) EmbeddingClient, (d) registered extractor plugins.
 
-**Performance & timeout discipline (R6, P-B):**
-- The pipeline's first step is `ChunkRepository.delete_by_document_id` + `VectorExtractor.delete` (idempotency for retry — see §3.1).
+**CSV row packing (B24):** `CSVToDocument` emits one Document per row. For a 50 MB CSV this is up to ~1 M rows ⇒ ~1 M tiny chunks ⇒ ~31 k embedder batches ⇒ unbounded ingest time. The CSV branch therefore inserts a `RowMerger` SuperComponent that joins consecutive rows with `\n` until the buffered text reaches `CSV_CHUNK_TARGET_CHARS` (default 2 000 chars ≈ 512 tokens, well below bge-m3's 8 192). Each merged buffer becomes one Document; downstream sentence splitting then refines further. Non-CSV formats bypass `RowMerger` (Haystack `ConditionalRouter` based on MIME). Result: 50 MB CSV → ~25 k chunks instead of ~1 M.
+
+**Performance & timeout discipline (R6, P-B, B18):**
+- The pipeline's first step is `ChunkRepository.delete_by_document_id` + `PluginRegistry.fan_out_delete` (idempotency for retry — see §3.1; sweeps every plugin, not just `VectorExtractor`).
 - `EmbeddingClient` is invoked in **batches of 32 chunks** per HTTP call (configurable; never 1-by-1).
-- Every external call carries an explicit timeout: Embedder 30 s/batch, ES bulk 60 s, MinIO get 30 s, plugin `extract()` 60 s overall (enforced by `PluginRegistry.fan_out`).
+- Every external call carries an explicit timeout: Embedder 30 s/batch (ingest), ES bulk 60 s, MinIO get 30 s, plugin `extract()` 60 s overall (enforced by `PluginRegistry.fan_out`).
+- **Overall pipeline ceiling:** `PIPELINE_TIMEOUT_SECONDS` (default 1800 s, B18). Overrun ⇒ `FAILED` with `error_code=PIPELINE_TIMEOUT`.
 - The pipeline body runs with no DB transaction open (see §3.1 locking discipline).
 
 ---
@@ -139,12 +152,17 @@ class ExtractorPlugin(Protocol):
 
 **P1 plugins:** `VectorExtractor` (required, ES bulk), `StubGraphExtractor` (optional, no-op). See §4.4.
 
+**Plugin construction (B17):** the Protocol freezes the **interface** (`extract`, `delete`, `health` plus three attributes) but plugins are **dependency-injected** via their constructor. `VectorExtractor.__init__(repo: DocumentRepository, chunks: ChunkRepository, embedder: EmbeddingClient, es: ElasticsearchClient)` — `extract(document_id)` reads `source_title` from `repo` and chunk rows from `chunks`. Plugins MUST NOT import `pipelines/` or HTTP layers; they accept their dependencies as constructor args, the registry simply holds the constructed instances.
+
 **Registry:**
 - `register()` raises `DuplicatePluginError` on name conflict.
 - `fan_out(document_id)` → dispatch extract to all plugins concurrently; **per-plugin timeout 60 s** (overrun → `Result(error="timeout")`); `all_required_ok(results)` gates `READY`.
 - `fan_out_delete(document_id)` → dispatch delete to all plugins concurrently; **per-plugin timeout 60 s**; runs **outside any DB transaction** (no row locks held during plugin network calls — P-E).
 
-**BDD:** S4 (missing field → isinstance fails), S5 (stub no-op → READY), S11 (duplicate name raises).
+**BDD:**
+- **S4 Protocol conformance** — Given an object missing any of `name` / `required` / `queue` / `extract` / `delete` / `health`, When `isinstance(obj, ExtractorPlugin)` is evaluated, Then it returns `False` (and `register()` raises before fan_out).
+- **S5 stub no-op extract → READY** — Given a registered `StubGraphExtractor` (optional, no-op `extract`), When the worker runs `fan_out(document_id)`, Then `Result(ok=True)` is returned in 0 ms and `all_required_ok` does not depend on it (since `required=False`).
+- **S11 duplicate registration** — Given a `PluginRegistry` already holding a plugin named `vector`, When `register()` is called with another plugin of the same `name`, Then it raises `DuplicatePluginError` and the existing instance is unaffected.
 
 ---
 
@@ -161,6 +179,17 @@ Title participates in **both** retrieval surfaces (B15): semantic (baked into ev
 - `POST /chat/stream` → SSE; `delta` events stream incremental `content`, closing with one `done` event whose data payload is the same JSON body as `/chat`.
 
 Both share the same request schema and the same retrieval pipeline; only the LLM call differs (`LLMClient.chat` vs `LLMClient.stream`).
+
+**Join mode toggle (C6):** `DocumentJoiner` is config-driven via `CHAT_JOIN_MODE` env var:
+
+| Mode | Pipeline shape |
+|---|---|
+| `rrf` (default) | both retrievers + `DocumentJoiner(join_mode="reciprocal_rank_fusion")` (`k=60`) |
+| `concatenate` | both retrievers + simple merge (no re-ranking) |
+| `vector_only` | `ESVectorRetriever` only; no joiner |
+| `bm25_only` | `ESBM25Retriever` only; no joiner |
+
+The factory assembles the appropriate component graph at startup; the chat router has no knowledge of the mode. Switching is a pure-config operation, no code change.
 
 **P1 OPEN:** no permission gating; `sources[]` unrestricted. Future phase introduces a **Permission Layer post-filter** on retrieved chunks (§3.5) — ES queries themselves remain permission-blind in every phase.
 
@@ -182,6 +211,7 @@ Both share the same request schema and the same retrieval pipeline; only the LLM
 - `maxTokens` caps the LLM output (`completionTokens`); not the prompt.
 - If `messages` does not contain a `role:"system"` entry, the server **prepends** `{"role":"system","content":"You are a helpful assistant"}` before invoking the LLM.
 - The retrieval query is the **last `role:"user"` message**; preceding messages are passed through to the LLM as conversation history.
+- **`provider` validation (B22):** P1 ships a single LLM endpoint (§4.5). The router validates `provider` against the allow-list `{"openai"}` and returns 422 (`error_code=CHAT_PROVIDER_UNSUPPORTED`) on any other value. The accepted value is **echoed verbatim** in the response (§3.4.2); P1 does not route on it. Future phases extend the allow-list and use the field as a routing key.
 - Validation errors → 422 RFC 9457 problem+json (B5).
 
 #### 3.4.2 Response schema
@@ -210,7 +240,7 @@ Both share the same request schema and the same retrieval pipeline; only the LLM
 - `sources` is `null` when no chunks were retrieved (e.g. empty index, retriever error fallback). Otherwise every entry has **all fields populated** — partial rows are not emitted.
 - `sources[].type` is reserved for future categorisation; **P1 always emits `"knowledge"`**. Future values `"app"` and `"workspace"` will be derived in a later phase.
 - `sources[].title` comes from `documents.source_title` (joined on `document_id` after retrieval).
-- `sources[].excerpt` is the chunk text the retriever surfaced (truncated server-side to 512 chars).
+- `sources[].excerpt` is the chunk text the retriever surfaced. **Truncated to `EXCERPT_MAX_CHARS` (default 512) inside `SourceHydrator`** (B23) — single locus, before the LLM sees it. Truncation appends `…` if cut. Router never re-truncates.
 - `usage` is reported by `LLMClient`; for streaming the LLM API must include final usage (e.g. OpenAI `stream_options.include_usage=true`).
 
 #### 3.4.3 Streaming wire format (`/chat/stream` only)
@@ -275,7 +305,9 @@ Retrieval may over-fetch (`K' = K × overfetch_factor`) so that after permission
 
 **Note on prior decision:** An earlier round declared OpenFGA out-of-scope across all phases (see `00_journal.md`). That decision is **superseded** here: OpenFGA returns as the Permission-Layer backend in a future phase, but is fully encapsulated behind `PermissionClient` and never reaches the retrieval / data layers. The original concern (no out-of-band ACL on every ES query) is preserved by routing permission checks through a post-retrieval gate, not an ES filter.
 
-**BDD (future-phase-gated):** S9 (token refresh at `expiresAt − 5 min`); permission-gating BDD specified when that phase plan is written.
+**BDD:**
+- **S9 token refresh at boundary** — Given `TokenManager` cache holds a J2 with `expiresAt = T0 + 60 min`, When the wall clock advances to `T0 + 55 min` (`expiresAt − 5 min`) and a caller asks for the J2 token, Then `TokenManager` issues exactly one J1→J2 refresh HTTP exchange and returns the new token; 100 concurrent callers around the boundary share that single refresh (single-flight, P-F).
+- Permission-gating BDD specified when that future phase plan is written.
 
 ---
 
@@ -285,9 +317,9 @@ Retrieval may over-fetch (`K' = K × overfetch_factor`) so that after permission
 
 > Implementation = a one-shot Python entrypoint (`python -m ragent.reconciler`) packaged in the same image, scheduled by **K8s CronJob** with `concurrencyPolicy: Forbid` and `successfulJobsHistoryLimit: 3`. Not a TaskIQ scheduled task (decouples sweeper liveness from broker health — Reconciler is the recovery surface for broker outage itself, see R1).
 
-- `UPLOADED > 5 min` → re-kiq `ingest.pipeline` (R1 — covers TaskIQ message loss and broker outage at POST time).
-- `PENDING > 5 min, attempt ≤ 5` → re-kiq `ingest.pipeline` (idempotent key: `document_id + attempt`).
-- `PENDING > 5 min, attempt > 5` → `FAILED` (cleans chunks/ES per §3.1 R5 path) + structured-log `event=ingest.failed`.
+- `UPLOADED, updated_at < NOW() - 5 min` → re-kiq `ingest.pipeline` (R1 — covers TaskIQ message loss and broker outage at POST time).
+- `PENDING, updated_at < NOW() - 5 min, attempt ≤ 5` → **stale heartbeat (B16)** ⇒ worker is dead or hung ⇒ re-kiq `ingest.pipeline` (idempotent key: `document_id + attempt`). A live worker keeps its row's `updated_at` fresh and is never re-dispatched.
+- `PENDING, updated_at < NOW() - 5 min, attempt > 5` → `FAILED` (cleans chunks/ES per §3.1 R5 path) + structured-log `event=ingest.failed`.
 - `DELETING > 5 min` → resume cascade delete idempotently.
 - **Multi-READY invariant repair (R3):** every cycle also runs `SELECT source_id, source_app FROM documents WHERE status='READY' GROUP BY source_id, source_app HAVING COUNT(*) > 1` and re-enqueues `ingest.supersede` for each pair.
 - **Heartbeat (R8):** every tick increments `reconciler_tick_total` and emits `event=reconciler.tick`. Prometheus alert fires if no tick observed for > 10 min (Reconciler is itself a single point of failure).
@@ -352,16 +384,16 @@ All non-2xx responses use **RFC 9457 Problem Details** (`Content-Type: applicati
 
 ### 4.2 Supported Formats
 
-| Format | Converter | Notes | Phase |
-|---|---|---|:---:|
-| `.txt`  | `TextFileToDocument`     | UTF-8 text | **P1** |
-| `.md`   | `MarkdownToDocument`     | front-matter stripped | **P1** |
-| `.html` | `HTMLToDocument`         | visible text, script/style stripped | **P1** |
-| `.csv`  | `CSVToDocument`          | row-as-document; **no row cap** — bounded only by the global 50 MB file limit (B2) | **P1** |
-| `.pdf`  | `PyPDFToDocument`        | text-extractable only | P2 |
-| `.docx` | `DOCXToDocument`         | body + tables | P2 |
-| `.pptx` | `PPTXToDocument`         | slide text + notes | P2 |
-| `.xlsx` | `XLSXToDocument`         | active sheets | P2 |
+| Format | Converter | MIME (allow-list) | Notes | Phase |
+|---|---|---|---|:---:|
+| `.txt`  | `TextFileToDocument`     | `text/plain`              | UTF-8 text | **P1** |
+| `.md`   | `MarkdownToDocument`     | `text/markdown`           | front-matter stripped | **P1** |
+| `.html` | `HTMLToDocument`         | `text/html`               | visible text, script/style stripped | **P1** |
+| `.csv`  | `CSVToDocument`          | `text/csv`                | row-as-document; rows packed by `RowMerger` to ~2 000 chars (B24); bounded by global 50 MB file limit (B2) | **P1** |
+| `.pdf`  | `PyPDFToDocument`        | `application/pdf`         | text-extractable only | P2 |
+| `.docx` | `DOCXToDocument`         | `application/vnd.openxmlformats-officedocument.wordprocessingml.document` | body + tables | P2 |
+| `.pptx` | `PPTXToDocument`         | `application/vnd.openxmlformats-officedocument.presentationml.presentation` | slide text + notes | P2 |
+| `.xlsx` | `XLSXToDocument`         | `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` | active sheets | P2 |
 
 > 415 on unsupported MIME; 413 on > 50 MB. Image-only / scanned documents are not supported in any phase.
 
@@ -370,7 +402,7 @@ All non-2xx responses use **RFC 9457 Problem Details** (`Content-Type: applicati
 | Pipeline | Components | Timeouts | Test Path | Phase |
 |---|---|---|---|:---:|
 | **Ingest** | `delete_by_document_id (idempotency) → FileTypeRouter → Converter → DocumentCleaner → LanguageRouter → {cjk_splitter \| en_splitter} (sentence-level, B1) → EmbeddingClient(bge-m3, batch=32) → ChunkRepository.bulk_insert → PluginRegistry.fan_out (per-plugin 60 s)` | Embedder 30 s/batch · ES bulk 60 s · MinIO get 30 s · plugin 60 s | `tests/integration/test_ingest_pipeline.py` | **P1** sync |
-| **Chat** | `QueryEmbedder → ESVector → ESBM25 → DocumentJoiner(RRF) → LLMClient.stream` (sequential in P1; parallel in P2 — see §3.4 P-A) | Embedder 10 s · ES query 10 s · LLM 120 s | `tests/integration/test_chat_pipeline.py` | **P1** sync |
+| **Chat** | `QueryEmbedder → ESVector(kNN on `embedding`) → ESBM25(multi_match `text`+`title^2`) → DocumentJoiner (B23 `CHAT_JOIN_MODE`: rrf\|concatenate\|vector_only\|bm25_only) → SourceHydrator(JOIN documents, truncate `excerpt` to 512 chars) → LLMClient.{chat\|stream}` (retrievers sequential in P1; parallel in P2 — see §3.4 P-A) | Embedder 10 s (single query) · ES query 10 s · LLM 120 s · per-batch ingest embed 30 s (asymmetric — query is one string, ingest is up to 32) | `tests/integration/test_chat_endpoint.py` (T3.9), `tests/integration/test_chat_stream_endpoint.py` (T3.11), `tests/integration/test_chat_pipeline_retrieval.py` (T3.5) | **P1** sync |
 
 ### 4.4 Plugin Catalog
 
@@ -394,6 +426,33 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 
 **TokenManager refresh discipline (P-F):** the J1→J2 refresh path is **single-flight** — concurrent callers around the `expiresAt − 5 min` boundary share one in-flight refresh (in-process `asyncio.Lock` / `threading.Lock` keyed on the J1 token), avoiding stampede. The cached J2 is shared by Embedding/LLM/Rerank clients.
 
+### 4.6 Environment Variables (C2)
+
+| Variable | Default | Domain | Description |
+|---|---|---|---|
+| `RAGENT_ENV`                          | (none, required) | Bootstrap | `dev` \| `staging` \| `prod`. P1 startup guard (§7.5) refuses non-`dev`. |
+| `RAGENT_AUTH_DISABLED`                | `false`          | Bootstrap | Must be `true` in P1; future phases set `false` to enable JWT (§3.5). |
+| `WORKER_HEARTBEAT_INTERVAL_SECONDS`   | `30`             | Worker (B16) | How often the worker refreshes `documents.updated_at` during pipeline body. |
+| `PIPELINE_TIMEOUT_SECONDS`            | `1800`           | Worker (B18) | Overall pipeline-body wall-clock ceiling. |
+| `RECONCILER_STALE_AFTER_SECONDS`      | `300`            | Reconciler (§3.6) | Threshold for `updated_at` staleness; tied to heartbeat. |
+| `CSV_CHUNK_TARGET_CHARS`              | `2000`           | Pipeline (B24) | `RowMerger` target size per merged buffer. |
+| `EMBEDDER_BATCH_SIZE`                 | `32`             | Pipeline (P-B) | Chunks per embedder HTTP call. |
+| `CHAT_JOIN_MODE`                      | `rrf`            | Chat (C6) | `rrf` \| `concatenate` \| `vector_only` \| `bm25_only`. |
+| `EXCERPT_MAX_CHARS`                   | `512`            | Chat (B23) | `SourceHydrator` truncates `sources[].excerpt` to this length. |
+| `RAGENT_DEFAULT_LLM_PROVIDER`         | `openai`         | Chat (B22) | Echoed when request omits `provider`. |
+| `RAGENT_DEFAULT_LLM_MODEL`            | `gptoss-120b`    | Chat (§3.4.1) | Echoed when request omits `model`. |
+| `RAGENT_DEFAULT_LLM_TEMPERATURE`      | `0.7`            | Chat (§3.4.1) | |
+| `RAGENT_DEFAULT_LLM_MAX_TOKENS`       | `4096`           | Chat (§3.4.1) | |
+| `RAGENT_DEFAULT_SYSTEM_PROMPT`        | `You are a helpful assistant` | Chat (§3.4.1) | Auto-prepended when `messages` lacks a `system` entry. |
+| `MINIO_BUCKET`                        | `ragent-staging` | Storage (B10) | Single bucket for staging objects. |
+| `AI_API_AUTH_URL`                     | (required)       | Clients (§4.5) | TokenManager J1→J2 endpoint. |
+| `EMBEDDING_API_URL`                   | (required)       | Clients (§4.5) | |
+| `LLM_API_URL`                         | (required)       | Clients (§4.5) | |
+| `REREANK_API_URL`                     | (required P2)    | Clients (§4.5) | |
+| `HR_API_URL`                          | (future)         | Clients (§4.5) | |
+
+> Timeouts in §4.3 are intentionally asymmetric: ingest embedder uses 30 s/batch (32 strings), query embedder uses 10 s (1 string) (C8). Same client, two call sites, two budgets.
+
 ---
 
 ## 5. Data Structures
@@ -408,7 +467,7 @@ CREATE TABLE documents (
   source_app       VARCHAR(64)  NOT NULL,
   source_title     VARCHAR(256) NOT NULL,
   source_workspace VARCHAR(64)  NULL,
-  storage_uri      VARCHAR(512) NOT NULL,
+  object_key       VARCHAR(256) NOT NULL,  -- MinIO key only (B10 format); bucket is config-driven (`MINIO_BUCKET`), not stored per-row (C3).
   status           ENUM('UPLOADED','PENDING','READY','FAILED','DELETING') NOT NULL,
   attempt          INT          NOT NULL DEFAULT 0,
   created_at       DATETIME(6)  NOT NULL,
@@ -479,6 +538,7 @@ No physical FK. ORM-level cascade only.
 - **DB:** no physical FK; index every `WHERE / JOIN / ORDER BY` field.
 - **Quality gate:** `uv run ruff format . && uv run ruff check . --fix && uv run pytest` before every commit.
 - **TDD commits:** `[STRUCTURAL]` or `[BEHAVIORAL]` prefix; never mixed.
+- **JSON naming convention (B21):** within request/response bodies, **identifier and resource fields are `snake_case`** (`document_id`, `source_id`, `source_app`, `source_title`, `error_code`, `next_cursor`, `task_id`, `trace_id`); **LLM token/config knobs are `camelCase`** (`maxTokens`, `promptTokens`, `completionTokens`, `totalTokens`, `temperature`, `topP` if added later) — preserved to match upstream OpenAI-shape expectations. Within a single body both styles may coexist; the rule above resolves which to use for any new field.
 
 ### 6.1 Schema & Migration (B3)
 
@@ -518,3 +578,13 @@ Two artefacts, **both versioned in git**, both consulted at boot:
 | **B13** | 2026-05-04 | Chat API | `sources[].type` taxonomy | **Reserved enum** `"knowledge" \| "app" \| "workspace"`; **P1 always emits `"knowledge"`**. Future phase derives `"app"` / `"workspace"` (likely from `source_app` / `source_workspace` semantics). | Drop the field for now (breaks forward-compat clients); ship full derivation logic in P1 (out of scope, no acceptance criteria). | §3.4.2 / T3.3 |
 | **B14** | 2026-05-04 | Auth/Permission | (a) `documents.owner_user_id` semantics; (b) where ACL lives | **(a)** Rename to `create_user` — pure audit metadata recording the `X-User-Id` of the creating request, **not** an authorization field. **(b)** Authentication and Permission are separate layers. ES (`chunks_v1`) carries no auth fields in any phase. Permission gating runs **post-retrieval** via a `PermissionClient` Protocol; future-phase backend = **OpenFGA** (supersedes the earlier "out-of-scope across all phases" declaration). Index renamed `idx_owner_document` → `idx_create_user_document`. | Owner-based ES filter (couples auth to retrieval; re-index on every model change); keep "owner" naming with auth semantics (overloads the column, blocks future sharing/role models); keep OpenFGA out-of-scope (no scalable answer for sharing). | §1 / §3.4 / §3.5 / §4.1 / §5.1 / T0.8 / T2.1 / T8 |
 | **B15** | 2026-05-04 | Retrieval | How `source_title` participates in chat retrieval | **Two surfaces, no extra retriever:** (1) **Semantic** — `VectorExtractor` embeds `f"{source_title}\n\n{chunk_text}"` at ingest, so the existing `embedding` already carries title semantics. (2) **Lexical** — `title` is denormalised onto each chunk row in `chunks_v1`; `ESBM25Retriever` runs `multi_match` on `["text", "title^2"]` (2× boost). Existing 2-retriever + RRF topology unchanged. | BM25-only on title (misses semantic matches like "meeting"→"sync notes"); separate `title_embedding` vector field + 3rd retriever (3-way RRF, extra ingest embed call, mapping bloat); join `documents.source_title` post-retrieval for ranking only (loses BM25 + vector influence on top-K selection). | §3.2 / §3.4 / §4.4 / §5.2 / T1.9 / T3.5 |
+| **B16** | 2026-05-04 | Resilience | Worker–Reconciler concurrency safety | **Worker heartbeat:** during the pipeline body the worker updates `documents.updated_at = NOW()` every `WORKER_HEARTBEAT_INTERVAL_SECONDS` (default 30 s, single PK-keyed `UPDATE`). Reconciler's threshold becomes `updated_at < NOW() - 5 min` — a live worker is never re-dispatched. Closes the no-lock-window race opened by the §3.1 short-tx locking discipline. | Hold a row lock across pipeline body (defeats the §3.1 reform); add `assigned_to_worker` lease column (extra write per status mutation, lease-renewal complexity); rely on TaskIQ message-id deduplication (only catches redelivery, not Reconciler-initiated parallel kiq). | §3.1 / §3.6 / §4.6 / T2.1 / T3.2b |
+| **B17** | 2026-05-04 | Plugin | How `VectorExtractor.extract(document_id)` reads `source_title` (Protocol cannot pass it as an arg) | **Constructor injection:** `VectorExtractor.__init__(repo, chunks, embedder, es)`. `extract()` calls `repo.get(document_id).source_title`. Protocol §3.3 stays frozen. Plugins are constructed by composition root with their dependencies and registered as instances. | Widen Protocol to `extract(document_id, metadata)` (breaks Protocol freeze, every plugin pays the metadata-dict cost forever); pass via Haystack channel input (couples plugin to pipeline assembly); fetch via global service-locator (hidden coupling). | §3.3 / §4.4 / T1.12 |
+| **B18** | 2026-05-04 | Resilience | Per-document pipeline timeout | **Hard ceiling `PIPELINE_TIMEOUT_SECONDS` (default 1800 = 30 min)** around the worker pipeline body. Overrun ⇒ `FAILED` with `error_code=PIPELINE_TIMEOUT`, full cleanup. Bounds pathological inputs (huge CSV, runaway plugin) deterministically; heartbeat catches faster (5 min) but timeout is the deterministic upper bound. | No ceiling (relies on heartbeat alone; allows worker pods to be tied up indefinitely on bad data); reject docs at upload time by estimated processing cost (estimation is unreliable). | §3.1 / §3.2 / §4.6 / S34 |
+| **B19** | 2026-05-04 | Doc hygiene | §4.3 Pipeline Catalog Chat row was stale post-B12 (single endpoint, no SourceHydrator, no join-mode toggle) | Updated row to reference `LLMClient.{chat\|stream}`, `SourceHydrator`, `CHAT_JOIN_MODE` (C6), and the three integration test paths (T3.5 / T3.9 / T3.11). Also added the asymmetric-timeout note (C8). | Leave stale (causes plan/spec drift; future readers wire the wrong test). | §4.3 |
+| **B20** | 2026-05-04 | BDD hygiene | S4 / S5 / S9 / S11 referenced but no Given/When/Then bodies | Inlined full bodies in §3.3 (S4, S5, S11) and §3.5 (S9). | Footnote-style "see plan" (BDD scenarios live in spec, not plan, per project convention). | §3.3 / §3.5 |
+| **B21** | 2026-05-04 | API | JSON field naming convention | **IDs / resources = `snake_case`** (`document_id`, `source_id`, `error_code`, `next_cursor`, …); **LLM token/config knobs = `camelCase`** (`maxTokens`, `promptTokens`, `completionTokens`, `totalTokens`, `temperature`). Mixed within one body is allowed; the rule above resolves which side a new field falls on. Preserves OpenAI-shape upstream familiarity for chat tokens while keeping ingest/data fields snake-case. | All-snake (breaks user-specified chat shape); all-camel (forces `documentId`/`sourceId` rename across ingest, schema, OpenFGA tuples, audit logs); ad-hoc per field (was the bug). | §6 / all body schemas |
+| **B22** | 2026-05-04 | Chat API | `provider` field semantics in P1 | **Validated allow-list `{"openai"}`**, 422 (`error_code=CHAT_PROVIDER_UNSUPPORTED`) on others; the accepted value is **echoed verbatim** in the response. P1 routes nothing on it. Future phases extend the allow-list and use `provider` as a routing key. | Echo only, no validation (silently accepts garbage); ignore the field entirely (forward-incompat with multi-provider future). | §3.4.1 / §3.4.2 / T3.3–T3.4 |
+| **B23** | 2026-05-04 | Chat API | Where `sources[].excerpt` is truncated | **Inside `SourceHydrator`**, single locus, `EXCERPT_MAX_CHARS` (default 512), append `…` if cut. Router never re-truncates. | Truncate in router (then chunks-as-LLM-context still see the long form, leak); truncate in retriever (couples retrieval to display concerns); leave to client (LLM gets full chunk for context, response surfaces full chunk to client — wasted bandwidth + risk of leaking text the operator intended to keep server-side). | §3.4.2 / T3.6 |
+| **B24** | 2026-05-04 | Pipeline | CSV row scaling — naive 1 row → 1 chunk would be 1 M chunks for a 50 MB file | **`RowMerger`** SuperComponent on the CSV branch only (Haystack `ConditionalRouter` on MIME): pack consecutive rows joined by `\n` until buffered text reaches `CSV_CHUNK_TARGET_CHARS` (default 2 000 ≈ 512 tokens, well under bge-m3's 8 192). Result: 50 MB CSV → ~25 k chunks instead of ~1 M. Combined with B18 ceiling, large CSVs are bounded both in count and total wall-clock. | Per-file row cap (loses tail rows); skip CSV in P1 (regression vs spec); change every row's chunker to "passage" (loses sentence-level fidelity for non-CSV); dynamic per-row Haystack `DocumentSplitter(split_by="word")` (no row-grouping, defeats the "one logical record per chunk" property). | §3.2 / §4.2 / S35 |
+| **B25** | 2026-05-04 | Storage | `documents.storage_uri` stored full URI; bucket name is constant config | **Rename column to `object_key VARCHAR(256) NOT NULL`** (key only, format per B10). Bucket is read from `MINIO_BUCKET` env var (default `ragent-staging`); reconstruct full URI on demand. Saves ~20 bytes/row, decouples row from bucket-rename ops, and makes a future bucket migration a config flip. | Keep full URI (rigid); store bucket per-row (rotation hell); URL-encode in object key (key+bucket separation already does the job). | §5.1 / T2.5 / T2.6 |
