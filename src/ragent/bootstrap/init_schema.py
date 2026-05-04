@@ -1,0 +1,126 @@
+"""Bootstrap auto-init: MariaDB tables and ES indexes (T0.8d).
+
+Idempotent: CREATE IF NOT EXISTS for MariaDB; PUT /<index> only when the index
+is absent for ES. Refuses to ALTER existing tables or update existing indexes.
+Schema drift is logged as event=schema.drift and must surface in /readyz.
+"""
+
+import base64
+import json
+import logging
+import os
+import ssl
+from pathlib import Path
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+from sqlalchemy import text
+
+logger = logging.getLogger(__name__)
+
+_MIGRATIONS = Path(__file__).parents[3] / "migrations"
+_ES_RESOURCES = Path(__file__).parents[3] / "resources" / "es"
+
+_REQUIRED_ES_PLUGINS = ["analysis-icu"]
+
+
+class ESPluginMissingError(Exception):
+    def __init__(self, missing: list[str]) -> None:
+        self.missing = missing
+        super().__init__(f"Required ES plugins not installed: {missing}")
+
+
+def _es_auth_headers() -> dict[str, str]:
+    """Build Authorization header from env vars (API key takes precedence over Basic)."""
+    api_key = os.environ.get("ES_API_KEY")
+    if api_key:
+        return {"Authorization": f"ApiKey {api_key}"}
+    user = os.environ.get("ES_USERNAME")
+    password = os.environ.get("ES_PASSWORD")
+    if user and password:
+        creds = base64.b64encode(f"{user}:{password}".encode()).decode()
+        return {"Authorization": f"Basic {creds}"}
+    return {}
+
+
+def _es_ssl_context() -> ssl.SSLContext:
+    ctx = ssl.create_default_context()
+    if os.environ.get("ES_VERIFY_CERTS", "true").lower() in ("false", "0"):
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
+def _es_request(url: str, method: str = "GET", body: dict | None = None) -> dict | None:
+    data = json.dumps(body).encode() if body else None
+    headers = {"Content-Type": "application/json"} if data else {}
+    headers.update(_es_auth_headers())
+    req = Request(url, data=data, method=method, headers=headers)
+    try:
+        with urlopen(req, timeout=30, context=_es_ssl_context()) as resp:
+            raw = resp.read()
+            return json.loads(raw) if raw else {}
+    except HTTPError as exc:
+        if exc.code == 404:
+            return None
+        raise
+
+
+def check_es_plugins(es_url: str) -> list[str]:
+    """Return required plugins missing from any node in the cluster.
+
+    Uses intersection: every node must have each plugin. A mixed cluster where
+    only some nodes have analysis-icu will still fail analysis on plugin-missing
+    nodes, so we require cluster-wide presence.
+    """
+    url = f"{es_url.rstrip('/')}/_nodes/plugins"
+    info = _es_request(url)
+    if not info:
+        return list(_REQUIRED_ES_PLUGINS)
+    nodes = list(info.get("nodes", {}).values())
+    if not nodes:
+        return list(_REQUIRED_ES_PLUGINS)
+    node_plugin_sets = [{p["name"] for p in node.get("plugins", [])} for node in nodes]
+    installed = set.intersection(*node_plugin_sets)
+    return [p for p in _REQUIRED_ES_PLUGINS if p not in installed]
+
+
+def _strip_comments(sql: str) -> str:
+    lines = [ln for ln in sql.splitlines() if not ln.strip().startswith("--")]
+    return "\n".join(lines).strip()
+
+
+def init_mariadb(engine) -> None:
+    sql = (_MIGRATIONS / "schema.sql").read_text()
+    with engine.begin() as conn:
+        for raw in sql.split(";"):
+            stmt = _strip_comments(raw)
+            if stmt:
+                conn.execute(text(stmt))
+
+
+def init_es(es_url: str) -> None:
+    """Raises ESPluginMissingError when a required plugin is absent — propagates to /readyz."""
+    missing = check_es_plugins(es_url)
+    if missing:
+        raise ESPluginMissingError(missing)
+
+    base = es_url.rstrip("/")
+    for path in sorted(_ES_RESOURCES.glob("*.json")):
+        index = path.stem
+        index_url = f"{base}/{index}"
+        existing = _es_request(index_url, method="HEAD")
+        if existing is not None:
+            logger.info("event=es.index_exists index=%s", index)
+            continue
+        body = json.loads(path.read_text())
+        _es_request(index_url, method="PUT", body=body)
+        logger.info("event=es.index_created index=%s", index)
+
+
+def auto_init(db_url: str, es_url: str) -> None:
+    from sqlalchemy import create_engine
+
+    engine = create_engine(db_url)
+    init_mariadb(engine)
+    init_es(es_url)

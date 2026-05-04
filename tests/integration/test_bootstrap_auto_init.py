@@ -1,0 +1,57 @@
+"""T0.8c — auto_init: first boot creates schema idempotently; second boot is a no-op."""
+
+import pytest
+
+from ragent.bootstrap.init_schema import auto_init
+
+pytestmark = pytest.mark.docker
+
+
+def test_first_boot_creates_mariadb_tables(mariadb_dsn: str, es_url: str) -> None:
+    auto_init(mariadb_dsn, es_url)
+    import sqlalchemy
+    from sqlalchemy import inspect as sa_inspect
+
+    engine = sqlalchemy.create_engine(mariadb_dsn)
+    insp = sa_inspect(engine)
+    assert "documents" in insp.get_table_names()
+    assert "chunks" in insp.get_table_names()
+
+
+def test_first_boot_creates_es_index(mariadb_dsn: str, es_url: str) -> None:
+    auto_init(mariadb_dsn, es_url)
+    from ragent.bootstrap.init_schema import _es_request
+
+    result = _es_request(f"{es_url}/chunks_v1")
+    assert result is not None, "chunks_v1 index should exist after auto_init"
+
+
+def test_second_boot_is_noop(mariadb_dsn: str, es_url: str) -> None:
+    """auto_init twice does not raise and does not alter existing schema."""
+    auto_init(mariadb_dsn, es_url)
+    auto_init(mariadb_dsn, es_url)  # second call — must not raise
+
+
+def test_mariadb_tables_have_expected_columns(mariadb_dsn: str, es_url: str) -> None:
+    auto_init(mariadb_dsn, es_url)
+    import sqlalchemy
+    from sqlalchemy import inspect as sa_inspect
+
+    engine = sqlalchemy.create_engine(mariadb_dsn)
+    insp = sa_inspect(engine)
+    doc_cols = {c["name"] for c in insp.get_columns("documents")}
+    assert {
+        "document_id",
+        "create_user",
+        "source_id",
+        "source_app",
+        "source_title",
+        "source_workspace",
+        "object_key",
+        "status",
+        "attempt",
+        "created_at",
+        "updated_at",
+    } <= doc_cols
+    chunk_cols = {c["name"] for c in insp.get_columns("chunks")}
+    assert {"chunk_id", "document_id", "ord", "text", "lang"} <= chunk_cols

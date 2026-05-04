@@ -321,6 +321,24 @@ POST {OPENFGA_API_URL}/check
 
 **Always** run these commands before commit.
 
+## Docker (required for testcontainers integration tests)
+
+Before running `uv run pytest`, ensure the Docker daemon is running:
+
+```bash
+# 1. Check if Docker is running
+docker ps &>/dev/null && echo "Docker ready" || {
+    # 2. Start daemon in background if not running
+    sudo dockerd --host=unix:///var/run/docker.sock &>/tmp/dockerd.log &
+    # 3. Wait until socket is available (up to 30 s)
+    until docker ps &>/dev/null; do sleep 1; done
+    echo "Docker daemon started"
+}
+```
+
+> **Why:** testcontainers (MariaDB, ES, Redis, MinIO) require a live Docker socket.
+> Without it, all `@pytest.mark.docker` tests are skipped and remain `[ ]` in plan.md.
+
 ## Python
 - Format: `uv run ruff format .`
 - Lint: `uv run ruff check . --fix`

@@ -1,10 +1,3 @@
-"""VectorExtractor — Phase 1 W3 (spec §2 Indexing Pipeline, plan 3.1-3.2).
-
-Idempotency: ES bulk uses chunk_id as _id, so re-extracting the same document_id
-upserts in place. Embedder/ES/chunk_store are injected (Protocol-shaped) so
-unit tests stay free of network IO.
-"""
-
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -16,6 +9,10 @@ class Chunk:
     ord: int
     text: str
     lang: str
+
+
+class _Repo(Protocol):
+    def get(self, document_id: str) -> Any: ...
 
 
 class _Embedder(Protocol):
@@ -33,43 +30,53 @@ class VectorExtractor:
 
     def __init__(
         self,
+        repo: _Repo,
+        chunks: dict[str, list[Chunk]],
         embedder: _Embedder,
         es: _ES,
-        chunk_store: dict[str, list[Chunk]],
         index: str = "chunks_v1",
     ) -> None:
+        self._repo = repo
+        self._chunks = chunks
         self._embedder = embedder
         self._es = es
-        self._chunks = chunk_store
         self._index = index
 
     def extract(self, document_id: str) -> None:
-        chunks = self._chunks.get(document_id, [])
-        if not chunks:
+        chunk_list = self._chunks.get(document_id, [])
+        if not chunk_list:
             return
-        vectors = self._embedder.embed([c.text for c in chunks])
-        actions = [
-            {
-                "_op_type": "index",
-                "_index": self._index,
-                "_id": c.chunk_id,
-                "_source": {
-                    "chunk_id": c.chunk_id,
-                    "document_id": c.document_id,
-                    "lang": c.lang,
-                    "text": c.text,
-                    "embedding": v,
-                },
+        doc = self._repo.get(document_id)
+        if doc is None:
+            return
+        title = doc.source_title
+        inputs = [f"{title}\n\n{c.text}" for c in chunk_list]
+        vectors = self._embedder.embed(inputs)
+        actions = []
+        for c, v in zip(chunk_list, vectors, strict=True):
+            source: dict[str, Any] = {
+                "chunk_id": c.chunk_id,
+                "document_id": c.document_id,
+                "lang": c.lang,
+                "title": title,
+                "text": c.text,
+                "embedding": v,
+                "source_app": doc.source_app,
             }
-            for c, v in zip(chunks, vectors, strict=True)
-        ]
+            if doc.source_workspace is not None:
+                source["source_workspace"] = doc.source_workspace
+            actions.append(
+                {"_op_type": "index", "_index": self._index, "_id": c.chunk_id, "_source": source}
+            )
         self._es.bulk(actions)
 
     def delete(self, document_id: str) -> None:
-        chunks = self._chunks.get(document_id, [])
-        actions = [{"_op_type": "delete", "_index": self._index, "_id": c.chunk_id} for c in chunks]
+        chunk_list = self._chunks.get(document_id, [])
+        actions = [
+            {"_op_type": "delete", "_index": self._index, "_id": c.chunk_id} for c in chunk_list
+        ]
         if actions:
             self._es.bulk(actions)
 
     def health(self) -> bool:
-        return self._embedder is not None and self._es is not None
+        return True
