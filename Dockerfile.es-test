@@ -1,0 +1,7 @@
+FROM docker.elastic.co/elasticsearch/elasticsearch:9.2.3
+
+# Install analysis-icu plugin — required for icu_text analyzer on chunks_v1 index.
+RUN bin/elasticsearch-plugin install --batch analysis-icu
+
+ENV discovery.type=single-node
+ENV xpack.security.enabled=false
