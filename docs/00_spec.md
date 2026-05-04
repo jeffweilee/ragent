@@ -172,14 +172,12 @@ P2 auth: JWT + OpenFGA `check(can_view)` / `list_resource` / `check(can_delete)`
 |---|---|---|:---:|
 | `.txt`  | `TextFileToDocument`     | UTF-8 text | **P1** |
 | `.md`   | `MarkdownToDocument`     | front-matter stripped | **P1** |
-| `.pdf`  | `PyPDFToDocument`        | text-extractable only, no OCR | **P1** |
-| `.docx` | `DOCXToDocument`         | body + tables | **P1** |
-| `.pptx` | `PPTXToDocument`         | slide text + notes | **P1** |
 | `.html` | `HTMLToDocument`         | visible text, script/style stripped | **P1** |
 | `.csv`  | `CSVToDocument`          | row-as-document | **P1** |
+| `.pdf`  | `PyPDFToDocument`        | text-extractable only, no OCR | **P2** |
+| `.docx` | `DOCXToDocument`         | body + tables | **P2** |
+| `.pptx` | `PPTXToDocument`         | slide text + notes | **P2** |
 | `.xlsx` | `XLSXToDocument`         | active sheets | P2 |
-| image-PDF | OCR router + PyPDF     | OCR text | P2 |
-| `.png/.jpg/.tiff` | `TesseractOCR` | OCR text | P3 |
 
 > 415 on unsupported MIME; 413 on > 50 MB.
 
