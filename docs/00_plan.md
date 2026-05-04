@@ -47,19 +47,19 @@
 
 | # | Category | Task | Depends On | Status | Owner | Week |
 |---|---|---|---|:---:|---|:---:|
-| T2.1 | Red  | `tests/unit/test_document_repository.py` — `create (with optional source_id) / get / acquire (FOR UPDATE) / update_status (state-machine guarded) / list_pending / list / delete / list_ready_by_source(source_id) FOR UPDATE SKIP LOCKED` (returns all READY rows; service picks MAX(created_at) survivor). | T0.4, T0.6, T0.7 | [ ] | QA | W3 |
+| T2.1 | Red  | `tests/unit/test_document_repository.py` — `create (mandatory source_id + source_app, optional source_workspace) / get / acquire (FOR UPDATE) / update_status (state-machine guarded) / list_pending / list / delete / list_ready_by_source(source_id, source_app) FOR UPDATE SKIP LOCKED` (returns all READY rows for the pair; service picks MAX(created_at) survivor). | T0.4, T0.6, T0.7 | [ ] | QA | W3 |
 | T2.2 | Green | `src/ragent/repositories/document_repository.py` (Repository layer; CRUD only). | T2.1 | [ ] | Dev | W3 |
 | T2.3 | Red  | `tests/unit/test_chunk_repository.py` — `bulk_insert / delete_by_document_id`. | T0.4 | [ ] | QA | W3 |
 | T2.4 | Green | `src/ragent/repositories/chunk_repository.py`. | T2.3 | [ ] | Dev | W3 |
 | T2.5 | Red  | `tests/unit/test_minio_client.py` — `put_object` returns `minio://...`; `delete_object` idempotent. MinIO is transient staging only — cleared on terminal pipeline state. | T0.1 | [ ] | QA | W3 |
 | T2.6 | Green | `src/ragent/storage/minio_client.py`. | T2.5 | [ ] | Dev | W3 |
-| T2.7 | Red  | `tests/unit/test_ingest_service_create.py` — MIME validate (≤50 MB, allow-list per spec §4.2) → put → repo.create (persists optional `source_id`) → kiq dispatch; rolls back row if MinIO put fails. | T2.2, T2.6, T1.7 | [ ] | QA | W3 |
+| T2.7 | Red  | `tests/unit/test_ingest_service_create.py` — validate `source_id`+`source_app` mandatory (S23 → 422 on missing/empty), MIME validate (≤50 MB, allow-list per spec §4.2) → put → repo.create (persists `source_id`, `source_app`, optional `source_workspace`) → kiq dispatch; rolls back row if MinIO put fails. | T2.2, T2.6, T1.7 | [ ] | QA | W3 |
 | T2.8 | Green | `src/ragent/services/ingest_service.py::create` (≤ 30 LOC/method). | T2.7 | [ ] | Dev | W3 |
 | T2.9 | Red  | `tests/unit/test_ingest_service_delete.py` — cascade order (acquire→DELETING → fan_out_delete → chunks → row; MinIO already cleared at terminal state, deleted in cascade only if status is UPLOADED/PENDING); on any failure row stays DELETING (S13); idempotent re-delete returns 204 (S14). | T2.8, T1.8 | [ ] | QA | W3 |
 | T2.10 | Green | `src/ragent/services/ingest_service.py::delete`. | T2.9 | [ ] | Dev | W3 |
 | T2.11 | Red | `tests/unit/test_ingest_service_list.py` — cursor pagination by `document_id` ASC; `next_cursor` correctness (S15, P1 OPEN: no ACL filter). | T2.2 | [ ] | QA | W3 |
 | T2.12 | Green | `src/ragent/services/ingest_service.py::list`. | T2.11 | [ ] | Dev | W3 |
-| T2.13 | Red | `tests/unit/test_ingest_router.py` — Router only parses/validates and delegates; 415 on bad MIME, 413 on >50 MB; `X-User-Id` required (P1 OPEN). | T2.8, T2.10, T2.12 | [ ] | QA | W3 |
+| T2.13 | Red | `tests/unit/test_ingest_router.py` — Router only parses/validates and delegates; 415 on bad MIME, 413 on >50 MB; 422 on missing/empty `source_id` or `source_app` (S23); `X-User-Id` required (P1 OPEN). | T2.8, T2.10, T2.12 | [ ] | QA | W3 |
 | T2.14 | Green | `src/ragent/routers/ingest.py` (declares all endpoints in spec §4.1). | T2.13 | [ ] | Dev | W3 |
 
 ### Track T3 — Pipelines (Ingest + Chat assembly)
@@ -70,7 +70,7 @@
 | T3.2 | Green | `src/ragent/pipelines/factory.py` + `pipelines/ingest.py`. | T3.1 | [ ] | Dev | W3 |
 | T3.2a | Red | `tests/integration/test_worker_minio_cleanup.py` — terminal status (`READY` or `FAILED`) is committed **before** `MinIOClient.delete_object` is called; if the delete raises, the document still ends up in the terminal status and an `event=minio.orphan_object` log is emitted (S16, S21). On retry path (still `PENDING`), MinIO object is retained. | T3.2 | [ ] | QA | W3 |
 | T3.2b | Green | Worker task: commit terminal status first; then best-effort `MinIOClient.delete_object` (errors logged, not raised). | T3.2a | [ ] | Dev | W3 |
-| T3.2c | Red | `tests/integration/test_supersede_task.py` — on `READY` with `source_id` set, kiq `ingest.supersede`; task selects all `READY` rows with same `source_id`, keeps `MAX(created_at)`, cascade-deletes the rest (S17); out-of-order finish still converges to MAX(created_at) survivor (S20); FAILED never enqueues supersede (S18); idempotent re-run (S19). | T3.2b, T2.10 | [ ] | QA | W3 |
+| T3.2c | Red | `tests/integration/test_supersede_task.py` — on `READY`, kiq `ingest.supersede`; task selects all `READY` rows with same `(source_id, source_app)`, keeps `MAX(created_at)`, cascade-deletes the rest (S17); same `source_id` with different `source_app` coexists (S22); out-of-order finish still converges to MAX(created_at) survivor (S20); FAILED never enqueues supersede (S18); idempotent re-run (S19). | T3.2b, T2.10 | [ ] | QA | W3 |
 | T3.2d | Green | `src/ragent/services/ingest_service.py::supersede(document_id)` + TaskIQ `ingest.supersede` worker; selects READY peers, keeps MAX(created_at), reuses cascade delete path for losers. | T3.2c | [ ] | Dev | W3 |
 | T3.3 | Red | `tests/integration/test_chat_pipeline.py` — emits ≥1 `delta` then exactly one `done` with sources (S6); P1 OPEN: ACL filter no-op. | T4.4, T4.6 | [ ] | QA | W4 |
 | T3.4 | Green | `src/ragent/pipelines/chat.py` (QueryEmbedder → {ESVector ∥ ESBM25} → DocumentJoiner(RRF) → LLM stream). | T3.3 | [ ] | Dev | W4 |
