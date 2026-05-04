@@ -12,11 +12,13 @@
   },
   "mappings": {
     "properties": {
-      "chunk_id":    { "type": "keyword" },
-      "document_id": { "type": "keyword" },
-      "lang":        { "type": "keyword" },
-      "title":       { "type": "text", "analyzer": "icu_text" },
-      "text":        { "type": "text", "analyzer": "icu_text" },
+      "chunk_id":         { "type": "keyword" },
+      "document_id":      { "type": "keyword" },
+      "source_app":       { "type": "keyword" },
+      "source_workspace": { "type": "keyword" },
+      "lang":             { "type": "keyword" },
+      "title":            { "type": "text", "analyzer": "icu_text" },
+      "text":             { "type": "text", "analyzer": "icu_text" },
       "embedding": {
         "type": "dense_vector",
         "dims": 1024,

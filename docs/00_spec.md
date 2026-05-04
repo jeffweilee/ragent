@@ -169,10 +169,12 @@ class ExtractorPlugin(Protocol):
 ### 3.4 Chat Pipeline
 
 ```
-QueryEmbedder → {ESVectorRetriever (kNN on `embedding`) ∥ ESBM25Retriever (multi_match on `["text", "title^2"]`)} → DocumentJoiner(RRF) → SourceHydrator(JOIN documents) → LLMClient.{chat | stream}
+QueryEmbedder → {ESVectorRetriever (kNN on `embedding`, optional filter) ∥ ESBM25Retriever (multi_match on `["text", "title^2"]`, optional filter)} → DocumentJoiner(RRF) → SourceHydrator(JOIN documents) → LLMClient.{chat | stream}
 ```
 
 Title participates in **both** retrieval surfaces (B15): semantic (baked into every chunk's `embedding` at ingest via `embed(f"{title}\n\n{text}")`) and lexical (BM25 boosted 2× via `multi_match`). No separate title-only retriever, no extra ES field beyond `title`.
+
+**Filter scope (B29):** Optional `source_app` / `source_workspace` request params (§3.4.1) translate to ES `term` filters applied to both retrievers' `filter` clause. Both fields denormalised onto chunks at ingest (§5.2). Empty filter ⇒ unrestricted retrieval (current P1 behaviour). Both filters AND together when both are supplied.
 
 **Two endpoints (B12):**
 - `POST /chat` → non-streaming, returns full JSON body once LLM completes.
@@ -199,15 +201,18 @@ The factory assembles the appropriate component graph at startup; the chat route
 
 ```json
 {
-  "messages":    [{"role": "system|user|assistant", "content": "..."}],
-  "provider":    "openai",
-  "model":       "gptoss-120b",
-  "temperature": 0.7,
-  "maxTokens":   4096
+  "messages":         [{"role": "system|user|assistant", "content": "..."}],
+  "provider":         "openai",
+  "model":            "gptoss-120b",
+  "temperature":      0.7,
+  "maxTokens":        4096,
+  "source_app":       "confluence",
+  "source_workspace": "engineering"
 }
 ```
 
 - Only `messages` is required. All other fields are optional and fall back to the defaults shown above.
+- **Retrieval filters (B29):** `source_app` and `source_workspace` are optional. When present, both retrievers apply an ES `term` filter on the matching chunk field (denormalised at ingest, §5.2). Both supplied ⇒ AND. Both omitted ⇒ unrestricted retrieval. Empty string is rejected (422 `error_code=CHAT_FILTER_INVALID`); to skip a filter, omit the field. `source_app` length ≤ 64, `source_workspace` length ≤ 64 (matches §5.1 column widths).
 - `maxTokens` caps the LLM output (`completionTokens`); not the prompt.
 - If `messages` does not contain a `role:"system"` entry, the server **prepends** `{"role":"system","content":"You are a helpful assistant"}` before invoking the LLM.
 - The retrieval query is the **last `role:"user"` message**; preceding messages are passed through to the LLM as conversation history.
@@ -260,6 +265,10 @@ data: {"type":"done", ...response schema as 3.4.2…}\n\n
 - **S6c** — Request with only `messages` → defaults (`provider="openai"`, `model="gptoss-120b"`, `temperature=0.7`, `maxTokens=4096`) applied.
 - **S6d** — Empty retrieval (index empty or retriever error) → response `sources: null` and the LLM still answers.
 - **S6e** — Every emitted `sources[]` entry has all six fields populated and `type="knowledge"`.
+- **S6f filter narrows by source_app (B29)** — Given indexed chunks span `source_app ∈ {"confluence","slack"}`, When `POST /chat {"messages":[…], "source_app":"confluence"}` runs, Then both retrievers issue ES queries with `term: {source_app: "confluence"}` and `sources[]` contains only `source_app="confluence"` rows.
+- **S6g filter AND combination (B29)** — Given chunks across `(source_app, source_workspace)` ∈ {(confluence,eng), (confluence,hr), (slack,eng)}, When `POST /chat {…, "source_app":"confluence", "source_workspace":"eng"}` runs, Then `sources[]` contains only the (confluence, eng) row.
+- **S6h filter no-match (B29)** — Given no chunks match the filter, When the request runs, Then `sources` is `null` (§3.4.2 contract for empty retrieval) and the LLM still answers.
+- **S6i filter empty string rejected (B29)** — Given `source_app=""`, When the request runs, Then 422 problem+json with `error_code=CHAT_FILTER_INVALID`; no LLM call is made.
 - **S8**  — `POST /mcp/tools/rag` returns 501 in P1 (handler not yet wired).
 
 ---
@@ -395,6 +404,7 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 | `INGEST_NOT_FOUND`                   | 404         | `GET /ingest/{id}` / `DELETE /ingest/{id}` on unknown id | Service T2.10 |
 | `CHAT_MESSAGES_MISSING`              | 422         | `messages` absent or empty | Schema T3.3 |
 | `CHAT_PROVIDER_UNSUPPORTED`          | 422         | `provider` outside `{"openai"}` allow-list (B22) | Schema T3.3 |
+| `CHAT_FILTER_INVALID`                | 422         | `source_app` or `source_workspace` empty string / exceeds 64 chars (B29) | Schema T3.3 |
 | `CHAT_LLM_ERROR`                     | 502 / SSE-error | Pre-stream LLM failure (problem+json) or mid-stream LLM failure (`data: {type:error}`, B6) | Router T3.10/T3.12 |
 | `CHAT_RETRIEVER_ERROR`               | 502 / SSE-error | ES vector / BM25 retriever failure | Router T3.10/T3.12 |
 | `MCP_NOT_IMPLEMENTED`                | 501         | `POST /mcp/tools/rag` (S8) | Router T6.1 |
@@ -425,13 +435,13 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 | Pipeline | Components | Timeouts | Test Path | Phase |
 |---|---|---|---|:---:|
 | **Ingest** | `delete_by_document_id (idempotency) → FileTypeRouter → Converter → DocumentCleaner → LanguageRouter → {cjk_splitter \| en_splitter} (sentence-level, B1) → EmbeddingClient(bge-m3, batch=32) → ChunkRepository.bulk_insert → PluginRegistry.fan_out (per-plugin 60 s)` | Embedder 30 s/batch · ES bulk 60 s · MinIO get 30 s · plugin 60 s | `tests/integration/test_ingest_pipeline.py` | **P1** sync |
-| **Chat** | `QueryEmbedder → ESVector(kNN on `embedding`, `bbq_hnsw` index) → ESBM25(multi_match `text`+`title^2`, `icu_text` analyzer, B26) → DocumentJoiner (C6 `CHAT_JOIN_MODE`: rrf\|concatenate\|vector_only\|bm25_only) → SourceHydrator(JOIN documents, truncate `excerpt` to 512 chars) → LLMClient.{chat\|stream}` (retrievers sequential in P1; parallel in P2 — see §3.4 P-A) | Embedder 10 s (single query) · ES query 10 s · LLM 120 s · per-batch ingest embed 30 s (asymmetric — query is one string, ingest is up to 32) | `tests/integration/test_chat_endpoint.py` (T3.9), `tests/integration/test_chat_stream_endpoint.py` (T3.11), `tests/integration/test_chat_pipeline_retrieval.py` (T3.5) | **P1** sync |
+| **Chat** | `QueryEmbedder → ESVector(kNN on `embedding`, `bbq_hnsw` index, optional `term` filter on `source_app`/`source_workspace` — B29) → ESBM25(multi_match `text`+`title^2`, `icu_text` analyzer, B26, same optional filter) → DocumentJoiner (C6 `CHAT_JOIN_MODE`: rrf\|concatenate\|vector_only\|bm25_only) → SourceHydrator(JOIN documents, truncate `excerpt` to 512 chars) → LLMClient.{chat\|stream}` (retrievers sequential in P1; parallel in P2 — see §3.4 P-A) | Embedder 10 s (single query) · ES query 10 s · LLM 120 s · per-batch ingest embed 30 s (asymmetric — query is one string, ingest is up to 32) | `tests/integration/test_chat_endpoint.py` (T3.9), `tests/integration/test_chat_stream_endpoint.py` (T3.11), `tests/integration/test_chat_pipeline_retrieval.py` (T3.5) | **P1** sync |
 
 ### 4.4 Plugin Catalog
 
 | Plugin | `name` | `required` | `queue` | `extract()` | `delete()` | Phase |
 |---|---|:---:|---|---|---|:---:|
-| `VectorExtractor`    | `vector`     | ✓ | `extract.vector` | embed `f"{source_title}\n\n{chunk_text}"` (B15) → ES bulk index by `chunk_id`, denormalising `title` onto each row | ES bulk `_op_type=delete` | **P1** |
+| `VectorExtractor`    | `vector`     | ✓ | `extract.vector` | embed `f"{source_title}\n\n{chunk_text}"` (B15) → ES bulk index by `chunk_id`, denormalising `title`, `source_app`, `source_workspace` onto each row (B15, B29) | ES bulk `_op_type=delete` | **P1** |
 | `StubGraphExtractor` | `graph_stub` | — | `extract.graph`  | no-op | no-op | **P1** |
 | `GraphExtractor`     | `graph`      | — | `extract.graph`  | LightRAG → Graph DB upsert | entity GC + ref_count | P3 |
 
@@ -622,11 +632,13 @@ No physical FK. ORM-level cascade only.
   },
   "mappings": {
     "properties": {
-      "chunk_id":    { "type": "keyword" },
-      "document_id": { "type": "keyword" },
-      "lang":        { "type": "keyword" },
-      "title":       { "type": "text", "analyzer": "icu_text" },
-      "text":        { "type": "text", "analyzer": "icu_text" },
+      "chunk_id":         { "type": "keyword" },
+      "document_id":      { "type": "keyword" },
+      "source_app":       { "type": "keyword" },
+      "source_workspace": { "type": "keyword" },
+      "lang":             { "type": "keyword" },
+      "title":            { "type": "text", "analyzer": "icu_text" },
+      "text":             { "type": "text", "analyzer": "icu_text" },
       "embedding": {
         "type": "dense_vector",
         "dims": 1024,
@@ -648,6 +660,8 @@ No physical FK. ORM-level cascade only.
 **Title surface (B15):** `title` is denormalised onto every chunk row from `documents.source_title`. Two retrieval surfaces are derived from it:
 1. **Lexical** — BM25 retriever runs `multi_match` on `["text", "title^2"]` (title boosted 2× over body) using the `icu_text` analyzer (B26).
 2. **Semantic** — `embedding` is computed as `embed(f"{source_title}\n\n{chunk_text}")` at ingest time, so every chunk vector already carries title semantics. No separate `title_embedding` field is stored.
+
+**Filter surface (B29):** `source_app` and `source_workspace` are denormalised from `documents` onto every chunk row as `keyword` fields. Chat (§3.4.1) accepts optional `source_app` and `source_workspace` filter params; when present they apply as ES `term` filters in **both** retrievers' `filter` clause (kNN `filter` and BM25 `bool.filter`). Filtering happens **before** scoring narrows the candidate pool, so top-K returned reflects the requested scope without over-fetch. These are **not auth fields** (B14): they are content-scope metadata, like `lang`. Permission gating remains a separate post-retrieval layer (§3.5).
 
 ### 5.3 ID / DateTime
 
@@ -717,4 +731,5 @@ Two artefacts, **both versioned in git**, both consulted at boot:
 | **B25** | 2026-05-04 | Storage | `documents.storage_uri` stored full URI; bucket name is constant config | **Rename column to `object_key VARCHAR(256) NOT NULL`** (key only, format per B10). Bucket is read from `MINIO_BUCKET` env var (default `ragent`); reconstruct full URI on demand. Saves ~20 bytes/row, decouples row from bucket-rename ops, and makes a future bucket migration a config flip. | Keep full URI (rigid); store bucket per-row (rotation hell); URL-encode in object key (key+bucket separation already does the job). | §5.1 / T2.5 / T2.6 |
 | **B26** | 2026-05-04 | ES | (a) BM25 analyzer; (b) vector index type; (c) where the index definition lives | **(a) `icu_text` custom analyzer** (`icu_tokenizer` + `icu_folding` + `lowercase`) on `text` and `title` — required for CJK tokenisation; `standard` analyzer collapses CJK to per-character or mega-tokens, breaking BM25. `analysis-icu` plugin is a hard ES dependency (verified at `/readyz`). **(b) `bbq_hnsw`** (Better Binary Quantization HNSW, ES 8.16+) on `embedding` — ~32× memory reduction at negligible recall cost; falls back to standard HNSW with `event=es.bbq_unsupported` log if cluster rejects. **(c) Source of truth = `resources/es/chunks_v1.json`** loaded by boot auto-init (§6.1) when the index does not exist; spec §5.2 mirrors the file in prose; CI drift test enforces equality. | Default `standard` analyzer (CJK becomes useless for BM25); `nori`/`smartcn` (per-language plugin sprawl, doesn't cover all CJK consistently); raw HNSW (4× more memory at our 1024 dims); inline mapping in Python code (every change is a code commit, no resource-file diffability). | §5.2 / §6.1 / T0.8d / T0.9 |
 | **B27** | 2026-05-04 | Infra | Redis topology — single-instance vs Sentinel HA | **Per-instance toggle via `REDIS_MODE` env (`standalone` \| `sentinel`)**. Both broker and rate-limiter share the mode; standalone reads `REDIS_BROKER_URL` / `REDIS_RATELIMIT_URL`; sentinel reads `REDIS_SENTINEL_HOSTS` (shared quorum) + `REDIS_*_SENTINEL_MASTER` (per-instance master name). Connection layer dispatches on mode (`redis-py-sentinel` vs `redis-py`). Default `standalone` for dev/CI; prod sets `sentinel`. | Hardcode Sentinel (broken local dev); hardcode standalone (no prod HA story); per-instance independent mode (config matrix doubles, no real-world need). | §3.6 / §4.6 / T0.9 |
+| **B29** | 2026-05-04 | Chat API | Optional retrieval filter by `source_app` / `source_workspace` | **Filter in ES via denormalised keyword fields.** `chunks_v1` mapping gains two `keyword` fields (`source_app`, `source_workspace`) populated by `VectorExtractor` from `documents` at ingest. Chat request schema (§3.4.1) accepts both as optional fields; when present they apply as ES `term` filter in **both** retrievers' `filter` clause (kNN `filter`, BM25 `bool.filter`). AND semantics when both supplied. Empty string ⇒ 422 `CHAT_FILTER_INVALID`. These are scope metadata, not auth fields (B14 distinction preserved); permission gating remains a separate post-retrieval layer (§3.5). | Post-retrieval filter via document JOIN in SourceHydrator (forces over-fetch with unbounded `K' = K × overfetch_factor` — narrow workspaces silently truncate); filter on `documents` only, retrieve all chunks then drop (defeats kNN top-K semantics); add a third retriever per filter combination (mapping bloat, no win). Pre-existing `chunks_v1` data does not exist (still pre-implementation), so single-version mapping update is safe; would otherwise require `chunks_v2` + reindex. | §3.4 / §3.4.1 / §4.3 / §4.4 / §5.2 / `resources/es/chunks_v1.json` / T1.9 / T1.12 / T3.5 |
 | **B28** | 2026-05-04 | Config | Env-var inventory was incomplete — missing datastore connections (MariaDB/ES/MinIO host/creds), J1 client credentials, HTTP bind, OTEL exporter, retry/timeout policy knobs, upload limits, and log level; `RERANK_API_URL` was misspelled `REREANK_API_URL` | **Reorganise §4.6 into 8 subsections** (bootstrap, datastore, redis, third-party clients, worker/reconciler, pipeline/chat, per-call timeouts, observability). **Add 26 new vars** covering every previously implicit literal: `MARIADB_DSN`, `ES_HOSTS`/`ES_USERNAME`/`ES_PASSWORD`/`ES_API_KEY`/`ES_VERIFY_CERTS`, `MINIO_ENDPOINT`/`MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY`/`MINIO_SECURE`, `RAGENT_HOST`/`RAGENT_PORT`/`LOG_LEVEL`, `AI_API_CLIENT_ID`/`AI_API_CLIENT_SECRET`, `WORKER_MAX_ATTEMPTS`, `RECONCILER_PENDING_STALE_SECONDS`/`RECONCILER_UPLOADED_STALE_SECONDS`/`RECONCILER_DELETING_STALE_SECONDS`, `INGEST_MAX_FILE_SIZE_BYTES`, `INGEST_LIST_MAX_LIMIT`, the seven per-call timeouts (`EMBEDDER_INGEST/QUERY`, `ES_BULK/QUERY`, `MINIO_GET/PUT`, `LLM`, `PLUGIN_FAN_OUT`, `READYZ_PROBE`), plus four `OTEL_*` vars. **Fix typo** `REREANK_API_URL` → `RERANK_API_URL`. **Rename** ambiguous `RECONCILER_STALE_AFTER_SECONDS` to per-state `RECONCILER_PENDING_STALE_SECONDS` and add UPLOADED/DELETING siblings. **Change `MINIO_BUCKET` default** from `ragent-staging` → `ragent` (B10/B25 prose updated). Also adds an inventory rule: any literal value read by code that is not represented in §4.6 is a spec drift bug. | Leave datastore connections as "implicit per-environment overrides" (every operator reinvents the wheel; bootstrap module has no canonical names to read); expose only DSN-style strings for ES/MinIO too (forces credential concatenation in URLs, harder to rotate); keep timeouts as code constants only (violates J21 rule "every call site lists per-call timeout AND aggregate ceiling"); ship without J1 creds (TokenManager has a URL but no way to authenticate — boot succeeds but every embedder/LLM call fails on first request). | §1 / §3.1 / §3.6 / §3.7 / §4.5 / §4.6 / §6.1 / T0.8 |
