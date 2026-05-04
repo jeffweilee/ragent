@@ -48,6 +48,8 @@
 | T1.8 | Red | `tests/unit/test_plugin_registry_delete.py` — `fan_out_delete` calls every registered plugin; per-plugin timeout 60 s; idempotent on already-deleted; runs with no DB tx open (R10, P-E). | T1.7 | [ ] | QA | W3 |
 | T1.9 | Red | `tests/unit/test_vector_extractor.py` — Protocol conformance, embedder/ES bulk once, idempotent rerun, delete clears chunks. | T1.2 | [x] | QA | W3 |
 | T1.10 | Green | `src/ragent/plugins/vector.py`. | T1.9 | [x] | Dev | W3 |
+| T1.11 | Red | `tests/unit/test_vector_extractor_title.py` — **B15 amendment:** mock embedder captures the input string per chunk and asserts it equals `f"{source_title}\n\n{chunk_text}"`; ES bulk body for each chunk carries `title` field equal to `documents.source_title` (denormalised). | T1.10, T2.2 | [ ] | QA | W3 |
+| T1.12 | Green | Amend `src/ragent/plugins/vector.py::extract` to read `source_title` from the `documents` row (passed by pipeline or fetched), prepend to chunk text before embedding, and write `title` into the ES bulk doc. | T1.11 | [ ] | Dev | W3 |
 
 ### Track T2 — Ingest CRUD (Repositories + Storage + Service + Router)
 
@@ -84,7 +86,7 @@
 | T3.2h | Green | Worker uses `acquire_nowait`; on `LockNotAvailable` exception, re-kiq with exponential backoff (cap 30 s). | T3.2g | [ ] | Dev | W3 |
 | T3.3 | Red | `tests/unit/test_chat_request_schema.py` — request validation (B12, S6c): `messages` required (422 if missing/empty); defaults applied when omitted (`provider="openai"`, `model="gptoss-120b"`, `temperature=0.7`, `maxTokens=4096`); auto-prepend `{"role":"system","content":"You are a helpful assistant"}` if no system entry (S6b, observable via mock LLM capture). | T4.6 | [ ] | QA | W4 |
 | T3.4 | Green | `src/ragent/schemas/chat.py` (Pydantic) — `ChatRequest` with defaults; `Message`; `normalize_messages()` helper that prepends default system. | T3.3 | [ ] | Dev | W4 |
-| T3.5 | Red | `tests/integration/test_chat_pipeline_retrieval.py` — QueryEmbedder → {ESVector + ESBM25 sequential} → DocumentJoiner(RRF) → SourceHydrator joins `documents` for `(source_app, source_id, source_title)` (B11) → returns hydrated chunks. Empty index → hydrated list is empty. | T2.4, T4.2, T4.4, T2.2 | [ ] | QA | W4 |
+| T3.5 | Red | `tests/integration/test_chat_pipeline_retrieval.py` — QueryEmbedder → {ESVector kNN on `embedding` + ESBM25 `multi_match(["text","title^2"])` sequential, B15} → DocumentJoiner(RRF) → SourceHydrator joins `documents` for `(source_app, source_id, source_title)` (B11) → returns hydrated chunks. Title-only lexical query (terms appear in title, not body) recalls the doc via BM25 title^2; semantic title query (synonym of title, no token overlap) recalls via the title-aware `embedding` (B15). Empty index → hydrated list is empty. | T2.4, T4.2, T4.4, T2.2, T1.12 | [ ] | QA | W4 |
 | T3.6 | Green | `src/ragent/pipelines/chat.py::build_retrieval_pipeline` + `SourceHydrator` component (calls `DocumentRepository.get_titles_by_document_ids`). | T3.5 | [ ] | Dev | W4 |
 | T3.7 | Red | `tests/unit/test_llm_client_chat.py` — `LLMClient.chat(messages,...)` non-streaming returns `{content, usage:{promptTokens,completionTokens,totalTokens}}`; honours `model`, `temperature`, `maxTokens`; 120 s timeout. | T4.6 | [ ] | QA | W4 |
 | T3.8 | Green | Add `LLMClient.chat()` non-streaming method to `src/ragent/clients/llm.py`; existing `stream()` already covered by T4.5/T4.6. Streaming path requests `stream_options.include_usage=true` so terminal `done` carries usage. | T3.7 | [ ] | Dev | W4 |
