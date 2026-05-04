@@ -46,6 +46,8 @@
 
 **Storage model:** MinIO is **transient staging only** — needed because Router (API) and Worker may run on different hosts. The original file is deleted from MinIO after the pipeline reaches a terminal state (`READY` or `FAILED`). After ingest, only chunks (ES) + metadata (MariaDB) remain.
 
+**Object key convention (B10):** `{source_app}_{source_id}_{document_id}` (single bucket `ragent-staging`). `source_app` and `source_id` are sanitized to `[A-Za-z0-9._-]` (other chars percent-encoded) to satisfy MinIO key constraints. The `document_id` suffix guarantees uniqueness even when the same `(source_app, source_id)` is re-POSTed before supersede converges.
+
 **Pipeline retry idempotency:** Every pipeline run begins with `ChunkRepository.delete_by_document_id(document_id)` and `VectorExtractor.delete(document_id)` (idempotent ES bulk-delete) so a Reconciler retry of a partially-written attempt does not produce duplicate chunks. `chunk_id` may therefore be a fresh `new_id()` per run; identity is by `(document_id, ord)`.
 
 **Supersede model (smart upsert):** Every `POST /ingest` carries a mandatory `(source_id, source_app)` pair (e.g. `("DOC-123", "confluence")`) and an optional `source_workspace`. The pair is the **logical identity** of a document — at steady state at most one `READY` row may exist per `(source_id, source_app)`. A new POST always creates a fresh `document_id`; when it reaches `READY`, the system enqueues a **supersede** task that selects every `READY` row sharing the same `(source_id, source_app)`, keeps the one with `MAX(created_at)`, and cascade-deletes the rest. This guarantees "latest write wins" even when documents finish out-of-order, gives zero-downtime replacement (old chunks remain queryable until the new ones are indexed), and preserves the old version if the new ingest fails. Supersede is enqueued **only** on the `PENDING → READY` transition; FAILED or mid-flight DELETE never triggers it. Uniqueness is **eventual**, enforced by supersede — not by a DB UNIQUE constraint, since transient duplicates are expected during ingestion. **Mutation = re-POST with the same `(source_id, source_app)`; there is no PUT/PATCH endpoint.**
@@ -95,7 +97,7 @@
 ### 3.2 Indexing Pipeline
 
 ```
-FileTypeRouter → Converter → DocumentCleaner → LanguageRouter → Chunker → EmbeddingClient → ChunkRepository → PluginRegistry.fan_out()
+FileTypeRouter → Converter → DocumentCleaner → LanguageRouter → {cjk_splitter | en_splitter} → EmbeddingClient → ChunkRepository → PluginRegistry.fan_out()
 ```
 
 ```mermaid
@@ -103,8 +105,8 @@ flowchart LR
   A[FileTypeRouter] --> B["Converter\n(.txt/.md/...)"]
   B --> C[DocumentCleaner]
   C --> D[LanguageRouter]
-  D --> E1[CN Chunker]
-  D --> E2[EN Chunker]
+  D --> E1["cjk_splitter\n(sentence)"]
+  D --> E2["en_splitter\n(sentence, default)"]
   E1 & E2 --> F["EmbeddingClient\nbge-m3"]
   F --> G["ChunkRepository\nbulk_insert"]
   G --> H["PluginRegistry\nfan_out()"]
@@ -158,6 +160,8 @@ QueryEmbedder → {ESVectorRetriever ∥ ESBM25Retriever} → DocumentJoiner(RRF
 
 **Response:** SSE stream of `delta` events, closing with one `done { answer, sources[] }`.
 
+**Error mid-stream (B6):** If the LLM or any retriever fails *after* the first `delta` has been written, the server emits a single default-event `data:` line with payload `{"type":"error","error_code":"<CODE>","message":"<text>"}` and closes the connection. **No `event: error` named-event is used** — keeps client parsing uniform (every line is a JSON `data:` payload). Pre-stream failures (before the first `delta`) return a normal RFC 9457 problem+json response with the appropriate HTTP status.
+
 **BDD:**
 - **S6** — ≥ 1 `delta` + exactly one `done` with sources.
 - **S8** — `POST /mcp/tools/rag` returns 501 in P1 (handler not yet wired).
@@ -182,7 +186,10 @@ QueryEmbedder → {ESVectorRetriever ∥ ESBM25Retriever} → DocumentJoiner(RRF
 
 ### 3.6 Resilience
 
-**Reconciler (cron 5 min, `SELECT … FOR UPDATE SKIP LOCKED`):**
+**Reconciler (Kubernetes `CronJob`, schedule `*/5 * * * *`, `SELECT … FOR UPDATE SKIP LOCKED`) — B9:**
+
+> Implementation = a one-shot Python entrypoint (`python -m ragent.reconciler`) packaged in the same image, scheduled by **K8s CronJob** with `concurrencyPolicy: Forbid` and `successfulJobsHistoryLimit: 3`. Not a TaskIQ scheduled task (decouples sweeper liveness from broker health — Reconciler is the recovery surface for broker outage itself, see R1).
+
 - `UPLOADED > 5 min` → re-kiq `ingest.pipeline` (R1 — covers TaskIQ message loss and broker outage at POST time).
 - `PENDING > 5 min, attempt ≤ 5` → re-kiq `ingest.pipeline` (idempotent key: `document_id + attempt`).
 - `PENDING > 5 min, attempt > 5` → `FAILED` (cleans chunks/ES per §3.1 R5 path) + structured-log `event=ingest.failed`.
@@ -220,8 +227,32 @@ QueryEmbedder → {ESVectorRetriever ∥ ESBM25Retriever} → DocumentJoiner(RRF
 | DELETE | `/ingest/{id}`          | `X-User-Id` | — | `204` idempotent |
 | POST   | `/chat`                 | `X-User-Id` | `{ query: str }` | `text/event-stream` (`delta`*, `done`) |
 | POST   | `/mcp/tools/rag`        | `X-User-Id` | `{ query: str }` | **501** (P1) |
+| GET    | `/livez`                | none        | — | `200 {"status":"ok"}` — process up; no dependency probes |
+| GET    | `/readyz`               | none        | — | `200` if MariaDB + ES + Redis + MinIO probes all OK; else `503 application/problem+json` listing failed deps |
+| GET    | `/metrics`              | none        | — | `200 text/plain; version=0.0.4` — Prometheus exposition (counters/histograms in §3.7) |
 
 P2 auth: JWT verify + owner-based ACL filter on ES queries.
+
+### 4.1.1 Error Response Schema (B5)
+
+All non-2xx responses use **RFC 9457 Problem Details** (`Content-Type: application/problem+json`), extended with a business-semantic `error_code`:
+
+```json
+{
+  "type":        "https://ragent.dev/errors/ingest-mime-unsupported",
+  "title":       "Unsupported media type",
+  "status":      415,
+  "detail":      "MIME 'image/png' is not in the P1 allow-list",
+  "instance":    "/ingest",
+  "error_code":  "INGEST_MIME_UNSUPPORTED",
+  "trace_id":    "01J9..."
+}
+```
+
+- `error_code` is a stable `SCREAMING_SNAKE_CASE` string clients may switch on; HTTP status is for transport semantics only.
+- `trace_id` echoes the OTEL trace id when present.
+- 422 responses additionally include `errors: [{field, message}, …]` for field-level validation (e.g. missing `source_id`).
+- **`/livez`, `/readyz`, `/metrics` are the only endpoints whose 2xx body is NOT problem+json**; their non-2xx still uses problem+json.
 
 ### 4.2 Supported Formats
 
@@ -230,7 +261,7 @@ P2 auth: JWT verify + owner-based ACL filter on ES queries.
 | `.txt`  | `TextFileToDocument`     | UTF-8 text | **P1** |
 | `.md`   | `MarkdownToDocument`     | front-matter stripped | **P1** |
 | `.html` | `HTMLToDocument`         | visible text, script/style stripped | **P1** |
-| `.csv`  | `CSVToDocument`          | row-as-document | **P1** |
+| `.csv`  | `CSVToDocument`          | row-as-document; **no row cap** — bounded only by the global 50 MB file limit (B2) | **P1** |
 | `.pdf`  | `PyPDFToDocument`        | text-extractable only | P2 |
 | `.docx` | `DOCXToDocument`         | body + tables | P2 |
 | `.pptx` | `PPTXToDocument`         | slide text + notes | P2 |
@@ -242,7 +273,7 @@ P2 auth: JWT verify + owner-based ACL filter on ES queries.
 
 | Pipeline | Components | Timeouts | Test Path | Phase |
 |---|---|---|---|:---:|
-| **Ingest** | `delete_by_document_id (idempotency) → FileTypeRouter → Converter → DocumentCleaner → LanguageRouter → {CN\|EN Chunker} → EmbeddingClient(bge-m3, batch=32) → ChunkRepository.bulk_insert → PluginRegistry.fan_out (per-plugin 60 s)` | Embedder 30 s/batch · ES bulk 60 s · MinIO get 30 s · plugin 60 s | `tests/integration/test_ingest_pipeline.py` | **P1** sync |
+| **Ingest** | `delete_by_document_id (idempotency) → FileTypeRouter → Converter → DocumentCleaner → LanguageRouter → {cjk_splitter \| en_splitter} (sentence-level, B1) → EmbeddingClient(bge-m3, batch=32) → ChunkRepository.bulk_insert → PluginRegistry.fan_out (per-plugin 60 s)` | Embedder 30 s/batch · ES bulk 60 s · MinIO get 30 s · plugin 60 s | `tests/integration/test_ingest_pipeline.py` | **P1** sync |
 | **Chat** | `QueryEmbedder → ESVector → ESBM25 → DocumentJoiner(RRF) → LLMClient.stream` (sequential in P1; parallel in P2 — see §3.4 P-A) | Embedder 10 s · ES query 10 s · LLM 120 s | `tests/integration/test_chat_pipeline.py` | **P1** sync |
 
 ### 4.4 Plugin Catalog
@@ -343,3 +374,37 @@ No physical FK. ORM-level cascade only.
 - **DB:** no physical FK; index every `WHERE / JOIN / ORDER BY` field.
 - **Quality gate:** `uv run ruff format . && uv run ruff check . --fix && uv run pytest` before every commit.
 - **TDD commits:** `[STRUCTURAL]` or `[BEHAVIORAL]` prefix; never mixed.
+
+### 6.1 Schema & Migration (B3)
+
+Two artefacts, **both versioned in git**, both consulted at boot:
+
+| Artefact | Path | Purpose | Owner |
+|---|---|---|---|
+| **Consolidated snapshot** | `migrations/schema.sql` | Single-file DDL representing the current target schema. Updated **in lockstep with every incremental migration**. Used by fresh dev/CI/testcontainers bring-up (`mariadb < schema.sql` → instant ready). | Dev |
+| **Incremental migrations** | `migrations/NNN_<slug>.sql` (e.g. `001_initial.sql`, `002_add_workspace.sql`) | Forward-only ALTER scripts applied via Alembic (`alembic upgrade head`). Production / staging path. | Dev |
+
+**Boot-time auto-init (idempotent):**
+- On startup, the bootstrap module runs `CREATE TABLE IF NOT EXISTS … / CREATE INDEX IF NOT EXISTS …` against MariaDB derived from `schema.sql`, and `PUT /<index>` for ES if the index does not exist (with the `chunks_v1` mapping from §5.2). Existing tables/indexes are left untouched.
+- Auto-init is for dev/test bring-up convenience only; production migrations MUST go through Alembic. Boot-init refuses to run any `ALTER` — schema drift between `schema.sql` and the live DB is logged as `event=schema.drift` and surfaces in `/readyz` as a degraded state, not an automatic mutation.
+
+**Invariant:** `schema.sql` ≡ replaying `001 → NNN`. CI enforces this with `tests/integration/test_schema_drift.py` (apply both paths to two scratch DBs, `mysqldump` both, diff must be empty).
+
+---
+
+## 7. Decision Log
+
+> Frozen 2026-05-04. Each row records a once-blocking design choice with the alternatives considered. Changes require a new dated row (append-only, never edit in place).
+
+| ID | Date | Domain | Question | Decision | Alternatives rejected | Affects |
+|---|---|---|---|---|---|---|
+| **B1** | 2026-05-04 | NLP | Chinese chunking strategy in `LanguageRouter` | **Sentence-level split** with `en_splitter` (default) and `cjk_splitter` (CJK branch). Both emit one chunk per sentence; downstream embedder batches them (32/call). | jieba word-segmentation (heavyweight, P3 graph concern); omit CN in P1 (kills demo). | §3.2 / §4.3 / T3.1 |
+| **B2** | 2026-05-04 | Format | CSV row scaling (10⁵-row file → 10⁵ chunks?) | **No row cap.** Inherit the global 50 MB file-size limit (already in §4.2). Operator concern, not pipeline concern. | Per-file row cap (arbitrary); group N rows/chunk (loses row identity); omit `.csv` in P1. | §4.2 / T3.1 |
+| **B3** | 2026-05-04 | DB | Migration tool | **Both:** `migrations/schema.sql` (consolidated snapshot, kept current) + `migrations/NNN_*.sql` (Alembic-applied incrementals). Boot performs idempotent `CREATE … IF NOT EXISTS` for MariaDB tables/indexes and ES indexes; never `ALTER`. | Alembic-only (no quick CI bring-up); raw-only (no audit trail of changes); sqlx-style (Python toolchain mismatch). | §6.1 / T0.8 |
+| **B4** | 2026-05-04 | Ops | Health/metrics endpoints | **App layer:** `/livez`, `/readyz`, `/metrics`. K8s probes use `/livez` for liveness and `/readyz` for readiness; Prometheus scrapes `/metrics`. **Infra layer:** K8s pod-level liveness only (no in-app dep probes for liveness — would cause cascading restarts on transient ES blips). | Single `/health` endpoint (conflates liveness vs readiness); separate sidecar exporter (extra deploy unit). | §4.1 / T7.1 / T7.7 |
+| **B5** | 2026-05-04 | API | REST error response shape | **RFC 9457 Problem Details** (`application/problem+json`) with extension `error_code` (stable `SCREAMING_SNAKE_CASE` business identifier). 422 also carries `errors[]` for field validation. | Bare `{error, message}` (no standard, no machine-readable code); RFC 7807 (superseded by 9457). | §4.1.1 / T2.13 |
+| **B6** | 2026-05-04 | API/SSE | Mid-stream error contract on `/chat` | **`data:` line with payload `{type:"error", error_code, message}`**, then close. No `event: error` named-event — keeps client parser uniform (every line is JSON). Pre-stream errors use normal RFC 9457 response. | `event: error` named SSE event (forces dual parser path); silently truncate (loses error_code). | §3.4 / T3.3 |
+| **B7** | 2026-05-04 | API | `GET /ingest?after=&limit=` semantics | **Cursor pagination by `document_id` ASC** (UUIDv7 → time-ordered). `after` = last `document_id` of previous page; server returns `next_cursor` = last id of current page. P2 adds `WHERE owner_user_id=?` predicate using `idx_owner_document`. | OFFSET-based (linear scan); page-number based (incompatible with cursor stability); keyset on `created_at` (collisions). | §4.1 / T2.11 |
+| **B8** | 2026-05-04 | Test infra | Integration backends | **`testcontainers-python`** spins up MariaDB + ES + Redis + MinIO per integration session (module-scoped fixture; reused across tests). | docker-compose (manual, dev-only); in-process fakes (drift from prod behaviour). | T0.9 / all `tests/integration/` |
+| **B9** | 2026-05-04 | Resilience | Reconciler scheduler | **Kubernetes `CronJob`** `*/5 * * * *` running `python -m ragent.reconciler` with `concurrencyPolicy: Forbid`. | TaskIQ scheduled task (broker outage = sweeper outage; sweeper is the recovery surface for broker outage); APScheduler (in-process, dies with worker pod). | §3.6 / T5.2 |
+| **B10** | 2026-05-04 | Storage | MinIO object key format | **`{source_app}_{source_id}_{document_id}`** in single bucket `ragent-staging`. `source_app` and `source_id` sanitised to `[A-Za-z0-9._-]`. The `document_id` suffix preserves uniqueness during transient duplicates pre-supersede. | `{document_id}` only (loses source provenance for forensic / orphan-sweep tooling); `{owner}/{document_id}` (P1 OPEN has no owner); per-source bucket (bucket sprawl). | §3.1 / T2.5 / T2.6 |
