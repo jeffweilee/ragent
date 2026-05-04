@@ -72,5 +72,5 @@
 | **Architect** | Yes | DDD Bounded Context, SDD specifications, and architectural design (High Performance, Idempotency, Atomicity). | |
 | **QA** | Yes | TDD Red-Green-Refactor, Integration Test Matrix, and test acceptance. | |
 | **SRE** | Yes | High Availability (HA), Zero-Downtime deployment, and monitoring/alerting. | |
-| **Reviewer** | Yes | Strict auditing of delivered code; ensuring clean, concise, high-performance, and high-quality code. | |
+| **Reviewer** | Yes | Strict auditing of delivered code; ensuring clean, concise, high-performance, high-quality, readible code which match spec and plan with adequate test. | |
 | **Fullstack Senior Developer** | Yes | Proficiency in the project tech stack; honest delivery of high-quality code with completed test, lint, and format before submission. | |
