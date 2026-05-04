@@ -132,6 +132,16 @@ def test_es_request_reraises_non_404_http_error() -> None:
         _es_request("http://es:9200/index")
 
 
+def test_es_request_returns_empty_dict_for_head_with_no_body() -> None:
+    mock_resp = MagicMock()
+    mock_resp.read.return_value = b""
+    mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    with patch("ragent.bootstrap.init_schema.urlopen", return_value=mock_resp):
+        result = _es_request("http://es:9200/chunks_v1", method="HEAD")
+    assert result == {}
+
+
 def test_check_es_plugins_returns_all_required_when_nodes_unreachable() -> None:
     with patch("ragent.bootstrap.init_schema._es_request", return_value=None):
         missing = check_es_plugins("http://es:9200")

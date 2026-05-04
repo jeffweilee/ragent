@@ -33,7 +33,8 @@ def _es_request(url: str, method: str = "GET", body: dict | None = None) -> dict
     req = Request(url, data=data, method=method, headers=headers)
     try:
         with urlopen(req, timeout=30) as resp:
-            return json.loads(resp.read())
+            raw = resp.read()
+            return json.loads(raw) if raw else {}
     except HTTPError as exc:
         if exc.code == 404:
             return None

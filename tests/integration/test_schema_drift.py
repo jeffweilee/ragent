@@ -15,18 +15,23 @@ def _mysqldump(dsn: str) -> str:
     from urllib.parse import urlparse
 
     parsed = urlparse(dsn.replace("mysql+pymysql://", "mysql://"))
+    host = parsed.hostname or "127.0.0.1"
+    db = parsed.path.lstrip("/")
     result = subprocess.run(
         [
             "mysqldump",
             "--no-data",
             "--skip-comments",
+            "--column-statistics=0",  # MySQL 8.0 client compat with MariaDB 10.x
+            "--protocol=TCP",  # force TCP, avoid Unix socket when host=localhost
+            f"--ignore-table={db}.alembic_version",  # alembic tracking table not part of app schema
             "-h",
-            parsed.hostname,
+            host,
             "-P",
             str(parsed.port or 3306),
             f"-u{parsed.username}",
             f"-p{parsed.password}",
-            parsed.path.lstrip("/"),
+            db,
         ],
         capture_output=True,
         text=True,

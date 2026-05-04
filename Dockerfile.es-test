@@ -1,7 +1,11 @@
 FROM docker.elastic.co/elasticsearch/elasticsearch:9.2.3
 
-# Install analysis-icu plugin — required for icu_text analyzer on chunks_v1 index.
-RUN bin/elasticsearch-plugin install --batch analysis-icu
+# Install analysis-icu plugin — download via curl to bypass Java SSL trust issues.
+RUN curl --insecure -L \
+    https://artifacts.elastic.co/downloads/elasticsearch-plugins/analysis-icu/analysis-icu-9.2.3.zip \
+    -o /tmp/analysis-icu.zip \
+    && bin/elasticsearch-plugin install --batch file:///tmp/analysis-icu.zip \
+    && rm /tmp/analysis-icu.zip
 
 ENV discovery.type=single-node
 ENV xpack.security.enabled=false
