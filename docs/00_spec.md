@@ -11,8 +11,8 @@
 - Pluggable extractor architecture: graph reasoning (P3) without pipeline rewrite.
 
 ### ⚠️ P1 OPEN Mode
-- Auth **DISABLED** in P1. `X-User-Id` header for tracing only. JWT restored in P2.
-- **OpenFGA is out-of-scope across all phases.** ACL (if needed in P2) handled via owner-based filter.
+- Authentication **DISABLED** in P1. `X-User-Id` header trusted; recorded as `documents.create_user` (audit only, not authorization). JWT restored in a future phase.
+- Permission gating **DISABLED** in P1. The Permission Layer (§3.5) ships in a future phase, backed by OpenFGA, and stays out of the retrieval/ES path.
 - Startup guard refuses to start unless `RAGENT_AUTH_DISABLED=true AND RAGENT_ENV=dev`.
 
 ---
@@ -160,7 +160,7 @@ QueryEmbedder → {ESVectorRetriever ∥ ESBM25Retriever} → DocumentJoiner(RRF
 
 Both share the same request schema and the same retrieval pipeline; only the LLM call differs (`LLMClient.chat` vs `LLMClient.stream`).
 
-**P1 OPEN:** ACL filter is a no-op; `sources[]` unrestricted. P2: owner-based `terms(owner_user_id)` pre-filter on ES queries.
+**P1 OPEN:** no permission gating; `sources[]` unrestricted. Future phase introduces a **Permission Layer post-filter** on retrieved chunks (§3.5) — ES queries themselves remain permission-blind in every phase.
 
 **Performance note (P-A):** Haystack sync Pipeline in P1 runs `ESVectorRetriever` and `ESBM25Retriever` **sequentially**, so chat latency = `vector + BM25 + LLM` (additive). True parallelism requires AsyncPipeline (P2) or wrapping the two retrievers in a custom `ThreadPoolExecutor` SuperComponent. P1 ships sequential and accepts the latency hit; P2 makes them concurrent.
 
@@ -232,19 +232,48 @@ data: {"type":"done", ...response schema as 3.4.2…}\n\n
 
 ---
 
-### 3.5 Auth & Permission — DISABLED IN P1 → P2
+### 3.5 Authentication & Permission
 
-- JWT layer OFF in P1. `X-User-Id: <string>` validated non-empty.
-- **OpenFGA is out-of-scope across all phases.** No external authorization service.
-- Audit logs for destructive ops emitted at INFO with `auth_mode=open` in P1.
-- **TokenManager (J1→J2) is active in P1** — used by Embedding/LLM/Rerank clients only.
+Two distinct concerns, kept architecturally separate from retrieval:
 
-**P2 contract:**
-- JWT verify → subject claim → `user_id`.
-- ACL: owner-based filter at the ES layer (`terms(owner_user_id ∈ [user_id])`) — single SQL/ES predicate, no out-of-band service.
-- Sharing model (group/role) deferred to a later phase if needed.
+| Concern | Question answered | Mechanism | P1 | Future phase |
+|---|---|---|---|---|
+| **Authentication** | Who is the caller? | JWT verify → `user_id` from subject claim | OFF — `X-User-Id` header trusted, validated non-empty | JWT validated via FastAPI dependency |
+| **Permission** | Can this caller see this document? | Permission Layer service that calls **OpenFGA** | OPEN — no checks, all docs visible | `PermissionClient.batch_check(user_id, document_ids)` returns the allowed subset |
 
-**BDD (P2-gated):** S9 (token refresh at `expiresAt − 5 min`).
+**Design principle:** Elasticsearch (`chunks_v1`) carries **no auth fields** in any phase. Retrieval is permission-blind; the Permission Layer post-filters retrieved chunks by their `document_id`. This keeps ES schema stable across phases, avoids the "owner-filter on every chunk" duplication, and lets the permission model evolve (roles, sharing, groups) without re-indexing.
+
+**Permission Layer interface (future phase):**
+
+```python
+class PermissionClient(Protocol):
+    def batch_check(self, user_id: str, document_ids: list[str], relation: str = "viewer") -> set[str]: ...
+    def list_objects(self, user_id: str, relation: str = "viewer") -> list[str] | None: ...  # None = "too many, fall back to batch_check"
+```
+
+`PermissionClient` is the single integration point for OpenFGA. It is the only module that imports the OpenFGA SDK; everything else depends on the Protocol.
+
+**Chat retrieval gating (future phase):**
+
+```
+ES retrieval (top K' candidates)
+       ↓
+PermissionClient.batch_check(user_id, candidate_doc_ids)
+       ↓
+filter to allowed → SourceHydrator → LLM
+```
+
+Retrieval may over-fetch (`K' = K × overfetch_factor`) so that after permission filtering at least K results remain. Strategy and `overfetch_factor` are decided when the future phase ships; not P1 concerns.
+
+**P1 (current phase):**
+- No JWT — `X-User-Id` is a trusted string, used only for `documents.create_user` (audit) and OTEL span tags.
+- No Permission Layer — chat returns all matching chunks, ingest list endpoint is unrestricted.
+- Audit logs for destructive ops emitted at INFO with `auth_mode=open`.
+- **TokenManager (J1→J2) is active in P1** — used by Embedding/LLM/Rerank clients only (third-party API auth, unrelated to user auth).
+
+**Note on prior decision:** An earlier round declared OpenFGA out-of-scope across all phases (see `00_journal.md`). That decision is **superseded** here: OpenFGA returns as the Permission-Layer backend in a future phase, but is fully encapsulated behind `PermissionClient` and never reaches the retrieval / data layers. The original concern (no out-of-band ACL on every ES query) is preserved by routing permission checks through a post-retrieval gate, not an ES filter.
+
+**BDD (future-phase-gated):** S9 (token refresh at `expiresAt − 5 min`); permission-gating BDD specified when that phase plan is written.
 
 ---
 
@@ -296,7 +325,7 @@ data: {"type":"done", ...response schema as 3.4.2…}\n\n
 | GET    | `/readyz`               | none        | — | `200` if MariaDB + ES + Redis + MinIO probes all OK; else `503 application/problem+json` listing failed deps |
 | GET    | `/metrics`              | none        | — | `200 text/plain; version=0.0.4` — Prometheus exposition (counters/histograms in §3.7) |
 
-P2 auth: JWT verify + owner-based ACL filter on ES queries.
+Future-phase auth: JWT verify (auth) + `PermissionClient` post-retrieval gate (permission, OpenFGA-backed) — see §3.5. ES queries remain permission-blind in every phase.
 
 ### 4.1.1 Error Response Schema (B5)
 
@@ -372,7 +401,7 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 ```sql
 CREATE TABLE documents (
   document_id      CHAR(26)     PRIMARY KEY,
-  owner_user_id    VARCHAR(64)  NOT NULL,
+  create_user      VARCHAR(64)  NOT NULL,
   source_id        VARCHAR(128) NOT NULL,
   source_app       VARCHAR(64)  NOT NULL,
   source_title     VARCHAR(256) NOT NULL,
@@ -384,13 +413,16 @@ CREATE TABLE documents (
   updated_at       DATETIME(6)  NOT NULL,
   INDEX idx_status_updated (status, updated_at),
   INDEX idx_source_app_id_status_created (source_app, source_id, status, created_at),
-  INDEX idx_owner_document (owner_user_id, document_id)
+  INDEX idx_create_user_document (create_user, document_id)
 );
 -- (source_id, source_app) is the LOGICAL identity. Uniqueness is eventual,
 -- enforced by the supersede task — not a DB UNIQUE constraint, since
 -- transient duplicates are expected during ingestion.
--- idx_owner_document supports the P2 list endpoint
--- (`WHERE owner_user_id=? AND document_id > ? ORDER BY document_id`).
+-- create_user records WHO uploaded the row (audit / "my uploads" list).
+-- It is NOT an authorization field — permission checks live in a
+-- separate Permission Layer (see §3.5), not on this column.
+-- idx_create_user_document supports "list documents I uploaded"
+-- (`WHERE create_user=? AND document_id > ? ORDER BY document_id`).
 
 CREATE TABLE chunks (
   chunk_id    CHAR(26)   PRIMARY KEY,
@@ -406,7 +438,7 @@ No physical FK. ORM-level cascade only.
 
 **ID classification:**
 - **Internal IDs** (UID rule applies — `00_rule.md` §ID Generation Strategy): `document_id`, `chunk_id` — `CHAR(26)` UUIDv7→Crockford Base32, generated by `new_id()`.
-- **External IDs / display fields** (UID rule does **not** apply — supplied by clients or upstream systems): `source_id` (client-supplied stable identifier, any string ≤ 128 chars: URL hash, external doc ID, etc.), `source_app` (≤ 64 chars; namespace/source system, e.g. `confluence`, `slack`, `intranet`), `source_title` (≤ 256 chars; human-readable display title surfaced as `sources[].title` in chat), `source_workspace` (optional ≤ 64 chars; intra-app scope, e.g. team or space), `owner_user_id` (HR `employee_id`, any string ≤ 64 chars).
+- **External IDs / display fields** (UID rule does **not** apply — supplied by clients or upstream systems): `source_id` (client-supplied stable identifier, any string ≤ 128 chars: URL hash, external doc ID, etc.), `source_app` (≤ 64 chars; namespace/source system, e.g. `confluence`, `slack`, `intranet`), `source_title` (≤ 256 chars; human-readable display title surfaced as `sources[].title` in chat), `source_workspace` (optional ≤ 64 chars; intra-app scope, e.g. team or space), `create_user` (≤ 64 chars; the `X-User-Id` of the request that created the row — audit metadata only, **not an authorization field**).
 - The `task_id` returned from `POST /ingest` is the `document_id` itself; no separate task identifier exists.
 
 ### 5.2 Elasticsearch `chunks_v1`
@@ -470,10 +502,11 @@ Two artefacts, **both versioned in git**, both consulted at boot:
 | **B4** | 2026-05-04 | Ops | Health/metrics endpoints | **App layer:** `/livez`, `/readyz`, `/metrics`. K8s probes use `/livez` for liveness and `/readyz` for readiness; Prometheus scrapes `/metrics`. **Infra layer:** K8s pod-level liveness only (no in-app dep probes for liveness — would cause cascading restarts on transient ES blips). | Single `/health` endpoint (conflates liveness vs readiness); separate sidecar exporter (extra deploy unit). | §4.1 / T7.1 / T7.7 |
 | **B5** | 2026-05-04 | API | REST error response shape | **RFC 9457 Problem Details** (`application/problem+json`) with extension `error_code` (stable `SCREAMING_SNAKE_CASE` business identifier). 422 also carries `errors[]` for field validation. | Bare `{error, message}` (no standard, no machine-readable code); RFC 7807 (superseded by 9457). | §4.1.1 / T2.13 |
 | **B6** | 2026-05-04 | API/SSE | Mid-stream error contract on `/chat` | **`data:` line with payload `{type:"error", error_code, message}`**, then close. No `event: error` named-event — keeps client parser uniform (every line is JSON). Pre-stream errors use normal RFC 9457 response. | `event: error` named SSE event (forces dual parser path); silently truncate (loses error_code). | §3.4 / T3.3 |
-| **B7** | 2026-05-04 | API | `GET /ingest?after=&limit=` semantics | **Cursor pagination by `document_id` ASC** (UUIDv7 → time-ordered). `after` = last `document_id` of previous page; server returns `next_cursor` = last id of current page. P2 adds `WHERE owner_user_id=?` predicate using `idx_owner_document`. | OFFSET-based (linear scan); page-number based (incompatible with cursor stability); keyset on `created_at` (collisions). | §4.1 / T2.11 |
+| **B7** | 2026-05-04 | API | `GET /ingest?after=&limit=` semantics | **Cursor pagination by `document_id` ASC** (UUIDv7 → time-ordered). `after` = last `document_id` of previous page; server returns `next_cursor` = last id of current page. Future "my uploads" view adds `WHERE create_user=?` predicate using `idx_create_user_document` (B14). | OFFSET-based (linear scan); page-number based (incompatible with cursor stability); keyset on `created_at` (collisions). | §4.1 / T2.11 |
 | **B8** | 2026-05-04 | Test infra | Integration backends | **`testcontainers-python`** spins up MariaDB + ES + Redis + MinIO per integration session (module-scoped fixture; reused across tests). | docker-compose (manual, dev-only); in-process fakes (drift from prod behaviour). | T0.9 / all `tests/integration/` |
 | **B9** | 2026-05-04 | Resilience | Reconciler scheduler | **Kubernetes `CronJob`** `*/5 * * * *` running `python -m ragent.reconciler` with `concurrencyPolicy: Forbid`. | TaskIQ scheduled task (broker outage = sweeper outage; sweeper is the recovery surface for broker outage); APScheduler (in-process, dies with worker pod). | §3.6 / T5.2 |
 | **B10** | 2026-05-04 | Storage | MinIO object key format | **`{source_app}_{source_id}_{document_id}`** in single bucket `ragent-staging`. `source_app` and `source_id` sanitised to `[A-Za-z0-9._-]`. The `document_id` suffix preserves uniqueness during transient duplicates pre-supersede. | `{document_id}` only (loses source provenance for forensic / orphan-sweep tooling); `{owner}/{document_id}` (P1 OPEN has no owner); per-source bucket (bucket sprawl). | §3.1 / T2.5 / T2.6 |
 | **B11** | 2026-05-04 | Ingest | Display-title surface for chat `sources[]` | **`source_title` mandatory** on `POST /ingest` (`VARCHAR(256) NOT NULL`). Joined into chat retrieval as `sources[].title`. 422 if missing/empty. | Derive from filename (lossy, ugly); store on chunk row (denormalised, redundant); make optional + fallback to `source_id` (degrades chat UX). | §3.1 / §4.1 / §5.1 / T2 |
 | **B12** | 2026-05-04 | Chat API | Streaming vs non-streaming response | **Two endpoints:** `POST /chat` (synchronous JSON, §3.4.2 body) and `POST /chat/stream` (SSE; same body delivered as terminal `done` event after `delta` chunks). Shared §3.4.1 request schema with defaults (`provider="openai"`, `model="gptoss-120b"`, `temperature=0.7`, `maxTokens=4096`); auto-prepend default system message if absent. | Single SSE-only endpoint (forces streaming clients on simple integrations); single JSON-only endpoint (loses streaming UX); `Accept`-header content-negotiation on one path (subtle bugs, harder to test). | §3.4 / §4.1 / T3.3–T3.4 |
 | **B13** | 2026-05-04 | Chat API | `sources[].type` taxonomy | **Reserved enum** `"knowledge" \| "app" \| "workspace"`; **P1 always emits `"knowledge"`**. Future phase derives `"app"` / `"workspace"` (likely from `source_app` / `source_workspace` semantics). | Drop the field for now (breaks forward-compat clients); ship full derivation logic in P1 (out of scope, no acceptance criteria). | §3.4.2 / T3.3 |
+| **B14** | 2026-05-04 | Auth/Permission | (a) `documents.owner_user_id` semantics; (b) where ACL lives | **(a)** Rename to `create_user` — pure audit metadata recording the `X-User-Id` of the creating request, **not** an authorization field. **(b)** Authentication and Permission are separate layers. ES (`chunks_v1`) carries no auth fields in any phase. Permission gating runs **post-retrieval** via a `PermissionClient` Protocol; future-phase backend = **OpenFGA** (supersedes the earlier "out-of-scope across all phases" declaration). Index renamed `idx_owner_document` → `idx_create_user_document`. | Owner-based ES filter (couples auth to retrieval; re-index on every model change); keep "owner" naming with auth semantics (overloads the column, blocks future sharing/role models); keep OpenFGA out-of-scope (no scalable answer for sharing). | §1 / §3.4 / §3.5 / §4.1 / §5.1 / T0.8 / T2.1 / T8 |

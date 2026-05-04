@@ -27,7 +27,7 @@
 | T0.5 | Red | `tests/unit/test_datetime_utility.py` — `utcnow()` tz-aware UTC; `to_iso` ends in `Z`; `from_db` attaches UTC. | T0.1 | [ ] | QA | W2 |
 | T0.6 | Green | `src/ragent/utility/datetime.py`. | T0.5 | [ ] | Dev | W2 |
 | T0.7 | Red | `tests/unit/test_state_machine.py` — accepts `{UPLOADED→PENDING, PENDING→READY, PENDING→FAILED, PENDING→DELETING, READY→DELETING, FAILED→DELETING}`; rejects `{UPLOADED→FAILED, READY→PENDING, FAILED→READY, DELETING→READY}` (S10). | T0.1 | [ ] | QA | W2 |
-| T0.8 | Structural | DB migration `migrations/001_initial.sql` — documents + chunks tables, indexes `idx_status_updated`, `idx_source_app_id_status_created`, `idx_owner_document` (P-D, prepares P2 list endpoint). Alembic configured (B3). | T0.1 | [ ] | Dev | W2 |
+| T0.8 | Structural | DB migration `migrations/001_initial.sql` — documents (incl. `create_user VARCHAR(64) NOT NULL` per B14) + chunks tables, indexes `idx_status_updated`, `idx_source_app_id_status_created`, `idx_create_user_document` (B14, supports future "my uploads" list). Alembic configured (B3). | T0.1 | [ ] | Dev | W2 |
 | T0.8a | Structural | `migrations/schema.sql` — consolidated snapshot reflecting head; updated in lockstep with every `NNN_*.sql` (B3). | T0.8 | [ ] | Dev | W2 |
 | T0.8b | Red | `tests/integration/test_schema_drift.py` — apply `schema.sql` and `alembic upgrade head` to two scratch DBs (testcontainers); `mysqldump` diff must be empty (B3 invariant). | T0.8a, T0.9 | [ ] | QA | W2 |
 | T0.8c | Red | `tests/integration/test_bootstrap_auto_init.py` — first boot against empty MariaDB + ES creates tables/indexes/`chunks_v1` index idempotently; second boot is a no-op; pre-existing schema drift is logged `event=schema.drift` and surfaces in `/readyz` as degraded (B3, B4). | T0.8a, T0.9 | [ ] | QA | W2 |
@@ -53,7 +53,7 @@
 
 | # | Category | Task | Depends On | Status | Owner | Week |
 |---|---|---|---|:---:|---|:---:|
-| T2.1 | Red  | `tests/unit/test_document_repository.py` — `create (mandatory source_id + source_app + source_title, optional source_workspace — B11) / get / acquire_nowait (FOR UPDATE NOWAIT raises on lock contention — R7, S28) / update_status (state-machine guarded) / list_pending / list_uploaded (R1) / list / delete / list_ready_by_source(source_id, source_app) FOR UPDATE SKIP LOCKED / pop_oldest_loser_for_supersede(source_id, source_app) FOR UPDATE SKIP LOCKED LIMIT 1 (P-C single-loser-per-tx) / find_multi_ready_groups (R3) / get_titles_by_document_ids(ids) → {document_id: (source_app, source_id, source_title)} for chat hydration (B11, B12)`. | T0.4, T0.6, T0.7 | [ ] | QA | W3 |
+| T2.1 | Red  | `tests/unit/test_document_repository.py` — `create (mandatory source_id + source_app + source_title + create_user, optional source_workspace — B11, B14) / get / acquire_nowait (FOR UPDATE NOWAIT raises on lock contention — R7, S28) / update_status (state-machine guarded) / list_pending / list_uploaded (R1) / list / delete / list_ready_by_source(source_id, source_app) FOR UPDATE SKIP LOCKED / pop_oldest_loser_for_supersede(source_id, source_app) FOR UPDATE SKIP LOCKED LIMIT 1 (P-C single-loser-per-tx) / find_multi_ready_groups (R3) / get_titles_by_document_ids(ids) → {document_id: (source_app, source_id, source_title)} for chat hydration (B11, B12) / list_by_create_user(create_user, after, limit) future "my uploads" path (B14)`. | T0.4, T0.6, T0.7 | [ ] | QA | W3 |
 | T2.2 | Green | `src/ragent/repositories/document_repository.py` (Repository layer; CRUD only). | T2.1 | [ ] | Dev | W3 |
 | T2.3 | Red  | `tests/unit/test_chunk_repository.py` — `bulk_insert / delete_by_document_id`. | T0.4 | [ ] | QA | W3 |
 | T2.4 | Green | `src/ragent/repositories/chunk_repository.py`. | T2.3 | [ ] | Dev | W3 |
@@ -146,19 +146,21 @@
 | T7.7 | Red | `tests/integration/test_health_endpoints.py` — (B4) `GET /livez` → 200 always; `GET /readyz` → 200 only when MariaDB+ES+Redis+MinIO probes pass; one dep down → 503 `application/problem+json` listing failed deps; `GET /metrics` → 200 `text/plain; version=0.0.4` exposing `reconciler_tick_total`, `worker_pipeline_duration_seconds`, `minio_orphan_object_total`, `multi_ready_repaired_total`. | T7.1 | [ ] | QA | W6 |
 | T7.8 | Green | `src/ragent/routers/health.py` (`/livez`, `/readyz`, `/metrics`); readiness probes via async timeouts ≤ 2 s each. | T7.7 | [ ] | Dev | W6 |
 
-### Track T8 — Auth & Permission `[~] DISABLED IN P1 → P2`
+### Track T8 — Authentication & Permission Layer `[~] DISABLED IN P1`
 
-> P1 produces NO code in this track. **OpenFGA is out-of-scope across all phases.** Interface in `00_spec.md` §3.5; implementation lands in P2.
+> P1 produces NO code in this track. Authentication (JWT) and Permission (OpenFGA via `PermissionClient` Protocol) are **separate layers**; ES carries no auth fields in any phase (B14). Interface in `00_spec.md` §3.5; implementation lands in a future phase.
 
 | # | Category | Task | Depends On | Status | Owner | Phase |
 |---|---|---|---|:---:|---|:---:|
-| T8.1 | Red  | `tests/unit/test_jwt.py` — invalid → 401 on `/chat` and `/ingest`. | (P2 entry) | [~] | QA | P2 |
-| T8.2 | Green | `src/ragent/auth/jwt.py` (FastAPI dependency). | T8.1 | [~] | Dev | P2 |
-| T8.3 | Red  | `tests/unit/test_owner_acl_filter.py` — `build_es_filter(user_id)` produces `terms(owner_user_id ∈ [user_id])`. | T8.2 | [~] | QA | P2 |
-| T8.4 | Green | `src/ragent/auth/acl.py::build_es_filter(user_id)` (owner-based, no external service). | T8.3 | [~] | Dev | P2 |
-| T8.5 | Red  | `tests/integration/test_user_isolation.py` — user A cannot retrieve user B's documents via `/chat` or `/ingest`. | T8.4 | [~] | QA | P2 |
-| T8.6 | Green | Wire owner-based pre-filter into `pipelines/chat.py` and `services/ingest_service.py::list/get/delete`. | T8.5 | [~] | Dev | P2 |
-| T8.7 | Behavioral | `HRClient` + JWT-subject → employee resolution; populate `documents.owner_user_id`. | T8.2 | [~] | Dev | P2 |
+| T8.1 | Red  | `tests/unit/test_jwt.py` — invalid → 401 problem+json on all `/chat*` and `/ingest*` endpoints. | (entry) | [~] | QA | future |
+| T8.2 | Green | `src/ragent/auth/jwt.py` (FastAPI dependency); subject claim → `user_id`. | T8.1 | [~] | Dev | future |
+| T8.3 | Red  | `tests/unit/test_permission_client_protocol.py` — Protocol conformance for `batch_check(user_id, document_ids, relation) -> set[str]` and `list_objects(user_id, relation) -> list[str] \| None`. | T8.2 | [~] | QA | future |
+| T8.4 | Green | `src/ragent/auth/permission.py` — `PermissionClient` Protocol + `OpenFGAPermissionClient` implementation (sole module importing the OpenFGA SDK; B14). | T8.3 | [~] | Dev | future |
+| T8.5 | Red  | `tests/integration/test_chat_permission_gate.py` — chat retrieval over-fetches K' candidates; `PermissionClient.batch_check` post-filters to allowed; user A's query never surfaces a chunk whose `document_id` belongs to user B's private doc. ES query body asserted to carry NO auth filter (B14). | T8.4 | [~] | QA | future |
+| T8.6 | Green | Wire `PermissionClient` post-retrieval gate into `pipelines/chat.py` (between SourceHydrator and LLM, or before hydration). | T8.5 | [~] | Dev | future |
+| T8.7 | Red  | `tests/unit/test_ingest_permission.py` — `GET /ingest/{id}` and `DELETE /ingest/{id}` call `PermissionClient.batch_check([id])` and 403 problem+json when not allowed. | T8.4 | [~] | QA | future |
+| T8.8 | Green | Wire `PermissionClient` into `services/ingest_service.py::get/delete`; `list` either calls `list_objects` then `WHERE document_id IN (...)`, or falls back to `batch_check` per page when `list_objects` returns `None`. | T8.7 | [~] | Dev | future |
+| T8.9 | Behavioral | `HRClient` + JWT-subject → employee resolution; OpenFGA tuple-write on ingest (`user:<id>` viewer of `document:<doc_id>`). | T8.2, T8.4 | [~] | Dev | future |
 
 ---
 
@@ -179,7 +181,7 @@
 | # | Category | Task | Status | Owner |
 |---|---|---|:---:|---|
 | P2.1 | Stability | SRE: HA verification, monitoring, alerting rules. | [ ] | SRE |
-| P2.2 | Security | Re-enable JWT auth + owner-based ACL per Track T8 (all `[~]` rows → `[ ]` → `[x]`). Remove `RAGENT_AUTH_DISABLED` env knob. | [ ] | Dev |
+| P2.2 | Security | Activate JWT auth + Permission Layer (`PermissionClient` over OpenFGA) per Track T8 (all `[~]` rows → `[ ]` → `[x]`); B14: ES still carries no auth fields. Remove `RAGENT_AUTH_DISABLED` env knob. | [ ] | Dev |
 | P2.3 | Behavioral | Wire `RerankClient` into chat pipeline as `HybridRetrieverWithRerank` SuperComponent. | [ ] | Dev |
 | P2.4 | Behavioral | `ConditionalRouter` intent split (translate/summarize → Direct LLM). | [ ] | Dev |
 | P2.5 | Behavioral | MCP Tool real handler. | [ ] | Dev |
