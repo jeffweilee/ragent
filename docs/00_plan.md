@@ -62,7 +62,7 @@
 | T2.2 | Green | `src/ragent/repositories/document_repository.py` (Repository layer; CRUD only). | T2.1 | [ ] | Dev | W3 |
 | T2.3 | Red  | `tests/unit/test_chunk_repository.py` — `bulk_insert / delete_by_document_id`. | T0.4 | [ ] | QA | W3 |
 | T2.4 | Green | `src/ragent/repositories/chunk_repository.py`. | T2.3 | [ ] | Dev | W3 |
-| T2.5 | Red  | `tests/unit/test_minio_client.py` — `put_object(source_app, source_id, document_id, ...)` builds key `{source_app}_{source_id}_{document_id}` (sanitised to `[A-Za-z0-9._-]`) in bucket from `MINIO_BUCKET` env (default `ragent-staging`, B10) and **returns the object key only, not a URI** (B25, C3); `delete_object(key)` idempotent. Bucket name is read once at startup, never per-row. MinIO is transient staging only — cleared on terminal pipeline state. | T0.1 | [ ] | QA | W3 |
+| T2.5 | Red  | `tests/unit/test_minio_client.py` — `put_object(source_app, source_id, document_id, ...)` builds key `{source_app}_{source_id}_{document_id}` (sanitised to `[A-Za-z0-9._-]`) in bucket from `MINIO_BUCKET` env (default `ragent`, B10/B28) and **returns the object key only, not a URI** (B25, C3); `delete_object(key)` idempotent. Bucket name is read once at startup, never per-row. MinIO is transient staging only — cleared on terminal pipeline state. | T0.1 | [ ] | QA | W3 |
 | T2.6 | Green | `src/ragent/storage/minio_client.py` (B10 key format, B25 returns key string). | T2.5 | [ ] | Dev | W3 |
 | T2.7 | Red  | `tests/unit/test_ingest_service_create.py` — validate `source_id`+`source_app`+`source_title` mandatory (S23 → 422 on missing/empty — B11), MIME validate against C1 allow-list `{text/plain, text/markdown, text/html, text/csv}` (≤50 MB) → put → repo.create (persists `source_id`, `source_app`, `source_title`, `object_key` per B25, `create_user`, optional `source_workspace`) → kiq dispatch; rolls back row if MinIO put fails. | T2.2, T2.6, T1.7 | [ ] | QA | W3 |
 | T2.8 | Green | `src/ragent/services/ingest_service.py::create` (≤ 30 LOC/method). | T2.7 | [ ] | Dev | W3 |
@@ -107,7 +107,7 @@
 
 | # | Category | Task | Depends On | Status | Owner | Week |
 |---|---|---|---|:---:|---|:---:|
-| T4.1 | Red | `tests/unit/test_token_manager.py` — refresh at `expiresAt − 5min` boundary using fake clock (S9); single-flight refresh: 100 concurrent calls share one HTTP exchange (P-F). | T0.6 | [ ] | QA | W4 |
+| T4.1 | Red | `tests/unit/test_token_manager.py` — POSTs `AI_API_CLIENT_ID` + `AI_API_CLIENT_SECRET` (B28) to `AI_API_AUTH_URL/auth/api/accesstoken`; refreshes at `expiresAt − 5min` boundary using fake clock (S9); single-flight refresh: 100 concurrent calls share one HTTP exchange (P-F). Credentials never appear in log records or error responses. | T0.6 | [ ] | QA | W4 |
 | T4.2 | Green | `src/ragent/clients/auth.py` (`TokenManager`) with `asyncio.Lock` / `threading.Lock` around exchange. | T4.1 | [ ] | Dev | W4 |
 | T4.3 | Red | `tests/unit/test_embedding_client.py` — POST shape, `bge-m3`, validates `returnCode == 96200`, retry 3× @ 1 s; **batch interface** accepts `list[str]` and issues one HTTP call per batch up to 32 chunks (P-B). | T4.2 | [ ] | QA | W4 |
 | T4.4 | Green | `src/ragent/clients/embedding.py` (batch=32 default, configurable). | T4.3 | [ ] | Dev | W4 |
@@ -120,9 +120,9 @@
 
 | # | Category | Task | Depends On | Status | Owner | Week |
 |---|---|---|---|:---:|---|:---:|
-| T5.1 | Red | `tests/integration/test_reconciler_redispatch.py` — `PENDING` row with `updated_at < NOW() - RECONCILER_STALE_AFTER_SECONDS` (B16, default 5 min) → re-kiq, idempotent (S2). Live worker with fresh `updated_at` is **not** re-dispatched (S33). | T2.2, T2.8 | [ ] | QA | W6 |
+| T5.1 | Red | `tests/integration/test_reconciler_redispatch.py` — `PENDING` row with `updated_at < NOW() - RECONCILER_PENDING_STALE_SECONDS` (B16/B28, default 5 min) → re-kiq, idempotent (S2). Live worker with fresh `updated_at` is **not** re-dispatched (S33). | T2.2, T2.8 | [ ] | QA | W6 |
 | T5.2 | Green | `src/ragent/reconciler.py` — one-shot entrypoint `python -m ragent.reconciler` (B9: K8s `CronJob` `*/5 * * * *`, `concurrencyPolicy: Forbid`); `SELECT … FOR UPDATE SKIP LOCKED`. Manifest `deploy/k8s/reconciler-cronjob.yaml` checked in. | T5.1 | [ ] | Dev | W6 |
-| T5.3 | Red | `tests/integration/test_reconciler_failed.py` — attempt > 5 → status=FAILED + structured-log alert (S3). | T5.2 | [ ] | QA | W6 |
+| T5.3 | Red | `tests/integration/test_reconciler_failed.py` — `attempt > WORKER_MAX_ATTEMPTS` (B28, default 5) → status=FAILED + structured-log alert (S3). | T5.2 | [ ] | QA | W6 |
 | T5.4 | Green | Status transition + structured log line `event=ingest.failed`. | T5.3 | [ ] | Dev | W6 |
 | T5.5 | Red | `tests/integration/test_reconciler_delete_resume.py` — DELETING > 5 min → resume cascade idempotently (S13). | T2.10 | [ ] | QA | W6 |
 | T5.6 | Green | Reconciler resumes DELETING. | T5.5 | [ ] | Dev | W6 |

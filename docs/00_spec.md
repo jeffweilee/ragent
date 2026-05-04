@@ -50,7 +50,7 @@
 
 **Storage model:** MinIO is **transient staging only** — needed because Router (API) and Worker may run on different hosts. The original file is deleted from MinIO after the pipeline reaches a terminal state (`READY` or `FAILED`). After ingest, only chunks (ES) + metadata (MariaDB) remain.
 
-**Object key convention (B10):** `{source_app}_{source_id}_{document_id}` (single bucket `ragent-staging`). `source_app` and `source_id` are sanitized to `[A-Za-z0-9._-]` (other chars percent-encoded) to satisfy MinIO key constraints. The `document_id` suffix guarantees uniqueness even when the same `(source_app, source_id)` is re-POSTed before supersede converges.
+**Object key convention (B10):** `{source_app}_{source_id}_{document_id}` (single bucket from `MINIO_BUCKET` env, default `ragent`). `source_app` and `source_id` are sanitized to `[A-Za-z0-9._-]` (other chars percent-encoded) to satisfy MinIO key constraints. The `document_id` suffix guarantees uniqueness even when the same `(source_app, source_id)` is re-POSTed before supersede converges.
 
 **Pipeline retry idempotency:** Every pipeline run begins with `ChunkRepository.delete_by_document_id(document_id)` and `VectorExtractor.delete(document_id)` (idempotent ES bulk-delete) so a Reconciler retry of a partially-written attempt does not produce duplicate chunks. `chunk_id` may therefore be a fresh `new_id()` per run; identity is by `(document_id, ord)`.
 
@@ -442,45 +442,117 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 | `TokenManager`    | `AI_API_AUTH_URL/auth/api/accesstoken`          | J1 → J2 | **P1** |
 | `EmbeddingClient` | `EMBEDDING_API_URL/text_embedding`              | J2 | **P1** |
 | `LLMClient`       | `LLM_API_URL/gpt_oss_120b/v1/chat/completions` | J2 | **P1** |
-| `RerankClient`    | `REREANK_API_URL/`                              | J2 | P1 unit / P2 wired |
+| `RerankClient`    | `RERANK_API_URL/`                               | J2 | P1 unit / P2 wired |
 | `HRClient`        | `HR_API_URL/v3/employees`                       | `Authorization` | P2 |
 
 All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on client.
 
 **TokenManager refresh discipline (P-F):** the J1→J2 refresh path is **single-flight** — concurrent callers around the `expiresAt − 5 min` boundary share one in-flight refresh (in-process `asyncio.Lock` / `threading.Lock` keyed on the J1 token), avoiding stampede. The cached J2 is shared by Embedding/LLM/Rerank clients.
 
-### 4.6 Environment Variables (C2)
+### 4.6 Environment Variables (C2 + B28)
 
-| Variable | Default | Domain | Description |
-|---|---|---|---|
-| `RAGENT_ENV`                          | (none, required) | Bootstrap | `dev` \| `staging` \| `prod`. P1 startup guard (§7.5) refuses non-`dev`. |
-| `RAGENT_AUTH_DISABLED`                | `false`          | Bootstrap | Must be `true` in P1; P2 sets `false` to enable JWT (§3.5). |
-| `WORKER_HEARTBEAT_INTERVAL_SECONDS`   | `30`             | Worker (B16) | How often the worker refreshes `documents.updated_at` during pipeline body. |
-| `PIPELINE_TIMEOUT_SECONDS`            | `1800`           | Worker (B18) | Overall pipeline-body wall-clock ceiling. |
-| `RECONCILER_STALE_AFTER_SECONDS`      | `300`            | Reconciler (§3.6) | Threshold for `updated_at` staleness; tied to heartbeat. |
-| `CSV_CHUNK_TARGET_CHARS`              | `2000`           | Pipeline (B24) | `RowMerger` target size per merged buffer. |
-| `EMBEDDER_BATCH_SIZE`                 | `32`             | Pipeline (P-B) | Chunks per embedder HTTP call. |
-| `CHAT_JOIN_MODE`                      | `rrf`            | Chat (C6) | `rrf` \| `concatenate` \| `vector_only` \| `bm25_only`. |
-| `EXCERPT_MAX_CHARS`                   | `512`            | Chat (B23) | `SourceHydrator` truncates `sources[].excerpt` to this length. |
-| `RAGENT_DEFAULT_LLM_PROVIDER`         | `openai`         | Chat (B22) | Echoed when request omits `provider`. |
-| `RAGENT_DEFAULT_LLM_MODEL`            | `gptoss-120b`    | Chat (§3.4.1) | Echoed when request omits `model`. |
-| `RAGENT_DEFAULT_LLM_TEMPERATURE`      | `0.7`            | Chat (§3.4.1) | |
-| `RAGENT_DEFAULT_LLM_MAX_TOKENS`       | `4096`           | Chat (§3.4.1) | |
-| `RAGENT_DEFAULT_SYSTEM_PROMPT`        | `You are a helpful assistant` | Chat (§3.4.1) | Auto-prepended when `messages` lacks a `system` entry. |
-| `MINIO_BUCKET`                        | `ragent-staging` | Storage (B10) | Single bucket for staging objects. |
-| `REDIS_MODE`                          | `standalone`     | Redis (B27)   | `standalone` \| `sentinel`. Applies to both broker and rate-limiter; per-instance master names below. |
-| `REDIS_BROKER_URL`                    | `redis://localhost:6379/0` | Redis (B27, mode=standalone) | TaskIQ broker URL. Ignored when `REDIS_MODE=sentinel`. |
-| `REDIS_RATELIMIT_URL`                 | `redis://localhost:6379/1` | Redis (B27, mode=standalone) | Rate-limiter URL. Ignored when `REDIS_MODE=sentinel`. |
-| `REDIS_SENTINEL_HOSTS`                | (required if mode=sentinel) | Redis (B27)   | Comma-separated `host:port` list (≥ 3 nodes recommended). |
-| `REDIS_BROKER_SENTINEL_MASTER`        | `ragent-broker`  | Redis (B27, mode=sentinel) | Master name registered with sentinels for the broker instance. |
-| `REDIS_RATELIMIT_SENTINEL_MASTER`     | `ragent-ratelimit` | Redis (B27, mode=sentinel) | Master name registered with sentinels for the rate-limiter instance. |
-| `AI_API_AUTH_URL`                     | (required)       | Clients (§4.5) | TokenManager J1→J2 endpoint. |
-| `EMBEDDING_API_URL`                   | (required)       | Clients (§4.5) | |
-| `LLM_API_URL`                         | (required)       | Clients (§4.5) | |
-| `REREANK_API_URL`                     | (required P2)    | Clients (§4.5) | |
-| `HR_API_URL`                          | (future)         | Clients (§4.5) | |
+> **Inventory rules (B28):** every external dependency, every per-call timeout, every operational threshold, and every credential MUST appear in this table. Code that reads a literal value not represented here is a spec drift bug. Vars marked `(required)` have no default and refuse boot.
 
-> Timeouts in §4.3 are intentionally asymmetric: ingest embedder uses 30 s/batch (32 strings), query embedder uses 10 s (1 string) (C8). Same client, two call sites, two budgets.
+#### 4.6.1 Bootstrap & HTTP server
+
+| Variable | Default | Description |
+|---|---|---|
+| `RAGENT_ENV`                          | (required)       | `dev` \| `staging` \| `prod`. P1 startup guard refuses non-`dev`. |
+| `RAGENT_AUTH_DISABLED`                | `false`          | Must be `true` in P1; P2 sets `false` to enable JWT (§3.5). |
+| `RAGENT_HOST`                         | `127.0.0.1`      | API bind address. P1 OPEN guard (§1) refuses any value other than `127.0.0.1` while `RAGENT_ENV=dev` & `RAGENT_AUTH_DISABLED=true`. |
+| `RAGENT_PORT`                         | `8000`           | API bind port. |
+| `LOG_LEVEL`                           | `INFO`           | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR`. Applies to app + TaskIQ + Reconciler. |
+
+#### 4.6.2 Datastore connections (boot-blocking)
+
+| Variable | Default | Description |
+|---|---|---|
+| `MARIADB_DSN`                         | (required)       | Full SQLAlchemy DSN, e.g. `mysql+aiomysql://user:pass@host:3306/ragent?charset=utf8mb4`. Used by repositories, bootstrap, `/readyz`. |
+| `ES_HOSTS`                            | (required)       | Comma-separated `https?://host:port` list. |
+| `ES_USERNAME`                         | (optional)       | Basic-auth username; omit for unauthenticated dev clusters. |
+| `ES_PASSWORD`                         | (optional)       | Basic-auth password. |
+| `ES_API_KEY`                          | (optional)       | Alternative to user/password (mutually exclusive). |
+| `ES_VERIFY_CERTS`                     | `true`           | Set `false` for self-signed dev clusters. |
+| `MINIO_ENDPOINT`                      | (required)       | `host:port` (no scheme). |
+| `MINIO_ACCESS_KEY`                    | (required)       | |
+| `MINIO_SECRET_KEY`                    | (required)       | |
+| `MINIO_SECURE`                        | `false`          | `true` ⇒ HTTPS. |
+| `MINIO_BUCKET`                        | `ragent`         | Single staging bucket (B10). |
+
+#### 4.6.3 Redis (B27)
+
+| Variable | Default | Description |
+|---|---|---|
+| `REDIS_MODE`                          | `standalone`     | `standalone` \| `sentinel`. Applies to broker and rate-limiter. |
+| `REDIS_BROKER_URL`                    | `redis://localhost:6379/0` | TaskIQ broker URL (mode=standalone). |
+| `REDIS_RATELIMIT_URL`                 | `redis://localhost:6379/1` | Rate-limiter URL (mode=standalone). |
+| `REDIS_SENTINEL_HOSTS`                | (required if mode=sentinel) | Comma-separated `host:port` list (≥ 3 nodes recommended). |
+| `REDIS_BROKER_SENTINEL_MASTER`        | `ragent-broker`  | Master name for broker instance (mode=sentinel). |
+| `REDIS_RATELIMIT_SENTINEL_MASTER`     | `ragent-ratelimit` | Master name for rate-limiter instance (mode=sentinel). |
+
+#### 4.6.4 Third-party API endpoints & credentials
+
+| Variable | Default | Description |
+|---|---|---|
+| `AI_API_AUTH_URL`                     | (required)       | TokenManager J1→J2 endpoint. |
+| `AI_API_CLIENT_ID`                    | (required)       | J1 identity POSTed to `AI_API_AUTH_URL/auth/api/accesstoken`. **Never logged, never echoed in error responses.** |
+| `AI_API_CLIENT_SECRET`                | (required)       | J1 secret. **Never logged, never echoed.** |
+| `EMBEDDING_API_URL`                   | (required)       | bge-m3 endpoint. |
+| `LLM_API_URL`                         | (required)       | gptoss-120b endpoint. |
+| `RERANK_API_URL`                      | (required P2)    | Rerank endpoint (P1 unit-tests only; wired in P2). |
+| `HR_API_URL`                          | (future)         | OpenFGA-related role lookup (P2+). |
+
+#### 4.6.5 Worker, Reconciler & retry policy
+
+| Variable | Default | Description |
+|---|---|---|
+| `WORKER_HEARTBEAT_INTERVAL_SECONDS`   | `30`             | How often the worker refreshes `documents.updated_at` during pipeline body (B16). |
+| `WORKER_MAX_ATTEMPTS`                 | `5`              | Pipeline gives up and marks `FAILED` once `attempt > WORKER_MAX_ATTEMPTS` (§3.1 R5). |
+| `PIPELINE_TIMEOUT_SECONDS`            | `1800`           | Overall pipeline-body wall-clock ceiling (B18). |
+| `RECONCILER_PENDING_STALE_SECONDS`    | `300`            | Re-dispatch threshold for `PENDING` rows whose heartbeat aged past this. |
+| `RECONCILER_UPLOADED_STALE_SECONDS`   | `300`            | Re-kiq threshold for `UPLOADED` orphans (R1: TaskIQ message lost / broker outage at POST). |
+| `RECONCILER_DELETING_STALE_SECONDS`   | `300`            | Resume threshold for stuck `DELETING` cascades. |
+
+#### 4.6.6 Pipeline & chat tunables
+
+| Variable | Default | Description |
+|---|---|---|
+| `INGEST_MAX_FILE_SIZE_BYTES`          | `52428800`       | 50 MB upload cap (B2); 413 on overrun. |
+| `INGEST_LIST_MAX_LIMIT`               | `100`            | `GET /ingest?limit=` upper bound (§4.1, B7). |
+| `CSV_CHUNK_TARGET_CHARS`              | `2000`           | `RowMerger` target merged-buffer size (B24). |
+| `EMBEDDER_BATCH_SIZE`                 | `32`             | Chunks per embedder HTTP call (P-B). |
+| `CHAT_JOIN_MODE`                      | `rrf`            | `rrf` \| `concatenate` \| `vector_only` \| `bm25_only` (C6). |
+| `EXCERPT_MAX_CHARS`                   | `512`            | `SourceHydrator` truncation length (B23). |
+| `RAGENT_DEFAULT_LLM_PROVIDER`         | `openai`         | Echoed when request omits `provider`. |
+| `RAGENT_DEFAULT_LLM_MODEL`            | `gptoss-120b`    | Echoed when request omits `model`. |
+| `RAGENT_DEFAULT_LLM_TEMPERATURE`      | `0.7`            | |
+| `RAGENT_DEFAULT_LLM_MAX_TOKENS`       | `4096`           | |
+| `RAGENT_DEFAULT_SYSTEM_PROMPT`        | `You are a helpful assistant` | Auto-prepended when `messages` lacks a `system` entry. |
+
+#### 4.6.7 Per-call timeouts (matches §4.3 catalog)
+
+| Variable | Default (s) | Site |
+|---|---|---|
+| `EMBEDDER_INGEST_TIMEOUT_SECONDS`     | `30`             | per-batch (32 strings) ingest call. |
+| `EMBEDDER_QUERY_TIMEOUT_SECONDS`      | `10`             | single-string chat-query call (C8 asymmetric). |
+| `ES_BULK_TIMEOUT_SECONDS`             | `60`             | `VectorExtractor` bulk index/delete. |
+| `ES_QUERY_TIMEOUT_SECONDS`            | `10`             | chat retrievers (vector + BM25). |
+| `MINIO_GET_TIMEOUT_SECONDS`           | `30`             | worker download from staging. |
+| `MINIO_PUT_TIMEOUT_SECONDS`           | `60`             | router upload to staging. |
+| `LLM_TIMEOUT_SECONDS`                 | `120`            | `LLMClient.{chat\|stream}`. |
+| `PLUGIN_FAN_OUT_TIMEOUT_SECONDS`      | `60`             | per-plugin `extract`/`delete` ceiling (§3.3). |
+| `READYZ_PROBE_TIMEOUT_SECONDS`        | `2`              | per-dependency `/readyz` probe budget (§4.1). |
+
+> Timeouts above are intentionally asymmetric: ingest embedder uses 30 s/batch (32 strings), query embedder uses 10 s (1 string) (C8). Same client, two call sites, two budgets.
+
+#### 4.6.8 Observability (OpenTelemetry)
+
+| Variable | Default | Description |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT`         | (optional)       | OTLP collector URL; absence disables export (no-op tracer). |
+| `OTEL_SERVICE_NAME`                   | `ragent-api`     | Per-process: `ragent-api` \| `ragent-worker` \| `ragent-reconciler`. |
+| `OTEL_TRACES_SAMPLER`                 | `parentbased_traceidratio` | Standard OTEL SDK sampler name. |
+| `OTEL_TRACES_SAMPLER_ARG`             | `0.1`            | Sampling ratio (10% by default; raise to `1.0` in dev). |
 
 ---
 
@@ -627,7 +699,7 @@ Two artefacts, **both versioned in git**, both consulted at boot:
 | **B7** | 2026-05-04 | API | `GET /ingest?after=&limit=` semantics | **Cursor pagination by `document_id` ASC** (UUIDv7 → time-ordered). `after` = last `document_id` of previous page; server returns `next_cursor` = last id of current page. Future "my uploads" view adds `WHERE create_user=?` predicate using `idx_create_user_document` (B14). | OFFSET-based (linear scan); page-number based (incompatible with cursor stability); keyset on `created_at` (collisions). | §4.1 / T2.11 |
 | **B8** | 2026-05-04 | Test infra | Integration backends | **`testcontainers-python`** spins up MariaDB + ES + Redis + MinIO per integration session (module-scoped fixture; reused across tests). | docker-compose (manual, dev-only); in-process fakes (drift from prod behaviour). | T0.9 / all `tests/integration/` |
 | **B9** | 2026-05-04 | Resilience | Reconciler scheduler | **Kubernetes `CronJob`** `*/5 * * * *` running `python -m ragent.reconciler` with `concurrencyPolicy: Forbid`. | TaskIQ scheduled task (broker outage = sweeper outage; sweeper is the recovery surface for broker outage); APScheduler (in-process, dies with worker pod). | §3.6 / T5.2 |
-| **B10** | 2026-05-04 | Storage | MinIO object key format | **`{source_app}_{source_id}_{document_id}`** in single bucket `ragent-staging`. `source_app` and `source_id` sanitised to `[A-Za-z0-9._-]`. The `document_id` suffix preserves uniqueness during transient duplicates pre-supersede. | `{document_id}` only (loses source provenance for forensic / orphan-sweep tooling); `{owner}/{document_id}` (P1 OPEN has no owner); per-source bucket (bucket sprawl). | §3.1 / T2.5 / T2.6 |
+| **B10** | 2026-05-04 | Storage | MinIO object key format | **`{source_app}_{source_id}_{document_id}`** in a single bucket from `MINIO_BUCKET` env (default `ragent`). `source_app` and `source_id` sanitised to `[A-Za-z0-9._-]`. The `document_id` suffix preserves uniqueness during transient duplicates pre-supersede. | `{document_id}` only (loses source provenance for forensic / orphan-sweep tooling); `{owner}/{document_id}` (P1 OPEN has no owner); per-source bucket (bucket sprawl). | §3.1 / T2.5 / T2.6 |
 | **B11** | 2026-05-04 | Ingest | Display-title surface for chat `sources[]` | **`source_title` mandatory** on `POST /ingest` (`VARCHAR(256) NOT NULL`). Joined into chat retrieval as `sources[].title`. 422 if missing/empty. | Derive from filename (lossy, ugly); store on chunk row (denormalised, redundant); make optional + fallback to `source_id` (degrades chat UX). | §3.1 / §4.1 / §5.1 / T2 |
 | **B12** | 2026-05-04 | Chat API | Streaming vs non-streaming response | **Two endpoints:** `POST /chat` (synchronous JSON, §3.4.2 body) and `POST /chat/stream` (SSE; same body delivered as terminal `done` event after `delta` chunks). Shared §3.4.1 request schema with defaults (`provider="openai"`, `model="gptoss-120b"`, `temperature=0.7`, `maxTokens=4096`); auto-prepend default system message if absent. | Single SSE-only endpoint (forces streaming clients on simple integrations); single JSON-only endpoint (loses streaming UX); `Accept`-header content-negotiation on one path (subtle bugs, harder to test). | §3.4 / §4.1 / T3.3–T3.4 |
 | **B13** | 2026-05-04 | Chat API | `sources[].type` taxonomy | **Reserved enum** `"knowledge" \| "app" \| "workspace"`; **P1 always emits `"knowledge"`**. Future phase derives `"app"` / `"workspace"` (likely from `source_app` / `source_workspace` semantics). | Drop the field for now (breaks forward-compat clients); ship full derivation logic in P1 (out of scope, no acceptance criteria). | §3.4.2 / T3.3 |
@@ -642,6 +714,7 @@ Two artefacts, **both versioned in git**, both consulted at boot:
 | **B22** | 2026-05-04 | Chat API | `provider` field semantics in P1 | **Validated allow-list `{"openai"}`**, 422 (`error_code=CHAT_PROVIDER_UNSUPPORTED`) on others; the accepted value is **echoed verbatim** in the response. P1 routes nothing on it. Future phases extend the allow-list and use `provider` as a routing key. | Echo only, no validation (silently accepts garbage); ignore the field entirely (forward-incompat with multi-provider future). | §3.4.1 / §3.4.2 / T3.3–T3.4 |
 | **B23** | 2026-05-04 | Chat API | Where `sources[].excerpt` is truncated | **Inside `SourceHydrator`**, single locus, `EXCERPT_MAX_CHARS` (default 512), append `…` if cut. Router never re-truncates. | Truncate in router (then chunks-as-LLM-context still see the long form, leak); truncate in retriever (couples retrieval to display concerns); leave to client (LLM gets full chunk for context, response surfaces full chunk to client — wasted bandwidth + risk of leaking text the operator intended to keep server-side). | §3.4.2 / T3.6 |
 | **B24** | 2026-05-04 | Pipeline | CSV row scaling — naive 1 row → 1 chunk would be 1 M chunks for a 50 MB file | **`RowMerger`** SuperComponent on the CSV branch only (Haystack `ConditionalRouter` on MIME): pack consecutive rows joined by `\n` until buffered text reaches `CSV_CHUNK_TARGET_CHARS` (default 2 000 ≈ 512 tokens, well under bge-m3's 8 192). Result: 50 MB CSV → ~25 k chunks instead of ~1 M. Combined with B18 ceiling, large CSVs are bounded both in count and total wall-clock. | Per-file row cap (loses tail rows); skip CSV in P1 (regression vs spec); change every row's chunker to "passage" (loses sentence-level fidelity for non-CSV); dynamic per-row Haystack `DocumentSplitter(split_by="word")` (no row-grouping, defeats the "one logical record per chunk" property). | §3.2 / §4.2 / S35 |
-| **B25** | 2026-05-04 | Storage | `documents.storage_uri` stored full URI; bucket name is constant config | **Rename column to `object_key VARCHAR(256) NOT NULL`** (key only, format per B10). Bucket is read from `MINIO_BUCKET` env var (default `ragent-staging`); reconstruct full URI on demand. Saves ~20 bytes/row, decouples row from bucket-rename ops, and makes a future bucket migration a config flip. | Keep full URI (rigid); store bucket per-row (rotation hell); URL-encode in object key (key+bucket separation already does the job). | §5.1 / T2.5 / T2.6 |
+| **B25** | 2026-05-04 | Storage | `documents.storage_uri` stored full URI; bucket name is constant config | **Rename column to `object_key VARCHAR(256) NOT NULL`** (key only, format per B10). Bucket is read from `MINIO_BUCKET` env var (default `ragent`); reconstruct full URI on demand. Saves ~20 bytes/row, decouples row from bucket-rename ops, and makes a future bucket migration a config flip. | Keep full URI (rigid); store bucket per-row (rotation hell); URL-encode in object key (key+bucket separation already does the job). | §5.1 / T2.5 / T2.6 |
 | **B26** | 2026-05-04 | ES | (a) BM25 analyzer; (b) vector index type; (c) where the index definition lives | **(a) `icu_text` custom analyzer** (`icu_tokenizer` + `icu_folding` + `lowercase`) on `text` and `title` — required for CJK tokenisation; `standard` analyzer collapses CJK to per-character or mega-tokens, breaking BM25. `analysis-icu` plugin is a hard ES dependency (verified at `/readyz`). **(b) `bbq_hnsw`** (Better Binary Quantization HNSW, ES 8.16+) on `embedding` — ~32× memory reduction at negligible recall cost; falls back to standard HNSW with `event=es.bbq_unsupported` log if cluster rejects. **(c) Source of truth = `resources/es/chunks_v1.json`** loaded by boot auto-init (§6.1) when the index does not exist; spec §5.2 mirrors the file in prose; CI drift test enforces equality. | Default `standard` analyzer (CJK becomes useless for BM25); `nori`/`smartcn` (per-language plugin sprawl, doesn't cover all CJK consistently); raw HNSW (4× more memory at our 1024 dims); inline mapping in Python code (every change is a code commit, no resource-file diffability). | §5.2 / §6.1 / T0.8d / T0.9 |
 | **B27** | 2026-05-04 | Infra | Redis topology — single-instance vs Sentinel HA | **Per-instance toggle via `REDIS_MODE` env (`standalone` \| `sentinel`)**. Both broker and rate-limiter share the mode; standalone reads `REDIS_BROKER_URL` / `REDIS_RATELIMIT_URL`; sentinel reads `REDIS_SENTINEL_HOSTS` (shared quorum) + `REDIS_*_SENTINEL_MASTER` (per-instance master name). Connection layer dispatches on mode (`redis-py-sentinel` vs `redis-py`). Default `standalone` for dev/CI; prod sets `sentinel`. | Hardcode Sentinel (broken local dev); hardcode standalone (no prod HA story); per-instance independent mode (config matrix doubles, no real-world need). | §3.6 / §4.6 / T0.9 |
+| **B28** | 2026-05-04 | Config | Env-var inventory was incomplete — missing datastore connections (MariaDB/ES/MinIO host/creds), J1 client credentials, HTTP bind, OTEL exporter, retry/timeout policy knobs, upload limits, and log level; `RERANK_API_URL` was misspelled `REREANK_API_URL` | **Reorganise §4.6 into 8 subsections** (bootstrap, datastore, redis, third-party clients, worker/reconciler, pipeline/chat, per-call timeouts, observability). **Add 26 new vars** covering every previously implicit literal: `MARIADB_DSN`, `ES_HOSTS`/`ES_USERNAME`/`ES_PASSWORD`/`ES_API_KEY`/`ES_VERIFY_CERTS`, `MINIO_ENDPOINT`/`MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY`/`MINIO_SECURE`, `RAGENT_HOST`/`RAGENT_PORT`/`LOG_LEVEL`, `AI_API_CLIENT_ID`/`AI_API_CLIENT_SECRET`, `WORKER_MAX_ATTEMPTS`, `RECONCILER_PENDING_STALE_SECONDS`/`RECONCILER_UPLOADED_STALE_SECONDS`/`RECONCILER_DELETING_STALE_SECONDS`, `INGEST_MAX_FILE_SIZE_BYTES`, `INGEST_LIST_MAX_LIMIT`, the seven per-call timeouts (`EMBEDDER_INGEST/QUERY`, `ES_BULK/QUERY`, `MINIO_GET/PUT`, `LLM`, `PLUGIN_FAN_OUT`, `READYZ_PROBE`), plus four `OTEL_*` vars. **Fix typo** `REREANK_API_URL` → `RERANK_API_URL`. **Rename** ambiguous `RECONCILER_STALE_AFTER_SECONDS` to per-state `RECONCILER_PENDING_STALE_SECONDS` and add UPLOADED/DELETING siblings. **Change `MINIO_BUCKET` default** from `ragent-staging` → `ragent` (B10/B25 prose updated). Also adds an inventory rule: any literal value read by code that is not represented in §4.6 is a spec drift bug. | Leave datastore connections as "implicit per-environment overrides" (every operator reinvents the wheel; bootstrap module has no canonical names to read); expose only DSN-style strings for ES/MinIO too (forces credential concatenation in URLs, harder to rotate); keep timeouts as code constants only (violates J21 rule "every call site lists per-call timeout AND aggregate ceiling"); ship without J1 creds (TokenManager has a URL but no way to authenticate — boot succeeds but every embedder/LLM call fails on first request). | §1 / §3.1 / §3.6 / §3.7 / §4.5 / §4.6 / §6.1 / T0.8 |
