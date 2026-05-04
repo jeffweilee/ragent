@@ -50,10 +50,10 @@
 
 **Pipeline retry idempotency:** Every pipeline run begins with `ChunkRepository.delete_by_document_id(document_id)` and `VectorExtractor.delete(document_id)` (idempotent ES bulk-delete) so a Reconciler retry of a partially-written attempt does not produce duplicate chunks. `chunk_id` may therefore be a fresh `new_id()` per run; identity is by `(document_id, ord)`.
 
-**Supersede model (smart upsert):** Every `POST /ingest` carries a mandatory `(source_id, source_app)` pair (e.g. `("DOC-123", "confluence")`) and an optional `source_workspace`. The pair is the **logical identity** of a document — at steady state at most one `READY` row may exist per `(source_id, source_app)`. A new POST always creates a fresh `document_id`; when it reaches `READY`, the system enqueues a **supersede** task that selects every `READY` row sharing the same `(source_id, source_app)`, keeps the one with `MAX(created_at)`, and cascade-deletes the rest. This guarantees "latest write wins" even when documents finish out-of-order, gives zero-downtime replacement (old chunks remain queryable until the new ones are indexed), and preserves the old version if the new ingest fails. Supersede is enqueued **only** on the `PENDING → READY` transition; FAILED or mid-flight DELETE never triggers it. Uniqueness is **eventual**, enforced by supersede — not by a DB UNIQUE constraint, since transient duplicates are expected during ingestion. **Mutation = re-POST with the same `(source_id, source_app)`; there is no PUT/PATCH endpoint.**
+**Supersede model (smart upsert):** Every `POST /ingest` carries a mandatory `(source_id, source_app, source_title)` triple (e.g. `("DOC-123", "confluence", "Q3 OKR Planning")`) and an optional `source_workspace`. The `(source_id, source_app)` pair is the **logical identity** of a document; `source_title` is human-readable display text required by chat retrieval (`sources[].title` in §3.4). At steady state at most one `READY` row may exist per `(source_id, source_app)`. A new POST always creates a fresh `document_id`; when it reaches `READY`, the system enqueues a **supersede** task that selects every `READY` row sharing the same `(source_id, source_app)`, keeps the one with `MAX(created_at)`, and cascade-deletes the rest. This guarantees "latest write wins" even when documents finish out-of-order, gives zero-downtime replacement (old chunks remain queryable until the new ones are indexed), and preserves the old version if the new ingest fails. Supersede is enqueued **only** on the `PENDING → READY` transition; FAILED or mid-flight DELETE never triggers it. Uniqueness is **eventual**, enforced by supersede — not by a DB UNIQUE constraint, since transient duplicates are expected during ingestion. **Mutation = re-POST with the same `(source_id, source_app)` (and updated `source_title` if the title changed); there is no PUT/PATCH endpoint.**
 
 **Create flow:**
-1. `POST /ingest` (`source_id`, `source_app`, optional `source_workspace`) → MIME/size validation → MinIO upload (staging) → `documents(UPLOADED, source_id, source_app, source_workspace)` → kiq `ingest.pipeline` → 202.
+1. `POST /ingest` (`source_id`, `source_app`, `source_title`, optional `source_workspace`) → MIME/size validation → MinIO upload (staging) → `documents(UPLOADED, source_id, source_app, source_title, source_workspace)` → kiq `ingest.pipeline` → 202.
 2. Worker `ingest.pipeline`:
    - **TX-A:** `acquire FOR UPDATE NOWAIT`. On lock contention → re-kiq self with backoff and exit (no attempt increment). On success → `PENDING`, `attempt+1`, **commit**.
    - **Pipeline body (no DB tx):** `delete_by_document_id` (idempotency) → run §3.2 → `fan_out` → all required ok ⇒ outcome=`READY`; any required error ⇒ outcome=`PENDING_RETRY` (no terminal commit; Reconciler resumes); attempt > 5 ⇒ outcome=`FAILED`.
@@ -80,7 +80,7 @@
 - **S19 supersede idempotent** — Given supersede already ran for D2, When the task fires again, Then no further deletes occur (only one `READY` row remains for that `(source_id, source_app)`).
 - **S20 supersede out-of-order finish** — Given D1 (created at t=0) and D2 (created at t=1) share `(source_id="X", source_app="confluence")`, When D2 reaches `READY` first (D1 still `PENDING`) and D1 reaches `READY` later, Then after both supersede tasks run only D2 (the row with `MAX(created_at)`) remains; D1 is cascade-deleted.
 - **S22 same source_id different source_app coexist** — Given doc D1 with `(source_id="X", source_app="confluence")` is `READY`, When client POSTs with `(source_id="X", source_app="slack")`, Then both reach `READY` and coexist; supersede touches neither.
-- **S23 missing source_id or source_app** — Given a POST omits either `source_id` or `source_app`, Then router returns 422 with field-level validation error; no MinIO upload, no DB row.
+- **S23 missing source_id, source_app, or source_title** — Given a POST omits any of `source_id` / `source_app` / `source_title`, Then router returns 422 problem+json with field-level `errors[]`; no MinIO upload, no DB row.
 - **S21 worker crash post-commit MinIO orphan tolerated** — Given the worker has committed `status=READY` but crashed before `MinIO.delete_object` returned, When the document is fetched, Then status is `READY` and the orphan staging object is logged as `event=minio.orphan_object` (acceptable; P2 sweeper will GC).
 - **S24 UPLOADED orphan recovered (R1)** — Given a row in `UPLOADED` for > 5 min (TaskIQ message lost or broker outage at POST time), When the Reconciler runs, Then it re-kiqs `ingest.pipeline` and the doc proceeds normally.
 - **S25 pipeline retry produces no duplicate chunks (R4)** — Given a Reconciler retry of a previously partially-written ingest, When the pipeline reruns, Then `chunks` count for that `document_id` equals the chunker's output and `chunks_v1` ES index has no orphans.
@@ -151,20 +151,84 @@ class ExtractorPlugin(Protocol):
 ### 3.4 Chat Pipeline
 
 ```
-QueryEmbedder → {ESVectorRetriever ∥ ESBM25Retriever} → DocumentJoiner(RRF) → LLMClient.stream → SSE
+QueryEmbedder → {ESVectorRetriever ∥ ESBM25Retriever} → DocumentJoiner(RRF) → SourceHydrator(JOIN documents) → LLMClient.{chat | stream}
 ```
+
+**Two endpoints (B12):**
+- `POST /chat` → non-streaming, returns full JSON body once LLM completes.
+- `POST /chat/stream` → SSE; `delta` events stream incremental `content`, closing with one `done` event whose data payload is the same JSON body as `/chat`.
+
+Both share the same request schema and the same retrieval pipeline; only the LLM call differs (`LLMClient.chat` vs `LLMClient.stream`).
 
 **P1 OPEN:** ACL filter is a no-op; `sources[]` unrestricted. P2: owner-based `terms(owner_user_id)` pre-filter on ES queries.
 
 **Performance note (P-A):** Haystack sync Pipeline in P1 runs `ESVectorRetriever` and `ESBM25Retriever` **sequentially**, so chat latency = `vector + BM25 + LLM` (additive). True parallelism requires AsyncPipeline (P2) or wrapping the two retrievers in a custom `ThreadPoolExecutor` SuperComponent. P1 ships sequential and accepts the latency hit; P2 makes them concurrent.
 
-**Response:** SSE stream of `delta` events, closing with one `done { answer, sources[] }`.
+#### 3.4.1 Request schema (shared by `/chat` and `/chat/stream`)
 
-**Error mid-stream (B6):** If the LLM or any retriever fails *after* the first `delta` has been written, the server emits a single default-event `data:` line with payload `{"type":"error","error_code":"<CODE>","message":"<text>"}` and closes the connection. **No `event: error` named-event is used** — keeps client parsing uniform (every line is a JSON `data:` payload). Pre-stream failures (before the first `delta`) return a normal RFC 9457 problem+json response with the appropriate HTTP status.
+```json
+{
+  "messages":    [{"role": "system|user|assistant", "content": "..."}],
+  "provider":    "openai",
+  "model":       "gptoss-120b",
+  "temperature": 0.7,
+  "maxTokens":   4096
+}
+```
+
+- Only `messages` is required. All other fields are optional and fall back to the defaults shown above.
+- `maxTokens` caps the LLM output (`completionTokens`); not the prompt.
+- If `messages` does not contain a `role:"system"` entry, the server **prepends** `{"role":"system","content":"You are a helpful assistant"}` before invoking the LLM.
+- The retrieval query is the **last `role:"user"` message**; preceding messages are passed through to the LLM as conversation history.
+- Validation errors → 422 RFC 9457 problem+json (B5).
+
+#### 3.4.2 Response schema
+
+`/chat` (non-streaming, `Content-Type: application/json`) and the terminal `done` event of `/chat/stream` both carry:
+
+```json
+{
+  "content":  "COMPLETE_MARKDOWN_RESPONSE",
+  "usage":    {"promptTokens": 0, "completionTokens": 0, "totalTokens": 0},
+  "model":    "gptoss-120b",
+  "provider": "openai",
+  "sources":  [
+    {
+      "document_id": "01J9...",
+      "source_app":  "confluence",
+      "source_id":   "DOC-123",
+      "type":        "knowledge",
+      "title":       "Q3 OKR Planning",
+      "excerpt":     "...chunk text snippet..."
+    }
+  ]
+}
+```
+
+- `sources` is `null` when no chunks were retrieved (e.g. empty index, retriever error fallback). Otherwise every entry has **all fields populated** — partial rows are not emitted.
+- `sources[].type` is reserved for future categorisation; **P1 always emits `"knowledge"`**. Future values `"app"` and `"workspace"` will be derived in a later phase.
+- `sources[].title` comes from `documents.source_title` (joined on `document_id` after retrieval).
+- `sources[].excerpt` is the chunk text the retriever surfaced (truncated server-side to 512 chars).
+- `usage` is reported by `LLMClient`; for streaming the LLM API must include final usage (e.g. OpenAI `stream_options.include_usage=true`).
+
+#### 3.4.3 Streaming wire format (`/chat/stream` only)
+
+```
+data: {"type":"delta","content":"<token chunk>"}\n\n
+…
+data: {"type":"done", ...response schema as 3.4.2…}\n\n
+```
+
+**Error mid-stream (B6):** If the LLM or any retriever fails *after* the first `delta` has been written, the server emits a single default-event `data:` line with payload `{"type":"error","error_code":"<CODE>","message":"<text>"}` and closes the connection. **No `event: error` named-event is used.** Pre-stream failures (before the first `delta`) return a normal RFC 9457 problem+json response. `/chat` always uses problem+json on error (it has no streaming surface).
 
 **BDD:**
-- **S6** — ≥ 1 `delta` + exactly one `done` with sources.
-- **S8** — `POST /mcp/tools/rag` returns 501 in P1 (handler not yet wired).
+- **S6**  — `POST /chat/stream` emits ≥ 1 `data: {type:"delta",...}` then exactly one `data: {type:"done",...}` carrying `content`, `usage`, `model`, `provider`, `sources`.
+- **S6a** — `POST /chat` returns `200 application/json` with the full §3.4.2 body (single response, no streaming framing).
+- **S6b** — Request without `role:"system"` entry → server prepends the default system message before LLM invocation; observable via mock LLM capture.
+- **S6c** — Request with only `messages` → defaults (`provider="openai"`, `model="gptoss-120b"`, `temperature=0.7`, `maxTokens=4096`) applied.
+- **S6d** — Empty retrieval (index empty or retriever error) → response `sources: null` and the LLM still answers.
+- **S6e** — Every emitted `sources[]` entry has all six fields populated and `type="knowledge"`.
+- **S8**  — `POST /mcp/tools/rag` returns 501 in P1 (handler not yet wired).
 
 ---
 
@@ -221,11 +285,12 @@ QueryEmbedder → {ESVectorRetriever ∥ ESBM25Retriever} → DocumentJoiner(RRF
 
 | Method | Path | P1 Auth | Request | Response |
 |---|---|---|---|---|
-| POST   | `/ingest`               | `X-User-Id` | `multipart/form-data: file` (≤ 50 MB, MIME ∈ §4.2), `source_id` (≤ 128, **mandatory**), `source_app` (≤ 64, **mandatory**), `source_workspace` (≤ 64, optional) | `202 { task_id }` — `task_id` **is** the `document_id` (26-char Crockford Base32). 422 if `source_id` or `source_app` missing/empty. |
+| POST   | `/ingest`               | `X-User-Id` | `multipart/form-data: file` (≤ 50 MB, MIME ∈ §4.2), `source_id` (≤ 128, **mandatory**), `source_app` (≤ 64, **mandatory**), `source_title` (≤ 256, **mandatory**), `source_workspace` (≤ 64, optional) | `202 { task_id }` — `task_id` **is** the `document_id` (26-char Crockford Base32). 422 problem+json if any of `source_id` / `source_app` / `source_title` missing/empty. |
 | GET    | `/ingest/{id}`          | `X-User-Id` | — | `200 { status, attempt, updated_at }` |
 | GET    | `/ingest?after=&limit=` | `X-User-Id` | — | `200 { items, next_cursor }` (limit ≤ 100) |
 | DELETE | `/ingest/{id}`          | `X-User-Id` | — | `204` idempotent |
-| POST   | `/chat`                 | `X-User-Id` | `{ query: str }` | `text/event-stream` (`delta`*, `done`) |
+| POST   | `/chat`                 | `X-User-Id` | §3.4.1 schema (`messages` required; rest default) | `200 application/json` per §3.4.2 |
+| POST   | `/chat/stream`          | `X-User-Id` | §3.4.1 schema | `text/event-stream` per §3.4.3 (`data: {type:delta\|done\|error}`) |
 | POST   | `/mcp/tools/rag`        | `X-User-Id` | `{ query: str }` | **501** (P1) |
 | GET    | `/livez`                | none        | — | `200 {"status":"ok"}` — process up; no dependency probes |
 | GET    | `/readyz`               | none        | — | `200` if MariaDB + ES + Redis + MinIO probes all OK; else `503 application/problem+json` listing failed deps |
@@ -310,6 +375,7 @@ CREATE TABLE documents (
   owner_user_id    VARCHAR(64)  NOT NULL,
   source_id        VARCHAR(128) NOT NULL,
   source_app       VARCHAR(64)  NOT NULL,
+  source_title     VARCHAR(256) NOT NULL,
   source_workspace VARCHAR(64)  NULL,
   storage_uri      VARCHAR(512) NOT NULL,
   status           ENUM('UPLOADED','PENDING','READY','FAILED','DELETING') NOT NULL,
@@ -340,7 +406,7 @@ No physical FK. ORM-level cascade only.
 
 **ID classification:**
 - **Internal IDs** (UID rule applies — `00_rule.md` §ID Generation Strategy): `document_id`, `chunk_id` — `CHAR(26)` UUIDv7→Crockford Base32, generated by `new_id()`.
-- **External IDs** (UID rule does **not** apply — supplied by clients or upstream systems): `source_id` (client-supplied stable identifier, any string ≤ 128 chars: URL hash, external doc ID, etc.), `source_app` (≤ 64 chars; namespace/source system, e.g. `confluence`, `slack`, `intranet`), `source_workspace` (optional ≤ 64 chars; intra-app scope, e.g. team or space), `owner_user_id` (HR `employee_id`, any string ≤ 64 chars).
+- **External IDs / display fields** (UID rule does **not** apply — supplied by clients or upstream systems): `source_id` (client-supplied stable identifier, any string ≤ 128 chars: URL hash, external doc ID, etc.), `source_app` (≤ 64 chars; namespace/source system, e.g. `confluence`, `slack`, `intranet`), `source_title` (≤ 256 chars; human-readable display title surfaced as `sources[].title` in chat), `source_workspace` (optional ≤ 64 chars; intra-app scope, e.g. team or space), `owner_user_id` (HR `employee_id`, any string ≤ 64 chars).
 - The `task_id` returned from `POST /ingest` is the `document_id` itself; no separate task identifier exists.
 
 ### 5.2 Elasticsearch `chunks_v1`
@@ -408,3 +474,6 @@ Two artefacts, **both versioned in git**, both consulted at boot:
 | **B8** | 2026-05-04 | Test infra | Integration backends | **`testcontainers-python`** spins up MariaDB + ES + Redis + MinIO per integration session (module-scoped fixture; reused across tests). | docker-compose (manual, dev-only); in-process fakes (drift from prod behaviour). | T0.9 / all `tests/integration/` |
 | **B9** | 2026-05-04 | Resilience | Reconciler scheduler | **Kubernetes `CronJob`** `*/5 * * * *` running `python -m ragent.reconciler` with `concurrencyPolicy: Forbid`. | TaskIQ scheduled task (broker outage = sweeper outage; sweeper is the recovery surface for broker outage); APScheduler (in-process, dies with worker pod). | §3.6 / T5.2 |
 | **B10** | 2026-05-04 | Storage | MinIO object key format | **`{source_app}_{source_id}_{document_id}`** in single bucket `ragent-staging`. `source_app` and `source_id` sanitised to `[A-Za-z0-9._-]`. The `document_id` suffix preserves uniqueness during transient duplicates pre-supersede. | `{document_id}` only (loses source provenance for forensic / orphan-sweep tooling); `{owner}/{document_id}` (P1 OPEN has no owner); per-source bucket (bucket sprawl). | §3.1 / T2.5 / T2.6 |
+| **B11** | 2026-05-04 | Ingest | Display-title surface for chat `sources[]` | **`source_title` mandatory** on `POST /ingest` (`VARCHAR(256) NOT NULL`). Joined into chat retrieval as `sources[].title`. 422 if missing/empty. | Derive from filename (lossy, ugly); store on chunk row (denormalised, redundant); make optional + fallback to `source_id` (degrades chat UX). | §3.1 / §4.1 / §5.1 / T2 |
+| **B12** | 2026-05-04 | Chat API | Streaming vs non-streaming response | **Two endpoints:** `POST /chat` (synchronous JSON, §3.4.2 body) and `POST /chat/stream` (SSE; same body delivered as terminal `done` event after `delta` chunks). Shared §3.4.1 request schema with defaults (`provider="openai"`, `model="gptoss-120b"`, `temperature=0.7`, `maxTokens=4096`); auto-prepend default system message if absent. | Single SSE-only endpoint (forces streaming clients on simple integrations); single JSON-only endpoint (loses streaming UX); `Accept`-header content-negotiation on one path (subtle bugs, harder to test). | §3.4 / §4.1 / T3.3–T3.4 |
+| **B13** | 2026-05-04 | Chat API | `sources[].type` taxonomy | **Reserved enum** `"knowledge" \| "app" \| "workspace"`; **P1 always emits `"knowledge"`**. Future phase derives `"app"` / `"workspace"` (likely from `source_app` / `source_workspace` semantics). | Drop the field for now (breaks forward-compat clients); ship full derivation logic in P1 (out of scope, no acceptance criteria). | §3.4.2 / T3.3 |
