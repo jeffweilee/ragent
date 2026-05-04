@@ -269,6 +269,7 @@ data: {"type":"done", ...response schema as 3.4.2…}\n\n
 - **S6g filter AND combination (B29)** — Given chunks across `(source_app, source_workspace)` ∈ {(confluence,eng), (confluence,hr), (slack,eng)}, When `POST /chat {…, "source_app":"confluence", "source_workspace":"eng"}` runs, Then `sources[]` contains only the (confluence, eng) row.
 - **S6h filter no-match (B29)** — Given no chunks match the filter, When the request runs, Then `sources` is `null` (§3.4.2 contract for empty retrieval) and the LLM still answers.
 - **S6i filter empty string rejected (B29)** — Given `source_app=""`, When the request runs, Then 422 problem+json with `error_code=CHAT_FILTER_INVALID`; no LLM call is made.
+- **S36 CJK BM25 via icu_tokenizer (B26)** — Given a document body containing `"產品規格"` (no whitespace) indexed under the `icu_text` analyzer, When a chat query for `"產品規格"` runs against `chunks_v1`, Then the BM25 retriever returns the chunk; the same query against a `standard`-analyzed control index does not. Proves the analyzer choice (B26) is functionally required for CJK retrieval.
 - **S8**  — `POST /mcp/tools/rag` returns 501 in P1 (handler not yet wired).
 
 ---
