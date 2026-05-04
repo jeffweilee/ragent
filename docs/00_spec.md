@@ -63,7 +63,26 @@ Provide an enterprise internal knowledge retrieval backend that ingests private 
    └─ attempt > 5 → status=FAILED + alert
 ```
 
-### 3.2 Chat (sync, SSE)
+### 3.2 Ingest CRUD (Create / Read / List / Delete)
+
+```
+[Client] --POST   /ingest                  --> create flow above (3.1)
+[Client] --GET    /ingest/{document_id}    --> DocumentRepository.get → 200 {status, attempt, updated_at}
+[Client] --GET    /ingest?after=&limit=    --> OpenFGA list_resource → DocumentRepository.list_by_ids → 200 {items, next_cursor}
+[Client] --DELETE /ingest/{document_id}    --> IngestService.delete (cascade)
+                                                ├─ OpenFGA check(can_view*)        # *P1 reuse; P2 → can_delete
+                                                ├─ DocumentRepository.acquire(FOR UPDATE) → status=DELETING
+                                                ├─ PluginRegistry.fan_out_delete(document_id)   ◀── all plugins, idempotent
+                                                │     ├─ VectorExtractor.delete()  → ES bulk _op_type=delete
+                                                │     └─ StubGraphExtractor.delete() → no-op
+                                                │       (P3) GraphExtractor.delete() → entity GC
+                                                ├─ ChunkRepository.delete_by_document_id
+                                                ├─ MinIOClient.delete_object(storage_uri)
+                                                └─ DocumentRepository.delete         → 204 No Content
+                                            (any failure mid-cascade → row stays DELETING; Reconciler retries)
+```
+
+### 3.3 Chat (sync, SSE)
 
 ```
 [Client] --POST /chat (JWT, query)--> [Router]
@@ -158,6 +177,39 @@ sequenceDiagram
   end
 ```
 
+### 4.5 Cascade Delete
+
+```mermaid
+sequenceDiagram
+  participant R as Router (DELETE /ingest/{id})
+  participant S as IngestService
+  participant FGA as OpenFGA
+  participant DR as DocumentRepository
+  participant Reg as PluginRegistry
+  participant V as VectorExtractor
+  participant G as StubGraphExtractor
+  participant CR as ChunkRepository
+  participant M as MinIO
+  R->>S: delete(document_id, user_id)
+  S->>FGA: check(user_id, can_view*, document_id)
+  FGA-->>S: allowed
+  S->>DR: acquire(FOR UPDATE) → status=DELETING
+  S->>Reg: fan_out_delete(document_id)
+  par
+    Reg->>V: delete()  → ES bulk _op_type=delete
+    V-->>Reg: ok
+  and
+    Reg->>G: delete()  → no-op
+    G-->>Reg: ok
+  end
+  Reg-->>S: {vector: ok, graph_stub: ok}
+  S->>CR: delete_by_document_id
+  S->>M: delete_object(storage_uri)
+  S->>DR: delete(document_id)
+  S-->>R: 204 No Content
+  Note over S,DR: any failure mid-cascade<br/>→ row stays DELETING<br/>→ Reconciler retries
+```
+
 ---
 
 ## 5. Scenario Testing (Given-When-Then) — Phase 1
@@ -167,7 +219,11 @@ sequenceDiagram
 - **S1 happy path** — Given a JWT-authenticated user, When they POST a 1 MB PDF to `/ingest`, Then the response is 202 with `task_id` (26-char base32), MinIO contains the original, `documents.status=UPLOADED`, and within 60 s status transitions to `READY` with chunks in Elasticsearch.
 - **S2 reconciler recovery** — Given a worker crashes after `status=PENDING` but before fan-out completes, When 5 min elapse, Then Reconciler re-kiqs `(document_id, attempt+1)` and the task completes idempotently (no duplicate ES docs).
 - **S3 failed after retries** — Given a required plugin fails 5 times, When the 6th attempt would fire, Then `status=FAILED`, structured-log line `event=ingest.failed document_id=… attempt=6` is emitted.
-- **S10 state-machine negative paths** (per `00_journal.md` rule) — Given any document, When transitioning UPLOADED→FAILED, READY→PENDING, or FAILED→READY, Then `update_status()` raises `IllegalStateTransition`.
+- **S10 state-machine negative paths** (per `00_journal.md` rule) — Given any document, When transitioning UPLOADED→FAILED, READY→PENDING, or FAILED→READY, Then `update_status()` raises `IllegalStateTransition`. Allowed: UPLOADED→PENDING, PENDING→READY, PENDING→FAILED, PENDING→DELETING, READY→DELETING, FAILED→DELETING.
+- **S12 delete cascade happy path** — Given a `READY` document with chunks in ES and original in MinIO, When user with `can_view` calls `DELETE /ingest/{id}`, Then status flips to `DELETING`, all plugins' `delete()` is invoked exactly once, ES has no chunks for that `document_id`, MinIO has no object, and the `documents` row is removed; response is 204.
+- **S13 delete partial failure → reconciler** — Given a delete where `MinIOClient.delete_object` raises, When the request returns 500, Then the row stays `DELETING`; on the next Reconciler tick (≤ 5 min) the cascade is retried idempotently and completes.
+- **S14 delete idempotent** — Given a document already deleted, When `DELETE /ingest/{id}` is called again, Then the response is 204 (not 404) and no plugin/ES/MinIO operation is performed.
+- **S15 list pagination + ACL pre-filter** — Given user A with `list_resource` returning {d1, d2, d3} and stored 5 documents, When `GET /ingest?limit=2` is called, Then response items ⊆ {d1, d2, d3}, length ≤ 2, and `next_cursor` continues correctly on the second page.
 
 ### Domain: Pluggable Pipeline
 
@@ -191,12 +247,14 @@ sequenceDiagram
 
 ### 6.1 REST / SSE
 
-| Method | Path | Auth | Request | Response |
-|---|---|---|---|---|
-| POST | `/ingest` | JWT | `multipart/form-data: file` | 202 `{ "task_id": "<26-char-base32>" }` |
-| GET  | `/ingest/{document_id}` | JWT | — | 200 `{ "status": "UPLOADED\|PENDING\|READY\|FAILED", "attempt": int, "updated_at": "<ISO 8601 Z>" }` |
-| POST | `/chat` | JWT | `{ "query": str }` | `text/event-stream` (`delta`*, `done`) |
-| POST | `/mcp/tools/rag` | JWT | `{ "query": str }` | **501 Not Implemented** (P1); P2 → `{ answer, sources[] }` |
+| Method | Path | Auth | Request | Response | Notes |
+|---|---|---|---|---|---|
+| POST   | `/ingest` | JWT | `multipart/form-data: file` (≤ 50 MB, MIME ∈ allow-list §6.5) | `202 { "task_id": "<26-char-base32>" }` | Async; pipeline kicked. |
+| GET    | `/ingest/{document_id}` | JWT | — | `200 { "status": "UPLOADED\|PENDING\|READY\|FAILED\|DELETING", "attempt": int, "updated_at": "<ISO 8601 Z>" }` | OpenFGA `check(can_view)`; 403 on deny, 404 on missing. |
+| GET    | `/ingest?after=<document_id>&limit=<≤100>` | JWT | — | `200 { "items": [...], "next_cursor": "<id>\|null" }` | OpenFGA `list_resource` pre-filter; cursor pagination by `document_id` ASC. |
+| DELETE | `/ingest/{document_id}` | JWT | — | `204 No Content` (also 204 if already deleted — idempotent) | Cascade per §3.2 / §4.5; P1 reuses `can_view` (Accepted Risk, see journal 2026-05-04). |
+| POST   | `/chat` | JWT | `{ "query": str }` | `text/event-stream` (`delta`*, `done`) | OpenFGA dual-filter §3.3 / §4.3. |
+| POST   | `/mcp/tools/rag` | JWT | `{ "query": str }` | **501 Not Implemented** (P1); P2 → `{ answer, sources[] }` | Schema published in P1; handler in P2. |
 
 **SSE event payloads:**
 
@@ -222,8 +280,9 @@ class ExtractorPlugin(Protocol):
 
 ```python
 class PluginRegistry:
-    def register(self, plugin: ExtractorPlugin) -> None: ...   # raises DuplicatePluginError
-    def fan_out(self, document_id: str) -> dict[str, Result]:  # name -> Result(ok, error?)
+    def register(self, plugin: ExtractorPlugin) -> None: ...           # raises DuplicatePluginError
+    def fan_out(self, document_id: str) -> dict[str, Result]: ...      # extract path
+    def fan_out_delete(self, document_id: str) -> dict[str, Result]: ...  # delete path; fans to ALL plugins
     def all_required_ok(self, results: dict[str, Result]) -> bool: ...
 ```
 
@@ -240,6 +299,40 @@ class PluginRegistry:
 
 All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on the client; structured logs.
 
+### 6.5 Supported Ingest Data (single source of truth)
+
+| Format | MIME | Haystack Converter | Extraction Surface | Max Size | Phase |
+|---|---|---|---|---|---|
+| `.txt`  | `text/plain`                                                                 | `TextFileToDocument`     | UTF-8 text                                  | 50 MB | **P1** |
+| `.md`   | `text/markdown`                                                              | `MarkdownToDocument`     | rendered text (front-matter stripped)       | 50 MB | **P1** |
+| `.pdf`  | `application/pdf`                                                            | `PyPDFToDocument`        | text-extractable pages only (no OCR P1)     | 50 MB | **P1** |
+| `.docx` | `application/vnd.openxmlformats-officedocument.wordprocessingml.document`    | `DOCXToDocument`         | body paragraphs + tables (text)             | 50 MB | **P1** |
+| `.pptx` | `application/vnd.openxmlformats-officedocument.presentationml.presentation`  | `PPTXToDocument`         | slide text + speaker notes (images skipped) | 50 MB | **P1** |
+| `.html` | `text/html`                                                                  | `HTMLToDocument`         | visible text (script/style stripped)        | 50 MB | **P1** |
+| `.csv`  | `text/csv`                                                                   | `CSVToDocument`          | row-as-document                              | 50 MB | **P1** |
+| `.xlsx` | `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`          | `XLSXToDocument`         | active sheets, header row                    | 50 MB | P2     |
+| image-PDF | `application/pdf`                                                          | `OCRRouter` + `PyPDFToDocument` | OCR text                              | 50 MB | P2     |
+| image (.png/.jpg/.tiff) | `image/*`                                                      | `TesseractOCR`           | OCR text                                     | 50 MB | P3     |
+
+> **Router contract**: Reject early — unsupported MIME → 415; size > 50 MB → 413. P2/P3 rows are **declared but disabled** in P1 (returning 415 with explicit "deferred" message).
+
+### 6.6 Pipeline Catalog (single source of truth)
+
+| Pipeline | Components (in order) | Pluggable Points | Timeout / Retry | Test Path | Phase |
+|---|---|---|---|---|---|
+| **Ingest** | `FileTypeRouter` → `*ToDocument` (per §6.5) → `DocumentCleaner` → `LanguageRouter` → `{ChineseDocumentSplitter \| NLTKDocumentSplitter}` → `Embedder (third-party API)` → `ChunkRepository.bulk_insert` → `PluginRegistry.fan_out(document_id)` | (a) per-format converter; (b) per-language splitter; (c) Embedder client; (d) registered extractor plugins | per-component default; Embedder retry 3× @ 1 s | `tests/integration/test_ingest_pipeline.py` | **P1** sync |
+| **Chat**   | `QueryEmbedder` → `{ESVectorRetriever ∥ ESBM25Retriever}` → `DocumentJoiner(reciprocal_rank_fusion)` → *(P2)* `RerankSuperComponent` → `OpenFGA post-filter` → `LLMClient.stream` | (a) add `LightRAGRetriever` (P3, 200 ms TO → []); (b) `Rerank` SuperComponent (P2 swap); (c) `ConditionalRouter` for intent split (P2); (d) replace LLM model via env | LLM 120 s timeout, retry 3× @ 2 s; OpenFGA 10 s, retry 3× @ 0.5 s | `tests/integration/test_chat_pipeline.py` | **P1** sync (AsyncPipeline P2) |
+
+### 6.7 Plugin Catalog (single source of truth)
+
+| Plugin Class | `name` | `required` | `queue` | `extract()` Behavior | `delete()` Behavior | Test Path | Phase |
+|---|---|:-:|---|---|---|---|---|
+| `VectorExtractor`    | `vector`     | True  | `extract.vector` | embed chunks (Embedding API) → ES bulk index by `chunk_id` | ES bulk `_op_type=delete` by `chunk_id` (idempotent) | `tests/unit/test_vector_extractor.py`     | **P1** |
+| `StubGraphExtractor` | `graph_stub` | False | `extract.graph`  | no-op (returns None)                                       | no-op                                                | `tests/unit/test_plugin_protocol.py`      | **P1** |
+| `GraphExtractor`     | `graph`      | False | `extract.graph`  | LightRAG entity extraction → Graph DB upsert               | entity GC + ref_count decrement                      | `tests/unit/test_graph_extractor.py`      | P3     |
+
+> **Registration**: explicit in `src/ragent/bootstrap.py`. `PluginRegistry.register()` raises `DuplicatePluginError` on conflicting `name`. Lint check (Phase 2 CI) verifies this table matches `PluginRegistry.registered_names()`.
+
 ---
 
 ## 7. Data Structure
@@ -251,7 +344,7 @@ CREATE TABLE documents (
   document_id    CHAR(26)    PRIMARY KEY,
   owner_user_id  VARCHAR(64) NOT NULL,
   storage_uri    VARCHAR(512) NOT NULL,
-  status         ENUM('UPLOADED','PENDING','READY','FAILED') NOT NULL,
+  status         ENUM('UPLOADED','PENDING','READY','FAILED','DELETING') NOT NULL,
   attempt        INT          NOT NULL DEFAULT 0,
   created_at     DATETIME(6)  NOT NULL,
   updated_at     DATETIME(6)  NOT NULL,

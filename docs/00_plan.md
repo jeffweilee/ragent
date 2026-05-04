@@ -36,7 +36,7 @@
 | 2.7 | Green | `src/ragent/utility/id_gen.py` (UUIDv7 → 16 bytes → base32, ≤ 30 LOC). | [ ] | Dev |
 | 2.8 | Red | `tests/unit/test_datetime_utility.py` — `utcnow()` always tz-aware UTC; `to_iso` ends in `Z`; `from_db` attaches UTC. | [ ] | QA |
 | 2.9 | Green | `src/ragent/utility/datetime.py`. | [ ] | Dev |
-| 2.10 | Red | `tests/unit/test_state_machine.py` — `update_status()` accepts UPLOADED→PENDING, PENDING→READY, PENDING→FAILED; rejects UPLOADED→FAILED, READY→PENDING, FAILED→READY (S10). | [ ] | QA |
+| 2.10 | Red | `tests/unit/test_state_machine.py` — accepts {UPLOADED→PENDING, PENDING→READY, PENDING→FAILED, PENDING→DELETING, READY→DELETING, FAILED→DELETING}; rejects {UPLOADED→FAILED, READY→PENDING, FAILED→READY, DELETING→READY} (S10). | [ ] | QA |
 
 ### W3 — Ingest Repositories, Storage, and Service
 
@@ -44,6 +44,7 @@
 |---|---|---|:---:|---|
 | 3.0 | Red | `tests/unit/test_plugin_registry.py` — register + fan_out + all_required_ok; duplicate name raises (S11); required-failure → all_required_ok=False. | [ ] | QA |
 | 3.0g | Green | `src/ragent/plugins/registry.py` (`PluginRegistry`, `Result`, `DuplicatePluginError`). | [ ] | Dev |
+| 3.0d | Red | `tests/unit/test_plugin_registry_delete.py` — `fan_out_delete` calls **every** registered plugin (including optional); idempotent on already-deleted. | [ ] | QA |
 | 3.1 | Red | `tests/unit/test_vector_extractor.py` — already implemented. | [x] | QA |
 | 3.2 | Green | `src/ragent/plugins/vector.py` — already implemented. | [x] | Dev |
 | 3.3 | Red | `tests/unit/test_document_repository.py` — `create / get / acquire (FOR UPDATE) / update_status (state-machine guarded) / list_pending`. Uses sqlite-in-memory or fake. | [ ] | QA |
@@ -52,8 +53,14 @@
 | 3.5g | Green | `src/ragent/repositories/chunk_repository.py`. | [ ] | Dev |
 | 3.6 | Red | `tests/unit/test_minio_client.py` — `put_object` returns `minio://...` URI; `delete_object` idempotent. | [ ] | QA |
 | 3.6g | Green | `src/ragent/storage/minio_client.py`. | [ ] | Dev |
-| 3.7 | Red | `tests/unit/test_ingest_service.py` — orchestrates put → repo.create → kiq dispatch; rolls back row if MinIO put fails. | [ ] | QA |
-| 3.7g | Green | `src/ragent/services/ingest_service.py` (Service layer, ≤ 30 LOC/method). | [ ] | Dev |
+| 3.7 | Red | `tests/unit/test_ingest_service_create.py` — orchestrates MIME validate (≤50 MB, allow-list per spec §6.5) → put → repo.create → kiq dispatch; rolls back row if MinIO put fails. | [ ] | QA |
+| 3.7g | Green | `src/ragent/services/ingest_service.py::create` (Service layer, ≤ 30 LOC/method). | [ ] | Dev |
+| 3.7d | Red | `tests/unit/test_ingest_service_delete.py` — cascade order (FGA check → acquire→DELETING → fan_out_delete → chunks → MinIO → row); on MinIO failure row stays DELETING (S13); idempotent re-delete returns 204 without side effects (S14). | [ ] | QA |
+| 3.7dg | Green | `src/ragent/services/ingest_service.py::delete`. | [ ] | Dev |
+| 3.7l | Red | `tests/unit/test_ingest_service_list.py` — `list_resource` pre-filter + cursor pagination by `document_id` ASC; `next_cursor` correctness across page boundary (S15). | [ ] | QA |
+| 3.7lg | Green | `src/ragent/services/ingest_service.py::list`. | [ ] | Dev |
+| 3.7r | Red | `tests/unit/test_ingest_router.py` — Router only parses/validates and delegates; no DB or service business logic; 415 on bad MIME, 413 on >50 MB. | [ ] | QA |
+| 3.7rg | Green | `src/ragent/routers/ingest.py` (Router layer; FastAPI; declares all endpoints in spec §6.1). | [ ] | Dev |
 | 3.8 | Red | `tests/integration/test_ingest_pipeline.py` — Haystack ingest pipeline happy path (Convert→Clean→Lang→Split→Embed). Mock embedder. | [ ] | QA |
 | 3.8g | Green | `src/ragent/pipelines/factory.py` + `pipelines/ingest.py`. | [ ] | Dev |
 
@@ -92,6 +99,7 @@
 |---|---|---|:---:|---|
 | 6.1 | Red | `tests/integration/test_reconciler_redispatch.py` — PENDING > 5 min → re-kiq, idempotent (S2). | [ ] | QA |
 | 6.1g | Green | `src/ragent/reconciler.py` (TaskIQ scheduled, `SELECT … FOR UPDATE SKIP LOCKED`). | [ ] | Dev |
+| 6.1d | Red | `tests/integration/test_reconciler_delete_resume.py` — DELETING > 5 min → resume cascade idempotently (S13). | [ ] | QA |
 | 6.2 | Red | `tests/integration/test_reconciler_failed.py` — attempt > 5 → status=FAILED + structured-log alert (S3). | [ ] | QA |
 | 6.2g | Green | Status transition + structured log line `event=ingest.failed`. | [ ] | Dev |
 | 6.3 | Structural | OpenAPI schema for `POST /mcp/tools/rag` published; handler returns 501. | [ ] | Dev |
