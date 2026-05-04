@@ -21,12 +21,12 @@
 | # | Category | Task | Depends On | Status | Owner | Week |
 |---|---|---|---|:---:|---|:---:|
 | T0.1 | Structural | Scaffold project: `pyproject.toml`, `src/ragent/`, `tests/{unit,integration,e2e}/`. | — | [x] | Dev | W1 |
-| T0.2 | Structural | CI alias `make check` = `ruff format . && ruff check . --fix && pytest --cov=src/ragent --cov-branch --cov-fail-under=92`. Coverage floor enforced (DoD); fails CI on drop. | T0.1 | [ ] | Dev | W1 |
-| T0.3 | Red | `tests/unit/test_id_gen.py` — `new_id()` returns 26-char Crockford base32; sortable across calls. | T0.1 | [ ] | QA | W2 |
-| T0.4 | Green | `src/ragent/utility/id_gen.py` (UUIDv7 → 16 bytes → base32; ≤ 30 LOC). | T0.3 | [ ] | Dev | W2 |
-| T0.5 | Red | `tests/unit/test_datetime_utility.py` — `utcnow()` tz-aware UTC; `to_iso` ends in `Z`; `from_db` attaches UTC. | T0.1 | [ ] | QA | W2 |
-| T0.6 | Green | `src/ragent/utility/datetime.py`. | T0.5 | [ ] | Dev | W2 |
-| T0.7 | Red | `tests/unit/test_state_machine.py` — accepts `{UPLOADED→PENDING, PENDING→READY, PENDING→FAILED, PENDING→DELETING, READY→DELETING, FAILED→DELETING}`; rejects `{UPLOADED→FAILED, READY→PENDING, FAILED→READY, DELETING→READY}` (S10). | T0.1 | [ ] | QA | W2 |
+| T0.2 | Structural | CI alias `make check` = `ruff format . && ruff check . --fix && pytest --cov=src/ragent --cov-branch --cov-fail-under=92`. Coverage floor enforced (DoD); fails CI on drop. | T0.1 | [x] | Dev | W1 |
+| T0.3 | Red | `tests/unit/test_id_gen.py` — `new_id()` returns 26-char Crockford base32; sortable across calls. | T0.1 | [x] | QA | W2 |
+| T0.4 | Green | `src/ragent/utility/id_gen.py` (UUIDv7 → 16 bytes → base32; ≤ 30 LOC). | T0.3 | [x] | Dev | W2 |
+| T0.5 | Red | `tests/unit/test_datetime_utility.py` — `utcnow()` tz-aware UTC; `to_iso` ends in `Z`; `from_db` attaches UTC. | T0.1 | [x] | QA | W2 |
+| T0.6 | Green | `src/ragent/utility/datetime.py`. | T0.5 | [x] | Dev | W2 |
+| T0.7 | Red | `tests/unit/test_state_machine.py` — accepts `{UPLOADED→PENDING, PENDING→READY, PENDING→FAILED, PENDING→DELETING, READY→DELETING, FAILED→DELETING}`; rejects `{UPLOADED→FAILED, READY→PENDING, FAILED→READY, DELETING→READY}` (S10). | T0.1 | [x] | QA | W2 |
 | T0.8 | Structural | DB migration `migrations/001_initial.sql` — `documents` (cols: `document_id CHAR(26) PK`, `create_user VARCHAR(64) NOT NULL` (B14), `source_id VARCHAR(128) NOT NULL` (B11), `source_app VARCHAR(64) NOT NULL` (B11), `source_title VARCHAR(256) NOT NULL` (B11), `source_workspace VARCHAR(64) NULL` (B11), `object_key VARCHAR(256) NOT NULL` (B25), `status ENUM(...)`, `attempt INT`, `created_at`, `updated_at`) + `chunks` (cols: `chunk_id`, `document_id`, `ord`, `text MEDIUMTEXT`, `lang VARCHAR(8)`); indexes `idx_status_updated`, `idx_source_app_id_status_created`, `idx_create_user_document`, `idx_document` (chunks). Alembic configured (B3). | T0.1 | [ ] | Dev | W2 |
 | T0.8a | Structural | `migrations/schema.sql` — consolidated snapshot reflecting head; updated in lockstep with every `NNN_*.sql` (B3). | T0.8 | [ ] | Dev | W2 |
 | T0.8e | Structural | Check in `resources/es/chunks_v1.json` — full settings + mappings per spec §5.2 (icu_text analyzer, bbq_hnsw vector index, B26). | T0.1 | [ ] | Dev | W2 |
@@ -50,9 +50,9 @@
 | T1.3 | Red | Stub graph extractor no-op test (S5). | T0.1 | [x] | QA | W2 |
 | T1.4 | Green | `src/ragent/plugins/stub_graph.py`. | T1.3 | [x] | Dev | W2 |
 | T1.5 | Refactor | Reviewed: no shared boilerplate; kept duplicated per YAGNI. | T1.4 | [x] | Reviewer | W2 |
-| T1.6 | Red | `tests/unit/test_plugin_registry.py` — register, fan_out, all_required_ok; duplicate name raises (S11); per-plugin timeout `PLUGIN_FAN_OUT_TIMEOUT_SECONDS` (B28, default 60) overrun → `Result(error="timeout")` (R6, S29). | T1.2 | [ ] | QA | W3 |
-| T1.7 | Green | `src/ragent/plugins/registry.py` (`PluginRegistry`, `Result`, `DuplicatePluginError`); concurrent fan_out with per-plugin timeout from `PLUGIN_FAN_OUT_TIMEOUT_SECONDS`. | T1.6 | [ ] | Dev | W3 |
-| T1.8 | Red | `tests/unit/test_plugin_registry_delete.py` — `fan_out_delete` calls every registered plugin; per-plugin timeout `PLUGIN_FAN_OUT_TIMEOUT_SECONDS` (B28); idempotent on already-deleted; runs with no DB tx open (R10, P-E). | T1.7 | [ ] | QA | W3 |
+| T1.6 | Red | `tests/unit/test_plugin_registry.py` — register, fan_out, all_required_ok; duplicate name raises (S11); per-plugin timeout `PLUGIN_FAN_OUT_TIMEOUT_SECONDS` (B28, default 60) overrun → `Result(error="timeout")` (R6, S29). | T1.2 | [x] | QA | W3 |
+| T1.7 | Green | `src/ragent/plugins/registry.py` (`PluginRegistry`, `Result`, `DuplicatePluginError`); concurrent fan_out with per-plugin timeout from `PLUGIN_FAN_OUT_TIMEOUT_SECONDS`. | T1.6 | [x] | Dev | W3 |
+| T1.8 | Red | `tests/unit/test_plugin_registry_delete.py` — `fan_out_delete` calls every registered plugin; per-plugin timeout `PLUGIN_FAN_OUT_TIMEOUT_SECONDS` (B28); idempotent on already-deleted; runs with no DB tx open (R10, P-E). | T1.7 | [x] | QA | W3 |
 | T1.9 | Red | `tests/unit/test_vector_extractor.py` — Protocol conformance, embedder/ES bulk once, idempotent rerun, delete clears chunks. | T1.2 | [x] | QA | W3 |
 | T1.10 | Green | `src/ragent/plugins/vector.py`. | T1.9 | [x] | Dev | W3 |
 | T1.11 | Red | `tests/unit/test_vector_extractor_title.py` — **B15 + B17 + B29 amendment.** Constructor signature `VectorExtractor(repo, chunks, embedder, es)` (B17 DI). Mock embedder captures the input string per chunk and asserts it equals `f"{source_title}\n\n{chunk_text}"`; ES bulk body for each chunk carries `title`, `text`, `lang`, `chunk_id`, `document_id`, `embedding`, `source_app`, `source_workspace` per `resources/es/chunks_v1.json` (B26, B29) — no extra fields, no missing fields. `source_workspace` is omitted from the bulk row when the document's column is NULL (ES `keyword` handles missing values; `term` filter on the field will not match those rows). `extract(document_id)` reads all four denormalised values via `repo.get(document_id)`. Constructor injection only — no service-locator, no globals. | T1.10, T2.2, T0.8e | [ ] | QA | W3+ |
