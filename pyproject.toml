@@ -52,6 +52,7 @@ addopts = "-q --tb=short"
 
 [dependency-groups]
 dev = [
+    "fakeredis>=2.35.1",
     "pytest>=9.0.3",
     "pytest-cov>=7.1.0",
     "ruff>=0.15.12",

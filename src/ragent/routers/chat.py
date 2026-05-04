@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import json
+import math
+import time
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Header, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from ragent.clients.rate_limiter import RateLimiter
+from ragent.errors.problem import problem
 from ragent.schemas.chat import ChatRequest, normalize_messages
 
 _PIPELINE_INPUT_KEY = "query_embedder"
@@ -41,14 +45,39 @@ def _run_retrieval(retrieval_pipeline: Any, req: ChatRequest) -> list[Any]:
     return result.get(_PIPELINE_OUTPUT_KEY, {}).get("documents", [])
 
 
-def create_chat_router(retrieval_pipeline: Any, llm_client: Any) -> APIRouter:
+def _rate_limit_response(reset_at: float) -> Response:
+    retry_after = max(1, math.ceil(reset_at - time.time()))
+    resp = problem(429, "CHAT_RATE_LIMITED", "Too Many Requests")
+    resp.headers["Retry-After"] = str(retry_after)
+    return resp
+
+
+def create_chat_router(
+    retrieval_pipeline: Any,
+    llm_client: Any,
+    rate_limiter: RateLimiter | None = None,
+    rate_limit: int = 60,
+    rate_limit_window: int = 60,
+) -> APIRouter:
     router = APIRouter()
+
+    def _check_rate(user_id: str | None) -> Response | None:
+        if rate_limiter is None or user_id is None:
+            return None
+        result = rate_limiter.check(
+            f"chat:{user_id}", limit=rate_limit, window_seconds=rate_limit_window
+        )
+        if not result.allowed:
+            return _rate_limit_response(result.reset_at or 0)
+        return None
 
     @router.post("/chat")
     async def chat(
         body: ChatRequest,
         x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
-    ) -> JSONResponse:
+    ) -> Response:
+        if (blocked := _check_rate(x_user_id)) is not None:
+            return blocked
         messages = normalize_messages(body)
         docs = _run_retrieval(retrieval_pipeline, body)
         result = llm_client.chat(
@@ -71,7 +100,9 @@ def create_chat_router(retrieval_pipeline: Any, llm_client: Any) -> APIRouter:
     async def chat_stream(
         body: ChatRequest,
         x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
-    ) -> StreamingResponse:
+    ) -> Response:
+        if (blocked := _check_rate(x_user_id)) is not None:
+            return blocked
         messages = normalize_messages(body)
         docs = _run_retrieval(retrieval_pipeline, body)
         sources = _build_sources(docs)
