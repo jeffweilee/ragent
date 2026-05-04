@@ -1,113 +1,147 @@
 # 00_plan.md — Master TDD Implementation Checklist
 
-> Source: `docs/00_spec.md` · Authored: 2026-05-03 · Revised: 2026-05-04
+> Source: `docs/00_spec.md` · Authored: 2026-05-03 · Reorg: 2026-05-04 (Round 3)
 > Workflow: `CLAUDE.md` §THE TDD WORKFLOW · Tidy First (`[STRUCTURAL]` / `[BEHAVIORAL]`)
-> Each `[ ]` = one Red→Green→Refactor cycle, each cycle = one (or two: structural-then-behavioral) commit.
-> Revision driver: `docs/team/2026_05_04_phase1_review.md` — added ingest CRUD lifecycle (W2.5), pluggable pipeline registry (3.0), 3rd-party API clients (W3+), and OpenFGA dual-filter (W5).
+> Each `[ ]` = one Red→Green→Refactor cycle, each cycle = one (or two) commit.
+> Reorg driver: `docs/team/2026_05_04_phase1_round3_reorg_auth_off.md` (12/12 6-of-6).
+
+## Status legend
+- `[x]` delivered
+- `[ ]` TODO
+- `[~]` scaffolded-but-disabled (P1 OPEN mode — auth track deferred to P2)
 
 ---
 
-## Phase 1 — Core MLP (5–7 weeks)
+## Phase 1 — Tracks (organized by domain)
 
-### W1 — Analysis & Skeleton
+> Tasks are grouped by domain track. The `Week` column preserves the original 5–7-week schedule for PM. The `Depends On` column lists prior task IDs that must be `[x]` first.
 
-| # | Category | Task | Status | Owner |
-|---|---|---|:---:|---|
-| 1.1 | Analysis | Define Domain Boundaries & Mission Objectives in `00_spec.md`. | [x] | Architect |
-| 1.2 | Design | Map Business Scenarios & write Given-When-Then in `00_spec.md` §5. | [x] | QA / PM |
-| 1.3 | Structural | Scaffold project: `pyproject.toml` (Python 3.12, uv, ruff, pytest), `src/ragent/`, `tests/{unit,integration,e2e}`. | [x] | Dev |
-| 1.4 | Structural | CI command alias `make check` = `ruff format . && ruff check . --fix && pytest`. | [ ] | Dev |
+### Track T0 — Foundations (utilities & state machine)
 
-### W2 — Plugin Protocol v1 (Red → Green → Refactor)
+| # | Category | Task | Depends On | Status | Owner | Week |
+|---|---|---|---|:---:|---|:---:|
+| T0.1 | Structural | Scaffold project: `pyproject.toml`, `src/ragent/`, `tests/{unit,integration,e2e}/`. | — | [x] | Dev | W1 |
+| T0.2 | Structural | CI alias `make check` = `ruff format . && ruff check . --fix && pytest`. | T0.1 | [ ] | Dev | W1 |
+| T0.3 | Red | `tests/unit/test_id_gen.py` — `new_id()` returns 26-char Crockford base32; sortable across calls. | T0.1 | [ ] | QA | W2 |
+| T0.4 | Green | `src/ragent/utility/id_gen.py` (UUIDv7 → 16 bytes → base32; ≤ 30 LOC). | T0.3 | [ ] | Dev | W2 |
+| T0.5 | Red | `tests/unit/test_datetime_utility.py` — `utcnow()` tz-aware UTC; `to_iso` ends in `Z`; `from_db` attaches UTC. | T0.1 | [ ] | QA | W2 |
+| T0.6 | Green | `src/ragent/utility/datetime.py`. | T0.5 | [ ] | Dev | W2 |
+| T0.7 | Red | `tests/unit/test_state_machine.py` — accepts `{UPLOADED→PENDING, PENDING→READY, PENDING→FAILED, PENDING→DELETING, READY→DELETING, FAILED→DELETING}`; rejects `{UPLOADED→FAILED, READY→PENDING, FAILED→READY, DELETING→READY}` (S10). | T0.1 | [ ] | QA | W2 |
 
-| # | Category | Task | Status | Owner |
-|---|---|---|:---:|---|
-| 2.1 | Red | Plugin Protocol attribute/method conformance test. | [x] | QA |
-| 2.2 | Green | `src/ragent/plugins/protocol.py` (`runtime_checkable` Protocol). | [x] | Dev |
-| 2.3 | Red | Stub graph extractor no-op test. | [x] | QA |
-| 2.4 | Green | `src/ragent/plugins/stub_graph.py`. | [x] | Dev |
-| 2.5 | Refactor | Reviewed: no shared boilerplate; kept duplicated per YAGNI. | [x] | Reviewer |
+### Track T1 — Plugins (Protocol + Registry + Extractors)
 
-### W2.5 — Ingest CRUD Lifecycle Foundations (NEW — team review 2026-05-04)
+| # | Category | Task | Depends On | Status | Owner | Week |
+|---|---|---|---|:---:|---|:---:|
+| T1.1 | Red | `tests/unit/test_plugin_protocol.py` — protocol attribute/method conformance (S4). | T0.1 | [x] | QA | W2 |
+| T1.2 | Green | `src/ragent/plugins/protocol.py` (`runtime_checkable` Protocol). | T1.1 | [x] | Dev | W2 |
+| T1.3 | Red | Stub graph extractor no-op test (S5). | T0.1 | [x] | QA | W2 |
+| T1.4 | Green | `src/ragent/plugins/stub_graph.py`. | T1.3 | [x] | Dev | W2 |
+| T1.5 | Refactor | Reviewed: no shared boilerplate; kept duplicated per YAGNI. | T1.4 | [x] | Reviewer | W2 |
+| T1.6 | Red | `tests/unit/test_plugin_registry.py` — register, fan_out, all_required_ok; duplicate name raises (S11). | T1.2 | [ ] | QA | W3 |
+| T1.7 | Green | `src/ragent/plugins/registry.py` (`PluginRegistry`, `Result`, `DuplicatePluginError`). | T1.6 | [ ] | Dev | W3 |
+| T1.8 | Red | `tests/unit/test_plugin_registry_delete.py` — `fan_out_delete` calls every registered plugin; idempotent on already-deleted. | T1.7 | [ ] | QA | W3 |
+| T1.9 | Red | `tests/unit/test_vector_extractor.py` — Protocol conformance, embedder/ES bulk once, idempotent rerun, delete clears chunks. | T1.2 | [x] | QA | W3 |
+| T1.10 | Green | `src/ragent/plugins/vector.py`. | T1.9 | [x] | Dev | W3 |
 
-| # | Category | Task | Status | Owner |
-|---|---|---|:---:|---|
-| 2.6 | Red | `tests/unit/test_id_gen.py` — `new_id()` returns 26-char Crockford base32; sortable across calls. | [ ] | QA |
-| 2.7 | Green | `src/ragent/utility/id_gen.py` (UUIDv7 → 16 bytes → base32, ≤ 30 LOC). | [ ] | Dev |
-| 2.8 | Red | `tests/unit/test_datetime_utility.py` — `utcnow()` always tz-aware UTC; `to_iso` ends in `Z`; `from_db` attaches UTC. | [ ] | QA |
-| 2.9 | Green | `src/ragent/utility/datetime.py`. | [ ] | Dev |
-| 2.10 | Red | `tests/unit/test_state_machine.py` — accepts {UPLOADED→PENDING, PENDING→READY, PENDING→FAILED, PENDING→DELETING, READY→DELETING, FAILED→DELETING}; rejects {UPLOADED→FAILED, READY→PENDING, FAILED→READY, DELETING→READY} (S10). | [ ] | QA |
+### Track T2 — Ingest CRUD (Repositories + Storage + Service + Router)
 
-### W3 — Ingest Repositories, Storage, and Service
+| # | Category | Task | Depends On | Status | Owner | Week |
+|---|---|---|---|:---:|---|:---:|
+| T2.1 | Red  | `tests/unit/test_document_repository.py` — `create / get / acquire (FOR UPDATE) / update_status (state-machine guarded) / list_pending / list / delete`. | T0.4, T0.6, T0.7 | [ ] | QA | W3 |
+| T2.2 | Green | `src/ragent/repositories/document_repository.py` (Repository layer; CRUD only). | T2.1 | [ ] | Dev | W3 |
+| T2.3 | Red  | `tests/unit/test_chunk_repository.py` — `bulk_insert / delete_by_document_id`. | T0.4 | [ ] | QA | W3 |
+| T2.4 | Green | `src/ragent/repositories/chunk_repository.py`. | T2.3 | [ ] | Dev | W3 |
+| T2.5 | Red  | `tests/unit/test_minio_client.py` — `put_object` returns `minio://...`; `delete_object` idempotent. | T0.1 | [ ] | QA | W3 |
+| T2.6 | Green | `src/ragent/storage/minio_client.py`. | T2.5 | [ ] | Dev | W3 |
+| T2.7 | Red  | `tests/unit/test_ingest_service_create.py` — MIME validate (≤50 MB, allow-list per spec §4.2) → put → repo.create → kiq dispatch; rolls back row if MinIO put fails. | T2.2, T2.6, T1.7 | [ ] | QA | W3 |
+| T2.8 | Green | `src/ragent/services/ingest_service.py::create` (≤ 30 LOC/method). | T2.7 | [ ] | Dev | W3 |
+| T2.9 | Red  | `tests/unit/test_ingest_service_delete.py` — cascade order (P1 OPEN: skip FGA → acquire→DELETING → fan_out_delete → chunks → MinIO → row); on MinIO failure row stays DELETING (S13); idempotent re-delete returns 204 (S14). | T2.8, T1.8 | [ ] | QA | W3 |
+| T2.10 | Green | `src/ragent/services/ingest_service.py::delete`. | T2.9 | [ ] | Dev | W3 |
+| T2.11 | Red | `tests/unit/test_ingest_service_list.py` — cursor pagination by `document_id` ASC; `next_cursor` correctness (S15, P1 OPEN: no ACL pre-filter). | T2.2 | [ ] | QA | W3 |
+| T2.12 | Green | `src/ragent/services/ingest_service.py::list`. | T2.11 | [ ] | Dev | W3 |
+| T2.13 | Red | `tests/unit/test_ingest_router.py` — Router only parses/validates and delegates; 415 on bad MIME, 413 on >50 MB; `X-User-Id` required (P1 OPEN). | T2.8, T2.10, T2.12 | [ ] | QA | W3 |
+| T2.14 | Green | `src/ragent/routers/ingest.py` (declares all endpoints in spec §4.1). | T2.13 | [ ] | Dev | W3 |
 
-| # | Category | Task | Status | Owner |
-|---|---|---|:---:|---|
-| 3.0 | Red | `tests/unit/test_plugin_registry.py` — register + fan_out + all_required_ok; duplicate name raises (S11); required-failure → all_required_ok=False. | [ ] | QA |
-| 3.0g | Green | `src/ragent/plugins/registry.py` (`PluginRegistry`, `Result`, `DuplicatePluginError`). | [ ] | Dev |
-| 3.0d | Red | `tests/unit/test_plugin_registry_delete.py` — `fan_out_delete` calls **every** registered plugin (including optional); idempotent on already-deleted. | [ ] | QA |
-| 3.1 | Red | `tests/unit/test_vector_extractor.py` — already implemented. | [x] | QA |
-| 3.2 | Green | `src/ragent/plugins/vector.py` — already implemented. | [x] | Dev |
-| 3.3 | Red | `tests/unit/test_document_repository.py` — `create / get / acquire (FOR UPDATE) / update_status (state-machine guarded) / list_pending`. Uses sqlite-in-memory or fake. | [ ] | QA |
-| 3.4 | Green | `src/ragent/repositories/document_repository.py` (Repository layer; only CRUD, no business logic). | [ ] | Dev |
-| 3.5 | Red | `tests/unit/test_chunk_repository.py` — `bulk_insert / delete_by_document_id`. | [ ] | QA |
-| 3.5g | Green | `src/ragent/repositories/chunk_repository.py`. | [ ] | Dev |
-| 3.6 | Red | `tests/unit/test_minio_client.py` — `put_object` returns `minio://...` URI; `delete_object` idempotent. | [ ] | QA |
-| 3.6g | Green | `src/ragent/storage/minio_client.py`. | [ ] | Dev |
-| 3.7 | Red | `tests/unit/test_ingest_service_create.py` — orchestrates MIME validate (≤50 MB, allow-list per spec §6.5) → put → repo.create → kiq dispatch; rolls back row if MinIO put fails. | [ ] | QA |
-| 3.7g | Green | `src/ragent/services/ingest_service.py::create` (Service layer, ≤ 30 LOC/method). | [ ] | Dev |
-| 3.7d | Red | `tests/unit/test_ingest_service_delete.py` — cascade order (FGA check → acquire→DELETING → fan_out_delete → chunks → MinIO → row); on MinIO failure row stays DELETING (S13); idempotent re-delete returns 204 without side effects (S14). | [ ] | QA |
-| 3.7dg | Green | `src/ragent/services/ingest_service.py::delete`. | [ ] | Dev |
-| 3.7l | Red | `tests/unit/test_ingest_service_list.py` — `list_resource` pre-filter + cursor pagination by `document_id` ASC; `next_cursor` correctness across page boundary (S15). | [ ] | QA |
-| 3.7lg | Green | `src/ragent/services/ingest_service.py::list`. | [ ] | Dev |
-| 3.7r | Red | `tests/unit/test_ingest_router.py` — Router only parses/validates and delegates; no DB or service business logic; 415 on bad MIME, 413 on >50 MB. | [ ] | QA |
-| 3.7rg | Green | `src/ragent/routers/ingest.py` (Router layer; FastAPI; declares all endpoints in spec §6.1). | [ ] | Dev |
-| 3.8 | Red | `tests/integration/test_ingest_pipeline.py` — Haystack ingest pipeline happy path (Convert→Clean→Lang→Split→Embed). Mock embedder. | [ ] | QA |
-| 3.8g | Green | `src/ragent/pipelines/factory.py` + `pipelines/ingest.py`. | [ ] | Dev |
+### Track T3 — Pipelines (Ingest + Chat assembly)
 
-### W4 — Chat Pipeline + LLM/Embedding Clients + Token Manager
+| # | Category | Task | Depends On | Status | Owner | Week |
+|---|---|---|---|:---:|---|:---:|
+| T3.1 | Red | `tests/integration/test_ingest_pipeline.py` — Haystack Convert→Clean→Lang→Split→Embed; mock embedder. | T2.4, T4.2 | [ ] | QA | W3 |
+| T3.2 | Green | `src/ragent/pipelines/factory.py` + `pipelines/ingest.py`. | T3.1 | [ ] | Dev | W3 |
+| T3.3 | Red | `tests/integration/test_chat_pipeline.py` — emits ≥1 `delta` then exactly one `done` with sources (S6); P1 OPEN: pre/post-filter no-op. | T4.4, T4.6 | [ ] | QA | W4 |
+| T3.4 | Green | `src/ragent/pipelines/chat.py` (QueryEmbedder → {ESVector ∥ ESBM25} → DocumentJoiner(RRF) → LLM stream). | T3.3 | [ ] | Dev | W4 |
 
-| # | Category | Task | Status | Owner |
-|---|---|---|:---:|---|
-| 4.0 | Red | `tests/unit/test_token_manager.py` — refresh at `expiresAt − 5min` boundary using fake clock (S9). | [ ] | QA |
-| 4.0g | Green | `src/ragent/clients/auth.py` (`TokenManager`). | [ ] | Dev |
-| 4.1 | Red | `tests/unit/test_embedding_client.py` — POST shape, `bge-m3`, validates `returnCode == 96200`, retry 3× @ 1s. | [ ] | QA |
-| 4.1g | Green | `src/ragent/clients/embedding.py`. | [ ] | Dev |
-| 4.2 | Red | `tests/unit/test_llm_client.py` — streaming async iterator yields deltas; timeout 120s; retry 3× @ 2s. | [ ] | QA |
-| 4.2g | Green | `src/ragent/clients/llm.py`. | [ ] | Dev |
-| 4.3 | Red | `tests/unit/test_rerank_client.py` — POST shape, `bge-reranker-base`, `top_k=2`. (Wired in P2.) | [ ] | QA |
-| 4.3g | Green | `src/ragent/clients/rerank.py`. | [ ] | Dev |
-| 4.4 | Red | `tests/integration/test_chat_pipeline.py` — emits ≥1 `delta` then exactly one `done` with sources (S6). | [ ] | QA |
-| 4.4g | Green | `src/ragent/pipelines/chat.py` (QueryEmbedder → {ESVector ∥ ESBM25} → DocumentJoiner(RRF) → LLM stream). | [ ] | Dev |
+### Track T4 — Third-Party Clients
 
-### W5 — Auth Layer + OpenFGA Dual-Filter
+| # | Category | Task | Depends On | Status | Owner | Week |
+|---|---|---|---|:---:|---|:---:|
+| T4.1 | Red | `tests/unit/test_token_manager.py` — refresh at `expiresAt − 5min` boundary using fake clock (S9). | T0.6 | [ ] | QA | W4 |
+| T4.2 | Green | `src/ragent/clients/auth.py` (`TokenManager`). | T4.1 | [ ] | Dev | W4 |
+| T4.3 | Red | `tests/unit/test_embedding_client.py` — POST shape, `bge-m3`, validates `returnCode == 96200`, retry 3× @ 1 s. | T4.2 | [ ] | QA | W4 |
+| T4.4 | Green | `src/ragent/clients/embedding.py`. | T4.3 | [ ] | Dev | W4 |
+| T4.5 | Red | `tests/unit/test_llm_client.py` — streaming async iterator yields deltas; timeout 120 s; retry 3× @ 2 s. | T4.2 | [ ] | QA | W4 |
+| T4.6 | Green | `src/ragent/clients/llm.py`. | T4.5 | [ ] | Dev | W4 |
+| T4.7 | Red | `tests/unit/test_rerank_client.py` — POST shape, `bge-reranker-base`, `top_k=2`. (Wired P2.) | T4.2 | [ ] | QA | W4 |
+| T4.8 | Green | `src/ragent/clients/rerank.py`. | T4.7 | [ ] | Dev | W4 |
 
-| # | Category | Task | Status | Owner |
-|---|---|---|:---:|---|
-| 5.1 | Red | `tests/unit/test_jwt.py` — invalid → 401 on `/chat` and `/ingest`. | [ ] | QA |
-| 5.1g | Green | `src/ragent/auth/jwt.py` (FastAPI dependency). | [ ] | Dev |
-| 5.2 | Red | `tests/unit/test_openfga_client.py` — `list_resource` and `check` request/response per `00_rule.md`. | [ ] | QA |
-| 5.2g | Green | `src/ragent/clients/openfga.py`. | [ ] | Dev |
-| 5.3 | Red | `tests/unit/test_acl_filter.py` — `list_resource` result becomes ES `terms` filter on `document_id`. | [ ] | QA |
-| 5.3g | Green | `src/ragent/auth/acl.py::build_es_filter(user_id)`. | [ ] | Dev |
-| 5.4 | Red | `tests/integration/test_post_filter.py` — even if ES returns leaked doc, `check` drops + audit log (S7). | [ ] | QA |
-| 5.4g | Green | Post-filter wired into `pipelines/chat.py`. | [ ] | Dev |
-| 5.5 | Red | `tests/integration/test_user_isolation.py` — user A cannot retrieve user B's private doc. | [ ] | QA |
+### Track T5 — Resilience (Reconciler)
 
-### W6 — Reconciler, MCP Schema, Observability, Acceptance
+| # | Category | Task | Depends On | Status | Owner | Week |
+|---|---|---|---|:---:|---|:---:|
+| T5.1 | Red | `tests/integration/test_reconciler_redispatch.py` — PENDING > 5 min → re-kiq, idempotent (S2). | T2.2, T2.8 | [ ] | QA | W6 |
+| T5.2 | Green | `src/ragent/reconciler.py` (TaskIQ scheduled, `SELECT … FOR UPDATE SKIP LOCKED`). | T5.1 | [ ] | Dev | W6 |
+| T5.3 | Red | `tests/integration/test_reconciler_failed.py` — attempt > 5 → status=FAILED + structured-log alert (S3). | T5.2 | [ ] | QA | W6 |
+| T5.4 | Green | Status transition + structured log line `event=ingest.failed`. | T5.3 | [ ] | Dev | W6 |
+| T5.5 | Red | `tests/integration/test_reconciler_delete_resume.py` — DELETING > 5 min → resume cascade idempotently (S13). | T2.10 | [ ] | QA | W6 |
+| T5.6 | Green | Reconciler resumes DELETING. | T5.5 | [ ] | Dev | W6 |
 
-| # | Category | Task | Status | Owner |
-|---|---|---|:---:|---|
-| 6.1 | Red | `tests/integration/test_reconciler_redispatch.py` — PENDING > 5 min → re-kiq, idempotent (S2). | [ ] | QA |
-| 6.1g | Green | `src/ragent/reconciler.py` (TaskIQ scheduled, `SELECT … FOR UPDATE SKIP LOCKED`). | [ ] | Dev |
-| 6.1d | Red | `tests/integration/test_reconciler_delete_resume.py` — DELETING > 5 min → resume cascade idempotently (S13). | [ ] | QA |
-| 6.2 | Red | `tests/integration/test_reconciler_failed.py` — attempt > 5 → status=FAILED + structured-log alert (S3). | [ ] | QA |
-| 6.2g | Green | Status transition + structured log line `event=ingest.failed`. | [ ] | Dev |
-| 6.3 | Structural | OpenAPI schema for `POST /mcp/tools/rag` published; handler returns 501. | [ ] | Dev |
-| 6.4 | Red | `tests/unit/test_mcp_endpoint.py` — returns 501 in P1 (S8). | [ ] | QA |
-| 6.5 | Refactor | Wire OTEL: Haystack auto-trace + FastAPI middleware (no custom spans). | [ ] | SRE |
-| 6.6 | Acceptance | E2E 100-doc ingest → success rate ≥ 99% (`tests/e2e/test_ingest_success_rate.py`). | [ ] | QA |
-| 6.7 | Acceptance | Golden 50-Q top-3 ≥ 70% (`tests/e2e/test_golden_set.py`). | [ ] | QA |
-| 6.8 | Acceptance | Chaos: kill worker mid-ingest → Reconciler recovers ≤ 10 min. | [ ] | SRE |
+### Track T6 — MCP Schema (501 in P1)
+
+| # | Category | Task | Depends On | Status | Owner | Week |
+|---|---|---|---|:---:|---|:---:|
+| T6.1 | Structural | OpenAPI schema for `POST /mcp/tools/rag` published; handler returns 501. | T2.14 | [ ] | Dev | W6 |
+| T6.2 | Red | `tests/unit/test_mcp_endpoint.py` — returns 501 in P1 (S8). | T6.1 | [ ] | QA | W6 |
+
+### Track T7 — Observability + Acceptance
+
+| # | Category | Task | Depends On | Status | Owner | Week |
+|---|---|---|---|:---:|---|:---:|
+| T7.1 | Refactor | Wire OTEL: Haystack auto-trace + FastAPI middleware (no custom spans). Logs include `auth_mode=open` field. | T3.4 | [ ] | SRE | W6 |
+| T7.2 | Acceptance | E2E 100-doc ingest → success rate ≥ 99% (`tests/e2e/test_ingest_success_rate.py`). | T3.2, T5.6 | [ ] | QA | W6 |
+| T7.3 | Acceptance | Golden 50-Q top-3 ≥ 70% (`tests/e2e/test_golden_set.py`). | T3.4 | [ ] | QA | W6 |
+| T7.4 | Acceptance | Chaos: kill worker mid-ingest → Reconciler recovers ≤ 10 min. | T5.6 | [ ] | SRE | W6 |
+| T7.5 | Structural | Startup guard: `bootstrap.py` refuses to start unless `RAGENT_AUTH_DISABLED=true AND RAGENT_ENV=dev`; bind 127.0.0.1 only in dev. | T2.14 | [ ] | SRE | W6 |
+| T7.6 | Red | `tests/unit/test_bootstrap_startup_guard.py` — non-dev env or AUTH_DISABLED unset → SystemExit. | T7.5 | [ ] | QA | W6 |
+
+### Track T8 — Auth & Permission `[~] DISABLED IN P1 → P2`
+
+> P1 produces NO code in this track. Interfaces are documented in `00_spec.md` §3.5 and §4.5; implementation lands in P2.
+
+| # | Category | Task | Depends On | Status | Owner | Phase |
+|---|---|---|---|:---:|---|:---:|
+| T8.1 | Red  | `tests/unit/test_jwt.py` — invalid → 401 on `/chat` and `/ingest`. | (P2 entry) | [~] | QA | P2 |
+| T8.2 | Green | `src/ragent/auth/jwt.py` (FastAPI dependency). | T8.1 | [~] | Dev | P2 |
+| T8.3 | Red  | `tests/unit/test_openfga_client.py` — `list_resource` and `check` request/response per `00_rule.md`. | (P2 entry) | [~] | QA | P2 |
+| T8.4 | Green | `src/ragent/clients/openfga.py`. | T8.3 | [~] | Dev | P2 |
+| T8.5 | Red  | `tests/unit/test_acl_filter.py` — `list_resource` becomes ES `terms` filter on `document_id`. | T8.4 | [~] | QA | P2 |
+| T8.6 | Green | `src/ragent/auth/acl.py::build_es_filter(user_id)`. | T8.5 | [~] | Dev | P2 |
+| T8.7 | Red  | `tests/integration/test_post_filter.py` — `check` drops leaked doc + audit log (S7). | T8.4 | [~] | QA | P2 |
+| T8.8 | Green | Post-filter wired into `pipelines/chat.py` and `services/ingest_service.py::delete`. | T8.7 | [~] | Dev | P2 |
+| T8.9 | Red  | `tests/integration/test_user_isolation.py` — user A cannot retrieve user B's private doc. | T8.6, T8.8 | [~] | QA | P2 |
+| T8.10 | Behavioral | Introduce `can_delete` OpenFGA relation; replace `can_view` for delete authorization. | T8.4 | [~] | Dev | P2 |
+| T8.11 | Behavioral | `HRClient` + JWT-subject → employee resolution; populate `documents.owner_user_id`. | T8.2 | [~] | Dev | P2 |
+
+---
+
+## Definition of Done — Phase 1
+
+- [ ] Every `[ ]` row in tracks T0–T7 is `[x]`.
+- [ ] T8 rows remain `[~]` (auth disabled by design); spec §3.5 and §4.5 still describe the P2 contract.
+- [ ] `uv run ruff format . && uv run ruff check . && uv run pytest` exits 0.
+- [ ] Acceptance metrics T7.2 / T7.3 / T7.4 met.
+- [ ] Startup guard (T7.5) verified (`pytest tests/unit/test_bootstrap_startup_guard.py`).
+- [ ] Every BDD scenario in `00_spec.md` §3.X has a corresponding plan row whose test path matches.
+- [ ] `00_journal.md` carries at least one P1 lesson per domain encountered.
 
 ---
 
@@ -115,31 +149,21 @@
 
 | # | Category | Task | Status | Owner |
 |---|---|---|:---:|---|
-| 7.1 | Stability | SRE: HA verification, monitoring, alerting rules. | [ ] | SRE |
-| 7.2 | Behavioral | Wire `RerankClient` into chat pipeline as `HybridRetrieverWithRerank` SuperComponent. | [ ] | Dev |
-| 7.3 | Behavioral | `ConditionalRouter` intent split (translate/summarize → Direct LLM). | [ ] | Dev |
-| 7.4 | Behavioral | MCP Tool real handler. | [ ] | Dev |
-| 7.5 | Behavioral | `HRClient` + JWT-subject → employee resolution; populate `documents.owner_user_id` from HR. | [ ] | Dev |
-| 7.6 | Quality | RAGAS eval in CI; large-file streaming; chaos drills. | [ ] | QA |
-| 7.7 | Behavioral | Switch ingest/chat to Haystack `AsyncPipeline`. | [ ] | Dev |
-| 7.8 | Closure | Sync docs + record lessons in `00_journal.md`. | [ ] | Master |
+| P2.1 | Stability | SRE: HA verification, monitoring, alerting rules. | [ ] | SRE |
+| P2.2 | Security | Re-enable Auth & OpenFGA per Track T8 (all `[~]` rows → `[ ]` → `[x]`). Remove `RAGENT_AUTH_DISABLED` env knob. | [ ] | Dev |
+| P2.3 | Behavioral | Wire `RerankClient` into chat pipeline as `HybridRetrieverWithRerank` SuperComponent. | [ ] | Dev |
+| P2.4 | Behavioral | `ConditionalRouter` intent split (translate/summarize → Direct LLM). | [ ] | Dev |
+| P2.5 | Behavioral | MCP Tool real handler. | [ ] | Dev |
+| P2.6 | Quality | RAGAS eval in CI; large-file streaming; chaos drills. | [ ] | QA |
+| P2.7 | Behavioral | Switch ingest/chat to Haystack `AsyncPipeline`. | [ ] | Dev |
+| P2.8 | Closure | Sync docs + record lessons in `00_journal.md`. | [ ] | Master |
 
 ## Phase 3 — Graph Enhancement (conditional, +4–6 weeks) — *gated*
 
 | # | Category | Task | Status | Owner |
 |---|---|---|:---:|---|
-| 8.1 | Decision | ADR: Graph DB selection (Neo4j Community / ArcadeDB / Memgraph). | [ ] | Architect |
-| 8.2 | Behavioral | Replace `StubGraphExtractor` with real `GraphExtractor` (same Protocol). | [ ] | Dev |
-| 8.3 | Behavioral | `HybridRetrieverWithGraph` SuperComponent + `LightRAGRetriever` (200 ms TO → []). | [ ] | Dev |
-| 8.4 | Governance | Entity soft-delete + ref_count + GC + reconciliation cron. | [ ] | Dev |
-| 8.5 | Gate | P2 stable ≥ 4 weeks AND hybrid alone underperforms on relational queries. | [ ] | PM |
-
----
-
-## Definition of Done — Phase 1
-
-- [ ] All Phase 1 boxes ticked `[x]`.
-- [ ] `uv run ruff format . && uv run ruff check . && uv run pytest` exits 0.
-- [ ] Exit metrics 6.6 / 6.7 / 6.8 met.
-- [ ] `00_journal.md` updated with at least one Phase 1 lesson per domain encountered.
-- [ ] Every BDD scenario in `00_spec.md` §5 has a corresponding plan row whose test path matches the scenario name.
+| P3.1 | Decision | ADR: Graph DB selection (Neo4j Community / ArcadeDB / Memgraph). | [ ] | Architect |
+| P3.2 | Behavioral | Replace `StubGraphExtractor` with real `GraphExtractor` (same Protocol). | [ ] | Dev |
+| P3.3 | Behavioral | `HybridRetrieverWithGraph` SuperComponent + `LightRAGRetriever` (200 ms TO → []). | [ ] | Dev |
+| P3.4 | Governance | Entity soft-delete + ref_count + GC + reconciliation cron. | [ ] | Dev |
+| P3.5 | Gate | P2 stable ≥ 4 weeks AND hybrid alone underperforms on relational queries. | [ ] | PM |
