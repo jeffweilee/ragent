@@ -19,7 +19,9 @@
    - **Veto**: $\ge 4/6$ Reject.
    - **Tie (3:3)**: Master casts the deciding vote.
    - **Else**: Move to next round.
-5. **Output**: Decision summary + Trade-offs OR Pending items for next round.
+5. **Output**: Decision summary + Trade-offs OR Pending items for next round. Update `docs/00_plan.md`, `docs/00 _spec.md`. 
+6. **Relfection**: Refine `docs/00_journal.md`, prevent error prone recurrence through actionable, domain-specific guidelines. Dedupicate required.
+7. **Next**: Enter next round until plan and spec and implementation matches and no todo items.
 
 ---
 
