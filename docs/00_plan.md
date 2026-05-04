@@ -27,6 +27,7 @@
 | T0.5 | Red | `tests/unit/test_datetime_utility.py` — `utcnow()` tz-aware UTC; `to_iso` ends in `Z`; `from_db` attaches UTC. | T0.1 | [ ] | QA | W2 |
 | T0.6 | Green | `src/ragent/utility/datetime.py`. | T0.5 | [ ] | Dev | W2 |
 | T0.7 | Red | `tests/unit/test_state_machine.py` — accepts `{UPLOADED→PENDING, PENDING→READY, PENDING→FAILED, PENDING→DELETING, READY→DELETING, FAILED→DELETING}`; rejects `{UPLOADED→FAILED, READY→PENDING, FAILED→READY, DELETING→READY}` (S10). | T0.1 | [ ] | QA | W2 |
+| T0.8 | Structural | DB migration `001_initial.sql` — documents + chunks tables, indexes `idx_status_updated`, `idx_source_app_id_status_created`, `idx_owner_document` (P-D, prepares P2 list endpoint). | T0.1 | [ ] | Dev | W2 |
 
 ### Track T1 — Plugins (Protocol + Registry + Extractors)
 
@@ -37,9 +38,9 @@
 | T1.3 | Red | Stub graph extractor no-op test (S5). | T0.1 | [x] | QA | W2 |
 | T1.4 | Green | `src/ragent/plugins/stub_graph.py`. | T1.3 | [x] | Dev | W2 |
 | T1.5 | Refactor | Reviewed: no shared boilerplate; kept duplicated per YAGNI. | T1.4 | [x] | Reviewer | W2 |
-| T1.6 | Red | `tests/unit/test_plugin_registry.py` — register, fan_out, all_required_ok; duplicate name raises (S11). | T1.2 | [ ] | QA | W3 |
-| T1.7 | Green | `src/ragent/plugins/registry.py` (`PluginRegistry`, `Result`, `DuplicatePluginError`). | T1.6 | [ ] | Dev | W3 |
-| T1.8 | Red | `tests/unit/test_plugin_registry_delete.py` — `fan_out_delete` calls every registered plugin; idempotent on already-deleted. | T1.7 | [ ] | QA | W3 |
+| T1.6 | Red | `tests/unit/test_plugin_registry.py` — register, fan_out, all_required_ok; duplicate name raises (S11); per-plugin timeout 60 s overrun → `Result(error="timeout")` (R6, S29). | T1.2 | [ ] | QA | W3 |
+| T1.7 | Green | `src/ragent/plugins/registry.py` (`PluginRegistry`, `Result`, `DuplicatePluginError`); concurrent fan_out with per-plugin timeout. | T1.6 | [ ] | Dev | W3 |
+| T1.8 | Red | `tests/unit/test_plugin_registry_delete.py` — `fan_out_delete` calls every registered plugin; per-plugin timeout 60 s; idempotent on already-deleted; runs with no DB tx open (R10, P-E). | T1.7 | [ ] | QA | W3 |
 | T1.9 | Red | `tests/unit/test_vector_extractor.py` — Protocol conformance, embedder/ES bulk once, idempotent rerun, delete clears chunks. | T1.2 | [x] | QA | W3 |
 | T1.10 | Green | `src/ragent/plugins/vector.py`. | T1.9 | [x] | Dev | W3 |
 
@@ -47,7 +48,7 @@
 
 | # | Category | Task | Depends On | Status | Owner | Week |
 |---|---|---|---|:---:|---|:---:|
-| T2.1 | Red  | `tests/unit/test_document_repository.py` — `create (mandatory source_id + source_app, optional source_workspace) / get / acquire (FOR UPDATE) / update_status (state-machine guarded) / list_pending / list / delete / list_ready_by_source(source_id, source_app) FOR UPDATE SKIP LOCKED` (returns all READY rows for the pair; service picks MAX(created_at) survivor). | T0.4, T0.6, T0.7 | [ ] | QA | W3 |
+| T2.1 | Red  | `tests/unit/test_document_repository.py` — `create (mandatory source_id + source_app, optional source_workspace) / get / acquire_nowait (FOR UPDATE NOWAIT raises on lock contention — R7, S28) / update_status (state-machine guarded) / list_pending / list_uploaded (R1) / list / delete / list_ready_by_source(source_id, source_app) FOR UPDATE SKIP LOCKED / pop_oldest_loser_for_supersede(source_id, source_app) FOR UPDATE SKIP LOCKED LIMIT 1 (P-C single-loser-per-tx) / find_multi_ready_groups (R3)`. | T0.4, T0.6, T0.7 | [ ] | QA | W3 |
 | T2.2 | Green | `src/ragent/repositories/document_repository.py` (Repository layer; CRUD only). | T2.1 | [ ] | Dev | W3 |
 | T2.3 | Red  | `tests/unit/test_chunk_repository.py` — `bulk_insert / delete_by_document_id`. | T0.4 | [ ] | QA | W3 |
 | T2.4 | Green | `src/ragent/repositories/chunk_repository.py`. | T2.3 | [ ] | Dev | W3 |
@@ -55,7 +56,7 @@
 | T2.6 | Green | `src/ragent/storage/minio_client.py`. | T2.5 | [ ] | Dev | W3 |
 | T2.7 | Red  | `tests/unit/test_ingest_service_create.py` — validate `source_id`+`source_app` mandatory (S23 → 422 on missing/empty), MIME validate (≤50 MB, allow-list per spec §4.2) → put → repo.create (persists `source_id`, `source_app`, optional `source_workspace`) → kiq dispatch; rolls back row if MinIO put fails. | T2.2, T2.6, T1.7 | [ ] | QA | W3 |
 | T2.8 | Green | `src/ragent/services/ingest_service.py::create` (≤ 30 LOC/method). | T2.7 | [ ] | Dev | W3 |
-| T2.9 | Red  | `tests/unit/test_ingest_service_delete.py` — cascade order (acquire→DELETING → fan_out_delete → chunks → row; MinIO already cleared at terminal state, deleted in cascade only if status is UPLOADED/PENDING); on any failure row stays DELETING (S13); idempotent re-delete returns 204 (S14). | T2.8, T1.8 | [ ] | QA | W3 |
+| T2.9 | Red  | `tests/unit/test_ingest_service_delete.py` — cascade order (acquire NOWAIT → DELETING short tx → fan_out_delete OUTSIDE tx → chunks → MinIO if UPLOADED/PENDING → row); on any failure row stays DELETING (S13); idempotent re-delete returns 204 (S14); fan_out_delete runs with no DB tx open (P-E). | T2.8, T1.8 | [ ] | QA | W3 |
 | T2.10 | Green | `src/ragent/services/ingest_service.py::delete`. | T2.9 | [ ] | Dev | W3 |
 | T2.11 | Red | `tests/unit/test_ingest_service_list.py` — cursor pagination by `document_id` ASC; `next_cursor` correctness (S15, P1 OPEN: no ACL filter). | T2.2 | [ ] | QA | W3 |
 | T2.12 | Green | `src/ragent/services/ingest_service.py::list`. | T2.11 | [ ] | Dev | W3 |
@@ -69,9 +70,13 @@
 | T3.1 | Red | `tests/integration/test_ingest_pipeline.py` — Haystack Convert→Clean→Lang→Split→Embed; mock embedder. | T2.4, T4.2 | [ ] | QA | W3 |
 | T3.2 | Green | `src/ragent/pipelines/factory.py` + `pipelines/ingest.py`. | T3.1 | [ ] | Dev | W3 |
 | T3.2a | Red | `tests/integration/test_worker_minio_cleanup.py` — terminal status (`READY` or `FAILED`) is committed **before** `MinIOClient.delete_object` is called; if the delete raises, the document still ends up in the terminal status and an `event=minio.orphan_object` log is emitted (S16, S21). On retry path (still `PENDING`), MinIO object is retained. | T3.2 | [ ] | QA | W3 |
-| T3.2b | Green | Worker task: commit terminal status first; then best-effort `MinIOClient.delete_object` (errors logged, not raised). | T3.2a | [ ] | Dev | W3 |
-| T3.2c | Red | `tests/integration/test_supersede_task.py` — on `READY`, kiq `ingest.supersede`; task selects all `READY` rows with same `(source_id, source_app)`, keeps `MAX(created_at)`, cascade-deletes the rest (S17); same `source_id` with different `source_app` coexists (S22); out-of-order finish still converges to MAX(created_at) survivor (S20); FAILED never enqueues supersede (S18); idempotent re-run (S19). | T3.2b, T2.10 | [ ] | QA | W3 |
-| T3.2d | Green | `src/ragent/services/ingest_service.py::supersede(document_id)` + TaskIQ `ingest.supersede` worker; selects READY peers, keeps MAX(created_at), reuses cascade delete path for losers. | T3.2c | [ ] | Dev | W3 |
+| T3.2b | Green | Worker task: TX-A acquire NOWAIT + PENDING (commit) → pipeline body OUTSIDE tx (R2) → TX-B terminal commit (FAILED branch also runs fan_out_delete + delete_by_document_id per R5, S27) → post-commit MinIO best-effort. | T3.2a | [ ] | Dev | W3 |
+| T3.2c | Red | `tests/integration/test_supersede_task.py` — on `READY`, kiq `ingest.supersede`; task pops oldest loser one-at-a-time and commits per-loser (P-C, S31), keeps `MAX(created_at)`, cascade-deletes the rest (S17); same `source_id` with different `source_app` coexists (S22); out-of-order finish still converges to MAX(created_at) survivor (S20); FAILED never enqueues supersede (S18); idempotent re-run (S19). | T3.2b, T2.10 | [ ] | QA | W3 |
+| T3.2d | Green | `src/ragent/services/ingest_service.py::supersede(document_id)` + TaskIQ `ingest.supersede` worker; loops `pop_oldest_loser_for_supersede` + cascade delete + commit; never holds K row locks across K cascades. | T3.2c | [ ] | Dev | W3 |
+| T3.2e | Red | `tests/integration/test_pipeline_retry_idempotent.py` — Reconciler retry of a partially-written ingest produces no duplicate chunks; pipeline first step is `delete_by_document_id` + `VectorExtractor.delete` (R4, S25). | T3.2 | [ ] | QA | W3 |
+| T3.2f | Green | Pipeline factory prepends idempotency-clean step. | T3.2e | [ ] | Dev | W3 |
+| T3.2g | Red | `tests/unit/test_worker_acquire_nowait.py` — concurrent dispatch: second worker fails fast on `FOR UPDATE NOWAIT`, re-kiqs self with backoff, does **not** increment `attempt` (R7, S28). | T3.2 | [ ] | QA | W3 |
+| T3.2h | Green | Worker uses `acquire_nowait`; on `LockNotAvailable` exception, re-kiq with exponential backoff (cap 30 s). | T3.2g | [ ] | Dev | W3 |
 | T3.3 | Red | `tests/integration/test_chat_pipeline.py` — emits ≥1 `delta` then exactly one `done` with sources (S6); P1 OPEN: ACL filter no-op. | T4.4, T4.6 | [ ] | QA | W4 |
 | T3.4 | Green | `src/ragent/pipelines/chat.py` (QueryEmbedder → {ESVector ∥ ESBM25} → DocumentJoiner(RRF) → LLM stream). | T3.3 | [ ] | Dev | W4 |
 
@@ -79,10 +84,10 @@
 
 | # | Category | Task | Depends On | Status | Owner | Week |
 |---|---|---|---|:---:|---|:---:|
-| T4.1 | Red | `tests/unit/test_token_manager.py` — refresh at `expiresAt − 5min` boundary using fake clock (S9). | T0.6 | [ ] | QA | W4 |
-| T4.2 | Green | `src/ragent/clients/auth.py` (`TokenManager`). | T4.1 | [ ] | Dev | W4 |
-| T4.3 | Red | `tests/unit/test_embedding_client.py` — POST shape, `bge-m3`, validates `returnCode == 96200`, retry 3× @ 1 s. | T4.2 | [ ] | QA | W4 |
-| T4.4 | Green | `src/ragent/clients/embedding.py`. | T4.3 | [ ] | Dev | W4 |
+| T4.1 | Red | `tests/unit/test_token_manager.py` — refresh at `expiresAt − 5min` boundary using fake clock (S9); single-flight refresh: 100 concurrent calls share one HTTP exchange (P-F). | T0.6 | [ ] | QA | W4 |
+| T4.2 | Green | `src/ragent/clients/auth.py` (`TokenManager`) with `asyncio.Lock` / `threading.Lock` around exchange. | T4.1 | [ ] | Dev | W4 |
+| T4.3 | Red | `tests/unit/test_embedding_client.py` — POST shape, `bge-m3`, validates `returnCode == 96200`, retry 3× @ 1 s; **batch interface** accepts `list[str]` and issues one HTTP call per batch up to 32 chunks (P-B). | T4.2 | [ ] | QA | W4 |
+| T4.4 | Green | `src/ragent/clients/embedding.py` (batch=32 default, configurable). | T4.3 | [ ] | Dev | W4 |
 | T4.5 | Red | `tests/unit/test_llm_client.py` — streaming async iterator yields deltas; timeout 120 s; retry 3× @ 2 s. | T4.2 | [ ] | QA | W4 |
 | T4.6 | Green | `src/ragent/clients/llm.py`. | T4.5 | [ ] | Dev | W4 |
 | T4.7 | Red | `tests/unit/test_rerank_client.py` — POST shape, `bge-reranker-base`, `top_k=2`. (Wired P2.) | T4.2 | [ ] | QA | W4 |
@@ -98,6 +103,14 @@
 | T5.4 | Green | Status transition + structured log line `event=ingest.failed`. | T5.3 | [ ] | Dev | W6 |
 | T5.5 | Red | `tests/integration/test_reconciler_delete_resume.py` — DELETING > 5 min → resume cascade idempotently (S13). | T2.10 | [ ] | QA | W6 |
 | T5.6 | Green | Reconciler resumes DELETING. | T5.5 | [ ] | Dev | W6 |
+| T5.7 | Red | `tests/integration/test_reconciler_uploaded_orphan.py` — UPLOADED > 5 min → re-kiq `ingest.pipeline` (R1, S24). | T2.8 | [ ] | QA | W6 |
+| T5.8 | Green | Reconciler arm for `UPLOADED > 5 min`. | T5.7 | [ ] | Dev | W6 |
+| T5.9 | Red | `tests/integration/test_reconciler_multi_ready_repair.py` — two READY rows for same `(source_id, source_app)` → re-enqueue `ingest.supersede` (R3, S26). | T3.2d | [ ] | QA | W6 |
+| T5.10 | Green | Reconciler arm: `GROUP BY source_id, source_app HAVING COUNT(*)>1` → kiq supersede. | T5.9 | [ ] | Dev | W6 |
+| T5.11 | Red | `tests/integration/test_reconciler_failed_cleanup.py` — on `attempt>5 → FAILED`, partial chunks/ES are cleared (R5, S27). | T5.4 | [ ] | QA | W6 |
+| T5.12 | Green | FAILED transition runs `fan_out_delete` + `delete_by_document_id` before commit. | T5.11 | [ ] | Dev | W6 |
+| T5.13 | Red | `tests/integration/test_reconciler_heartbeat.py` — every tick increments `reconciler_tick_total` and emits `event=reconciler.tick` (R8, S30). | T5.2 | [ ] | QA | W6 |
+| T5.14 | Green | Heartbeat counter + log line in `reconciler.py`. | T5.13 | [ ] | Dev | W6 |
 
 ### Track T6 — MCP Schema (501 in P1)
 
@@ -110,7 +123,8 @@
 
 | # | Category | Task | Depends On | Status | Owner | Week |
 |---|---|---|---|:---:|---|:---:|
-| T7.1 | Refactor | Wire OTEL: Haystack auto-trace + FastAPI middleware (no custom spans). Logs include `auth_mode=open` field. | T3.4 | [ ] | SRE | W6 |
+| T7.1 | Refactor | Wire OTEL: Haystack auto-trace + FastAPI middleware (no custom spans). Logs include `auth_mode=open` field. Counters: `reconciler_tick_total`, `minio_orphan_object_total`, `multi_ready_repaired_total`. Histogram: `worker_pipeline_duration_seconds`. | T3.4 | [ ] | SRE | W6 |
+| T7.1a | Red | `tests/integration/test_alerting_rules.py` — Prometheus rule fires when `reconciler_tick_total` flat for > 10 min (R8, S30). | T7.1 | [ ] | QA | W6 |
 | T7.2 | Acceptance | E2E 100-doc ingest → success rate ≥ 99% (`tests/e2e/test_ingest_success_rate.py`). | T3.2, T5.6 | [ ] | QA | W6 |
 | T7.3 | Acceptance | Golden 50-Q top-3 ≥ 70% (`tests/e2e/test_golden_set.py`). | T3.4 | [ ] | QA | W6 |
 | T7.4 | Acceptance | Chaos: kill worker mid-ingest → Reconciler recovers ≤ 10 min. | T5.6 | [ ] | SRE | W6 |
