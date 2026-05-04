@@ -5,7 +5,7 @@
 ---
 
 ## Tech Stack
-- FastAPI (Python 3.12)
+- FastAPI (Python 3.12, `uv` package management)
 - TaskIQ + Redis Sentinel
 - Haystack 2.x
 - MariaDB 10.6
