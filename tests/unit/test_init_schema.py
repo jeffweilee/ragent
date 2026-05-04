@@ -97,13 +97,12 @@ def test_init_es_raises_plugin_missing_error() -> None:
 def test_init_mariadb_executes_schema_statements() -> None:
     mock_conn = MagicMock()
     mock_engine = MagicMock()
-    mock_engine.connect.return_value = mock_conn
+    mock_engine.begin.return_value = mock_conn
     mock_conn.__enter__ = MagicMock(return_value=mock_conn)
     mock_conn.__exit__ = MagicMock(return_value=False)
     init_mariadb(mock_engine)
     # Should call execute at least twice (documents + chunks tables)
     assert mock_conn.execute.call_count >= 2
-    mock_conn.commit.assert_called_once()
 
 
 # ── _es_request ──────────────────────────────────────────────────────────────

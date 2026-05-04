@@ -62,12 +62,11 @@ def _strip_comments(sql: str) -> str:
 def init_mariadb(engine) -> None:
     """Execute schema.sql (CREATE IF NOT EXISTS) against a SQLAlchemy engine."""
     sql = (_MIGRATIONS / "schema.sql").read_text()
-    with engine.connect() as conn:
+    with engine.begin() as conn:
         for raw in sql.split(";"):
             stmt = _strip_comments(raw)
             if stmt:
                 conn.execute(text(stmt))
-        conn.commit()
 
 
 def init_es(es_url: str) -> None:
