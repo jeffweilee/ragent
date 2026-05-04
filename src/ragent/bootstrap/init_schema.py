@@ -5,8 +5,11 @@ is absent for ES. Refuses to ALTER existing tables or update existing indexes.
 Schema drift is logged as event=schema.drift and must surface in /readyz.
 """
 
+import base64
 import json
 import logging
+import os
+import ssl
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -27,12 +30,34 @@ class ESPluginMissingError(Exception):
         super().__init__(f"Required ES plugins not installed: {missing}")
 
 
+def _es_auth_headers() -> dict[str, str]:
+    """Build Authorization header from env vars (API key takes precedence over Basic)."""
+    api_key = os.environ.get("ES_API_KEY")
+    if api_key:
+        return {"Authorization": f"ApiKey {api_key}"}
+    user = os.environ.get("ES_USERNAME")
+    password = os.environ.get("ES_PASSWORD")
+    if user and password:
+        creds = base64.b64encode(f"{user}:{password}".encode()).decode()
+        return {"Authorization": f"Basic {creds}"}
+    return {}
+
+
+def _es_ssl_context() -> ssl.SSLContext:
+    ctx = ssl.create_default_context()
+    if os.environ.get("ES_VERIFY_CERTS", "true").lower() in ("false", "0"):
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+    return ctx
+
+
 def _es_request(url: str, method: str = "GET", body: dict | None = None) -> dict | None:
     data = json.dumps(body).encode() if body else None
     headers = {"Content-Type": "application/json"} if data else {}
+    headers.update(_es_auth_headers())
     req = Request(url, data=data, method=method, headers=headers)
     try:
-        with urlopen(req, timeout=30) as resp:
+        with urlopen(req, timeout=30, context=_es_ssl_context()) as resp:
             raw = resp.read()
             return json.loads(raw) if raw else {}
     except HTTPError as exc:
@@ -42,14 +67,21 @@ def _es_request(url: str, method: str = "GET", body: dict | None = None) -> dict
 
 
 def check_es_plugins(es_url: str) -> list[str]:
-    """Return list of required plugins missing from every node in the cluster."""
+    """Return required plugins missing from any node in the cluster.
+
+    Uses intersection: every node must have each plugin. A mixed cluster where
+    only some nodes have analysis-icu will still fail analysis on plugin-missing
+    nodes, so we require cluster-wide presence.
+    """
     url = f"{es_url.rstrip('/')}/_nodes/plugins"
     info = _es_request(url)
     if not info:
         return list(_REQUIRED_ES_PLUGINS)
-    installed: set[str] = set()
-    for node in info.get("nodes", {}).values():
-        installed.update(p["name"] for p in node.get("plugins", []))
+    nodes = list(info.get("nodes", {}).values())
+    if not nodes:
+        return list(_REQUIRED_ES_PLUGINS)
+    node_plugin_sets = [{p["name"] for p in node.get("plugins", [])} for node in nodes]
+    installed = set.intersection(*node_plugin_sets)
     return [p for p in _REQUIRED_ES_PLUGINS if p not in installed]
 
 

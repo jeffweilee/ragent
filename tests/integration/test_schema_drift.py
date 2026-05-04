@@ -46,6 +46,11 @@ def _mysqldump(dsn: str) -> str:
     return schema.strip()
 
 
+def _strip_sql_comments(fragment: str) -> str:
+    lines = [ln for ln in fragment.splitlines() if not ln.strip().startswith("--")]
+    return "\n".join(lines).strip()
+
+
 def _apply_schema_sql(dsn: str) -> None:
     from pathlib import Path
 
@@ -54,12 +59,11 @@ def _apply_schema_sql(dsn: str) -> None:
 
     schema_sql = (Path(__file__).parents[2] / "migrations" / "schema.sql").read_text()
     engine = sqlalchemy.create_engine(dsn)
-    with engine.connect() as conn:
-        for stmt in schema_sql.split(";"):
-            stmt = stmt.strip()
-            if stmt and not stmt.startswith("--"):
+    with engine.begin() as conn:
+        for raw in schema_sql.split(";"):
+            stmt = _strip_sql_comments(raw)
+            if stmt:
                 conn.execute(text(stmt))
-        conn.commit()
 
 
 def _apply_alembic(dsn: str) -> None:

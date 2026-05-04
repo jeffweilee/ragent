@@ -17,10 +17,15 @@ depends_on = None
 _SQL = (Path(__file__).parent.parent.parent / "migrations" / "001_initial.sql").read_text()
 
 
+def _strip_comments(fragment: str) -> str:
+    lines = [ln for ln in fragment.splitlines() if not ln.strip().startswith("--")]
+    return "\n".join(lines).strip()
+
+
 def upgrade() -> None:
-    for stmt in _SQL.split(";"):
-        stmt = stmt.strip()
-        if stmt and not stmt.startswith("--"):
+    for raw in _SQL.split(";"):
+        stmt = _strip_comments(raw)
+        if stmt:
             op.execute(stmt)
 
 

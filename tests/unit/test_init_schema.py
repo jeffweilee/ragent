@@ -1,6 +1,8 @@
 """Unit tests for init_schema.py — mock DB and ES so Docker is not required."""
 
+import base64
 import json
+import os
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 
@@ -8,6 +10,7 @@ import pytest
 
 from ragent.bootstrap.init_schema import (
     ESPluginMissingError,
+    _es_auth_headers,
     _es_request,
     auto_init,
     check_es_plugins,
@@ -169,3 +172,49 @@ def test_es_plugin_missing_error_carries_missing_list() -> None:
     err = ESPluginMissingError(["analysis-icu", "other"])
     assert err.missing == ["analysis-icu", "other"]
     assert "analysis-icu" in str(err)
+
+
+# ── ES auth headers ──────────────────────────────────────────────────────────
+
+
+def test_es_auth_headers_uses_api_key_when_set() -> None:
+    with patch.dict(os.environ, {"ES_API_KEY": "my-key"}, clear=False):
+        headers = _es_auth_headers()
+    assert headers == {"Authorization": "ApiKey my-key"}
+
+
+def test_es_auth_headers_uses_basic_auth_when_no_api_key() -> None:
+    env = {"ES_USERNAME": "user", "ES_PASSWORD": "pass"}
+    with patch.dict(os.environ, env, clear=False):
+        headers = _es_auth_headers()
+    expected = "Basic " + base64.b64encode(b"user:pass").decode()
+    assert headers == {"Authorization": expected}
+
+
+def test_es_auth_headers_api_key_takes_precedence_over_basic() -> None:
+    env = {"ES_API_KEY": "key", "ES_USERNAME": "u", "ES_PASSWORD": "p"}
+    with patch.dict(os.environ, env, clear=False):
+        headers = _es_auth_headers()
+    assert headers["Authorization"].startswith("ApiKey ")
+
+
+def test_es_auth_headers_empty_when_no_credentials() -> None:
+    with patch.dict(os.environ, {}, clear=True):
+        headers = _es_auth_headers()
+    assert headers == {}
+
+
+# ── check_es_plugins intersection ────────────────────────────────────────────
+
+
+def test_check_es_plugins_requires_all_nodes_have_plugin() -> None:
+    """Mixed cluster: only node1 has the plugin → reported as missing."""
+    resp = {
+        "nodes": {
+            "n1": {"plugins": [{"name": "analysis-icu"}]},
+            "n2": {"plugins": []},
+        }
+    }
+    with patch("ragent.bootstrap.init_schema._es_request", return_value=resp):
+        missing = check_es_plugins("http://es:9200")
+    assert "analysis-icu" in missing

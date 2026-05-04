@@ -47,6 +47,8 @@ class VectorExtractor:
         if not chunk_list:
             return
         doc = self._repo.get(document_id)
+        if doc is None:
+            return
         title = doc.source_title
         inputs = [f"{title}\n\n{c.text}" for c in chunk_list]
         vectors = self._embedder.embed(inputs)

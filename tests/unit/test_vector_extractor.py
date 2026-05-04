@@ -99,3 +99,21 @@ def test_delete_removes_all_chunks_for_doc() -> None:
 def test_health_true_when_dependencies_present() -> None:
     plugin = VectorExtractor(repo=_Repo(), chunks={}, embedder=_FakeEmbedder(), es=_FakeES())
     assert plugin.health() is True
+
+
+def test_extract_is_noop_when_doc_not_found() -> None:
+    """No error when the document was deleted between submission and processing."""
+
+    class _MissingRepo:
+        def get(self, document_id: str) -> None:
+            return None
+
+    es = _FakeES()
+    plugin = VectorExtractor(
+        repo=_MissingRepo(),
+        chunks={"d1": _chunks("d1")},
+        embedder=_FakeEmbedder(),
+        es=es,
+    )
+    plugin.extract("d1")  # must not raise
+    assert es.bulk_calls == []
