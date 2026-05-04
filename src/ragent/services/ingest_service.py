@@ -120,6 +120,22 @@ class IngestService:
     # List (T2.12)
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------
+    # Supersede (T3.2d)
+    # ------------------------------------------------------------------
+
+    def supersede(self, survivor_id: str, source_id: str, source_app: str) -> None:
+        while True:
+            loser = self._repo.pop_oldest_loser_for_supersede(source_id, source_app, survivor_id)
+            if loser is None:
+                break
+            self._repo.delete_chunks(loser.document_id)
+            self._repo.delete(loser.document_id)
+
+    # ------------------------------------------------------------------
+    # List (T2.12)
+    # ------------------------------------------------------------------
+
     def list(self, after: str | None = None, limit: int = _LIST_MAX) -> IngestListResult:
         limit = min(limit, _LIST_MAX)
         rows = self._repo.list(after=after, limit=limit + 1)
