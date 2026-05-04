@@ -31,7 +31,10 @@ jobs:
         run: uv sync --frozen --extra dev
 
       - name: Run Lint (Ruff)
-        run: uv run ruff check src/ tests/
+        run: uv run ruff check src/ tests/ --fix
+
+      - name: Run Format (Ruff)
+        run: uv run ruff format src/ tests/
 
       - name: Run Tests with Coverage (Pytest)
         run: uv run pytest --cov=src --cov-report=term-missing
