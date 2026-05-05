@@ -39,12 +39,22 @@ def _row(**kwargs) -> dict:
 
 
 def _mock_conn(rows=None, rowcount=1):
+    """Returns a MagicMock that doubles as engine AND connection.
+
+    `repo._engine.begin()` yields the same mock back as the connection so
+    tests can inspect `conn.execute.call_args` exactly as before the pool
+    refactor (00_rule.md → Mandatory Connection Pool).
+    """
     conn = MagicMock()
     result = MagicMock()
     result.mappings.return_value.all.return_value = rows or []
     result.mappings.return_value.first.return_value = rows[0] if rows else None
     result.rowcount = rowcount
     conn.execute.return_value = result
+    cm = MagicMock()
+    cm.__enter__ = MagicMock(return_value=conn)
+    cm.__exit__ = MagicMock(return_value=False)
+    conn.begin.return_value = cm
     return conn
 
 
@@ -161,10 +171,9 @@ def test_acquire_nowait_returns_document_row_on_success():
 
 
 def test_acquire_nowait_raises_on_lock_contention():
-    conn = MagicMock()
-    # Simulate MariaDB lock error (1205 or equivalent)
     from sqlalchemy.exc import OperationalError
 
+    conn = _mock_conn()
     conn.execute.side_effect = OperationalError(
         "Statement", {}, Exception("Lock wait timeout exceeded")
     )
@@ -311,13 +320,7 @@ def test_pop_oldest_loser_returns_none_when_no_loser():
 
 
 def test_find_multi_ready_groups_returns_pairs():
-    # Simulate GROUP BY rows
-    conn = MagicMock()
-    result = MagicMock()
-    result.mappings.return_value.all.return_value = [
-        {"source_id": "DOC-1", "source_app": "confluence"},
-    ]
-    conn.execute.return_value = result
+    conn = _mock_conn(rows=[{"source_id": "DOC-1", "source_app": "confluence"}])
     repo = DocumentRepository(conn)
     groups = repo.find_multi_ready_groups()
     assert groups == [("DOC-1", "confluence")]

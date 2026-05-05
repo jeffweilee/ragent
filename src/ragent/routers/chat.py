@@ -8,6 +8,7 @@ import time
 from typing import Annotated, Any
 
 from fastapi import APIRouter, Header, Response
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ragent.clients.rate_limiter import RateLimiter
@@ -87,8 +88,9 @@ def create_chat_router(
         if (blocked := _check_rate(x_user_id)) is not None:
             return blocked
         messages = normalize_messages(body)
-        docs = _run_retrieval(retrieval_pipeline, body)
-        result = llm_client.chat(
+        docs = await run_in_threadpool(_run_retrieval, retrieval_pipeline, body)
+        result = await run_in_threadpool(
+            llm_client.chat,
             messages=messages,
             model=body.model,
             temperature=body.temperature,
@@ -112,7 +114,7 @@ def create_chat_router(
         if (blocked := _check_rate(x_user_id)) is not None:
             return blocked
         messages = normalize_messages(body)
-        docs = _run_retrieval(retrieval_pipeline, body)
+        docs = await run_in_threadpool(_run_retrieval, retrieval_pipeline, body)
         sources = _build_sources(docs)
 
         def _generate():

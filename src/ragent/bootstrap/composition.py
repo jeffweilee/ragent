@@ -124,15 +124,16 @@ def build_container() -> Container:
         verify_certs=os.environ.get("ES_VERIFY_CERTS", "true").lower() == "true",
     )
 
+    # SQLAlchemy `create_engine` returns an Engine wrapping a QueuePool by
+    # default. Repos receive the Engine and check out a connection per call
+    # (00_rule.md → Mandatory Connection Pool). The startup ping below uses
+    # a transient checkout and releases it immediately.
     engine = create_engine(_require("MARIADB_DSN"))
+    with engine.connect() as _ping:
+        _ping.execute(text("SELECT 1"))
 
-    # Persistent connection held for app lifetime; repos use it for all DB ops.
-    # Single-worker uvicorn means no concurrent access to this connection.
-    _repo_conn = engine.connect()
-    _repo_conn.execute(text("SELECT 1"))
-
-    doc_repo = DocumentRepository(conn=_repo_conn)
-    chunk_repo = ChunkRepository(conn=_repo_conn)
+    doc_repo = DocumentRepository(engine=engine)
+    chunk_repo = ChunkRepository(engine=engine)
 
     rate_limiter = RateLimiter.from_env()
 

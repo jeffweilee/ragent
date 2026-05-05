@@ -6,6 +6,7 @@ import io
 from typing import Annotated, Any
 
 from fastapi import APIRouter, File, Form, Header, Query, Response, UploadFile
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from ragent.errors.problem import problem
@@ -42,7 +43,8 @@ def create_router(svc: Any) -> APIRouter:  # noqa: B008
 
         data = await file.read()
         try:
-            doc_id = svc.create(
+            doc_id = await run_in_threadpool(
+                svc.create,
                 create_user=x_user_id,
                 source_id=source_id,
                 source_app=source_app,
@@ -63,7 +65,7 @@ def create_router(svc: Any) -> APIRouter:  # noqa: B008
     async def get_document(
         document_id: str,
     ):
-        doc = svc.get(document_id)
+        doc = await run_in_threadpool(svc.get, document_id)
         if doc is None:
             return problem(404, "INGEST_NOT_FOUND", "Document not found")
         return {
@@ -77,7 +79,7 @@ def create_router(svc: Any) -> APIRouter:  # noqa: B008
     async def delete_document(
         document_id: str,
     ):
-        svc.delete(document_id)
+        await run_in_threadpool(svc.delete, document_id)
         return Response(status_code=204)
 
     @router.get("/ingest")
@@ -85,7 +87,7 @@ def create_router(svc: Any) -> APIRouter:  # noqa: B008
         after: str | None = Query(None),
         limit: int = Query(100),
     ):
-        result = svc.list(after=after, limit=limit)
+        result = await run_in_threadpool(svc.list, after=after, limit=limit)
         items = [
             {
                 "document_id": doc.document_id,

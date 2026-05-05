@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
+from haystack.components.joiners import DocumentJoiner
 from haystack.core.component import component
 from haystack.core.pipeline import Pipeline
 from haystack.dataclasses import Document
@@ -15,6 +16,7 @@ from haystack_integrations.components.retrievers.elasticsearch import (
 
 _EXCERPT_MAX_CHARS = int(os.environ.get("EXCERPT_MAX_CHARS", "512"))
 _VALID_MODES = frozenset({"rrf", "concatenate", "vector_only", "bm25_only"})
+_HAYSTACK_JOIN_MODE = {"rrf": "reciprocal_rank_fusion", "concatenate": "concatenate"}
 
 
 @component
@@ -26,17 +28,6 @@ class _QueryEmbedder:
     def run(self, query: str) -> dict:
         embedding = self._embedder.embed([query], query=True)[0]
         return {"query": query, "query_embedding": embedding}
-
-
-@component
-class _DocumentJoiner:
-    def __init__(self, join_mode: str = "rrf") -> None:
-        self._mode = join_mode
-
-    @component.output_types(documents=list[Document])
-    def run(self, documents: list[list[Document]]) -> dict:
-        merged = [doc for docs in documents for doc in docs]
-        return {"documents": merged}
 
 
 @component
@@ -94,7 +85,7 @@ def build_retrieval_pipeline(
         pipeline.add_component(
             "bm25_retriever", ElasticsearchBM25Retriever(document_store=document_store)
         )
-        pipeline.add_component("joiner", _DocumentJoiner(join_mode))
+        pipeline.add_component("joiner", DocumentJoiner(join_mode=_HAYSTACK_JOIN_MODE[join_mode]))
         pipeline.connect("query_embedder.query_embedding", "vector_retriever.query_embedding")
         pipeline.connect("vector_retriever.documents", "joiner.documents")
         pipeline.connect("bm25_retriever.documents", "joiner.documents")

@@ -1,8 +1,14 @@
-"""T2.2 — DocumentRepository: CRUD + locking operations (spec §5.1, B11, B14, B17)."""
+"""T2.2 — DocumentRepository: CRUD + locking operations (spec §5.1, B11, B14, B17).
+
+Per `docs/00_rule.md` Database Practices: every method checks out a fresh
+connection from the engine's pool and releases it on exit. No long-lived
+shared connection — required for safety under FastAPI's async dispatch.
+"""
 
 from __future__ import annotations
 
 import datetime
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -52,14 +58,19 @@ def _rows_to_docs(rows: Any) -> list[DocumentRow]:
 
 
 class DocumentRepository:
-    def __init__(self, conn: Any) -> None:
-        self._conn = conn
+    def __init__(self, engine: Any) -> None:
+        self._engine = engine
+
+    def _run(self, fn: Callable[[Any], Any]) -> Any:
+        """Execute fn(conn) inside a fresh pooled connection + transaction."""
+        with self._engine.begin() as conn:
+            return fn(conn)
 
     def _fetch_all(self, stmt: Any, params: dict | None = None) -> list[Any]:
-        return self._conn.execute(stmt, params or {}).mappings().all()
+        return self._run(lambda c: c.execute(stmt, params or {}).mappings().all())
 
     def _fetch_first(self, stmt: Any, params: dict | None = None) -> Any | None:
-        return self._conn.execute(stmt, params or {}).mappings().first()
+        return self._run(lambda c: c.execute(stmt, params or {}).mappings().first())
 
     # ------------------------------------------------------------------
     # Create
@@ -75,26 +86,28 @@ class DocumentRepository:
         object_key: str,
         source_workspace: str | None = None,
     ) -> str:
-        self._conn.execute(
-            text(
-                """
-                INSERT INTO documents
-                  (document_id, create_user, source_id, source_app, source_title,
-                   source_workspace, object_key, status, attempt, created_at, updated_at)
-                VALUES
-                  (:document_id, :create_user, :source_id, :source_app, :source_title,
-                   :source_workspace, :object_key, 'UPLOADED', 0, NOW(6), NOW(6))
-                """
-            ),
-            {
-                "document_id": document_id,
-                "create_user": create_user,
-                "source_id": source_id,
-                "source_app": source_app,
-                "source_title": source_title,
-                "source_workspace": source_workspace,
-                "object_key": object_key,
-            },
+        self._run(
+            lambda c: c.execute(
+                text(
+                    """
+                    INSERT INTO documents
+                        (document_id, create_user, source_id, source_app, source_title,
+                         source_workspace, object_key, status, attempt, created_at, updated_at)
+                    VALUES
+                        (:document_id, :create_user, :source_id, :source_app, :source_title,
+                         :source_workspace, :object_key, 'UPLOADED', 0, NOW(6), NOW(6))
+                    """
+                ),
+                {
+                    "document_id": document_id,
+                    "create_user": create_user,
+                    "source_id": source_id,
+                    "source_app": source_app,
+                    "source_title": source_title,
+                    "source_workspace": source_workspace,
+                    "object_key": object_key,
+                },
+            )
         )
         return document_id
 
@@ -142,25 +155,31 @@ class DocumentRepository:
         if attempt is not None:
             attempt_clause = ", attempt = :attempt"
             params["attempt"] = attempt
-        result = self._conn.execute(
-            text(
-                f"""
-                UPDATE documents
-                SET status = :to_status, updated_at = NOW(6){attempt_clause}
-                WHERE document_id = :id AND status = :from_status
-                """
-            ),
-            params,
+        rowcount = self._run(
+            lambda c: (
+                c.execute(
+                    text(
+                        f"""
+                    UPDATE documents
+                    SET status = :to_status, updated_at = NOW(6){attempt_clause}
+                    WHERE document_id = :id AND status = :from_status
+                    """
+                    ),
+                    params,
+                ).rowcount
+            )
         )
-        if result.rowcount == 0:
+        if rowcount == 0:
             raise IllegalStateTransition(
                 f"update_status: {from_status} → {to_status} failed for {document_id}"
             )
 
     def update_heartbeat(self, document_id: str) -> None:
-        self._conn.execute(
-            text("UPDATE documents SET updated_at = NOW(6) WHERE document_id = :id"),
-            {"id": document_id},
+        self._run(
+            lambda c: c.execute(
+                text("UPDATE documents SET updated_at = NOW(6) WHERE document_id = :id"),
+                {"id": document_id},
+            )
         )
 
     # ------------------------------------------------------------------
@@ -241,9 +260,11 @@ class DocumentRepository:
     # ------------------------------------------------------------------
 
     def delete(self, document_id: str) -> None:
-        self._conn.execute(
-            text("DELETE FROM documents WHERE document_id = :id"),
-            {"id": document_id},
+        self._run(
+            lambda c: c.execute(
+                text("DELETE FROM documents WHERE document_id = :id"),
+                {"id": document_id},
+            )
         )
 
     # ------------------------------------------------------------------

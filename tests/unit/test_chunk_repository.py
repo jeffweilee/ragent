@@ -6,8 +6,13 @@ from ragent.repositories.chunk_repository import ChunkRepository
 
 
 def _mock_conn():
+    """MagicMock that doubles as engine + connection (00_rule.md pool rule)."""
     conn = MagicMock()
     conn.execute.return_value = MagicMock(rowcount=1)
+    cm = MagicMock()
+    cm.__enter__ = MagicMock(return_value=conn)
+    cm.__exit__ = MagicMock(return_value=False)
+    conn.begin.return_value = cm
     return conn
 
 
@@ -19,7 +24,6 @@ def test_bulk_insert_executes_for_each_chunk():
         {"chunk_id": "C2", "document_id": "D1", "ord": 1, "text": "world", "lang": "en"},
     ]
     repo.bulk_insert(chunks)
-    # Should have executed at least once (bulk or per-row)
     assert conn.execute.call_count >= 1
 
 
@@ -44,5 +48,4 @@ def test_bulk_insert_passes_correct_fields():
     repo = ChunkRepository(conn)
     chunk = {"chunk_id": "C9", "document_id": "D9", "ord": 0, "text": "txt", "lang": "zh"}
     repo.bulk_insert([chunk])
-    # Verify the call was made (SQL content checked in integration tests)
     conn.execute.assert_called()
