@@ -48,8 +48,10 @@ def _es_request(url: str, method: str = "GET", body: dict | None = None) -> dict
     headers = {"Content-Type": "application/json"} if data else {}
     headers.update(_es_auth_headers())
     req = Request(url, data=data, method=method, headers=headers)
+    # ES 9 takes ~30s to finish warming up after port 9200 opens; use 120s for writes.
+    timeout = 120 if method in ("PUT", "POST", "DELETE") else 30
     try:
-        with urlopen(req, timeout=30, context=_es_ssl_context()) as resp:
+        with urlopen(req, timeout=timeout, context=_es_ssl_context()) as resp:
             raw = resp.read()
             return json.loads(raw) if raw else {}
     except HTTPError as exc:
