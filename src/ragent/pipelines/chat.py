@@ -33,6 +33,8 @@ class _QueryEmbedder:
 
 @component
 class _SourceHydrator:
+    """Enrich chunk metadata with source_app/source_id/source_title from MariaDB."""
+
     def __init__(self, doc_repo: Any) -> None:
         self._repo = doc_repo
 
@@ -43,18 +45,35 @@ class _SourceHydrator:
         result = []
         for doc in documents:
             doc_id = doc.meta.get("document_id")
-            kwargs: dict = {}
             if doc_id and doc_id in sources:
                 source_app, source_id, source_title = sources[doc_id]
-                kwargs["meta"] = {
+                meta = {
                     **doc.meta,
                     "source_app": source_app,
                     "source_id": source_id,
                     "source_title": source_title,
                 }
-            if doc.content and len(doc.content) > _EXCERPT_MAX_CHARS:
-                kwargs["content"] = doc.content[:_EXCERPT_MAX_CHARS]
-            result.append(dataclasses.replace(doc, **kwargs) if kwargs else doc)
+                result.append(dataclasses.replace(doc, meta=meta))
+            else:
+                result.append(doc)
+        return {"documents": result}
+
+
+@component
+class _ExcerptTruncator:
+    """Truncate chunk content to EXCERPT_MAX_CHARS for response payloads."""
+
+    def __init__(self, max_chars: int = _EXCERPT_MAX_CHARS) -> None:
+        self._max = max_chars
+
+    @component.output_types(documents=list[Document])
+    def run(self, documents: list[Document]) -> dict:
+        result = []
+        for doc in documents:
+            if doc.content and len(doc.content) > self._max:
+                result.append(dataclasses.replace(doc, content=doc.content[: self._max]))
+            else:
+                result.append(doc)
         return {"documents": result}
 
 
@@ -69,6 +88,8 @@ def build_retrieval_pipeline(
 
     pipeline = Pipeline()
     pipeline.add_component("source_hydrator", _SourceHydrator(doc_repo))
+    pipeline.add_component("excerpt_truncator", _ExcerptTruncator())
+    pipeline.connect("source_hydrator.documents", "excerpt_truncator.documents")
 
     if join_mode == "vector_only":
         pipeline.add_component("query_embedder", _QueryEmbedder(embedder))
@@ -124,4 +145,4 @@ def run_retrieval(
         inputs.setdefault("vector_retriever", {})["filters"] = filters
 
     result = pipeline.run(inputs)
-    return result.get("source_hydrator", {}).get("documents", [])
+    return result.get("excerpt_truncator", {}).get("documents", [])
