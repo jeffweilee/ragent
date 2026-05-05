@@ -39,8 +39,9 @@ def test_csv_10k_rows_chunk_count_bounded():
 
     rows = 10_000
     chars_per_row = 50
-    total_chars = rows * chars_per_row
-    expected_max = math.ceil(total_chars / _CHUNK_TARGET_CHARS_CSV) + 1
+    # Rows are joined by "\n" (1 char), so each chunk fits floor(target / (row+1)) rows.
+    rows_per_chunk = _CHUNK_TARGET_CHARS_CSV // (chars_per_row + 1)
+    expected_max = math.ceil(rows / rows_per_chunk) + 1
 
     pipeline = build_ingest_pipeline(embedder=_MockEmbedder(), document_store=_FakeStore())
     result = pipeline.run(
