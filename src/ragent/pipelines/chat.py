@@ -16,6 +16,7 @@ from haystack_integrations.components.retrievers.elasticsearch import (
 )
 
 _EXCERPT_MAX_CHARS = int(os.environ.get("EXCERPT_MAX_CHARS", "512"))
+_DEFAULT_TOP_K = int(os.environ.get("RETRIEVAL_TOP_K", "20"))
 _VALID_MODES = frozenset({"rrf", "concatenate", "vector_only", "bm25_only"})
 _HAYSTACK_JOIN_MODE = {"rrf": "reciprocal_rank_fusion", "concatenate": "concatenate"}
 
@@ -82,6 +83,7 @@ def build_retrieval_pipeline(
     document_store: Any,
     doc_repo: Any,
     join_mode: str = "rrf",
+    top_k: int = _DEFAULT_TOP_K,
 ) -> Pipeline:
     if join_mode not in _VALID_MODES:
         raise ValueError(f"join_mode must be one of {sorted(_VALID_MODES)}, got {join_mode!r}")
@@ -94,26 +96,32 @@ def build_retrieval_pipeline(
     if join_mode == "vector_only":
         pipeline.add_component("query_embedder", _QueryEmbedder(embedder))
         pipeline.add_component(
-            "vector_retriever", ElasticsearchEmbeddingRetriever(document_store=document_store)
+            "vector_retriever",
+            ElasticsearchEmbeddingRetriever(document_store=document_store, top_k=top_k),
         )
         pipeline.connect("query_embedder.query_embedding", "vector_retriever.query_embedding")
         pipeline.connect("vector_retriever.documents", "source_hydrator.documents")
 
     elif join_mode == "bm25_only":
         pipeline.add_component(
-            "bm25_retriever", ElasticsearchBM25Retriever(document_store=document_store)
+            "bm25_retriever",
+            ElasticsearchBM25Retriever(document_store=document_store, top_k=top_k),
         )
         pipeline.connect("bm25_retriever.documents", "source_hydrator.documents")
 
     else:  # rrf or concatenate
         pipeline.add_component("query_embedder", _QueryEmbedder(embedder))
         pipeline.add_component(
-            "vector_retriever", ElasticsearchEmbeddingRetriever(document_store=document_store)
+            "vector_retriever",
+            ElasticsearchEmbeddingRetriever(document_store=document_store, top_k=top_k),
         )
         pipeline.add_component(
-            "bm25_retriever", ElasticsearchBM25Retriever(document_store=document_store)
+            "bm25_retriever",
+            ElasticsearchBM25Retriever(document_store=document_store, top_k=top_k),
         )
-        pipeline.add_component("joiner", DocumentJoiner(join_mode=_HAYSTACK_JOIN_MODE[join_mode]))
+        pipeline.add_component(
+            "joiner", DocumentJoiner(join_mode=_HAYSTACK_JOIN_MODE[join_mode], top_k=top_k)
+        )
         pipeline.connect("query_embedder.query_embedding", "vector_retriever.query_embedding")
         pipeline.connect("vector_retriever.documents", "joiner.documents")
         pipeline.connect("bm25_retriever.documents", "joiner.documents")
