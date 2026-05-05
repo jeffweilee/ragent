@@ -1,0 +1,50 @@
+{"q": "How do I configure kubernetes deployment?", "expected_doc_id": "DOC_K8S_001", "answer_keyword": "deployment"}
+{"q": "What is kubernetes deployment?", "expected_doc_id": "DOC_K8S_001", "answer_keyword": "deployment"}
+{"q": "Best practices for kubernetes deployment", "expected_doc_id": "DOC_K8S_001", "answer_keyword": "deployment"}
+{"q": "kubernetes deployment troubleshooting", "expected_doc_id": "DOC_K8S_001", "answer_keyword": "deployment"}
+{"q": "Explain kubernetes deployment to me", "expected_doc_id": "DOC_K8S_001", "answer_keyword": "deployment"}
+{"q": "How do I configure docker container?", "expected_doc_id": "DOC_DKR_001", "answer_keyword": "container"}
+{"q": "What is docker container?", "expected_doc_id": "DOC_DKR_001", "answer_keyword": "container"}
+{"q": "Best practices for docker container", "expected_doc_id": "DOC_DKR_001", "answer_keyword": "container"}
+{"q": "docker container troubleshooting", "expected_doc_id": "DOC_DKR_001", "answer_keyword": "container"}
+{"q": "Explain docker container to me", "expected_doc_id": "DOC_DKR_001", "answer_keyword": "container"}
+{"q": "How do I configure python asyncio?", "expected_doc_id": "DOC_PY_ASY", "answer_keyword": "asyncio"}
+{"q": "What is python asyncio?", "expected_doc_id": "DOC_PY_ASY", "answer_keyword": "asyncio"}
+{"q": "Best practices for python asyncio", "expected_doc_id": "DOC_PY_ASY", "answer_keyword": "asyncio"}
+{"q": "python asyncio troubleshooting", "expected_doc_id": "DOC_PY_ASY", "answer_keyword": "asyncio"}
+{"q": "Explain python asyncio to me", "expected_doc_id": "DOC_PY_ASY", "answer_keyword": "asyncio"}
+{"q": "How do I configure postgres indexing?", "expected_doc_id": "DOC_PG_IDX", "answer_keyword": "indexing"}
+{"q": "What is postgres indexing?", "expected_doc_id": "DOC_PG_IDX", "answer_keyword": "indexing"}
+{"q": "Best practices for postgres indexing", "expected_doc_id": "DOC_PG_IDX", "answer_keyword": "indexing"}
+{"q": "postgres indexing troubleshooting", "expected_doc_id": "DOC_PG_IDX", "answer_keyword": "indexing"}
+{"q": "Explain postgres indexing to me", "expected_doc_id": "DOC_PG_IDX", "answer_keyword": "indexing"}
+{"q": "How do I configure redis expire?", "expected_doc_id": "DOC_RD_EXP", "answer_keyword": "expire"}
+{"q": "What is redis expire?", "expected_doc_id": "DOC_RD_EXP", "answer_keyword": "expire"}
+{"q": "Best practices for redis expire", "expected_doc_id": "DOC_RD_EXP", "answer_keyword": "expire"}
+{"q": "redis expire troubleshooting", "expected_doc_id": "DOC_RD_EXP", "answer_keyword": "expire"}
+{"q": "Explain redis expire to me", "expected_doc_id": "DOC_RD_EXP", "answer_keyword": "expire"}
+{"q": "How do I configure nginx reverse proxy?", "expected_doc_id": "DOC_NGX_RP", "answer_keyword": "reverse proxy"}
+{"q": "What is nginx reverse proxy?", "expected_doc_id": "DOC_NGX_RP", "answer_keyword": "reverse proxy"}
+{"q": "Best practices for nginx reverse proxy", "expected_doc_id": "DOC_NGX_RP", "answer_keyword": "reverse proxy"}
+{"q": "nginx reverse proxy troubleshooting", "expected_doc_id": "DOC_NGX_RP", "answer_keyword": "reverse proxy"}
+{"q": "Explain nginx reverse proxy to me", "expected_doc_id": "DOC_NGX_RP", "answer_keyword": "reverse proxy"}
+{"q": "How do I configure git rebase?", "expected_doc_id": "DOC_GIT_RB", "answer_keyword": "rebase"}
+{"q": "What is git rebase?", "expected_doc_id": "DOC_GIT_RB", "answer_keyword": "rebase"}
+{"q": "Best practices for git rebase", "expected_doc_id": "DOC_GIT_RB", "answer_keyword": "rebase"}
+{"q": "git rebase troubleshooting", "expected_doc_id": "DOC_GIT_RB", "answer_keyword": "rebase"}
+{"q": "Explain git rebase to me", "expected_doc_id": "DOC_GIT_RB", "answer_keyword": "rebase"}
+{"q": "How do I configure ssh key authentication?", "expected_doc_id": "DOC_SSH_KEY", "answer_keyword": "key authentication"}
+{"q": "What is ssh key authentication?", "expected_doc_id": "DOC_SSH_KEY", "answer_keyword": "key authentication"}
+{"q": "Best practices for ssh key authentication", "expected_doc_id": "DOC_SSH_KEY", "answer_keyword": "key authentication"}
+{"q": "ssh key authentication troubleshooting", "expected_doc_id": "DOC_SSH_KEY", "answer_keyword": "key authentication"}
+{"q": "Explain ssh key authentication to me", "expected_doc_id": "DOC_SSH_KEY", "answer_keyword": "key authentication"}
+{"q": "How do I configure openssl self-signed cert?", "expected_doc_id": "DOC_OSL_CERT", "answer_keyword": "self-signed cert"}
+{"q": "What is openssl self-signed cert?", "expected_doc_id": "DOC_OSL_CERT", "answer_keyword": "self-signed cert"}
+{"q": "Best practices for openssl self-signed cert", "expected_doc_id": "DOC_OSL_CERT", "answer_keyword": "self-signed cert"}
+{"q": "openssl self-signed cert troubleshooting", "expected_doc_id": "DOC_OSL_CERT", "answer_keyword": "self-signed cert"}
+{"q": "Explain openssl self-signed cert to me", "expected_doc_id": "DOC_OSL_CERT", "answer_keyword": "self-signed cert"}
+{"q": "How do I configure jwt validation?", "expected_doc_id": "DOC_JWT_VAL", "answer_keyword": "validation"}
+{"q": "What is jwt validation?", "expected_doc_id": "DOC_JWT_VAL", "answer_keyword": "validation"}
+{"q": "Best practices for jwt validation", "expected_doc_id": "DOC_JWT_VAL", "answer_keyword": "validation"}
+{"q": "jwt validation troubleshooting", "expected_doc_id": "DOC_JWT_VAL", "answer_keyword": "validation"}
+{"q": "Explain jwt validation to me", "expected_doc_id": "DOC_JWT_VAL", "answer_keyword": "validation"}
