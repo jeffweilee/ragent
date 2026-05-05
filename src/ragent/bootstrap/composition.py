@@ -52,6 +52,7 @@ class Container:
     chunk_repo: Any
     registry: Any
     retrieval_pipeline: Any
+    ingest_pipeline: Any
     rate_limit: int
     rate_limit_window: int
 
@@ -76,6 +77,7 @@ def build_container() -> Container:
     from ragent.clients.rate_limiter import RateLimiter
     from ragent.clients.rerank import RerankClient
     from ragent.pipelines.chat import build_retrieval_pipeline
+    from ragent.pipelines.factory import DocumentEmbedder, build_ingest_pipeline
     from ragent.plugins.registry import PluginRegistry
     from ragent.plugins.stub_graph import StubGraphExtractor
     from ragent.plugins.vector import VectorExtractor
@@ -171,6 +173,12 @@ def build_container() -> Container:
         join_mode=join_mode,
     )
 
+    ingest_pipeline = build_ingest_pipeline(
+        embedder=DocumentEmbedder(embedding_client),
+        document_store=document_store,
+        chunk_repo=chunk_repo,
+    )
+
     return Container(
         token_manager=token_manager,
         embedding_client=embedding_client,
@@ -184,6 +192,7 @@ def build_container() -> Container:
         chunk_repo=chunk_repo,
         registry=registry,
         retrieval_pipeline=retrieval_pipeline,
+        ingest_pipeline=ingest_pipeline,
         rate_limit=_int_env("CHAT_RATE_LIMIT_PER_MINUTE", 60),
         rate_limit_window=_int_env("CHAT_RATE_LIMIT_WINDOW_SECONDS", 60),
     )

@@ -69,7 +69,6 @@ async def ingest_pipeline_task(document_id: str) -> None:
     from anyio import to_thread
 
     from ragent.bootstrap.composition import get_container
-    from ragent.pipelines.factory import build_idempotent_ingest_pipeline
 
     container = get_container()
 
@@ -81,17 +80,13 @@ async def ingest_pipeline_task(document_id: str) -> None:
         with tempfile.NamedTemporaryFile(delete=True) as tmp:
             tmp.write(data)
             tmp.flush()
-            pipeline = build_idempotent_ingest_pipeline(
-                embedder=container.embedding_client,
-                chunk_repo=container.chunk_repo,
-            )
-            result = pipeline.run(
+            result = container.ingest_pipeline.run(
                 {
                     "converter": {"sources": [tmp.name]},
                     "idempotency_clean": {"document_id": doc_id},
                 }
             )
-        return result.get("embedder", {}).get("documents", [])
+        return result.get("writer", {}).get("documents_written", [])
 
     await to_thread.run_sync(
         lambda: run_pipeline_task(
