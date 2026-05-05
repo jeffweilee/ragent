@@ -24,7 +24,7 @@ def create_health_router(probes: dict[str, ProbeFn] | None = None) -> APIRouter:
         return JSONResponse({"status": "ok"})
 
     @router.get("/readyz")
-    async def readyz():
+    async def readyz() -> JSONResponse:
         if not probes:
             return JSONResponse(
                 {"status": "degraded", "reason": "probes not configured"},

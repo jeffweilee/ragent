@@ -1,4 +1,4 @@
-"""T5.11 — Reconciler: FAILED transition clears chunks + ES before committing (R5, S27)."""
+"""T5.11 — Reconciler: FAILED transition commits status first, then clears chunks + ES (R5, S27)."""
 
 from __future__ import annotations
 
@@ -56,8 +56,8 @@ def _make_reconciler(
 # ---------------------------------------------------------------------------
 
 
-def test_failed_cleanup_calls_chunks_delete_before_status():
-    """chunks.delete_by_document_id is called before update_status(FAILED)."""
+def test_failed_status_committed_before_chunks_cleanup():
+    """update_status(FAILED) is called before chunks.delete_by_document_id (Rule 21)."""
     repo = _default_repo(exceeded=[_make_exceeded_doc("DOC001")])
     broker = MagicMock()
     chunks = MagicMock()
@@ -69,13 +69,13 @@ def test_failed_cleanup_calls_chunks_delete_before_status():
     rec = _make_reconciler(repo, broker, chunks=chunks)
     rec.run()
 
-    assert call_order == ["chunks_delete", "update_status"], (
-        f"Expected chunks_delete before update_status, got: {call_order}"
+    assert call_order == ["update_status", "chunks_delete"], (
+        f"Expected update_status before chunks_delete, got: {call_order}"
     )
 
 
-def test_failed_cleanup_calls_fan_out_delete_before_status():
-    """registry.fan_out_delete is called before update_status(FAILED)."""
+def test_failed_status_committed_before_fan_out_cleanup():
+    """update_status(FAILED) is called before registry.fan_out_delete (Rule 21)."""
     repo = _default_repo(exceeded=[_make_exceeded_doc("DOC001")])
     broker = MagicMock()
     registry = MagicMock()
@@ -88,8 +88,8 @@ def test_failed_cleanup_calls_fan_out_delete_before_status():
     rec = _make_reconciler(repo, broker, registry=registry)
     rec.run()
 
-    assert "fan_out_delete" in call_order
-    assert call_order.index("fan_out_delete") < call_order.index("update_status")
+    assert "update_status" in call_order
+    assert call_order.index("update_status") < call_order.index("fan_out_delete")
 
 
 def test_failed_cleanup_no_chunks_still_marks_failed():

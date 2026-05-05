@@ -29,31 +29,39 @@ class Reconciler:
         self._registry = registry
 
     def run(self) -> None:
+        asyncio.run(self._run_async())
+
+    async def _run_async(self) -> None:
         from ragent.bootstrap.telemetry import reconciler_tick_total
 
-        self._mark_failed()
+        await self._mark_failed()
         self._redispatch_pending()
         self._redispatch_uploaded()
-        self._resume_deleting()
+        await self._resume_deleting()
         self._repair_multi_ready()
         reconciler_tick_total.inc()
         logger.info("event=reconciler.tick")
 
-    def _mark_failed(self) -> None:
+    async def _mark_failed(self) -> None:
         max_attempts = int(os.environ.get("WORKER_MAX_ATTEMPTS", "5"))
         exceeded = self._repo.list_pending_exceeded(attempt_gt=max_attempts)
         for doc in exceeded:
-            # Clean partial output before committing FAILED (S27, R5)
-            if self._registry is not None:
-                asyncio.run(self._registry.fan_out_delete(doc.document_id))
-            if self._chunks is not None:
-                self._chunks.delete_by_document_id(doc.document_id)
-            self._repo.update_status(doc.document_id, from_status="PENDING", to_status="FAILED")
-            logger.info(
-                "event=ingest.failed document_id=%s attempt=%d reason=max_attempts_exceeded",
-                doc.document_id,
-                doc.attempt,
-            )
+            try:
+                # Commit terminal status first (Rule 21), then best-effort cleanup
+                self._repo.update_status(doc.document_id, from_status="PENDING", to_status="FAILED")
+                if self._registry is not None:
+                    await self._registry.fan_out_delete(doc.document_id)
+                if self._chunks is not None:
+                    self._chunks.delete_by_document_id(doc.document_id)
+                logger.info(
+                    "event=ingest.failed document_id=%s attempt=%d reason=max_attempts_exceeded",
+                    doc.document_id,
+                    doc.attempt,
+                )
+            except Exception:
+                logger.exception(
+                    "event=reconciler.mark_failed_error document_id=%s", doc.document_id
+                )
 
     def _redispatch_pending(self) -> None:
         stale_seconds = int(os.environ.get("RECONCILER_PENDING_STALE_SECONDS", "300"))
@@ -86,19 +94,24 @@ class Reconciler:
                 doc.document_id,
             )
 
-    def _resume_deleting(self) -> None:
+    async def _resume_deleting(self) -> None:
         stale_seconds = int(os.environ.get("RECONCILER_DELETING_STALE_SECONDS", "300"))
         updated_before = datetime.datetime.now(datetime.UTC) - datetime.timedelta(
             seconds=stale_seconds
         )
         stale = self._repo.list_deleting_stale(updated_before=updated_before)
         for doc in stale:
-            if self._registry is not None:
-                asyncio.run(self._registry.fan_out_delete(doc.document_id))
-            if self._chunks is not None:
-                self._chunks.delete_by_document_id(doc.document_id)
-            self._repo.delete(doc.document_id)
-            logger.info("event=reconciler.delete_resumed document_id=%s", doc.document_id)
+            try:
+                if self._registry is not None:
+                    await self._registry.fan_out_delete(doc.document_id)
+                if self._chunks is not None:
+                    self._chunks.delete_by_document_id(doc.document_id)
+                self._repo.delete(doc.document_id)
+                logger.info("event=reconciler.delete_resumed document_id=%s", doc.document_id)
+            except Exception:
+                logger.exception(
+                    "event=reconciler.delete_resume_error document_id=%s", doc.document_id
+                )
 
     def _repair_multi_ready(self) -> None:
         groups = self._repo.find_multi_ready_groups()
@@ -107,7 +120,7 @@ class Reconciler:
             if not docs:
                 continue
             # Survivor is the doc with the latest created_at (last in ASC-ordered list)
-            survivor = max(docs, key=lambda d: d.created_at)
+            survivor = docs[-1]  # list_ready_by_source returns ASC by created_at; last is newest
             self._broker.enqueue(
                 "ingest.supersede",
                 survivor_id=survivor.document_id,

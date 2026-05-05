@@ -24,7 +24,7 @@ def _budget() -> float:
 
 
 async def _run(fn: Callable[[], Any]) -> Any:
-    return await anyio.to_thread.run_sync(fn)
+    return await anyio.to_thread.run_sync(fn, abandon_on_cancel=True)
 
 
 def probe_mariadb(engine: Any) -> Callable[[], Awaitable[None]]:
