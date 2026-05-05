@@ -55,25 +55,26 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         structlog.contextvars.bind_contextvars(**identity)
         start = time.perf_counter()
         try:
-            response = await call_next(request)
-        except Exception:
-            logger.exception(
-                "api.error",
+            try:
+                response = await call_next(request)
+            except Exception:
+                logger.exception(
+                    "api.error",
+                    method=request.method,
+                    path=path,
+                    duration_ms=round((time.perf_counter() - start) * 1000.0, 3),
+                    **identity,
+                )
+                raise
+            logger.info(
+                "api.request",
                 method=request.method,
                 path=path,
+                status_code=response.status_code,
                 duration_ms=round((time.perf_counter() - start) * 1000.0, 3),
                 **identity,
             )
+            response.headers[_REQUEST_ID_HEADER] = request_id
+            return response
+        finally:
             structlog.contextvars.unbind_contextvars("request_id", "user_id")
-            raise
-        logger.info(
-            "api.request",
-            method=request.method,
-            path=path,
-            status_code=response.status_code,
-            duration_ms=round((time.perf_counter() - start) * 1000.0, 3),
-            **identity,
-        )
-        response.headers[_REQUEST_ID_HEADER] = request_id
-        structlog.contextvars.unbind_contextvars("request_id", "user_id")
-        return response
