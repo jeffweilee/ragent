@@ -15,8 +15,35 @@ from haystack_integrations.components.retrievers.elasticsearch import (
     ElasticsearchEmbeddingRetriever,
 )
 
-_EXCERPT_MAX_CHARS = int(os.environ.get("EXCERPT_MAX_CHARS", "512"))
+EXCERPT_MAX_CHARS = int(os.environ.get("EXCERPT_MAX_CHARS", "512"))
 _VALID_MODES = frozenset({"rrf", "concatenate", "vector_only", "bm25_only"})
+
+
+def build_es_filters(source_app: str | None, source_workspace: str | None) -> dict | None:
+    clauses = []
+    if source_app:
+        clauses.append({"field": "source_app", "operator": "==", "value": source_app})
+    if source_workspace:
+        clauses.append({"field": "source_workspace", "operator": "==", "value": source_workspace})
+    if not clauses:
+        return None
+    if len(clauses) == 1:
+        return clauses[0]
+    return {"operator": "AND", "conditions": clauses}
+
+
+def doc_to_source_entry(doc: Any) -> dict:
+    meta = doc.meta or {}
+    return {
+        "document_id": meta.get("document_id"),
+        "source_app": meta.get("source_app"),
+        "source_id": meta.get("source_id"),
+        "type": "knowledge",
+        "source_title": meta.get("source_title"),
+        "excerpt": (doc.content or "")[:EXCERPT_MAX_CHARS],
+    }
+
+
 _HAYSTACK_JOIN_MODE = {"rrf": "reciprocal_rank_fusion", "concatenate": "concatenate"}
 
 
@@ -52,8 +79,6 @@ class _SourceHydrator:
                     "source_id": source_id,
                     "source_title": source_title,
                 }
-            if doc.content and len(doc.content) > _EXCERPT_MAX_CHARS:
-                kwargs["content"] = doc.content[:_EXCERPT_MAX_CHARS]
             result.append(dataclasses.replace(doc, **kwargs) if kwargs else doc)
         return {"documents": result}
 

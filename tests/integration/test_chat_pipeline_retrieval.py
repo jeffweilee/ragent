@@ -177,14 +177,9 @@ def test_source_hydrator_enriches_documents(es_store, mock_embedder) -> None:
 # ── excerpt truncation ────────────────────────────────────────────────────────
 
 
-def test_excerpt_truncated_to_max_chars(es_store, mock_embedder, monkeypatch) -> None:
-    monkeypatch.setenv("EXCERPT_MAX_CHARS", "20")
-    import importlib
-
-    import ragent.pipelines.chat as chat_mod
-
-    importlib.reload(chat_mod)
-
+def test_pipeline_returns_full_content_untruncated(es_store, mock_embedder) -> None:
+    # Truncation was moved to the router layer (_build_sources / _to_chunk).
+    # The pipeline itself must return full chunk content so the LLM sees everything.
     long_text = "x" * 200
     _write_and_refresh(
         es_store,
@@ -207,7 +202,7 @@ def test_excerpt_truncated_to_max_chars(es_store, mock_embedder, monkeypatch) ->
     pipeline = _pipeline(es_store, mock_embedder, doc_repo, join_mode="vector_only")
     docs = _run(pipeline, "x" * 10)
 
-    assert all(len(d.content or "") <= 20 for d in docs if d.content)
+    assert any(len(d.content or "") == 200 for d in docs if d.content)
 
 
 # ── source_app filter ────────────────────────────────────────────────────────
