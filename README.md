@@ -45,6 +45,13 @@ export RAGENT_ENV=dev
 export EMBEDDING_API_URL="http://embedding-service/embed"
 export LLM_API_URL="http://llm-service/chat"
 export RERANK_API_URL="http://rerank-service/rerank"
+
+# Optional tuning
+export CHAT_JOIN_MODE="rrf"
+export EXCERPT_MAX_CHARS=512
+export WORKER_HEARTBEAT_INTERVAL_SECONDS=30
+export PIPELINE_TIMEOUT_SECONDS=1800
+export INGEST_MAX_FILE_SIZE_BYTES=52428800
 ```
 
 ### 3. Run database migrations
@@ -172,7 +179,7 @@ Request schema is shared by both endpoints. Only `messages` is required.
   "provider": "openai",
   "model": "gptoss-120b",
   "temperature": 0.7,
-  "maxTokens": 4096,
+  "max_tokens": 4096,
   "source_app": "confluence",
   "source_workspace": "engineering"
 }
