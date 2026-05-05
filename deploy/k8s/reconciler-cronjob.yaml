@@ -1,0 +1,24 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: ragent-reconciler
+  namespace: ragent
+spec:
+  schedule: "*/5 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: Never
+          containers:
+            - name: reconciler
+              image: ragent:latest
+              command: ["python", "-m", "ragent.reconciler"]
+              envFrom:
+                - secretRef:
+                    name: ragent-secrets
+                - configMapRef:
+                    name: ragent-config

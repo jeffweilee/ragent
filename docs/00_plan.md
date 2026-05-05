@@ -128,20 +128,20 @@
 
 | # | Category | Task | Depends On | Status | Owner | Week |
 |---|---|---|---|:---:|---|:---:|
-| T5.1 | Red | `tests/integration/test_reconciler_redispatch.py` — `PENDING` row with `updated_at < NOW() - RECONCILER_PENDING_STALE_SECONDS` (B16/B28, default 5 min) → re-kiq, idempotent (S2). Live worker with fresh `updated_at` is **not** re-dispatched (S33). | T2.2, T2.8 | [ ] | QA | W6 |
-| T5.2 | Green | `src/ragent/reconciler.py` — one-shot entrypoint `python -m ragent.reconciler` (B9: K8s `CronJob` `*/5 * * * *`, `concurrencyPolicy: Forbid`); `SELECT … FOR UPDATE SKIP LOCKED`. Manifest `deploy/k8s/reconciler-cronjob.yaml` checked in. | T5.1 | [ ] | Dev | W6 |
-| T5.3 | Red | `tests/integration/test_reconciler_failed.py` — `attempt > WORKER_MAX_ATTEMPTS` (B28, default 5) → status=FAILED + structured-log alert (S3). | T5.2 | [ ] | QA | W6 |
-| T5.4 | Green | Status transition + structured log line `event=ingest.failed`. | T5.3 | [ ] | Dev | W6 |
-| T5.5 | Red | `tests/integration/test_reconciler_delete_resume.py` — `DELETING` row with `updated_at < NOW() - RECONCILER_DELETING_STALE_SECONDS` (B28, default 300) → resume cascade idempotently (S13). | T2.10 | [ ] | QA | W6 |
-| T5.6 | Green | Reconciler resumes DELETING. | T5.5 | [ ] | Dev | W6 |
-| T5.7 | Red | `tests/integration/test_reconciler_uploaded_orphan.py` — `UPLOADED` row with `updated_at < NOW() - RECONCILER_UPLOADED_STALE_SECONDS` (B28, default 300) → re-kiq `ingest.pipeline` (R1, S24). | T2.8 | [ ] | QA | W6 |
-| T5.8 | Green | Reconciler arm for `UPLOADED > 5 min`. | T5.7 | [ ] | Dev | W6 |
-| T5.9 | Red | `tests/integration/test_reconciler_multi_ready_repair.py` — two READY rows for same `(source_id, source_app)` → re-enqueue `ingest.supersede` (R3, S26). | T3.2d | [ ] | QA | W6 |
-| T5.10 | Green | Reconciler arm: `GROUP BY source_id, source_app HAVING COUNT(*)>1` → kiq supersede. | T5.9 | [ ] | Dev | W6 |
-| T5.11 | Red | `tests/integration/test_reconciler_failed_cleanup.py` — on `attempt>5 → FAILED`, partial chunks/ES are cleared (R5, S27). | T5.4 | [ ] | QA | W6 |
-| T5.12 | Green | FAILED transition runs `fan_out_delete` + `delete_by_document_id` before commit. | T5.11 | [ ] | Dev | W6 |
-| T5.13 | Red | `tests/integration/test_reconciler_heartbeat.py` — every tick increments `reconciler_tick_total` and emits `event=reconciler.tick` (R8, S30). | T5.2 | [ ] | QA | W6 |
-| T5.14 | Green | Heartbeat counter + log line in `reconciler.py`. | T5.13 | [ ] | Dev | W6 |
+| T5.1 | Red | `tests/integration/test_reconciler_redispatch.py` — `PENDING` row with `updated_at < NOW() - RECONCILER_PENDING_STALE_SECONDS` (B16/B28, default 5 min) → re-kiq, idempotent (S2). Live worker with fresh `updated_at` is **not** re-dispatched (S33). | T2.2, T2.8 | [x] | QA | W6 |
+| T5.2 | Green | `src/ragent/reconciler.py` — one-shot entrypoint `python -m ragent.reconciler` (B9: K8s `CronJob` `*/5 * * * *`, `concurrencyPolicy: Forbid`); `SELECT … FOR UPDATE SKIP LOCKED`. Manifest `deploy/k8s/reconciler-cronjob.yaml` checked in. | T5.1 | [x] | Dev | W6 |
+| T5.3 | Red | `tests/integration/test_reconciler_failed.py` — `attempt > WORKER_MAX_ATTEMPTS` (B28, default 5) → status=FAILED + structured-log alert (S3). | T5.2 | [x] | QA | W6 |
+| T5.4 | Green | Status transition + structured log line `event=ingest.failed`. | T5.3 | [x] | Dev | W6 |
+| T5.5 | Red | `tests/integration/test_reconciler_delete_resume.py` — `DELETING` row with `updated_at < NOW() - RECONCILER_DELETING_STALE_SECONDS` (B28, default 300) → resume cascade idempotently (S13). | T2.10 | [x] | QA | W6 |
+| T5.6 | Green | Reconciler resumes DELETING. | T5.5 | [x] | Dev | W6 |
+| T5.7 | Red | `tests/integration/test_reconciler_uploaded_orphan.py` — `UPLOADED` row with `updated_at < NOW() - RECONCILER_UPLOADED_STALE_SECONDS` (B28, default 300) → re-kiq `ingest.pipeline` (R1, S24). | T2.8 | [x] | QA | W6 |
+| T5.8 | Green | Reconciler arm for `UPLOADED > 5 min`. | T5.7 | [x] | Dev | W6 |
+| T5.9 | Red | `tests/integration/test_reconciler_multi_ready_repair.py` — two READY rows for same `(source_id, source_app)` → re-enqueue `ingest.supersede` (R3, S26). | T3.2d | [x] | QA | W6 |
+| T5.10 | Green | Reconciler arm: `GROUP BY source_id, source_app HAVING COUNT(*)>1` → kiq supersede. | T5.9 | [x] | Dev | W6 |
+| T5.11 | Red | `tests/integration/test_reconciler_failed_cleanup.py` — on `attempt>5 → FAILED`, partial chunks/ES are cleared (R5, S27). | T5.4 | [x] | QA | W6 |
+| T5.12 | Green | FAILED transition runs `fan_out_delete` + `delete_by_document_id` before commit. | T5.11 | [x] | Dev | W6 |
+| T5.13 | Red | `tests/integration/test_reconciler_heartbeat.py` — every tick increments `reconciler_tick_total` and emits `event=reconciler.tick` (R8, S30). | T5.2 | [x] | QA | W6 |
+| T5.14 | Green | Heartbeat counter + log line in `reconciler.py`. | T5.13 | [x] | Dev | W6 |
 
 ### Track T6 — MCP Schema (501 in P1)
 
