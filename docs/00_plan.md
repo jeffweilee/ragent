@@ -176,15 +176,15 @@
 
 | # | Category | Task | Depends On | Status | Owner | Phase |
 |---|---|---|---|:---:|---|:---:|
-| T8.1 | Red  | `tests/unit/test_jwt.py` — invalid → 401 problem+json on all `/chat*` and `/ingest*` endpoints. | (entry) | [~] | QA | P2 |
-| T8.2 | Green | `src/ragent/auth/jwt.py` (FastAPI dependency); subject claim → `user_id`. | T8.1 | [~] | Dev | P2 |
+| T8.1 | Red  | `tests/unit/test_jwt.py` — JWT shape `{"exp": <unix>, "preferred_username": "<user_id>"}`: expired `exp` → 401 problem+json `AUTH_TOKEN_EXPIRED`; missing/empty `preferred_username` → 401 `AUTH_CLAIM_MISSING`; invalid signature → 401 on all `/chat*` and `/ingest*` endpoints. | (entry) | [~] | QA | P2 |
+| T8.2 | Green | `src/ragent/auth/jwt.py` (FastAPI dependency); validates `exp`, extracts `preferred_username` → `user_id` (the same value carried by `X-User-Id` in P1). When `RAGENT_TRUST_X_USER_ID_HEADER=true`, dependency bypasses JWT and reads `X-User-Id` header as `preferred_username` (§3.5). | T8.1 | [~] | Dev | P2 |
 | T8.3 | Red  | `tests/unit/test_permission_client_protocol.py` — Protocol conformance for `batch_check(user_id, document_ids, relation) -> set[str]` and `list_objects(user_id, relation) -> list[str] \| None`. | T8.2 | [~] | QA | P2 |
 | T8.4 | Green | `src/ragent/auth/permission.py` — `PermissionClient` Protocol + `OpenFGAPermissionClient` implementation (sole module importing the OpenFGA SDK; B14). | T8.3 | [~] | Dev | P2 |
-| T8.5 | Red  | `tests/integration/test_chat_permission_gate.py` — chat retrieval over-fetches K' candidates; `PermissionClient.batch_check` post-filters to allowed; user A's query never surfaces a chunk whose `document_id` belongs to user B's private doc. ES query body asserted to carry NO auth filter (B14). | T8.4 | [~] | QA | P2 |
-| T8.6 | Green | Wire `PermissionClient` post-retrieval gate into `pipelines/chat.py` (between SourceHydrator and LLM, or before hydration). | T8.5 | [~] | Dev | P2 |
-| T8.7 | Red  | `tests/unit/test_ingest_permission.py` — `GET /ingest/{id}` and `DELETE /ingest/{id}` call `PermissionClient.batch_check([id])` and 403 problem+json when not allowed. | T8.4 | [~] | QA | P2 |
-| T8.8 | Green | Wire `PermissionClient` into `services/ingest_service.py::get/delete`; `list` either calls `list_objects` then `WHERE document_id IN (...)`, or falls back to `batch_check` per page when `list_objects` returns `None`. | T8.7 | [~] | Dev | P2 |
-| T8.9 | Behavioral | `HRClient` + JWT-subject → employee resolution; OpenFGA tuple-write on ingest (`user:<id>` viewer of `document:<doc_id>`). | T8.2, T8.4 | [~] | Dev | P2 |
+| T8.5 | Red  | `tests/integration/test_chat_permission_gate.py` — with `RAGENT_PERMISSION_CHAT_ENABLED=true`, chat retrieval over-fetches K' candidates; `PermissionClient.batch_check(user_id=preferred_username, …)` post-filters to allowed; user A's query never surfaces a chunk from user B's private doc. With the flag `false` (default), gate is bypassed and all candidates reach LLM. ES query body asserted to carry NO auth filter in either case (B14). | T8.4 | [~] | QA | P2 |
+| T8.6 | Green | Wire `PermissionClient` post-retrieval gate into `pipelines/chat.py` (between SourceHydrator and LLM, or before hydration). Gate is no-op unless `RAGENT_PERMISSION_CHAT_ENABLED=true`. | T8.5 | [~] | Dev | P2 |
+| T8.7 | Red  | `tests/unit/test_ingest_permission.py` — with `RAGENT_PERMISSION_INGEST_ENABLED=true`, `GET /ingest/{id}` and `DELETE /ingest/{id}` call `PermissionClient.batch_check([id])` and 403 problem+json when not allowed; `GET /ingest` filters via `list_objects` (or `batch_check` fallback). With flag `false` (default), all three endpoints are unrestricted. `documents.create_user` is set from `preferred_username` on POST regardless of flag. | T8.4 | [~] | QA | P2 |
+| T8.8 | Green | Wire `PermissionClient` into `services/ingest_service.py::get/delete`; `list` either calls `list_objects` then `WHERE document_id IN (...)`, or falls back to `batch_check` per page when `list_objects` returns `None`. All three call sites are no-op unless `RAGENT_PERMISSION_INGEST_ENABLED=true`. | T8.7 | [~] | Dev | P2 |
+| T8.9 | Behavioral | `HRClient` + JWT `preferred_username` → employee resolution; OpenFGA tuple-write on ingest (`user:<preferred_username>` viewer of `document:<doc_id>`). | T8.2, T8.4 | [~] | Dev | P2 |
 
 ---
 
@@ -206,7 +206,7 @@
 | # | Category | Task | Status | Owner |
 |---|---|---|:---:|---|
 | P2.1 | Stability | SRE: HA verification, monitoring, alerting rules. | [ ] | SRE |
-| P2.2 | Security | Activate JWT auth + Permission Layer (`PermissionClient` over OpenFGA) per Track T8 (all `[~]` rows → `[ ]` → `[x]`); B14: ES still carries no auth fields. Remove `RAGENT_AUTH_DISABLED` env knob. | [ ] | Dev |
+| P2.2 | Security | Activate JWT auth (`exp` + `preferred_username` claims) + Permission Layer (`PermissionClient` over OpenFGA) per Track T8 (all `[~]` rows → `[ ]` → `[x]`); B14: ES still carries no auth fields. Remove `RAGENT_AUTH_DISABLED` env knob. Introduce `RAGENT_TRUST_X_USER_ID_HEADER` (default `false`) and per-surface `RAGENT_PERMISSION_INGEST_ENABLED` / `RAGENT_PERMISSION_CHAT_ENABLED` (both default `false`) — wiring lands but enforcement stays opt-in. | [ ] | Dev |
 | P2.3 | Behavioral | Wire `RerankClient` into chat pipeline as `HybridRetrieverWithRerank` SuperComponent. | [ ] | Dev |
 | P2.4 | Behavioral | `ConditionalRouter` intent split (translate/summarize → Direct LLM). | [ ] | Dev |
 | P2.5 | Behavioral | MCP Tool real handler. | [ ] | Dev |
