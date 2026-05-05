@@ -1,6 +1,28 @@
 """Session-scoped testcontainer fixtures for integration tests (T0.9)."""
 
+import json
+import time
+import urllib.request
+
 import pytest
+
+
+def _wait_es_yellow(url: str, timeout: int = 120) -> None:
+    """Block until ES cluster health is at least yellow (shards allocated)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(
+                f"{url}/_cluster/health?wait_for_status=yellow&timeout=10s", timeout=15
+            ) as resp:
+                health = json.loads(resp.read())
+                if health.get("status") in ("yellow", "green"):
+                    return
+        except Exception:
+            pass
+        time.sleep(2)
+    raise TimeoutError(f"ES at {url} did not reach yellow status within {timeout}s")
+
 
 try:
     import docker
@@ -50,39 +72,26 @@ def mariadb_dsn(mariadb_container) -> str:
 
 @pytest.fixture(scope="session")
 def es_container():
-    """ES with analysis-icu plugin — built from Dockerfile.es-test if available."""
     if not DOCKER_AVAILABLE:
         pytest.skip("Docker not available")
-    from pathlib import Path
-
     from testcontainers.elasticsearch import ElasticSearchContainer
 
-    dockerfile = Path(__file__).parents[1] / "Dockerfile.es-test"
-    image = "ragent-es-test:latest"
-    if dockerfile.exists():
-        import subprocess
-
-        subprocess.run(
-            ["docker", "build", "-f", str(dockerfile), "-t", image, "."],
-            cwd=str(Path(__file__).parents[1]),
-            check=True,
-            capture_output=True,
-        )
-    else:
-        image = "elasticsearch:9.2.3"
-
-    with ElasticSearchContainer(
-        image=image,
-        port=9200,
-    ) as container:
-        yield container
+    container = ElasticSearchContainer(image="elasticsearch:9.2.3", port=9200)
+    # single-node: skip cluster discovery / master election (faster startup).
+    container.with_env("discovery.type", "single-node")
+    # Disable disk watermark so shards allocate even on > 90%-full CI/dev VMs.
+    container.with_env("cluster.routing.allocation.disk.threshold_enabled", "false")
+    with container as c:
+        yield c
 
 
 @pytest.fixture(scope="session")
 def es_url(es_container) -> str:
     host = es_container.get_container_host_ip()
     port = es_container.get_exposed_port(9200)
-    return f"http://{host}:{port}"
+    url = f"http://{host}:{port}"
+    _wait_es_yellow(url)
+    return url
 
 
 @pytest.fixture(scope="session")

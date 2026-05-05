@@ -22,7 +22,6 @@ def _mysqldump(dsn: str) -> str:
             "mysqldump",
             "--no-data",
             "--skip-comments",
-            "--column-statistics=0",  # MySQL 8.0 client compat with MariaDB 10.x
             "--protocol=TCP",  # force TCP, avoid Unix socket when host=localhost
             f"--ignore-table={db}.alembic_version",  # alembic tracking table not part of app schema
             "-h",

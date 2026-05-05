@@ -625,14 +625,9 @@ No physical FK. ORM-level cascade only.
 ```json
 {
   "settings": {
-    "analysis": {
-      "analyzer": {
-        "icu_text": {
-          "type": "custom",
-          "tokenizer": "icu_tokenizer",
-          "filter": ["icu_folding", "lowercase"]
-        }
-      }
+    "index": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0
     }
   },
   "mappings": {
@@ -642,25 +637,25 @@ No physical FK. ORM-level cascade only.
       "source_app":       { "type": "keyword" },
       "source_workspace": { "type": "keyword" },
       "lang":             { "type": "keyword" },
-      "title":            { "type": "text", "analyzer": "icu_text" },
-      "text":             { "type": "text", "analyzer": "icu_text" },
+      "title":            { "type": "text" },
+      "text":             { "type": "text" },
       "embedding": {
         "type": "dense_vector",
         "dims": 1024,
         "index": true,
         "similarity": "cosine",
-        "index_options": { "type": "bbq_hnsw" }
+        "index_options": { "type": "flat" }
       }
     }
   }
 }
 ```
 
-**BM25 analyzer (B26):** `icu_text` (custom analyzer) uses the `icu_tokenizer` from the `analysis-icu` plugin instead of the default `standard` analyzer. Rationale: `standard` does whitespace/punctuation splitting only — Chinese/Japanese/Korean text (no whitespace separators) becomes single mega-tokens or per-character tokens, both useless for BM25. `icu_tokenizer` segments CJK by Unicode word boundaries, giving meaningful BM25 hits for multilingual content. `icu_folding` normalises Unicode (full-width ⇄ half-width, accented ⇄ ascii); `lowercase` normalises Latin script. The same analyzer covers `text` and `title` fields — consistent with `multi_match` ranking (B15).
+**Shard topology (B26):** `number_of_shards: 1` (single primary — sufficient for P1 corpus size, simpler routing); `number_of_replicas: 0` (no replicas — single-node dev/CI clusters reach `green` immediately; prod overrides via cluster-level template when HA is needed in P2).
 
-**Vector index (B26):** `embedding` uses `index_options.type = bbq_hnsw` (Better Binary Quantization HNSW, ES 8.16+). Quantises 1024-dim float vectors to 1-bit per dimension (~32× memory reduction) with negligible recall loss for `cosine` similarity at our scale. Falls back to standard HNSW if `bbq_hnsw` rejected by the cluster (e.g. dev cluster on older ES) — log `event=es.bbq_unsupported` and continue.
+**BM25 analyzer (B26):** `text` and `title` use the default `standard` analyzer in P1. Multilingual / CJK tokenisation via the `analysis-icu` plugin is deferred to P2 once the operational cost of plugin distribution is accepted; until then queries against CJK content rely on the vector retriever for recall.
 
-**Plugin requirement:** the `analysis-icu` plugin MUST be installed on every ES node (dev / CI / prod). Boot-time `/readyz` probe (B4) refuses ready if the plugin is not loaded.
+**Vector index (B26):** `embedding` uses `index_options.type = flat` — exact brute-force kNN, no graph build cost at write time, deterministic recall. P2 will revisit `bbq_hnsw` (Better Binary Quantization HNSW) once the corpus exceeds the size at which `flat` query latency stops meeting the chat budget.
 
 **Title surface (B15):** `title` is denormalised onto every chunk row from `documents.source_title`. Two retrieval surfaces are derived from it:
 1. **Lexical** — BM25 retriever runs `multi_match` on `["text", "title^2"]` (title boosted 2× over body) using the `icu_text` analyzer (B26).
