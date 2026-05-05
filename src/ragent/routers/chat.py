@@ -13,45 +13,23 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from ragent.clients.rate_limiter import RateLimiter
 from ragent.errors.problem import problem
-from ragent.pipelines.chat import run_retrieval
+from ragent.pipelines.chat import build_es_filters, doc_to_source_entry, run_retrieval
 from ragent.schemas.chat import ChatRequest, build_rag_messages
 
 
 def _build_sources(documents: list[Any]) -> list[dict] | None:
     if not documents:
         return None
-    sources = []
-    for doc in documents:
-        meta = doc.meta or {}
-        sources.append(
-            {
-                "type": "knowledge",
-                "document_id": meta.get("document_id"),
-                "source_app": meta.get("source_app"),
-                "source_id": meta.get("source_id"),
-                "source_title": meta.get("source_title"),
-                "excerpt": doc.content,
-            }
-        )
-    return sources
+    return [doc_to_source_entry(d) for d in documents]
 
 
 def _run_retrieval(retrieval_pipeline: Any, req: ChatRequest) -> list[Any]:
     last_user = next((m["content"] for m in reversed(req.messages) if m.get("role") == "user"), "")
-    clauses = []
-    if req.source_app:
-        clauses.append({"field": "source_app", "operator": "==", "value": req.source_app})
-    if req.source_workspace:
-        clauses.append(
-            {"field": "source_workspace", "operator": "==", "value": req.source_workspace}
-        )
-    if not clauses:
-        filters = None
-    elif len(clauses) == 1:
-        filters = clauses[0]
-    else:
-        filters = {"operator": "AND", "conditions": clauses}
-    return run_retrieval(retrieval_pipeline, query=last_user, filters=filters)
+    return run_retrieval(
+        retrieval_pipeline,
+        query=last_user,
+        filters=build_es_filters(req.source_app, req.source_workspace),
+    )
 
 
 def _rate_limit_response(reset_at: float) -> Response:

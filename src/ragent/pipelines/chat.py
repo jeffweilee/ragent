@@ -19,6 +19,33 @@ from ragent.utility.env import int_env
 _EXCERPT_MAX_CHARS = int_env("EXCERPT_MAX_CHARS", 512)
 _DEFAULT_TOP_K = int_env("RETRIEVAL_TOP_K", 20)
 _VALID_MODES = frozenset({"rrf", "concatenate", "vector_only", "bm25_only"})
+
+
+def build_es_filters(source_app: str | None, source_workspace: str | None) -> dict | None:
+    clauses = []
+    if source_app:
+        clauses.append({"field": "source_app", "operator": "==", "value": source_app})
+    if source_workspace:
+        clauses.append({"field": "source_workspace", "operator": "==", "value": source_workspace})
+    if not clauses:
+        return None
+    if len(clauses) == 1:
+        return clauses[0]
+    return {"operator": "AND", "conditions": clauses}
+
+
+def doc_to_source_entry(doc: Any) -> dict:
+    meta = doc.meta or {}
+    return {
+        "document_id": meta.get("document_id"),
+        "source_app": meta.get("source_app"),
+        "source_id": meta.get("source_id"),
+        "type": "knowledge",
+        "source_title": meta.get("source_title"),
+        "excerpt": (doc.content or "")[:_EXCERPT_MAX_CHARS],
+    }
+
+
 _HAYSTACK_JOIN_MODE = {"rrf": "reciprocal_rank_fusion", "concatenate": "concatenate"}
 
 

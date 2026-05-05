@@ -244,8 +244,8 @@ The factory assembles the appropriate component graph at startup; the chat route
 
 - `sources` is `null` when no chunks were retrieved (e.g. empty index, retriever error fallback). Otherwise every entry has **all fields populated** — partial rows are not emitted.
 - `sources[].type` is reserved for future categorisation; **P1 always emits `"knowledge"`**. Future values `"app"` and `"workspace"` will be derived in a later phase.
-- `sources[].title` comes from `documents.source_title` (joined on `document_id` after retrieval).
-- `sources[].excerpt` is the chunk text the retriever surfaced. **Truncated to `EXCERPT_MAX_CHARS` (default 512) inside `SourceHydrator`** (B23) — single locus, before the LLM sees it. Truncation appends `…` if cut. Router never re-truncates.
+- `sources[].source_title` comes from `documents.source_title` (joined on `document_id` after retrieval).
+- `sources[].excerpt` is the chunk text the retriever surfaced. **Truncated to `EXCERPT_MAX_CHARS` (default 512) in the router** (`_build_sources`) — presentation-only (B23); the LLM receives the full chunk text untruncated. Truncation is a hard character cut at `EXCERPT_MAX_CHARS` chars.
 - `usage` is reported by `LLMClient`; for streaming the LLM API must include final usage (e.g. OpenAI `stream_options.include_usage=true`).
 
 #### 3.4.3 Streaming wire format (`/chat/stream` only)
@@ -269,6 +269,56 @@ data: {"type":"done", ...response schema as 3.4.2…}\n\n
 - **S6g filter AND combination (B29)** — Given chunks across `(source_app, source_workspace)` ∈ {(confluence,eng), (confluence,hr), (slack,eng)}, When `POST /chat {…, "source_app":"confluence", "source_workspace":"eng"}` runs, Then `sources[]` contains only the (confluence, eng) row.
 - **S6h filter no-match (B29)** — Given no chunks match the filter, When the request runs, Then `sources` is `null` (§3.4.2 contract for empty retrieval) and the LLM still answers.
 - **S6i filter empty string rejected (B29)** — Given `source_app=""`, When the request runs, Then 422 problem+json with `error_code=CHAT_FILTER_INVALID`; no LLM call is made.
+
+---
+
+#### 3.4.4 `POST /retrieve` — Retrieval without LLM
+
+Runs the full retrieval pipeline (embed → kNN + BM25 → RRF join → source hydration) and returns ranked chunks without invoking the LLM. Useful for retrieval quality inspection and custom UIs.
+
+**Request schema:**
+
+```json
+{
+  "query":            "What are our Q3 OKRs?",
+  "source_app":       "confluence",
+  "source_workspace": "engineering",
+  "dedupe":           false
+}
+```
+
+- Only `query` is required.
+- `source_app` / `source_workspace`: same optional ES `term` filters as `/chat` (B29).
+- `dedupe` (default `false`): when `true`, keeps only the highest-scored chunk per `document_id` (pipeline output is already score-sorted, so first-seen = best).
+
+**Response schema:**
+
+```json
+{
+  "chunks": [
+    {
+      "document_id":  "01J9...",
+      "source_app":   "confluence",
+      "source_id":    "DOC-123",
+      "type":         "knowledge",
+      "source_title": "Q3 OKR Planning",
+      "excerpt":      "...truncated to EXCERPT_MAX_CHARS..."
+    }
+  ]
+}
+```
+
+- `chunks` is an empty array when no results are found (never `null`).
+- `excerpt` is truncated to `EXCERPT_MAX_CHARS` (default 512) in the router — same rule as `/chat` `sources[].excerpt` (B23).
+- `dedupe=false`: the same `document_id` can appear multiple times if multiple chunks from the same document ranked highly.
+- `dedupe=true`: one entry per `document_id`; the chunk with the highest RRF score is kept.
+
+**BDD:**
+- **S38 retrieve returns all chunks by default** — Given two chunks from the same `document_id` both rank in the top-K, When `POST /retrieve {"query":"..."}` (no `dedupe`), Then both appear in `chunks[]` with the same `document_id`.
+- **S39 retrieve dedupe=true keeps best chunk** — Given the same two chunks, When `POST /retrieve {"query":"...","dedupe":true}`, Then exactly one entry with that `document_id` appears, and its `excerpt` matches the higher-scored chunk.
+- **S40 retrieve empty index** — Given an empty ES index, When `POST /retrieve`, Then `{"chunks":[]}` is returned (not `null`).
+- **S41 retrieve filter (B29)** — Same `source_app` / `source_workspace` filter semantics as `/chat`; non-matching filter returns `{"chunks":[]}`.
+
 - **S36 CJK BM25 via icu_tokenizer (B26)** — Given a document body containing `"產品規格"` (no whitespace) indexed under the `icu_text` analyzer, When a chat query for `"產品規格"` runs against `chunks_v1`, Then the BM25 retriever returns the chunk; the same query against a `standard`-analyzed control index does not. Proves the analyzer choice (B26) is functionally required for CJK retrieval.
 - **S37 chat rate-limit per user (B31)** — Given `CHAT_RATE_LIMIT_PER_MINUTE=N` and a single `X-User-Id`, When the same caller issues N+1 `POST /chat` (or `/chat/stream`) requests within the window, Then the first N succeed and the (N+1)th returns 429 `application/problem+json` with `error_code=CHAT_RATE_LIMITED` and a `Retry-After` header equal to seconds until window reset. A different `X-User-Id` gets an independent budget; ingest, MCP, and health endpoints are unaffected. After the window expires the counter resets.
 - **S8**  — `POST /mcp/tools/rag` returns 501 in P1 (handler not yet wired).
@@ -463,7 +513,8 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 | Pipeline | Components | Timeouts | Test Path | Phase |
 |---|---|---|---|:---:|
 | **Ingest** | `delete_by_document_id (idempotency) → FileTypeRouter → Converter → DocumentCleaner → LanguageRouter → {cjk_splitter \| en_splitter} (sentence-level, B1) → EmbeddingClient(bge-m3, batch=32) → ChunkRepository.bulk_insert → PluginRegistry.fan_out (per-plugin 60 s)` | Embedder 30 s/batch · ES bulk 60 s · MinIO get 30 s · plugin 60 s | `tests/integration/test_ingest_pipeline.py` | **P1** sync |
-| **Chat** | `QueryEmbedder → ESVector(kNN on `embedding`, `bbq_hnsw` index, optional `term` filter on `source_app`/`source_workspace` — B29) → ESBM25(multi_match `text`+`title^2`, `icu_text` analyzer, B26, same optional filter) → DocumentJoiner (C6 `CHAT_JOIN_MODE`: rrf\|concatenate\|vector_only\|bm25_only) → SourceHydrator(JOIN documents, truncate `excerpt` to 512 chars) → LLMClient.{chat\|stream}` (retrievers sequential in P1; parallel in P2 — see §3.4 P-A) | Embedder 10 s (single query) · ES query 10 s · LLM 120 s · per-batch ingest embed 30 s (asymmetric — query is one string, ingest is up to 32) | `tests/integration/test_chat_endpoint.py` (T3.9), `tests/integration/test_chat_stream_endpoint.py` (T3.11), `tests/integration/test_chat_pipeline_retrieval.py` (T3.5) | **P1** sync |
+| **Chat** | `QueryEmbedder → ESVector(kNN on `embedding`, `bbq_hnsw` index, optional `term` filter on `source_app`/`source_workspace` — B29) → ESBM25(multi_match `text`+`title^2`, `icu_text` analyzer, B26, same optional filter) → DocumentJoiner (C6 `CHAT_JOIN_MODE`: rrf\|concatenate\|vector_only\|bm25_only) → SourceHydrator(JOIN documents → returns full chunk content) → LLMClient.{chat\|stream}` (retrievers sequential in P1; parallel in P2 — see §3.4 P-A); router truncates `sources[].excerpt` to `EXCERPT_MAX_CHARS` (B23) | Embedder 10 s (single query) · ES query 10 s · LLM 120 s · per-batch ingest embed 30 s (asymmetric — query is one string, ingest is up to 32) | `tests/integration/test_chat_endpoint.py` (T3.9), `tests/integration/test_chat_stream_endpoint.py` (T3.11), `tests/integration/test_chat_pipeline_retrieval.py` (T3.5) | **P1** sync |
+| **Retrieve** | Same as Chat pipeline up to `SourceHydrator` (shared `retrieval_pipeline` instance); no LLM call; router truncates `chunks[].excerpt` to `EXCERPT_MAX_CHARS` (B23); optional `dedupe` post-step (§3.4.4) | Embedder 10 s · ES query 10 s | `tests/unit/test_retrieve_router.py` (T3.19) | **P1** sync |
 
 ### 4.4 Plugin Catalog
 
@@ -840,7 +891,7 @@ ragent/
 | **B20** | 2026-05-04 | BDD hygiene | S4 / S5 / S9 / S11 referenced but no Given/When/Then bodies | Inlined full bodies in §3.3 (S4, S5, S11) and §3.5 (S9). | Footnote-style "see plan" (BDD scenarios live in spec, not plan, per project convention). | §3.3 / §3.5 |
 | **B21** | 2026-05-04 | API | JSON field naming convention | **IDs / resources = `snake_case`** (`document_id`, `source_id`, `error_code`, `next_cursor`, …); **LLM token/config knobs = `camelCase`** (`maxTokens`, `promptTokens`, `completionTokens`, `totalTokens`, `temperature`). Mixed within one body is allowed; the rule above resolves which side a new field falls on. Preserves OpenAI-shape upstream familiarity for chat tokens while keeping ingest/data fields snake-case. | All-snake (breaks user-specified chat shape); all-camel (forces `documentId`/`sourceId` rename across ingest, schema, OpenFGA tuples, audit logs); ad-hoc per field (was the bug). | §6 / all body schemas |
 | **B22** | 2026-05-04 | Chat API | `provider` field semantics in P1 | **Validated allow-list `{"openai"}`**, 422 (`error_code=CHAT_PROVIDER_UNSUPPORTED`) on others; the accepted value is **echoed verbatim** in the response. P1 routes nothing on it. Future phases extend the allow-list and use `provider` as a routing key. | Echo only, no validation (silently accepts garbage); ignore the field entirely (forward-incompat with multi-provider future). | §3.4.1 / §3.4.2 / T3.3–T3.4 |
-| **B23** | 2026-05-04 | Chat API | Where `sources[].excerpt` is truncated | **Inside `SourceHydrator`**, single locus, `EXCERPT_MAX_CHARS` (default 512), append `…` if cut. Router never re-truncates. | Truncate in router (then chunks-as-LLM-context still see the long form, leak); truncate in retriever (couples retrieval to display concerns); leave to client (LLM gets full chunk for context, response surfaces full chunk to client — wasted bandwidth + risk of leaking text the operator intended to keep server-side). | §3.4.2 / T3.6 |
+| **B23** | 2026-05-05 | Chat API | Where `sources[].excerpt` is truncated | **In the router** (`_build_sources` for `/chat`, `_to_chunk` for `/retrieve`), after retrieval — `EXCERPT_MAX_CHARS` (default 512) hard character cut. `SourceHydrator` returns full chunk content; the LLM receives the untruncated text; only the API response field is shortened. `EXCERPT_MAX_CHARS` is a public constant exported from `pipelines/chat.py` and imported by both routers. | Truncate inside `SourceHydrator` (LLM context is also cut — original P1 approach, reverted: reduces answer quality on long chunks without benefit to the API consumer); truncate in retriever (couples retrieval to display concerns); leave to client (full chunk surfaced to API consumer — bandwidth waste + potential text leakage). | §3.4.2 / §3.4.4 / T3.6 / T3.19 |
 | **B24** | 2026-05-04 | Pipeline | CSV row scaling — naive 1 row → 1 chunk would be 1 M chunks for a 50 MB file | **`RowMerger`** SuperComponent on the CSV branch only (Haystack `ConditionalRouter` on MIME): pack consecutive rows joined by `\n` until buffered text reaches `CSV_CHUNK_TARGET_CHARS` (default 2 000 ≈ 512 tokens, well under bge-m3's 8 192). Result: 50 MB CSV → ~25 k chunks instead of ~1 M. Combined with B18 ceiling, large CSVs are bounded both in count and total wall-clock. | Per-file row cap (loses tail rows); skip CSV in P1 (regression vs spec); change every row's chunker to "passage" (loses sentence-level fidelity for non-CSV); dynamic per-row Haystack `DocumentSplitter(split_by="word")` (no row-grouping, defeats the "one logical record per chunk" property). | §3.2 / §4.2 / S35 |
 | **B25** | 2026-05-04 | Storage | `documents.storage_uri` stored full URI; bucket name is constant config | **Rename column to `object_key VARCHAR(256) NOT NULL`** (key only, format per B10). Bucket is read from `MINIO_BUCKET` env var (default `ragent`); reconstruct full URI on demand. Saves ~20 bytes/row, decouples row from bucket-rename ops, and makes a future bucket migration a config flip. | Keep full URI (rigid); store bucket per-row (rotation hell); URL-encode in object key (key+bucket separation already does the job). | §5.1 / T2.5 / T2.6 |
 | **B26** | 2026-05-04 | ES | (a) BM25 analyzer; (b) vector index type; (c) where the index definition lives | **(a) `icu_text` custom analyzer** (`icu_tokenizer` + `icu_folding` + `lowercase`) on `text` and `title` — required for CJK tokenisation; `standard` analyzer collapses CJK to per-character or mega-tokens, breaking BM25. `analysis-icu` plugin is a hard ES dependency (verified at `/readyz`). **(b) `bbq_hnsw`** (Better Binary Quantization HNSW, ES 8.16+) on `embedding` — ~32× memory reduction at negligible recall cost; falls back to standard HNSW with `event=es.bbq_unsupported` log if cluster rejects. **(c) Source of truth = `resources/es/chunks_v1.json`** loaded by boot auto-init (§6.1) when the index does not exist; spec §5.2 mirrors the file in prose; CI drift test enforces equality. | Default `standard` analyzer (CJK becomes useless for BM25); `nori`/`smartcn` (per-language plugin sprawl, doesn't cover all CJK consistently); raw HNSW (4× more memory at our 1024 dims); inline mapping in Python code (every change is a code commit, no resource-file diffability). | §5.2 / §6.1 / T0.8d / T0.9 |

@@ -54,7 +54,11 @@ class _IdempotencyClean:
     @component.output_types(documents=list[Document])
     def run(self, documents: list[Document], document_id: str) -> dict:
         self._repo.delete_by_document_id(document_id)
-        return {"documents": documents}
+        stamped = [
+            dataclasses.replace(d, meta={**d.meta, "document_id": document_id})
+            for d in documents
+        ]
+        return {"documents": stamped}
 
 
 def _select_profile(doc: Document) -> tuple[int, int, AtomKind]:
@@ -121,7 +125,7 @@ def _pack_atoms(atoms: list[str], target: int, overlap: int, joiner: str) -> lis
         carry_len = 0
         cut = len(buf)
         for i in range(len(buf) - 1, -1, -1):
-            carry_len += len(buf[i]) + (len(joiner) if cut - i > 1 else 0)
+            carry_len += len(buf[i]) + (len(joiner) if i < len(buf) - 1 else 0)
             cut = i
             if carry_len >= overlap:
                 break
@@ -185,17 +189,21 @@ class _CharBudgetChunker:
             if not atoms:
                 continue
 
-            # Approximate offsets via running cursor; precise offsets would
-            # require expensive substring search per chunk on large docs.
             offset = 0
             for i, chunk_text in enumerate(_build_chunks(atoms, target, overlap, joiner)):
+                # Search forward from offset to find the chunk's actual start
+                # in the original content; avoids drift from variable carry length.
+                key = chunk_text[:min(40, len(chunk_text))]
+                found = content.find(key, offset)
+                if found >= 0:
+                    offset = found
                 result.append(
                     Document(
                         content=chunk_text,
                         meta={**doc.meta, "split_id": i, "split_idx_start": offset},
                     )
                 )
-                offset += max(1, len(chunk_text) - overlap)
+                offset += len(chunk_text)
         return {"documents": result}
 
 

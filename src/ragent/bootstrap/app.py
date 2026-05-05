@@ -17,6 +17,7 @@ from ragent.routers.chat import create_chat_router
 from ragent.routers.health import create_health_router
 from ragent.routers.ingest import create_router as create_ingest_router
 from ragent.routers.mcp import create_mcp_router
+from ragent.routers.retrieve import create_retrieve_router
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +96,7 @@ def create_app() -> FastAPI:
             rate_limit_window=container.rate_limit_window,
         )
     )
+    app.include_router(create_retrieve_router(retrieval_pipeline=container.retrieval_pipeline))
     app.include_router(create_mcp_router())
     app.include_router(create_health_router(probes=_build_probes(container)))
 

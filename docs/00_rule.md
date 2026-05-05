@@ -26,26 +26,35 @@
 
 ### `docs/00_plan.md`: Master TDD Implementation Checklist
 
+**Task column format (mandatory):** every task cell is rendered as a bulleted list (use `<br>•` separators inside the markdown cell). Each task **must** open with two one-line summary bullets, in this order:
+
+1. `• **Achieve:** <one sentence — what the task accomplishes / why>`
+2. `• **Deliver:** <one sentence — concrete artifact: file path, test path, env var, manifest, etc.>`
+
+Any further specifics (constraints, env vars, edge cases, references) follow as additional `•` bullets in the same cell. Do not write the task as a single prose paragraph.
+
 | Phase | Category | Task | Status | Owner |
 | :--- | :--- | :--- | :---: | :--- |
-| **Phase 1** | **Analysis** | Define Domain Boundaries and Mission Objectives in `spec.md`. | [ ] | Architect |
-| **Phase 1** | **Design** | Map Business Scenarios & write Given-When-Then test cases. | [ ] | QA / PM |
-| **Phase 1** | **Red** | Write and execute failing tests to define behavior expectations. | [ ] | QA / Dev |
-| **Phase 1** | **Green** | Implement minimal production code to pass all unit/integration tests. | [ ] | Dev |
-| **Phase 1** | **Refactor** | Code Review: Enforce Clean Code, Idempotency, and Performance. | [ ] | Reviewer |
-| **Phase 2** | **Stability** | SRE check: HA verification, Monitoring setup, and Alerting rules. | [ ] | SRE |
-| **Phase 2** | **Closure** | Sync all document updates and record lessons in `00_journal.md`. | [ ] | Master |
+| **Phase 1** | **Analysis** | • **Achieve:** Lock domain boundaries and mission objectives.<br>• **Deliver:** Updated sections in `docs/00_spec.md`. | [ ] | Architect |
+| **Phase 1** | **Design** | • **Achieve:** Translate scenarios into executable behavior contracts.<br>• **Deliver:** Given-When-Then rows under `docs/00_spec.md` §Scenario Testing. | [ ] | QA / PM |
+| **Phase 1** | **Red** | • **Achieve:** Pin behavior with failing tests before any production code.<br>• **Deliver:** Failing test files under `tests/{unit,integration,e2e}/`. | [ ] | QA / Dev |
+| **Phase 1** | **Green** | • **Achieve:** Make the red tests pass with the minimum viable code.<br>• **Deliver:** Production modules under `src/ragent/` matching the test contract. | [ ] | Dev |
+| **Phase 1** | **Refactor** | • **Achieve:** Tidy structure without changing behavior; enforce clean code, idempotency, performance.<br>• **Deliver:** Reviewed diff with green tests; review notes captured in commit/PR. | [ ] | Reviewer |
+| **Phase 2** | **Stability** | • **Achieve:** Production-grade resilience and visibility.<br>• **Deliver:** HA verification report, Prometheus alert rules, Grafana dashboards. | [ ] | SRE |
+| **Phase 2** | **Closure** | • **Achieve:** Close the loop on docs and lessons learned.<br>• **Deliver:** Updated `00_spec.md` / `00_plan.md` + new `00_journal.md` entries. | [ ] | Master |
 
 
 ### `docs/00_journal.md` (Blameless Team Reflection)
 
 > **Goal:** Prevent recurrence through actionable, domain-specific guidelines rather than individual blame.
 
-| Date | Domain | Issue Description | Root Cause | Actionable Guideline (Prevention) |
+**Format:**
+1. **Domain List (TOC)** at the top — a fixed, converged set of domains. New entries MUST be filed under an existing domain; do not invent new domains. Allowed domains: `Architecture`, `SRE`, `QA`, `Security`, `Spec`, `Process`.
+2. **Per-Domain Table** — one section per domain, each containing a 5-column table. The `Topic` column is a short tag (1–3 words) that lets a reader scan the table and locate the relevant entry without reading every Description.
+
+| Date | Topic | Description | Root Cause | Actionable Guideline |
 | :--- | :--- | :--- | :--- | :--- |
-| 2026-05-04 | **Architecture** | Race condition during high-concurrency wallet updates. | Missing atomicity at the DB transaction level. | **[Rule]** All balance-related mutations must use Pessimistic Locking and be wrapped in an atomic decorator. |
-| 2026-05-01 | **SRE** | Production downtime during schema migration. | Migration script lacked backward compatibility with the current API. | **[Rule]** Use "Expand and Contract" pattern for DB changes; never drop a column before the code reference is removed. |
-| 2026-04-25 | **QA** | Missed edge case in discount logic. | TDD Given-When-Then did not account for "Expired" status. | **[Rule]** All state-machine transitions must include a "Negative Path" test case in the Scenario Matrix. |
+| 2026-05-04 | Concurrency | Race condition during high-concurrency wallet updates. | Missing atomicity at the DB transaction level. | **[Rule]** All balance-related mutations must use Pessimistic Locking and be wrapped in an atomic decorator. |
 
 
 ---
