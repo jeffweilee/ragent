@@ -257,6 +257,8 @@ Error event: `{"type": "error", "error_code": "LLM_ERROR", "message": "..."}`
 
 Runs the full retrieval pipeline (embed → kNN + BM25 → RRF join → source hydration) and returns ranked chunks directly, without invoking the LLM. Useful for debugging retrieval quality or building custom UIs.
 
+By default returns **all ranked chunks** — a single document can appear multiple times if several of its chunks scored highly. Set `"dedupe": true` to keep only the best-scoring chunk per `document_id`.
+
 ```bash
 curl -X POST http://localhost:8000/retrieve \
   -H "Content-Type: application/json" \
@@ -264,16 +266,41 @@ curl -X POST http://localhost:8000/retrieve \
   -d '{
     "query": "What are our Q3 OKRs?",
     "source_app": "confluence",
-    "source_workspace": "engineering"
+    "source_workspace": "engineering",
+    "dedupe": true
   }'
 ```
 
 ```json
-// 200 OK
+// 200 OK — dedupe=false (default): same document_id can repeat
 {
   "chunks": [
     {
-      "document_id": "01J9ABCDEFGHJKMNPQRSTVWXYZ",
+      "document_id": "01J9AAA",
+      "source_app": "confluence",
+      "source_id": "DOC-123",
+      "type": "knowledge",
+      "source_title": "Q3 OKR Planning",
+      "excerpt": "Key results for Q3 include..."
+    },
+    {
+      "document_id": "01J9AAA",
+      "source_app": "confluence",
+      "source_id": "DOC-123",
+      "type": "knowledge",
+      "source_title": "Q3 OKR Planning",
+      "excerpt": "Another chunk from the same document..."
+    }
+  ]
+}
+```
+
+```json
+// 200 OK — dedupe=true: one entry per document_id (highest-scored chunk wins)
+{
+  "chunks": [
+    {
+      "document_id": "01J9AAA",
       "source_app": "confluence",
       "source_id": "DOC-123",
       "type": "knowledge",
@@ -286,11 +313,16 @@ curl -X POST http://localhost:8000/retrieve \
 
 **Request fields:**
 
-| Field | Type | Required | Notes |
-|---|---|---|---|
-| `query` | `string` | Yes | The retrieval query text |
-| `source_app` | `string` | No | ES filter; omit for unrestricted retrieval |
-| `source_workspace` | `string` | No | ES filter; ANDed with `source_app` when both supplied |
+| Field | Type | Required | Default | Notes |
+|---|---|---|---|---|
+| `query` | `string` | Yes | — | Retrieval query text |
+| `source_app` | `string` | No | — | ES filter; omit for unrestricted retrieval |
+| `source_workspace` | `string` | No | — | ES filter; ANDed with `source_app` when both supplied |
+| `dedupe` | `bool` | No | `false` | When `true`, keeps only the highest-scored chunk per `document_id` |
+
+**How `excerpt` works:**
+
+Each chunk stored in ES is the raw text segment produced by the indexing pipeline's splitter. The `excerpt` field in the response is that chunk's text, truncated to `EXCERPT_MAX_CHARS` characters (default `512`, configurable via env var) by `SourceHydrator` before it reaches the router. Truncation is a hard character cut — no semantic boundary is preserved. The same truncation applies to `sources[].excerpt` in `/chat` and `/chat/stream` responses.
 
 ---
 

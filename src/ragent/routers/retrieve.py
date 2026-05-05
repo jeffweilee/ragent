@@ -18,6 +18,7 @@ class RetrieveRequest(BaseModel):
     query: str = Field(..., min_length=1)
     source_app: str | None = None
     source_workspace: str | None = None
+    dedupe: bool = False
 
 
 def _build_filters(req: RetrieveRequest) -> dict | None:
@@ -35,6 +36,31 @@ def _build_filters(req: RetrieveRequest) -> dict | None:
     return {"operator": "AND", "conditions": clauses}
 
 
+def _to_chunk(doc: Any) -> dict:
+    meta = doc.meta or {}
+    return {
+        "document_id": meta.get("document_id"),
+        "source_app": meta.get("source_app"),
+        "source_id": meta.get("source_id"),
+        "type": "knowledge",
+        "source_title": meta.get("source_title"),
+        "excerpt": doc.content,
+    }
+
+
+def _dedupe_by_document(docs: list[Any]) -> list[Any]:
+    """Keep the first (highest-scored) chunk per document_id. Order preserved."""
+    seen: set[str] = set()
+    result = []
+    for doc in docs:
+        doc_id = (doc.meta or {}).get("document_id")
+        if doc_id is None or doc_id not in seen:
+            if doc_id is not None:
+                seen.add(doc_id)
+            result.append(doc)
+    return result
+
+
 def create_retrieve_router(retrieval_pipeline: Any) -> APIRouter:
     router = APIRouter()
 
@@ -47,19 +73,8 @@ def create_retrieve_router(retrieval_pipeline: Any) -> APIRouter:
         docs = await run_in_threadpool(
             run_retrieval, retrieval_pipeline, query=body.query, filters=filters
         )
-        chunks = []
-        for doc in docs:
-            meta = doc.meta or {}
-            chunks.append(
-                {
-                    "document_id": meta.get("document_id"),
-                    "source_app": meta.get("source_app"),
-                    "source_id": meta.get("source_id"),
-                    "type": "knowledge",
-                    "source_title": meta.get("source_title"),
-                    "excerpt": doc.content,
-                }
-            )
-        return JSONResponse({"chunks": chunks})
+        if body.dedupe:
+            docs = _dedupe_by_document(docs)
+        return JSONResponse({"chunks": [_to_chunk(d) for d in docs]})
 
     return router
