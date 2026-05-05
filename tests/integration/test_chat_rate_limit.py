@@ -18,7 +18,7 @@ def _make_app(limit: int = 2, window_seconds: int = 60):
     rate_limiter = RateLimiter(redis_client=fake_redis)
 
     retrieval_pipeline = MagicMock()
-    retrieval_pipeline.run.return_value = {"source_hydrator": {"documents": []}}
+    retrieval_pipeline.run.return_value = {"excerpt_truncator": {"documents": []}}
     llm_client = MagicMock()
     llm_client.chat.return_value = {"content": "ok", "usage": {}}
     llm_client.stream.return_value = iter(["ok"])
