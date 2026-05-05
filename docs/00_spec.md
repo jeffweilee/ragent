@@ -293,11 +293,11 @@ Two distinct concerns, kept architecturally separate from retrieval:
 ```
 
 - `exp` — Unix epoch seconds; expired tokens → 401 problem+json (`error_code=AUTH_TOKEN_EXPIRED`).
-- `preferred_username` — the canonical `user_id` (a.k.a. `X-User-Id`). Wired into:
+- `preferred_username` — the canonical `user_id` (a.k.a. `X-User-Id`). Missing/empty claim → 401 (`error_code=AUTH_CLAIM_MISSING`). Wired into:
   - **Ingest** — written verbatim to `documents.create_user` (audit only; B14).
   - **Chat** — passed to `PermissionClient.batch_check(user_id=…, …)` as the post-retrieval filter subject.
 
-**Header fallback (P2):** when `RAGENT_TRUST_X_USER_ID_HEADER=true`, the JWT dependency is bypassed and the `X-User-Id` request header is trusted as `preferred_username`. Default `false`. Intended for internal/dev callers; production deployments must keep it off.
+**Header fallback (P2):** when `RAGENT_TRUST_X_USER_ID_HEADER=true` and `RAGENT_ENV != prod`, the JWT dependency is bypassed and the `X-User-Id` request header is trusted as `preferred_username`. Default `false`. Intended for internal/dev callers; the flag is strictly ignored in `prod` to prevent accidental authentication bypass.
 
 **Permission Layer interface (P2):**
 
@@ -439,6 +439,8 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 | `PIPELINE_TIMEOUT`                   | log `event=ingest.failed reason=pipeline_timeout` | Pipeline body exceeds `PIPELINE_TIMEOUT_SECONDS` (B18, S34) | Worker T3.2j |
 | `ES_BBQ_UNSUPPORTED`                 | log `event=es.bbq_unsupported` | Cluster rejected `bbq_hnsw`; bootstrap retried with standard HNSW (B26) | Bootstrap |
 | `RECONCILER_TICK_MISSING`            | Prometheus alert | `reconciler_tick_total` flat > 10 min (R8, S30) | Alerting rule T7.1a |
+| `AUTH_TOKEN_EXPIRED`                 | 401             | JWT `exp` claim is in the past (T8.1) | Auth dependency T8.2 |
+| `AUTH_CLAIM_MISSING`                 | 401             | `preferred_username` claim absent or empty (T8.1) | Auth dependency T8.2 |
 
 ### 4.2 Supported Formats
 
@@ -493,8 +495,8 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | Variable | Default | Description |
 |---|---|---|
 | `RAGENT_ENV`                          | (required)       | `dev` \| `staging` \| `prod`. P1 startup guard refuses non-`dev`. |
-| `RAGENT_AUTH_DISABLED`                | `false`          | Must be `true` in P1; P2 sets `false` to enable JWT (§3.5). |
-| `RAGENT_TRUST_X_USER_ID_HEADER`       | `false`          | **P2 only.** When `true`, JWT dependency is bypassed and the `X-User-Id` header is trusted as `preferred_username` (§3.5). Ignored while `RAGENT_AUTH_DISABLED=true`. |
+| `RAGENT_AUTH_DISABLED`                | `false`          | Must be `true` in P1; removed in P2 to enable JWT (§3.5). |
+| `RAGENT_TRUST_X_USER_ID_HEADER`       | `false`          | **P2 only.** When `true` and `RAGENT_ENV != prod`, JWT dependency is bypassed and the `X-User-Id` header is trusted as `preferred_username` (§3.5). Strictly ignored in `prod`. |
 | `RAGENT_PERMISSION_INGEST_ENABLED`    | `false`          | **P2 only.** When `true`, `GET/DELETE /ingest/{id}` and `GET /ingest` enforce `PermissionClient` (§3.5). Default off — gate is wired but inert until OpenFGA tuples exist. |
 | `RAGENT_PERMISSION_CHAT_ENABLED`      | `false`          | **P2 only.** When `true`, chat retrieval applies the `PermissionClient` post-filter (§3.5). Default off. |
 | `RAGENT_HOST`                         | `127.0.0.1`      | API bind address. P1 OPEN guard (§1) refuses any value other than `127.0.0.1` while `RAGENT_ENV=dev` & `RAGENT_AUTH_DISABLED=true`. |
