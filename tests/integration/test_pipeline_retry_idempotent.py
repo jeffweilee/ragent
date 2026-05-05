@@ -45,7 +45,8 @@ def test_pipeline_clears_chunks_before_rerun():
         {
             "converter": {"sources": [ByteStream(data=text.encode())]},
             "idempotency_clean": {"document_id": "DOC001"},
-        }
+        },
+        include_outputs_from={"embedder"},
     )
     docs = result["embedder"]["documents"]
 

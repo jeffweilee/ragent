@@ -43,7 +43,10 @@ def test_csv_10k_rows_chunk_count_bounded():
     expected_max = math.ceil(total_chars / _CHUNK_TARGET_CHARS_CSV) + 1
 
     pipeline = build_ingest_pipeline(embedder=_MockEmbedder(), document_store=_FakeStore())
-    result = pipeline.run({"converter": {"sources": [_make_csv(rows, chars_per_row)]}})
+    result = pipeline.run(
+        {"converter": {"sources": [_make_csv(rows, chars_per_row)]}},
+        include_outputs_from={"embedder"},
+    )
     docs = result["embedder"]["documents"]
     assert len(docs) <= expected_max, f"Expected ≤{expected_max} chunks, got {len(docs)}"
 
@@ -57,7 +60,10 @@ def test_txt_uses_sentence_packing_within_budget():
     total_chars = rows * chars_per_row
 
     pipeline = build_ingest_pipeline(embedder=_MockEmbedder(), document_store=_FakeStore())
-    result = pipeline.run({"converter": {"sources": [_make_txt(total_chars)]}})
+    result = pipeline.run(
+        {"converter": {"sources": [_make_txt(total_chars)]}},
+        include_outputs_from={"embedder"},
+    )
     docs = result["embedder"]["documents"]
     assert len(docs) >= 1
     for doc in docs:
