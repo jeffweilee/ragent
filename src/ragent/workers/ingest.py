@@ -84,9 +84,13 @@ async def ingest_pipeline_task(document_id: str) -> None:
             pipeline = build_idempotent_ingest_pipeline(
                 embedder=container.embedding_client,
                 chunk_repo=container.chunk_repo,
-                document_id=doc_id,
             )
-            result = pipeline.run({"converter": {"sources": [tmp.name]}})
+            result = pipeline.run(
+                {
+                    "converter": {"sources": [tmp.name]},
+                    "idempotency_clean": {"document_id": doc_id},
+                }
+            )
         return result.get("embedder", {}).get("documents", [])
 
     await to_thread.run_sync(

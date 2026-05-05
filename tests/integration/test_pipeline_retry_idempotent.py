@@ -32,14 +32,17 @@ def test_pipeline_clears_chunks_before_rerun():
                 "documents": [dataclasses.replace(doc, embedding=[0.0] * 4) for doc in documents]
             }
 
-    pipeline = build_idempotent_ingest_pipeline(
-        embedder=_MockEmbedder(), chunk_repo=chunk_repo, document_id="DOC001"
-    )
+    pipeline = build_idempotent_ingest_pipeline(embedder=_MockEmbedder(), chunk_repo=chunk_repo)
 
     from haystack.dataclasses import ByteStream
 
     text = "Hello world. Second sentence. Third sentence."
-    result = pipeline.run({"converter": {"sources": [ByteStream(data=text.encode())]}})
+    result = pipeline.run(
+        {
+            "converter": {"sources": [ByteStream(data=text.encode())]},
+            "idempotency_clean": {"document_id": "DOC001"},
+        }
+    )
     docs = result["embedder"]["documents"]
 
     # Idempotency-clean step must have run delete before any inserts
@@ -70,10 +73,13 @@ def test_pipeline_retry_produces_no_duplicate_chunks():
     text = "One sentence. Two sentences."
 
     def _run():
-        pipeline = build_idempotent_ingest_pipeline(
-            embedder=_MockEmbedder(), chunk_repo=chunk_repo, document_id="DOC001"
+        pipeline = build_idempotent_ingest_pipeline(embedder=_MockEmbedder(), chunk_repo=chunk_repo)
+        pipeline.run(
+            {
+                "converter": {"sources": [ByteStream(data=text.encode())]},
+                "idempotency_clean": {"document_id": "DOC001"},
+            }
         )
-        pipeline.run({"converter": {"sources": [ByteStream(data=text.encode())]}})
 
     _run()
     first_count = len(chunks)

@@ -100,15 +100,18 @@ class _MimeRouter:
 
 @component
 class _IdempotencyClean:
-    """Deletes prior chunks before re-indexing to prevent duplicates on retry (R4, S25)."""
+    """Deletes prior chunks before re-indexing to prevent duplicates on retry (R4, S25).
 
-    def __init__(self, chunk_repo: Any, document_id: str) -> None:
+    document_id is a run input, not a constructor arg, so a single pipeline
+    instance can be reused across documents.
+    """
+
+    def __init__(self, chunk_repo: Any) -> None:
         self._repo = chunk_repo
-        self._document_id = document_id
 
     @component.output_types(documents=list[Document])
-    def run(self, documents: list[Document]) -> dict:
-        self._repo.delete_by_document_id(self._document_id)
+    def run(self, documents: list[Document], document_id: str) -> dict:
+        self._repo.delete_by_document_id(document_id)
         return {"documents": documents}
 
 
@@ -277,12 +280,16 @@ def build_ingest_pipeline(embedder: Any) -> Pipeline:
     return pipeline
 
 
-def build_idempotent_ingest_pipeline(embedder: Any, chunk_repo: Any, document_id: str) -> Pipeline:
-    """Build ingest pipeline with idempotency-clean step before embedding (R4, S25)."""
+def build_idempotent_ingest_pipeline(embedder: Any, chunk_repo: Any) -> Pipeline:
+    """Build ingest pipeline with idempotency-clean step before embedding (R4, S25).
+
+    The document_id is supplied per-run via pipeline.run inputs so a single
+    pipeline instance can be reused across documents.
+    """
     pipeline = Pipeline()
     pipeline.add_component("converter", TextFileToDocument())
     pipeline.add_component("cleaner", DocumentCleaner())
-    pipeline.add_component("idempotency_clean", _IdempotencyClean(chunk_repo, document_id))
+    pipeline.add_component("idempotency_clean", _IdempotencyClean(chunk_repo))
     pipeline.add_component("language_router", _DocumentLanguageRouter())
     pipeline.add_component(
         "en_splitter", DocumentSplitter(split_by="sentence", split_length=1, split_overlap=0)
