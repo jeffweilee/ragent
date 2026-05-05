@@ -281,10 +281,23 @@ Two distinct concerns, kept architecturally separate from retrieval:
 
 | Concern | Question answered | Mechanism | P1 | Future phase |
 |---|---|---|---|---|
-| **Authentication** | Who is the caller? | JWT verify → `user_id` from subject claim | OFF — `X-User-Id` header trusted, validated non-empty | JWT validated via FastAPI dependency |
-| **Permission** | Can this caller see this document? | Permission Layer service that calls **OpenFGA** | OPEN — no checks, all docs visible | `PermissionClient.batch_check(user_id, document_ids)` returns the allowed subset |
+| **Authentication** | Who is the caller? | JWT verify (`exp` expiry check) → `user_id = preferred_username` claim | OFF — `X-User-Id` header trusted, validated non-empty | JWT validated via FastAPI dependency; `RAGENT_TRUST_X_USER_ID_HEADER=true` falls back to header (dev/integration override) |
+| **Permission** | Can this caller see this document? | Permission Layer service that calls **OpenFGA** | OPEN — no checks, all docs visible | `PermissionClient.batch_check(user_id, document_ids)` returns the allowed subset; gated per-surface by `RAGENT_PERMISSION_INGEST_ENABLED` / `RAGENT_PERMISSION_CHAT_ENABLED` (both default `false` even in P2) |
 
 **Design principle:** Elasticsearch (`chunks_v1`) carries **no auth fields** in any phase. Retrieval is permission-blind; the Permission Layer post-filters retrieved chunks by their `document_id`. This keeps ES schema stable across phases, avoids the "owner-filter on every chunk" duplication, and lets the permission model evolve (roles, sharing, groups) without re-indexing.
+
+**JWT shape (P2):** tokens carry at minimum two claims:
+
+```json
+{"exp": 1666075529, "preferred_username": "xxxxxx"}
+```
+
+- `exp` — Unix epoch seconds (required). Absent → 401 (`error_code=AUTH_CLAIM_MISSING`). Non-numeric/non-integer → 401 (`error_code=AUTH_TOKEN_INVALID`). Expired → 401 (`error_code=AUTH_TOKEN_EXPIRED`).
+- `preferred_username` — the canonical `user_id` (a.k.a. `X-User-Id`). Missing/empty claim → 401 (`error_code=AUTH_CLAIM_MISSING`). Wired into:
+  - **Ingest** — written verbatim to `documents.create_user` (audit only; B14).
+  - **Chat** — passed to `PermissionClient.batch_check(user_id=…, …)` as the post-retrieval filter subject.
+
+**Header fallback (P2):** when `RAGENT_TRUST_X_USER_ID_HEADER=true` and `RAGENT_ENV != prod`, the JWT dependency is bypassed and the `X-User-Id` request header is trusted as `preferred_username`. Default `false`. Intended for internal/dev callers; the flag is strictly ignored in `prod` to prevent accidental authentication bypass.
 
 **Permission Layer interface (P2):**
 
@@ -295,6 +308,15 @@ class PermissionClient(Protocol):
 ```
 
 `PermissionClient` is the single integration point for OpenFGA. It is the only module that imports the OpenFGA SDK; everything else depends on the Protocol.
+
+**Per-surface enable flags (P2):** the gate is wired but **off by default**, controlled independently per surface:
+
+| Variable | Default | Effect when `false` |
+|---|---|---|
+| `RAGENT_PERMISSION_INGEST_ENABLED` | `false` | `GET/DELETE /ingest/{id}` and `GET /ingest` skip `PermissionClient` — list/get/delete are unrestricted. |
+| `RAGENT_PERMISSION_CHAT_ENABLED`   | `false` | Chat retrieval skips the post-filter — all candidate chunks reach `SourceHydrator → LLM`. |
+
+This lets P2 ship the wiring (JWT + `PermissionClient`) without forcing OpenFGA tuple data to exist on day one — operators flip flags when the tuple store is populated.
 
 **Chat retrieval gating (P2):**
 
@@ -417,6 +439,9 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 | `PIPELINE_TIMEOUT`                   | log `event=ingest.failed reason=pipeline_timeout` | Pipeline body exceeds `PIPELINE_TIMEOUT_SECONDS` (B18, S34) | Worker T3.2j |
 | `ES_BBQ_UNSUPPORTED`                 | log `event=es.bbq_unsupported` | Cluster rejected `bbq_hnsw`; bootstrap retried with standard HNSW (B26) | Bootstrap |
 | `RECONCILER_TICK_MISSING`            | Prometheus alert | `reconciler_tick_total` flat > 10 min (R8, S30) | Alerting rule T7.1a |
+| `AUTH_TOKEN_EXPIRED`                 | 401             | JWT `exp` claim is in the past (T8.1) | Auth dependency T8.2 |
+| `AUTH_CLAIM_MISSING`                 | 401             | `exp` or `preferred_username` claim absent or empty (T8.1) | Auth dependency T8.2 |
+| `AUTH_TOKEN_INVALID`                 | 401             | JWT signature invalid, or `exp` non-numeric/non-integer (T8.1) | Auth dependency T8.2 |
 
 ### 4.2 Supported Formats
 
@@ -471,7 +496,10 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | Variable | Default | Description |
 |---|---|---|
 | `RAGENT_ENV`                          | (required)       | `dev` \| `staging` \| `prod`. P1 startup guard refuses non-`dev`. |
-| `RAGENT_AUTH_DISABLED`                | `false`          | Must be `true` in P1; P2 sets `false` to enable JWT (§3.5). |
+| `RAGENT_AUTH_DISABLED`                | `false`          | Must be `true` in P1; removed in P2 to enable JWT (§3.5). |
+| `RAGENT_TRUST_X_USER_ID_HEADER`       | `false`          | **P2 only.** When `true` and `RAGENT_ENV != prod`, JWT dependency is bypassed and the `X-User-Id` header is trusted as `preferred_username` (§3.5). Strictly ignored in `prod`. |
+| `RAGENT_PERMISSION_INGEST_ENABLED`    | `false`          | **P2 only.** When `true`, `GET/DELETE /ingest/{id}` and `GET /ingest` enforce `PermissionClient` (§3.5). Default off — gate is wired but inert until OpenFGA tuples exist. |
+| `RAGENT_PERMISSION_CHAT_ENABLED`      | `false`          | **P2 only.** When `true`, chat retrieval applies the `PermissionClient` post-filter (§3.5). Default off. |
 | `RAGENT_HOST`                         | `127.0.0.1`      | API bind address. P1 OPEN guard (§1) refuses any value other than `127.0.0.1` while `RAGENT_ENV=dev` & `RAGENT_AUTH_DISABLED=true`. |
 | `RAGENT_PORT`                         | `8000`           | API bind port. |
 | `LOG_LEVEL`                           | `INFO`           | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR`. Applies to app + TaskIQ + Reconciler. |
