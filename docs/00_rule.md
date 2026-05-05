@@ -26,15 +26,22 @@
 
 ### `docs/00_plan.md`: Master TDD Implementation Checklist
 
+**Task column format (mandatory):** every task cell is rendered as a bulleted list (use `<br>•` separators inside the markdown cell). Each task **must** open with two one-line summary bullets, in this order:
+
+1. `• **Achieve:** <one sentence — what the task accomplishes / why>`
+2. `• **Deliver:** <one sentence — concrete artifact: file path, test path, env var, manifest, etc.>`
+
+Any further specifics (constraints, env vars, edge cases, references) follow as additional `•` bullets in the same cell. Do not write the task as a single prose paragraph.
+
 | Phase | Category | Task | Status | Owner |
 | :--- | :--- | :--- | :---: | :--- |
-| **Phase 1** | **Analysis** | Define Domain Boundaries and Mission Objectives in `spec.md`. | [ ] | Architect |
-| **Phase 1** | **Design** | Map Business Scenarios & write Given-When-Then test cases. | [ ] | QA / PM |
-| **Phase 1** | **Red** | Write and execute failing tests to define behavior expectations. | [ ] | QA / Dev |
-| **Phase 1** | **Green** | Implement minimal production code to pass all unit/integration tests. | [ ] | Dev |
-| **Phase 1** | **Refactor** | Code Review: Enforce Clean Code, Idempotency, and Performance. | [ ] | Reviewer |
-| **Phase 2** | **Stability** | SRE check: HA verification, Monitoring setup, and Alerting rules. | [ ] | SRE |
-| **Phase 2** | **Closure** | Sync all document updates and record lessons in `00_journal.md`. | [ ] | Master |
+| **Phase 1** | **Analysis** | • **Achieve:** Lock domain boundaries and mission objectives.<br>• **Deliver:** Updated sections in `docs/00_spec.md`. | [ ] | Architect |
+| **Phase 1** | **Design** | • **Achieve:** Translate scenarios into executable behavior contracts.<br>• **Deliver:** Given-When-Then rows under `docs/00_spec.md` §Scenario Testing. | [ ] | QA / PM |
+| **Phase 1** | **Red** | • **Achieve:** Pin behavior with failing tests before any production code.<br>• **Deliver:** Failing test files under `tests/{unit,integration,e2e}/`. | [ ] | QA / Dev |
+| **Phase 1** | **Green** | • **Achieve:** Make the red tests pass with the minimum viable code.<br>• **Deliver:** Production modules under `src/ragent/` matching the test contract. | [ ] | Dev |
+| **Phase 1** | **Refactor** | • **Achieve:** Tidy structure without changing behavior; enforce clean code, idempotency, performance.<br>• **Deliver:** Reviewed diff with green tests; review notes captured in commit/PR. | [ ] | Reviewer |
+| **Phase 2** | **Stability** | • **Achieve:** Production-grade resilience and visibility.<br>• **Deliver:** HA verification report, Prometheus alert rules, Grafana dashboards. | [ ] | SRE |
+| **Phase 2** | **Closure** | • **Achieve:** Close the loop on docs and lessons learned.<br>• **Deliver:** Updated `00_spec.md` / `00_plan.md` + new `00_journal.md` entries. | [ ] | Master |
 
 
 ### `docs/00_journal.md` (Blameless Team Reflection)
