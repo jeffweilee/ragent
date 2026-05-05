@@ -3,39 +3,12 @@
 from __future__ import annotations
 
 import os
-import sys
 from dataclasses import dataclass
 from typing import Any
 
-
-def _require(var: str) -> str:
-    val = os.environ.get(var, "")
-    if not val:
-        print(f"[ragent] required env var {var!r} is not set", file=sys.stderr)
-        sys.exit(1)
-    return val
-
-
-def _float_env(var: str, default: float) -> float:
-    raw = os.environ.get(var)
-    if raw is None:
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        print(f"[ragent] {var!r} must be a float, got {raw!r}", file=sys.stderr)
-        sys.exit(1)
-
-
-def _int_env(var: str, default: int) -> int:
-    raw = os.environ.get(var)
-    if raw is None:
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        print(f"[ragent] {var!r} must be an integer, got {raw!r}", file=sys.stderr)
-        sys.exit(1)
+from ragent.utility.env import float_env as _float_env
+from ragent.utility.env import int_env as _int_env
+from ragent.utility.env import require as _require
 
 
 @dataclass
@@ -52,13 +25,24 @@ class Container:
     chunk_repo: Any
     registry: Any
     retrieval_pipeline: Any
+    ingest_pipeline: Any
     rate_limit: int
     rate_limit_window: int
 
 
 def build_container() -> Container:
     import httpx
+    import nltk
     from elasticsearch import Elasticsearch
+
+    # Punkt is required by the chunker for EN sentence tokenization. Skip the
+    # download (and its network call) when the dataset is already provisioned,
+    # so airgapped environments can vendor it ahead of time.
+    try:
+        nltk.data.find("tokenizers/punkt_tab")
+    except LookupError:
+        nltk.download("punkt_tab", quiet=True)
+
     from haystack_integrations.document_stores.elasticsearch import ElasticsearchDocumentStore
     from minio import Minio
     from sqlalchemy import create_engine, text
@@ -69,6 +53,7 @@ def build_container() -> Container:
     from ragent.clients.rate_limiter import RateLimiter
     from ragent.clients.rerank import RerankClient
     from ragent.pipelines.chat import build_retrieval_pipeline
+    from ragent.pipelines.factory import DocumentEmbedder, build_ingest_pipeline
     from ragent.plugins.registry import PluginRegistry
     from ragent.plugins.stub_graph import StubGraphExtractor
     from ragent.plugins.vector import VectorExtractor
@@ -97,10 +82,16 @@ def build_container() -> Container:
         get_token=token_manager.get_token,
     )
 
-    rerank_client = RerankClient(
-        api_url=_require("RERANK_API_URL"),
-        http=http,
-        get_token=token_manager.get_token,
+    join_mode = os.environ.get("CHAT_JOIN_MODE", "rrf")
+    enable_rerank = os.environ.get("CHAT_RERANK_ENABLED", "true").lower() == "true"
+    rerank_client = (
+        RerankClient(
+            api_url=_require("RERANK_API_URL"),
+            http=http,
+            get_token=token_manager.get_token,
+        )
+        if enable_rerank
+        else None
     )
 
     _minio_raw = Minio(
@@ -156,12 +147,18 @@ def build_container() -> Container:
     )
     registry.register(StubGraphExtractor())
 
-    join_mode = os.environ.get("CHAT_JOIN_MODE", "rrf")
     retrieval_pipeline = build_retrieval_pipeline(
         embedder=embedding_client,
         document_store=document_store,
         doc_repo=doc_repo,
         join_mode=join_mode,
+        rerank_client=rerank_client,
+    )
+
+    ingest_pipeline = build_ingest_pipeline(
+        embedder=DocumentEmbedder(embedding_client),
+        document_store=document_store,
+        chunk_repo=chunk_repo,
     )
 
     return Container(
@@ -177,6 +174,7 @@ def build_container() -> Container:
         chunk_repo=chunk_repo,
         registry=registry,
         retrieval_pipeline=retrieval_pipeline,
+        ingest_pipeline=ingest_pipeline,
         rate_limit=_int_env("CHAT_RATE_LIMIT_PER_MINUTE", 60),
         rate_limit_window=_int_env("CHAT_RATE_LIMIT_WINDOW_SECONDS", 60),
     )

@@ -17,7 +17,7 @@ def _make_app(stream_deltas=None, retrieval_docs=None, llm_error=None):
     stream_deltas = stream_deltas or ["Hello", " world"]
 
     retrieval_pipeline = MagicMock()
-    retrieval_pipeline.run.return_value = {"source_hydrator": {"documents": retrieval_docs}}
+    retrieval_pipeline.run.return_value = {"excerpt_truncator": {"documents": retrieval_docs}}
 
     llm_client = MagicMock()
     if llm_error:
@@ -117,7 +117,7 @@ def test_chat_stream_injects_retrieved_context_into_llm_messages():
         },
     )
     retrieval_pipeline = MagicMock()
-    retrieval_pipeline.run.return_value = {"source_hydrator": {"documents": [doc]}}
+    retrieval_pipeline.run.return_value = {"excerpt_truncator": {"documents": [doc]}}
     llm_client = MagicMock()
     llm_client.stream.return_value = iter(["Answer"])
 

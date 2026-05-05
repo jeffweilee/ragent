@@ -5,12 +5,14 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tests.conftest import FakeDocumentStore as _FakeStore
+
 pytestmark = pytest.mark.docker
 
 
 def test_pipeline_clears_chunks_before_rerun():
     """On retry, delete_by_document_id runs before new chunks are written."""
-    from ragent.pipelines.factory import build_idempotent_ingest_pipeline
+    from ragent.pipelines.factory import build_ingest_pipeline
 
     delete_calls: list[str] = []
     insert_calls: list[str] = []
@@ -32,14 +34,20 @@ def test_pipeline_clears_chunks_before_rerun():
                 "documents": [dataclasses.replace(doc, embedding=[0.0] * 4) for doc in documents]
             }
 
-    pipeline = build_idempotent_ingest_pipeline(
-        embedder=_MockEmbedder(), chunk_repo=chunk_repo, document_id="DOC001"
+    pipeline = build_ingest_pipeline(
+        embedder=_MockEmbedder(), document_store=_FakeStore(), chunk_repo=chunk_repo
     )
 
     from haystack.dataclasses import ByteStream
 
     text = "Hello world. Second sentence. Third sentence."
-    result = pipeline.run({"converter": {"sources": [ByteStream(data=text.encode())]}})
+    result = pipeline.run(
+        {
+            "converter": {"sources": [ByteStream(data=text.encode())]},
+            "idempotency_clean": {"document_id": "DOC001"},
+        },
+        include_outputs_from={"embedder"},
+    )
     docs = result["embedder"]["documents"]
 
     # Idempotency-clean step must have run delete before any inserts
@@ -52,7 +60,7 @@ def test_pipeline_retry_produces_no_duplicate_chunks():
     from haystack.core.component import component
     from haystack.dataclasses import ByteStream, Document
 
-    from ragent.pipelines.factory import build_idempotent_ingest_pipeline
+    from ragent.pipelines.factory import build_ingest_pipeline
 
     chunks: list[dict] = []
     chunk_repo = MagicMock()
@@ -70,10 +78,15 @@ def test_pipeline_retry_produces_no_duplicate_chunks():
     text = "One sentence. Two sentences."
 
     def _run():
-        pipeline = build_idempotent_ingest_pipeline(
-            embedder=_MockEmbedder(), chunk_repo=chunk_repo, document_id="DOC001"
+        pipeline = build_ingest_pipeline(
+            embedder=_MockEmbedder(), document_store=_FakeStore(), chunk_repo=chunk_repo
         )
-        pipeline.run({"converter": {"sources": [ByteStream(data=text.encode())]}})
+        pipeline.run(
+            {
+                "converter": {"sources": [ByteStream(data=text.encode())]},
+                "idempotency_clean": {"document_id": "DOC001"},
+            }
+        )
 
     _run()
     first_count = len(chunks)

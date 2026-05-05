@@ -611,10 +611,18 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 |---|---|---|
 | `INGEST_MAX_FILE_SIZE_BYTES`          | `52428800`       | 50 MB upload cap (B2); 413 on overrun. |
 | `INGEST_LIST_MAX_LIMIT`               | `100`            | `GET /ingest?limit=` upper bound (§4.1, B7). |
-| `CSV_CHUNK_TARGET_CHARS`              | `2000`           | `RowMerger` target merged-buffer size (B24). |
+| `CHUNK_TARGET_CHARS_EN`               | `2000`           | `_CharBudgetChunker` EN/other-language target chars (B1). |
+| `CHUNK_OVERLAP_CHARS_EN`              | `300`            | `_CharBudgetChunker` EN/other overlap chars between chunks. |
+| `CHUNK_TARGET_CHARS_CJK`              | `500`            | `_CharBudgetChunker` CJK-density target (zh/ja/ko/th/lo/km/my). |
+| `CHUNK_OVERLAP_CHARS_CJK`             | `100`            | `_CharBudgetChunker` CJK overlap chars between chunks. |
+| `CHUNK_TARGET_CHARS_CSV`              | `2000`           | `_CharBudgetChunker` CSV row-packed target (B24). |
+| `CHUNK_OVERLAP_CHARS_CSV`             | `0`              | `_CharBudgetChunker` CSV overlap (no row overlap). |
+| `CHUNK_HARD_SPLIT_OVERLAP_CHARS`      | `200`            | Fallback overlap when an atom exceeds the budget. |
 | `EMBEDDER_BATCH_SIZE`                 | `32`             | Chunks per embedder HTTP call (P-B). |
 | `CHAT_JOIN_MODE`                      | `rrf`            | `rrf` \| `concatenate` \| `vector_only` \| `bm25_only` (C6). |
-| `EXCERPT_MAX_CHARS`                   | `512`            | Router-layer excerpt truncation length (B23); applied in `_build_sources` (chat) and `_to_chunk` (retrieve). Does not affect LLM context. |
+| `CHAT_RERANK_ENABLED`                 | `true`           | Insert `_Reranker` between joiner and `_SourceHydrator` (F1). |
+| `RETRIEVAL_TOP_K`                     | `20`             | Cap applied to retrievers, joiner, and reranker (F7). |
+| `EXCERPT_MAX_CHARS`                   | `512`            | `_ExcerptTruncator` truncation length (B23). |
 | `RAGENT_DEFAULT_LLM_PROVIDER`         | `openai`         | Echoed when request omits `provider`. |
 | `RAGENT_DEFAULT_LLM_MODEL`            | `gptoss-120b`    | Echoed when request omits `model`. |
 | `RAGENT_DEFAULT_LLM_TEMPERATURE`      | `0.7`            | |

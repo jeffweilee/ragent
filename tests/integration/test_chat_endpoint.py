@@ -16,7 +16,7 @@ def _make_app(retrieval_docs=None, llm_content="Hello!", llm_usage=None):
     llm_usage = llm_usage or {"promptTokens": 10, "completionTokens": 5, "totalTokens": 15}
 
     retrieval_pipeline = MagicMock()
-    retrieval_pipeline.run.return_value = {"source_hydrator": {"documents": retrieval_docs}}
+    retrieval_pipeline.run.return_value = {"excerpt_truncator": {"documents": retrieval_docs}}
 
     llm_client = MagicMock()
     llm_client.chat.return_value = {"content": llm_content, "usage": llm_usage}

@@ -627,16 +627,16 @@ wheels = [
 
 [[package]]
 name = "elasticsearch-haystack"
-version = "6.1.0"
+version = "4.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
     { name = "elasticsearch" },
     { name = "haystack-ai" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/ba/85/01a4afeae39cdc81eb307712c60caa2e1d11ed9c03f96e997d5c82cd6852/elasticsearch_haystack-6.1.0.tar.gz", hash = "sha256:fdeb24a62820f92b311e27e077614ec0398349d2990ed2595070c9b599d4b461", size = 64057, upload-time = "2026-05-04T14:29:07.833Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/d0/e9/d4b1796a00b602d26974b3b6b9c0076763be7d31e2cc94cff2e9c425667c/elasticsearch_haystack-4.2.0.tar.gz", hash = "sha256:72eeaaba43c562b48808339a250b8203df0adab6883b9bcaba56614e0cc2565c", size = 30489, upload-time = "2025-12-19T15:13:55.507Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/33/7e/3220af2905cb31523005fd13ef84672eb42db1a0bf7b163f3be81fbebae1/elasticsearch_haystack-6.1.0-py3-none-any.whl", hash = "sha256:0ea34d9c5fcf8f593ea70900189f7f65a53f278330abc0cc997a3dfe709c8301", size = 40271, upload-time = "2026-05-04T14:29:06.386Z" },
+    { url = "https://files.pythonhosted.org/packages/05/7a/538f102f22dac13f4a0fd5c8628de2acc1a959a2fbc55e6c22b6f4ba35c9/elasticsearch_haystack-4.2.0-py3-none-any.whl", hash = "sha256:8ad4267c4338cb62ec34f2c87b9926fbb3de1fdac3898c433ff1a714b8825ae4", size = 22105, upload-time = "2025-12-19T15:13:57.39Z" },
 ]
 
 [[package]]
@@ -2072,9 +2072,9 @@ dev = [
 requires-dist = [
     { name = "alembic", specifier = ">=1.18.4" },
     { name = "bandit", marker = "extra == 'dev'", specifier = ">=1.9.4" },
-    { name = "elasticsearch-haystack", specifier = ">=4.0" },
+    { name = "elasticsearch-haystack", specifier = ">=4.0,<7" },
     { name = "fastapi", specifier = ">=0.115.0" },
-    { name = "haystack-ai", specifier = ">=2.0" },
+    { name = "haystack-ai", specifier = ">=2.7,<3" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "langdetect", specifier = ">=1.0.9" },
     { name = "minio", specifier = ">=7.2.0" },

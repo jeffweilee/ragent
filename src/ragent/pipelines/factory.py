@@ -1,178 +1,267 @@
-"""T3.2 — Ingest pipeline factory: Convert→Clean→LanguageRouter→{cjk|en}Splitter→Embed (B1)."""
+"""T3.2 — Ingest pipeline factory: Convert→Clean→[Idempotency]→Chunker→Embed→Write (B1)."""
 
 from __future__ import annotations
 
-import os
+import dataclasses
 import re
-from typing import Any
+from typing import Any, Literal
 
 import langdetect
 import nltk
 from haystack.components.converters import TextFileToDocument
-from haystack.components.preprocessors import DocumentCleaner, DocumentSplitter
+from haystack.components.preprocessors import DocumentCleaner
+from haystack.components.writers import DocumentWriter
 from haystack.core.component import component
 from haystack.core.pipeline import Pipeline
 from haystack.dataclasses import Document
+from haystack.document_stores.types import DuplicatePolicy
 
-_CJK_LANGS = frozenset({"zh-cn", "zh-tw", "zh", "ja", "ko"})
-_CSV_CHUNK_TARGET_CHARS = int(os.environ.get("CSV_CHUNK_TARGET_CHARS", "2000"))
-_CJK_SENT_RE = re.compile(r"(?<=[。！？.!?])\s*")
+from ragent.utility.env import int_env
 
+AtomKind = Literal["line", "cjk_sent", "en_sent"]
 
-@component
-class _DocumentLanguageRouter:
-    @component.output_types(en=list[Document], cjk=list[Document])
-    def run(self, documents: list[Document]) -> dict:
-        en, cjk = [], []
-        for doc in documents:
-            try:
-                lang = langdetect.detect(doc.content or "")
-            except langdetect.lang_detect_exception.LangDetectException:
-                lang = "en"
-            (cjk if lang in _CJK_LANGS else en).append(doc)
-        return {"en": en, "cjk": cjk}
+# CJK-density profile: scripts that are scriptio-continua (no word spaces) and
+# pack much more semantic content per character than Latin scripts. bge-m3
+# tokenization scales roughly with character count for these scripts, so a
+# smaller char budget keeps the per-chunk token count comparable to EN.
+_CJK_LANGS = frozenset({"zh-cn", "zh-tw", "zh", "ja", "ko", "th", "lo", "km", "my"})
 
+_CHUNK_TARGET_CHARS_EN = int_env("CHUNK_TARGET_CHARS_EN", 2000)
+_CHUNK_OVERLAP_CHARS_EN = int_env("CHUNK_OVERLAP_CHARS_EN", 300)
+_CHUNK_TARGET_CHARS_CJK = int_env("CHUNK_TARGET_CHARS_CJK", 500)
+_CHUNK_OVERLAP_CHARS_CJK = int_env("CHUNK_OVERLAP_CHARS_CJK", 100)
+_CHUNK_TARGET_CHARS_CSV = int_env("CHUNK_TARGET_CHARS_CSV", 2000)
+_CHUNK_OVERLAP_CHARS_CSV = int_env("CHUNK_OVERLAP_CHARS_CSV", 0)
+_CHUNK_HARD_SPLIT_OVERLAP_CHARS = int_env("CHUNK_HARD_SPLIT_OVERLAP_CHARS", 200)
 
-@component
-class _CJKSentenceSplitter:
-    @component.output_types(documents=list[Document])
-    def run(self, documents: list[Document]) -> dict:
-        result = []
-        for doc in documents:
-            sentences = [s for s in _CJK_SENT_RE.split(doc.content or "") if s.strip()]
-            for i, sentence in enumerate(sentences):
-                result.append(Document(content=sentence, meta={**doc.meta, "split_id": i}))
-        return {"documents": result}
-
-
-@component
-class _RowMerger:
-    """Merges CSV rows into chunks until buffer reaches CSV_CHUNK_TARGET_CHARS (B24)."""
-
-    def __init__(self, target_chars: int = _CSV_CHUNK_TARGET_CHARS) -> None:
-        self._target = target_chars
-
-    @component.output_types(documents=list[Document])
-    def run(self, documents: list[Document]) -> dict:
-        chunks: list[Document] = []
-        buf: list[str] = []
-        buf_len = 0
-        for doc in documents:
-            lines = (doc.content or "").splitlines()
-            for line in lines:
-                buf.append(line)
-                buf_len += len(line)
-                if buf_len >= self._target:
-                    chunks.append(Document(content="\n".join(buf), meta=doc.meta))
-                    buf, buf_len = [], 0
-        if buf:
-            last_meta = documents[-1].meta if documents else {}
-            chunks.append(Document(content="\n".join(buf), meta=last_meta))
-        return {"documents": chunks}
-
-
-@component
-class _MimeRouter:
-    """Routes documents to 'csv' or 'other' based on content_type meta."""
-
-    @component.output_types(csv=list[Document], other=list[Document])
-    def run(self, documents: list[Document]) -> dict:
-        csv_docs, other_docs = [], []
-        for doc in documents:
-            if doc.meta.get("content_type") == "text/csv":
-                csv_docs.append(doc)
-            else:
-                other_docs.append(doc)
-        return {"csv": csv_docs, "other": other_docs}
+# Cap on how much text langdetect inspects; prefix is sufficient for accurate
+# detection and avoids quadratic cost on large CSV/JSON dumps.
+_LANG_DETECT_SAMPLE_CHARS = 1024
+_CJK_SENT_SPLIT_RE = re.compile(r"(?<=[。！？.!?।])\s*")
 
 
 @component
 class _IdempotencyClean:
-    """Deletes prior chunks before re-indexing to prevent duplicates on retry (R4, S25)."""
+    """Deletes prior chunks before re-indexing to prevent duplicates on retry (R4, S25).
 
-    def __init__(self, chunk_repo: Any, document_id: str) -> None:
+    document_id is a run input, not a constructor arg, so a single pipeline
+    instance can be reused across documents.
+    """
+
+    def __init__(self, chunk_repo: Any) -> None:
         self._repo = chunk_repo
-        self._document_id = document_id
+
+    @component.output_types(documents=list[Document])
+    def run(self, documents: list[Document], document_id: str) -> dict:
+        self._repo.delete_by_document_id(document_id)
+        stamped = [
+            dataclasses.replace(d, meta={**d.meta, "document_id": document_id}) for d in documents
+        ]
+        return {"documents": stamped}
+
+
+def _select_profile(doc: Document) -> tuple[int, int, AtomKind]:
+    """Pick (target_chars, overlap_chars, atom_kind) for a document.
+
+    Detection failures fall back to EN — safer (larger budget) than
+    over-shrinking real prose.
+    """
+    if doc.meta.get("content_type") == "text/csv":
+        return _CHUNK_TARGET_CHARS_CSV, _CHUNK_OVERLAP_CHARS_CSV, "line"
+    sample = (doc.content or "")[:_LANG_DETECT_SAMPLE_CHARS]
+    try:
+        lang = langdetect.detect(sample)
+    except langdetect.lang_detect_exception.LangDetectException:
+        lang = "en"
+    if lang in _CJK_LANGS:
+        return _CHUNK_TARGET_CHARS_CJK, _CHUNK_OVERLAP_CHARS_CJK, "cjk_sent"
+    return _CHUNK_TARGET_CHARS_EN, _CHUNK_OVERLAP_CHARS_EN, "en_sent"
+
+
+def _segment(content: str, kind: AtomKind) -> list[str]:
+    if kind == "line":
+        return [line for line in content.splitlines() if line]
+    if kind == "cjk_sent":
+        return [s for s in _CJK_SENT_SPLIT_RE.split(content) if s.strip()]
+    try:
+        return [s for s in nltk.sent_tokenize(content) if s.strip()]
+    except LookupError:  # pragma: no cover - punkt not provisioned
+        return [s for s in _CJK_SENT_SPLIT_RE.split(content) if s.strip()]
+
+
+def _hard_split(atom: str, target: int, overlap: int) -> list[str]:
+    """Char-window split with overlap for atoms that exceed the budget."""
+    step = max(1, target - overlap)
+    pieces: list[str] = []
+    start = 0
+    while start < len(atom):
+        end = min(start + target, len(atom))
+        pieces.append(atom[start:end])
+        if end == len(atom):
+            break
+        start += step
+    return pieces
+
+
+def _pack_atoms(atoms: list[str], target: int, overlap: int, joiner: str) -> list[str]:
+    """Greedy-pack atoms into chunks ≤ target; seed each new chunk with the
+    trailing atoms of the previous one whose cumulative length ≥ overlap.
+    """
+    chunks: list[str] = []
+    buf: list[str] = []
+    buf_len = 0
+
+    def flush() -> None:
+        nonlocal buf, buf_len
+        if not buf:
+            return
+        chunks.append(joiner.join(buf))
+        if overlap <= 0:
+            buf, buf_len = [], 0
+            return
+        # Walk backwards collecting tail atoms until cumulative length covers
+        # overlap, then keep that suffix as the seed for the next chunk.
+        carry_len = 0
+        cut = len(buf)
+        for i in range(len(buf) - 1, -1, -1):
+            carry_len += len(buf[i]) + (len(joiner) if i < len(buf) - 1 else 0)
+            cut = i
+            if carry_len >= overlap:
+                break
+        buf = buf[cut:]
+        buf_len = carry_len
+
+    for atom in atoms:
+        atom_len = len(atom)
+        sep = len(joiner) if buf else 0
+        if buf and buf_len + sep + atom_len > target:
+            flush()
+            sep = len(joiner) if buf else 0
+        buf.append(atom)
+        buf_len += sep + atom_len
+    if buf:
+        chunks.append(joiner.join(buf))
+    return chunks
+
+
+def _build_chunks(atoms: list[str], target: int, overlap: int, joiner: str) -> list[str]:
+    """Pack atoms into chunks ≤ target. Atoms > target are emitted as
+    standalone hard-split pieces, flushing any pending packed buffer first.
+    """
+    chunks: list[str] = []
+    pending: list[str] = []
+
+    def flush_pending() -> None:
+        nonlocal pending
+        if pending:
+            chunks.extend(_pack_atoms(pending, target, overlap, joiner))
+            pending = []
+
+    for atom in atoms:
+        if len(atom) > target:
+            flush_pending()
+            chunks.extend(_hard_split(atom, target, _CHUNK_HARD_SPLIT_OVERLAP_CHARS))
+        else:
+            pending.append(atom)
+    flush_pending()
+    return chunks
+
+
+@component
+class _CharBudgetChunker:
+    """Unified per-language char-budget chunker (replaces language router +
+    EN/CJK splitters + CSV row-merger). EN/other → 2000/300, CJK-density →
+    500/100, CSV → 2000/0. Oversized atoms are hard-split with 200-char
+    overlap. Mixed-language docs are bucketed per source document.
+    """
 
     @component.output_types(documents=list[Document])
     def run(self, documents: list[Document]) -> dict:
-        self._repo.delete_by_document_id(self._document_id)
-        return {"documents": documents}
+        result: list[Document] = []
+        for doc in documents:
+            content = doc.content or ""
+            if not content:
+                continue
+            target, overlap, kind = _select_profile(doc)
+            joiner = "\n" if kind == "line" else " "
+            atoms = _segment(content, kind)
+            if not atoms:
+                continue
+
+            offset = 0
+            for i, chunk_text in enumerate(_build_chunks(atoms, target, overlap, joiner)):
+                # Search forward from offset to find the chunk's actual start
+                # in the original content; avoids drift from variable carry length.
+                key = chunk_text[: min(40, len(chunk_text))]
+                found = content.find(key, offset)
+                if found >= 0:
+                    offset = found
+                result.append(
+                    Document(
+                        content=chunk_text,
+                        meta={**doc.meta, "split_id": i, "split_idx_start": offset},
+                    )
+                )
+                offset += len(chunk_text)
+        return {"documents": result}
 
 
-def build_ingest_pipeline(embedder: Any) -> Pipeline:
-    nltk.download("punkt_tab", quiet=True)
+@component
+class DocumentEmbedder:
+    """Wraps the project's external EmbeddingClient as a Haystack component.
 
+    The custom EmbeddingClient (clients/embedding.py) speaks the third-party
+    HTTP contract and is not a Haystack TextEmbedder. This thin wrapper lets
+    it slot into ingest pipelines: takes a list of Documents, embeds their
+    .content, and returns Documents with .embedding populated.
+    """
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    @component.output_types(documents=list[Document])
+    def run(self, documents: list[Document]) -> dict:
+        if not documents:
+            return {"documents": []}
+        texts = [d.content or "" for d in documents]
+        embeddings = self._client.embed(texts)
+        out = [
+            dataclasses.replace(d, embedding=e) for d, e in zip(documents, embeddings, strict=True)
+        ]
+        return {"documents": out}
+
+
+def build_ingest_pipeline(
+    embedder: Any,
+    document_store: Any,
+    *,
+    chunk_repo: Any | None = None,
+) -> Pipeline:
+    """Unified ingest pipeline.
+
+    Graph: Convert → Clean → [IdempotencyClean] → CharBudgetChunker →
+    Embedder → DocumentWriter. When `chunk_repo` is supplied, the
+    idempotency-clean step is inserted (document_id is passed at run time).
+    """
     pipeline = Pipeline()
     pipeline.add_component("converter", TextFileToDocument())
     pipeline.add_component("cleaner", DocumentCleaner())
-    pipeline.add_component("language_router", _DocumentLanguageRouter())
-    pipeline.add_component(
-        "en_splitter", DocumentSplitter(split_by="sentence", split_length=1, split_overlap=0)
-    )
-    pipeline.add_component("cjk_splitter", _CJKSentenceSplitter())
+    if chunk_repo is not None:
+        pipeline.add_component("idempotency_clean", _IdempotencyClean(chunk_repo))
+    pipeline.add_component("chunker", _CharBudgetChunker())
     pipeline.add_component("embedder", embedder)
+    pipeline.add_component(
+        "writer",
+        DocumentWriter(document_store=document_store, policy=DuplicatePolicy.OVERWRITE),
+    )
 
     pipeline.connect("converter.documents", "cleaner.documents")
-    pipeline.connect("cleaner.documents", "language_router.documents")
-    pipeline.connect("language_router.en", "en_splitter.documents")
-    pipeline.connect("language_router.cjk", "cjk_splitter.documents")
-    pipeline.connect("en_splitter.documents", "embedder.documents")
-    pipeline.connect("cjk_splitter.documents", "embedder.documents")
-
-    return pipeline
-
-
-def build_idempotent_ingest_pipeline(embedder: Any, chunk_repo: Any, document_id: str) -> Pipeline:
-    """Build ingest pipeline with idempotency-clean step before embedding (R4, S25)."""
-    nltk.download("punkt_tab", quiet=True)
-
-    pipeline = Pipeline()
-    pipeline.add_component("converter", TextFileToDocument())
-    pipeline.add_component("cleaner", DocumentCleaner())
-    pipeline.add_component("idempotency_clean", _IdempotencyClean(chunk_repo, document_id))
-    pipeline.add_component("language_router", _DocumentLanguageRouter())
-    pipeline.add_component(
-        "en_splitter", DocumentSplitter(split_by="sentence", split_length=1, split_overlap=0)
-    )
-    pipeline.add_component("cjk_splitter", _CJKSentenceSplitter())
-    pipeline.add_component("embedder", embedder)
-
-    pipeline.connect("converter.documents", "cleaner.documents")
-    pipeline.connect("cleaner.documents", "idempotency_clean.documents")
-    pipeline.connect("idempotency_clean.documents", "language_router.documents")
-    pipeline.connect("language_router.en", "en_splitter.documents")
-    pipeline.connect("language_router.cjk", "cjk_splitter.documents")
-    pipeline.connect("en_splitter.documents", "embedder.documents")
-    pipeline.connect("cjk_splitter.documents", "embedder.documents")
-
-    return pipeline
-
-
-def build_csv_ingest_pipeline(embedder: Any) -> Pipeline:
-    """Build ingest pipeline with MIME-conditional RowMerger for CSV (S35, B24)."""
-    nltk.download("punkt_tab", quiet=True)
-
-    pipeline = Pipeline()
-    pipeline.add_component("converter", TextFileToDocument())
-    pipeline.add_component("cleaner", DocumentCleaner())
-    pipeline.add_component("mime_router", _MimeRouter())
-    pipeline.add_component("row_merger", _RowMerger())
-    pipeline.add_component("language_router", _DocumentLanguageRouter())
-    pipeline.add_component(
-        "en_splitter", DocumentSplitter(split_by="sentence", split_length=1, split_overlap=0)
-    )
-    pipeline.add_component("cjk_splitter", _CJKSentenceSplitter())
-    pipeline.add_component("embedder", embedder)
-
-    pipeline.connect("converter.documents", "cleaner.documents")
-    pipeline.connect("cleaner.documents", "mime_router.documents")
-    pipeline.connect("mime_router.csv", "row_merger.documents")
-    pipeline.connect("mime_router.other", "language_router.documents")
-    pipeline.connect("row_merger.documents", "embedder.documents")
-    pipeline.connect("language_router.en", "en_splitter.documents")
-    pipeline.connect("language_router.cjk", "cjk_splitter.documents")
-    pipeline.connect("en_splitter.documents", "embedder.documents")
-    pipeline.connect("cjk_splitter.documents", "embedder.documents")
+    if chunk_repo is not None:
+        pipeline.connect("cleaner.documents", "idempotency_clean.documents")
+        pipeline.connect("idempotency_clean.documents", "chunker.documents")
+    else:
+        pipeline.connect("cleaner.documents", "chunker.documents")
+    pipeline.connect("chunker.documents", "embedder.documents")
+    pipeline.connect("embedder.documents", "writer.documents")
 
     return pipeline

@@ -60,3 +60,22 @@ def test_default_is_rrf(monkeypatch):
 def test_invalid_mode_raises():
     with pytest.raises(ValueError, match="join_mode"):
         _build("unknown_mode")
+
+
+def test_top_k_propagated_to_retrievers_and_joiner():
+    from unittest.mock import MagicMock
+
+    from haystack_integrations.document_stores.elasticsearch import ElasticsearchDocumentStore
+
+    from ragent.pipelines.chat import build_retrieval_pipeline
+
+    pipeline = build_retrieval_pipeline(
+        embedder=MagicMock(),
+        document_store=MagicMock(spec=ElasticsearchDocumentStore),
+        doc_repo=MagicMock(),
+        join_mode="rrf",
+        top_k=12,
+    )
+    assert pipeline.get_component("vector_retriever")._top_k == 12
+    assert pipeline.get_component("bm25_retriever")._top_k == 12
+    assert pipeline.get_component("joiner").top_k == 12

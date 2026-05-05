@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import dataclasses
-import os
 from typing import Any
 
 from haystack.components.joiners import DocumentJoiner
@@ -15,7 +14,10 @@ from haystack_integrations.components.retrievers.elasticsearch import (
     ElasticsearchEmbeddingRetriever,
 )
 
-EXCERPT_MAX_CHARS = int(os.environ.get("EXCERPT_MAX_CHARS", "512"))
+from ragent.utility.env import int_env
+
+_EXCERPT_MAX_CHARS = int_env("EXCERPT_MAX_CHARS", 512)
+_DEFAULT_TOP_K = int_env("RETRIEVAL_TOP_K", 20)
 _VALID_MODES = frozenset({"rrf", "concatenate", "vector_only", "bm25_only"})
 
 
@@ -40,7 +42,7 @@ def doc_to_source_entry(doc: Any) -> dict:
         "source_id": meta.get("source_id"),
         "type": "knowledge",
         "source_title": meta.get("source_title"),
-        "excerpt": (doc.content or "")[:EXCERPT_MAX_CHARS],
+        "excerpt": (doc.content or "")[:_EXCERPT_MAX_CHARS],
     }
 
 
@@ -60,6 +62,8 @@ class _QueryEmbedder:
 
 @component
 class _SourceHydrator:
+    """Enrich chunk metadata with source_app/source_id/source_title from MariaDB."""
+
     def __init__(self, doc_repo: Any) -> None:
         self._repo = doc_repo
 
@@ -70,16 +74,91 @@ class _SourceHydrator:
         result = []
         for doc in documents:
             doc_id = doc.meta.get("document_id")
-            kwargs: dict = {}
             if doc_id and doc_id in sources:
                 source_app, source_id, source_title = sources[doc_id]
-                kwargs["meta"] = {
+                meta = {
                     **doc.meta,
                     "source_app": source_app,
                     "source_id": source_id,
                     "source_title": source_title,
                 }
-            result.append(dataclasses.replace(doc, **kwargs) if kwargs else doc)
+                result.append(dataclasses.replace(doc, meta=meta))
+            else:
+                result.append(doc)
+        return {"documents": result}
+
+
+@component
+class _Reranker:
+    """Wrap RerankClient as a Haystack component.
+
+    Sits between the joiner (or single retriever) and source_hydrator so
+    rerank scoring sees full chunk content, before excerpt truncation.
+    """
+
+    def __init__(self, rerank_client: Any, top_k: int = _DEFAULT_TOP_K) -> None:
+        self._client = rerank_client
+        self._top_k = top_k
+
+    @component.output_types(documents=list[Document])
+    def run(self, query: str, documents: list[Document]) -> dict:
+        if not documents:
+            return {"documents": []}
+        texts = [d.content or "" for d in documents]
+        results = self._client.rerank(query=query, texts=texts, top_k=self._top_k)
+        ordered: list[Document] = []
+        for r in results[: self._top_k]:
+            i = r.get("index")
+            if i is None or not 0 <= i < len(documents):
+                continue
+            score = r.get("score")
+            doc = documents[i]
+            ordered.append(dataclasses.replace(doc, score=score) if score is not None else doc)
+        return {"documents": ordered}
+
+
+@component
+class _LLMGenerator:
+    """Wrap LLMClient.chat as a Haystack component.
+
+    Terminal node for non-streaming chat: takes RAG-built messages plus
+    cited documents, returns the answer string and passes documents
+    through for citation rendering.
+    """
+
+    def __init__(self, llm_client: Any) -> None:
+        self._client = llm_client
+
+    @component.output_types(answer=str, documents=list[Document], usage=dict)
+    def run(
+        self,
+        messages: list[dict],
+        documents: list[Document],
+        model: str,
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+    ) -> dict:
+        result = self._client.chat(
+            messages=messages, model=model, temperature=temperature, max_tokens=max_tokens
+        )
+        return {"answer": result["content"], "documents": documents, "usage": result["usage"]}
+
+
+@component
+class _ExcerptTruncator:
+    """Truncate chunk content to EXCERPT_MAX_CHARS for response payloads."""
+
+    def __init__(self, max_chars: int = _EXCERPT_MAX_CHARS) -> None:
+        self._max = max_chars
+
+    @component.output_types(documents=list[Document])
+    def run(self, documents: list[Document]) -> dict:
+        result = []
+        for doc in documents:
+            if doc.content and len(doc.content) > self._max:
+                result.append(dataclasses.replace(doc, content=doc.content[: self._max]))
+            else:
+                result.append(doc)
         return {"documents": result}
 
 
@@ -88,40 +167,59 @@ def build_retrieval_pipeline(
     document_store: Any,
     doc_repo: Any,
     join_mode: str = "rrf",
+    top_k: int = _DEFAULT_TOP_K,
+    rerank_client: Any | None = None,
 ) -> Pipeline:
     if join_mode not in _VALID_MODES:
         raise ValueError(f"join_mode must be one of {sorted(_VALID_MODES)}, got {join_mode!r}")
 
     pipeline = Pipeline()
     pipeline.add_component("source_hydrator", _SourceHydrator(doc_repo))
+    pipeline.add_component("excerpt_truncator", _ExcerptTruncator())
+    pipeline.connect("source_hydrator.documents", "excerpt_truncator.documents")
+
+    # The retriever output feeds either reranker → source_hydrator (when a
+    # rerank_client is configured) or source_hydrator directly.
+    if rerank_client is not None:
+        pipeline.add_component("reranker", _Reranker(rerank_client, top_k=top_k))
+        pipeline.connect("reranker.documents", "source_hydrator.documents")
+        retriever_sink = "reranker.documents"
+    else:
+        retriever_sink = "source_hydrator.documents"
 
     if join_mode == "vector_only":
         pipeline.add_component("query_embedder", _QueryEmbedder(embedder))
         pipeline.add_component(
-            "vector_retriever", ElasticsearchEmbeddingRetriever(document_store=document_store)
+            "vector_retriever",
+            ElasticsearchEmbeddingRetriever(document_store=document_store, top_k=top_k),
         )
         pipeline.connect("query_embedder.query_embedding", "vector_retriever.query_embedding")
-        pipeline.connect("vector_retriever.documents", "source_hydrator.documents")
+        pipeline.connect("vector_retriever.documents", retriever_sink)
 
     elif join_mode == "bm25_only":
         pipeline.add_component(
-            "bm25_retriever", ElasticsearchBM25Retriever(document_store=document_store)
+            "bm25_retriever",
+            ElasticsearchBM25Retriever(document_store=document_store, top_k=top_k),
         )
-        pipeline.connect("bm25_retriever.documents", "source_hydrator.documents")
+        pipeline.connect("bm25_retriever.documents", retriever_sink)
 
     else:  # rrf or concatenate
         pipeline.add_component("query_embedder", _QueryEmbedder(embedder))
         pipeline.add_component(
-            "vector_retriever", ElasticsearchEmbeddingRetriever(document_store=document_store)
+            "vector_retriever",
+            ElasticsearchEmbeddingRetriever(document_store=document_store, top_k=top_k),
         )
         pipeline.add_component(
-            "bm25_retriever", ElasticsearchBM25Retriever(document_store=document_store)
+            "bm25_retriever",
+            ElasticsearchBM25Retriever(document_store=document_store, top_k=top_k),
         )
-        pipeline.add_component("joiner", DocumentJoiner(join_mode=_HAYSTACK_JOIN_MODE[join_mode]))
+        pipeline.add_component(
+            "joiner", DocumentJoiner(join_mode=_HAYSTACK_JOIN_MODE[join_mode], top_k=top_k)
+        )
         pipeline.connect("query_embedder.query_embedding", "vector_retriever.query_embedding")
         pipeline.connect("vector_retriever.documents", "joiner.documents")
         pipeline.connect("bm25_retriever.documents", "joiner.documents")
-        pipeline.connect("joiner.documents", "source_hydrator.documents")
+        pipeline.connect("joiner.documents", retriever_sink)
 
     return pipeline
 
@@ -147,6 +245,8 @@ def run_retrieval(
         inputs["bm25_retriever"] = bm25_input
     if "vector_retriever" in nodes and filters:
         inputs.setdefault("vector_retriever", {})["filters"] = filters
+    if "reranker" in nodes:
+        inputs["reranker"] = {"query": query}
 
     result = pipeline.run(inputs)
-    return result.get("source_hydrator", {}).get("documents", [])
+    return result.get("excerpt_truncator", {}).get("documents", [])
