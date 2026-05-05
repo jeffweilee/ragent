@@ -130,6 +130,13 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 - **Action**: When debugging context is needed, log a length, hash, or count instead of the value. Error logs follow the same rule; tracebacks **must not** be enriched with request body content.
 - **Enforcement**: A denylist processor in `ragent.bootstrap.logging_config` drops the keys `query`, `prompt`, `messages`, `completion`, `chunks`, `embedding`, `documents`, `body`, `authorization`, `cookie`, `password`, `token`, `secret` from every emitted record as a safety net. The allow-list above is the policy contract; the denylist is the runtime guardrail.
 - **Format**: Timestamps are ISO 8601 UTC (`YYYY-MM-DDTHH:MM:SS.sssZ`), aligned with the DateTime rule. Output is JSON to stdout in production (`LOG_FORMAT=json`); developer-friendly key=value rendering is available via `LOG_FORMAT=console`.
+- **Naming convention** (one canonical string per work unit; the **same string** is used for both the OTEL span name and the structlog event name so log↔trace correlation is trivial):
+  - `api.request` / `api.error` — middleware-emitted, exactly one per HTTP request.
+  - `<router>.request` — router entry span (e.g. `chat.request`, `retrieve.request`).
+  - `<router>.<stage>` — sub-step inside a router (e.g. `chat.retrieval`, `chat.build_messages`, `chat.llm`, `retrieve.pipeline`, `retrieve.dedupe`).
+  - `<peer>.<verb>` — outbound HTTP client call (e.g. `llm.chat`, `llm.stream`, `embedding.embed`, `rerank.score`); error variant `<peer>.error`.
+  - `<domain>.<event>` — business state transitions (e.g. `ingest.failed`, `reconciler.tick`, `reconciler.redispatch`, `es.index_created`, `schema.drift`).
+  - All names are lowercase, dot-separated, ≤ 4 segments. New names must follow the same shape; reuse an existing prefix before inventing a new one.
 
 ---
 
