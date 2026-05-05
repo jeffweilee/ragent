@@ -75,9 +75,10 @@ def es_container():
         pytest.skip("Docker not available")
     from testcontainers.elasticsearch import ElasticSearchContainer
 
-    # Disable disk-based shard allocation so the test ES does not refuse to
-    # allocate primaries when the host disk is > 90% full (CI/dev VMs).
     container = ElasticSearchContainer(image="elasticsearch:9.2.3", port=9200)
+    # single-node: skip cluster discovery / master election (faster startup).
+    container.with_env("discovery.type", "single-node")
+    # Disable disk watermark so shards allocate even on > 90%-full CI/dev VMs.
     container.with_env("cluster.routing.allocation.disk.threshold_enabled", "false")
     with container as c:
         yield c
