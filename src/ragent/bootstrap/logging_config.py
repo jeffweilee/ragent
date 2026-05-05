@@ -61,24 +61,6 @@ def _drop_denylisted_keys(_logger: Any, _name: str, event_dict: dict[str, Any]) 
     return event_dict
 
 
-def _build_processor_chain(fmt: str) -> tuple[list, Any]:
-    pre_chain = [
-        structlog.contextvars.merge_contextvars,
-        structlog.processors.add_log_level,
-        structlog.processors.TimeStamper(fmt="iso", utc=True, key="timestamp"),
-        _add_otel_context,
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
-        _drop_denylisted_keys,
-        structlog.processors.EventRenamer("message"),
-    ]
-    if fmt == "console":
-        renderer: Any = structlog.dev.ConsoleRenderer(event_key="message")
-    else:
-        renderer = structlog.processors.JSONRenderer()
-    return pre_chain, renderer
-
-
 def _normalize_iso_timestamp(
     _logger: Any, _name: str, event_dict: dict[str, Any]
 ) -> dict[str, Any]:
@@ -87,6 +69,26 @@ def _normalize_iso_timestamp(
     if isinstance(ts, str) and ts.endswith("+00:00"):
         event_dict["timestamp"] = ts[:-6] + "Z"
     return event_dict
+
+
+def _shared_chain() -> list:
+    return [
+        structlog.contextvars.merge_contextvars,
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso", utc=True, key="timestamp"),
+        _normalize_iso_timestamp,
+        _add_otel_context,
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        _drop_denylisted_keys,
+        structlog.processors.EventRenamer("message"),
+    ]
+
+
+def _renderer(fmt: str) -> Any:
+    if fmt == "console":
+        return structlog.dev.ConsoleRenderer(event_key="message")
+    return structlog.processors.JSONRenderer()
 
 
 def configure_logging(service: str) -> None:
@@ -101,13 +103,8 @@ def configure_logging(service: str) -> None:
     level_name = os.getenv("LOG_LEVEL", "INFO").upper()
     level = getattr(logging, level_name, logging.INFO)
 
-    pre_chain, renderer = _build_processor_chain(fmt)
-    # Insert the timestamp normalizer right after TimeStamper.
-    shared_chain = [
-        *pre_chain[:3],
-        _normalize_iso_timestamp,
-        *pre_chain[3:],
-    ]
+    shared_chain = _shared_chain()
+    renderer = _renderer(fmt)
 
     structlog.configure(
         processors=[
