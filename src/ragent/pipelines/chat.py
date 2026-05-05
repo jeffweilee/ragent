@@ -15,7 +15,7 @@ from haystack_integrations.components.retrievers.elasticsearch import (
     ElasticsearchEmbeddingRetriever,
 )
 
-_EXCERPT_MAX_CHARS = int(os.environ.get("EXCERPT_MAX_CHARS", "512"))
+EXCERPT_MAX_CHARS = int(os.environ.get("EXCERPT_MAX_CHARS", "512"))
 _VALID_MODES = frozenset({"rrf", "concatenate", "vector_only", "bm25_only"})
 _HAYSTACK_JOIN_MODE = {"rrf": "reciprocal_rank_fusion", "concatenate": "concatenate"}
 
@@ -52,8 +52,6 @@ class _SourceHydrator:
                     "source_id": source_id,
                     "source_title": source_title,
                 }
-            if doc.content and len(doc.content) > _EXCERPT_MAX_CHARS:
-                kwargs["content"] = doc.content[:_EXCERPT_MAX_CHARS]
             result.append(dataclasses.replace(doc, **kwargs) if kwargs else doc)
         return {"documents": result}
 

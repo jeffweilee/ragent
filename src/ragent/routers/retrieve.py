@@ -9,7 +9,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from ragent.pipelines.chat import run_retrieval
+from ragent.pipelines.chat import EXCERPT_MAX_CHARS, run_retrieval
 
 _FILTER_MAX_LEN = 64
 
@@ -44,7 +44,7 @@ def _to_chunk(doc: Any) -> dict:
         "source_id": meta.get("source_id"),
         "type": "knowledge",
         "source_title": meta.get("source_title"),
-        "excerpt": doc.content,
+        "excerpt": (doc.content or "")[:EXCERPT_MAX_CHARS],
     }
 
 

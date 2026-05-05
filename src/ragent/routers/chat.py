@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from ragent.clients.rate_limiter import RateLimiter
 from ragent.errors.problem import problem
-from ragent.pipelines.chat import run_retrieval
+from ragent.pipelines.chat import EXCERPT_MAX_CHARS, run_retrieval
 from ragent.schemas.chat import ChatRequest, build_rag_messages
 
 
@@ -30,7 +30,7 @@ def _build_sources(documents: list[Any]) -> list[dict] | None:
                 "source_app": meta.get("source_app"),
                 "source_id": meta.get("source_id"),
                 "source_title": meta.get("source_title"),
-                "excerpt": doc.content,
+                "excerpt": (doc.content or "")[:EXCERPT_MAX_CHARS],
             }
         )
     return sources
