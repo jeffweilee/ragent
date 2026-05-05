@@ -140,6 +140,30 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 
 ---
 
+### OpenTelemetry: Initialize Once, Re-init After Fork
+
+- **Rule**: The global `TracerProvider` is set **exactly once per OS process**. Do not replace it at runtime; do not call `set_tracer_provider` from request paths, hot-reload paths, or library code.
+  - **Rationale**: `ProxyTracer` (returned by module-level `_tracer = trace.get_tracer(__name__)`) caches its real delegate on first span call. Replacing the global provider afterwards leaks spans to the dead provider — silent data loss in production, flaky tests in CI.
+
+- **Rule: Initialize before any tracer use.** `setup_tracing(service_name)` **must** be the first call in `create_app()`, worker entrypoint, and reconciler entrypoint — before any router/client module is imported into the request path.
+  - **Action**: keep `setup_tracing()` idempotent — if a real `TracerProvider` is already installed, return without re-setting. This protects against in-process module reloads.
+
+- **Rule: Re-initialize after `fork()`.** When deploying under gunicorn `--preload` (or any `os.fork()` model), `BatchSpanProcessor`'s background flush thread does **not** survive the fork; spans queue forever and never export.
+  - **Action**: in `gunicorn.conf.py`, hook `post_fork` to call `shutdown_tracing()` then `setup_tracing(service_name)` inside each worker. Also hook `worker_exit` to `shutdown_tracing()` so the queue flushes before the worker dies.
+  - **`shutdown_tracing()` contract**: call `provider.shutdown()` (flushes BatchSpanProcessor, closes OTLP connection), then reset `opentelemetry.trace._TRACER_PROVIDER_SET_ONCE._done = False` and `_TRACER_PROVIDER = None` so the next `setup_tracing()` succeeds.
+
+- **Rule: Use `BatchSpanProcessor` in production, never `SimpleSpanProcessor`.** Simple exports synchronously on the request thread; batch exports off-thread with bounded queue + drop-on-overflow.
+  - **Action**: tune via env — `OTEL_BSP_MAX_QUEUE_SIZE`, `OTEL_BSP_MAX_EXPORT_BATCH_SIZE`, `OTEL_BSP_EXPORT_TIMEOUT`. `SimpleSpanProcessor` is **only** allowed in `tests/` (see `tests/unit/conftest.py`).
+
+- **Rule: Propagate context across `asyncio.create_task` and thread pools.** OTEL stores the active span in a contextvar; `asyncio.create_task` does **not** automatically copy contextvars to the child task.
+  - **Action**: spans that span async task boundaries must capture `parent_ctx = trace.set_span_in_context(span)` and pass `context=parent_ctx` into `start_as_current_span` inside the child task — exactly the pattern used in `chat_stream`'s `StreamingResponse` generator. Never use `trace.use_span()` across an async-context boundary; it raises "Failed to detach context".
+
+- **Rule: Flush on shutdown.** App lifespan / worker shutdown **must** call `provider.shutdown()` (or rely on `shutdown_tracing()`). Without it, in-flight spans are dropped on SIGTERM and the OTLP connection leaks half-open.
+
+- **Rule: Never touch OTEL private internals from production code.** `_TRACER_PROVIDER_SET_ONCE`, `_TRACER_PROVIDER`, `ProxyTracer._real_tracer` may only be manipulated in `tests/` fixtures or in the single `shutdown_tracing()` helper. Production code uses only the public API.
+
+---
+
 
 
 ## Third-Party API
