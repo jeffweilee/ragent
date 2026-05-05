@@ -43,11 +43,11 @@
 
 **Format:**
 1. **Domain List (TOC)** at the top — a fixed, converged set of domains. New entries MUST be filed under an existing domain; do not invent new domains. Allowed domains: `Architecture`, `SRE`, `QA`, `Security`, `Spec`, `Process`.
-2. **Per-Domain Table** — one section per domain, each containing a 4-column table:
+2. **Per-Domain Table** — one section per domain, each containing a 5-column table. The `Topic` column is a short tag (1–3 words) that lets a reader scan the table and locate the relevant entry without reading every Description.
 
-| Date | Description | Root Cause | Actionable Guideline |
-| :--- | :--- | :--- | :--- |
-| 2026-05-04 | Race condition during high-concurrency wallet updates. | Missing atomicity at the DB transaction level. | **[Rule]** All balance-related mutations must use Pessimistic Locking and be wrapped in an atomic decorator. |
+| Date | Topic | Description | Root Cause | Actionable Guideline |
+| :--- | :--- | :--- | :--- | :--- |
+| 2026-05-04 | Concurrency | Race condition during high-concurrency wallet updates. | Missing atomicity at the DB transaction level. | **[Rule]** All balance-related mutations must use Pessimistic Locking and be wrapped in an atomic decorator. |
 
 
 ---
