@@ -24,9 +24,6 @@ def create_router(svc: Any) -> APIRouter:  # noqa: B008
         source_workspace: Annotated[str | None, Form()] = None,
         x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
     ):
-        if not x_user_id:
-            return problem(422, "INGEST_VALIDATION", "Missing X-User-Id header", errors=[])
-
         field_errors = []
         if not source_id:
             field_errors.append({"field": "source_id", "message": "required"})
@@ -65,7 +62,6 @@ def create_router(svc: Any) -> APIRouter:  # noqa: B008
     @router.get("/ingest/{document_id}")
     async def get_document(
         document_id: str,
-        x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
     ):
         doc = svc.get(document_id)
         if doc is None:
@@ -80,7 +76,6 @@ def create_router(svc: Any) -> APIRouter:  # noqa: B008
     @router.delete("/ingest/{document_id}", status_code=204)
     async def delete_document(
         document_id: str,
-        x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
     ):
         svc.delete(document_id)
         return Response(status_code=204)
@@ -89,7 +84,6 @@ def create_router(svc: Any) -> APIRouter:  # noqa: B008
     async def list_documents(
         after: str | None = Query(None),
         limit: int = Query(100),
-        x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
     ):
         result = svc.list(after=after, limit=limit)
         items = [

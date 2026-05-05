@@ -129,8 +129,7 @@ def build_container() -> Container:
     # Persistent connection held for app lifetime; repos use it for all DB ops.
     # Single-worker uvicorn means no concurrent access to this connection.
     _repo_conn = engine.connect()
-    with engine.connect() as probe:
-        probe.execute(text("SELECT 1"))
+    _repo_conn.execute(text("SELECT 1"))
 
     doc_repo = DocumentRepository(conn=_repo_conn)
     chunk_repo = ChunkRepository(conn=_repo_conn)

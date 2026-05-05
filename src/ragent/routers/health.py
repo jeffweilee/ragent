@@ -6,7 +6,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse, PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
-import ragent.bootstrap.telemetry  # noqa: F401 — registers Prometheus metrics on import
+import ragent.bootstrap.telemetry  # noqa: F401
 
 
 def create_health_router() -> APIRouter:

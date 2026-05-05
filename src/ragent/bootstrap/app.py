@@ -32,6 +32,7 @@ def _x_user_id_middleware(app: FastAPI) -> None:
 
 def create_app() -> FastAPI:
     enforce()
+    setup_tracing("ragent-api")
 
     from ragent.bootstrap.broker import broker as taskiq_broker
     from ragent.bootstrap.composition import get_container
@@ -39,12 +40,15 @@ def create_app() -> FastAPI:
 
     container = get_container()
 
-    setup_tracing("ragent-api")
-
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         init_schema()
         yield
+        from opentelemetry import trace
+
+        provider = trace.get_tracer_provider()
+        if hasattr(provider, "shutdown"):
+            provider.shutdown()
 
     app = FastAPI(title="ragent", lifespan=lifespan)
 

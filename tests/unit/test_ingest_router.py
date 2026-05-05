@@ -180,7 +180,15 @@ def test_list_ingest_returns_200():
 
 
 def test_missing_x_user_id_returns_422():
-    client, _ = _make_client()
+    from fastapi import FastAPI
+
+    from ragent.bootstrap.app import _x_user_id_middleware
+
+    svc = MagicMock()
+    app = FastAPI()
+    app.include_router(create_router(svc=svc))
+    _x_user_id_middleware(app)
+    client = TestClient(app, raise_server_exceptions=False)
     resp = client.post(
         "/ingest",
         data={"source_id": "S1", "source_app": "app", "source_title": "T"},

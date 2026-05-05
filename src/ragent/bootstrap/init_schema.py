@@ -124,3 +124,11 @@ def auto_init(db_url: str, es_url: str) -> None:
     engine = create_engine(db_url)
     init_mariadb(engine)
     init_es(es_url)
+
+
+def init_schema() -> None:
+    """No-arg entrypoint that reads MARIADB_DSN and ES_HOSTS from env vars."""
+    db_url = os.environ.get("MARIADB_DSN", "")
+    es_hosts = os.environ.get("ES_HOSTS", "")
+    es_url = es_hosts.split(",")[0] if es_hosts else ""
+    auto_init(db_url=db_url, es_url=es_url)
