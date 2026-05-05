@@ -334,6 +334,10 @@ Retrieval may over-fetch (`K' = K × overfetch_factor`) so that after permission
 - `DELETING > 5 min` → resume cascade delete idempotently.
 - **Multi-READY invariant repair (R3):** every cycle also runs `SELECT source_id, source_app FROM documents WHERE status='READY' GROUP BY source_id, source_app HAVING COUNT(*) > 1` and re-enqueues `ingest.supersede` for each pair.
 - **Heartbeat (R8):** every tick increments `reconciler_tick_total` and emits `event=reconciler.tick`. Prometheus alert fires if no tick observed for > 10 min (Reconciler is itself a single point of failure).
+- **Memory arms (P4 — see §3.8.4 for prose):**
+  - **`chat_sessions DELETING > MEMORY_RECONCILER_DELETING_STALE_SECONDS`** (default 300) → resume cascade clear (mirror of `documents DELETING`).
+  - **Redis short-term overflow** → every tick, `SCAN` a bounded sample of `memory:short:*` keys; for any key with `LLEN > MEMORY_SHORT_TERM_ROUNDS`, re-kiq `memory.distill` for the overflow rounds; if `LLEN > MEMORY_REDIS_MAX_PENDING_ROUNDS` (default 50) drop the oldest tail with `event=memory.dropped reason=distill_backlog`.
+  - **`memory_v1` orphan vectors** → list `chat_sessions WHERE status IN ('ACTIVE','DELETING')` and reconcile against ES `aggs cardinality session_id`; orphan ids → `delete_by_query`.
 
 **BDD:**
 - **S2** Given a `PENDING` document older than 5 min with `attempt ≤ 5`, When the reconciler runs, Then it re-kiqs `ingest.pipeline` exactly once per cycle (idempotent across redelivery).
@@ -354,6 +358,115 @@ Retrieval may over-fetch (`K' = K × overfetch_factor`) so that after permission
 
 ---
 
+### 3.8 Chat Memory Service (Phase 4)
+
+> Phase: **P4**. Source: `docs/team/2026_05_05_phase4_memory_kickoff.md`. Decisions: B32–B36.
+> **P4 production rollout requires P2 (auth + Permission Layer)**: in non-`dev` environments, memory endpoints refuse to serve when `RAGENT_AUTH_DISABLED=true` (extension of T7.5 startup guard). Dev/CI may run P4 under the existing P1 OPEN guard.
+
+Memory is **per-session, per-user, additive context** layered onto the existing chat pipeline (§3.4). Three-layer split — meta, short-term, long-term — chosen to match cost/latency/durability profiles (B32):
+
+| Layer | Store | Lifetime | Purpose |
+|---|---|---|---|
+| **Meta** | MariaDB `chat_sessions` | Durable | Session existence + ownership + distill cursor |
+| **Short-term** | Redis list `memory:short:{session_id}` (rate-limiter Redis instance, B27) | Sliding TTL `MEMORY_SHORT_TERM_TTL_SECONDS` (default 86400) | Last `MEMORY_SHORT_TERM_ROUNDS` (default 5) rounds verbatim |
+| **Long-term** | ES `memory_v1` (separate index from `chunks_v1`, B33) | Until session DELETE | Distilled rounds embedded for kNN recall |
+
+**One round** = one `(user_message, assistant_message)` tuple identified by a server-minted `round_id` (UUIDv7 → CHAR(26)). Rounds carry `created_at`, `session_id`, `user_id` (audit), and the message text.
+
+**Permission-blind retrieval (B14 lineage):** `memory_v1` carries no auth fields. Session ownership is enforced by `chat_sessions.create_user` check **before** the retriever is invoked (P1 OPEN: header trust; P2+: JWT subject + Permission Layer). `user_id` is denormalised onto `memory_v1` rows as **scope metadata**, not auth — matching the `00_journal.md` Retrieval/ACL distinction (`source_app`, `lang`, `user_id` are scope; ACL relations are not).
+
+#### 3.8.1 Chat API extension
+
+Both `/chat` and `/chat/stream` (§3.4.1) accept two new optional fields:
+
+```json
+{
+  "messages":         [...],
+  "enable_memory":    false,
+  "session_id":       "01J9..."
+}
+```
+
+- `enable_memory: bool` (default `false`). When `false` (or omitted) chat behaves exactly as §3.4 — full back-compat.
+- `session_id: string | null` (CHAR(26), Crockford Base32). Optional. When `enable_memory=true` and `session_id` is null, the server **mints a new session** (`new_id()`), persists `chat_sessions` row, and echoes the id back in the response.
+- Response (§3.4.2 update): `{..., "session_id": "01J9..." | null}` — populated only when memory was used in this turn.
+
+**Validation (§4.1.2 codes):**
+- `MEMORY_FLAG_INCONSISTENT` (422) — `session_id` present but `enable_memory=false`.
+- `MEMORY_SESSION_INVALID` (422) — `session_id` malformed (not 26-char Crockford Base32).
+- `MEMORY_SESSION_NOT_FOUND` (404) — `session_id` references no row, or row is `DELETING`.
+- `MEMORY_SESSION_FORBIDDEN` (403) — `chat_sessions.create_user != X-User-Id`.
+
+**Prompt assembly when `enable_memory=true`** (assembled inside the chat router before the LLM call, in this strict order):
+
+1. Default system prompt (`RAGENT_DEFAULT_SYSTEM_PROMPT`, §3.4.1 / B12).
+2. **Long-term recall** — second `system` message: top-`MEMORY_LONG_TERM_TOP_K` (default 5) `memory_v1` rows where `term: {session_id: <id>}` AND vector similarity to the last user message ≥ `MEMORY_LONG_TERM_MIN_SCORE` (default 0.3). Format: bullet list of recalled facts inside a fenced block (`- {kind}: {text}`). **Sanitisation (prompt-injection guard):** every recalled bullet is passed through a sanitiser that (a) strips role-token prefixes (`system:`, `user:`, `assistant:`), (b) caps per-bullet length at 1 KiB, (c) wraps the whole recall block in a fenced ``` ``` ``` ``` ` block so a hostile assistant turn from round 1 cannot break out and override the system prompt on turn 8.
+3. **Short-term history** — `MEMORY_SHORT_TERM_ROUNDS` rounds replayed as actual `messages[]` entries (oldest-first `user`/`assistant` pairs derived from each composite Redis entry's `user_text` / `assistant_text` fields).
+4. The new `messages[]` from the request (whose last `role:"user"` remains the **retrieval query** for both `chunks_v1` knowledge and `memory_v1` long-term — §3.4.1 invariant preserved).
+
+Knowledge retrieval (§3.4) and memory retrieval are **independent branches**: `chunks_v1` BM25+vector still runs whenever a user query exists, regardless of `enable_memory`. Memory is purely additive context; it does not displace knowledge sources from `sources[]`.
+
+#### 3.8.2 Distillation flow
+
+Every chat turn that returns 200 to the client triggers a FastAPI `BackgroundTasks` hook **after** the response is flushed (so the client never blocks on memory writes):
+
+1. `LPUSH memory:short:{session_id}` with **one composite JSON entry per round**: `{round_id, user_text, assistant_text, created_at}`. (One round = one list entry — chosen so list length maps 1:1 to round count; overflow predicate is `LLEN > N`, not `N × 2`.)
+2. Refresh sliding TTL: `EXPIRE memory:short:{session_id} MEMORY_SHORT_TERM_TTL_SECONDS`.
+3. If `LLEN > MEMORY_SHORT_TERM_ROUNDS`, **capture overflow before trim** with `LRANGE N -1` (the oldest rounds at the tail), then `LTRIM 0 N-1` to drop them from the list. For each captured round, `kiq memory.distill(payload)`. **Order is critical**: `LTRIM` discards the tail, so a subsequent `RPOP` would return the *new* tail, not the popped overflow — `LRANGE → LTRIM` is the only lossless sequence.
+4. Update `chat_sessions.round_count` + `updated_at`.
+
+**Distill task `memory.distill(payload, mode)`** — `@broker.task` registered on the canonical broker (T0.10):
+
+- `mode = MEMORY_DISTILL_MODE` (default `embed`; `summarize` opt-in, B34):
+  - `embed`: payload text = `f"User: {user}\n\nAssistant: {assistant}"`. One bge-m3 embedding call (`EmbeddingClient`, B28 timeouts).
+  - `summarize`: prepend an `LLMClient.chat()` call with `MEMORY_DISTILL_SYSTEM_PROMPT` to compress the round into 2–3 sentences; embed the summary instead.
+- ES write: `PUT memory_v1/_doc/{round_id}` (idempotency via `_id=round_id`; TaskIQ at-least-once redelivery becomes overwrite, never duplicate — B33 mirror of §3.1 idempotency).
+- Per-call ceiling: `MEMORY_DISTILL_TIMEOUT_SECONDS` (default 60).
+- Retry policy: same `WORKER_MAX_ATTEMPTS=5`; on terminal failure log `event=memory.distill_failed error_code=MEMORY_DISTILL_FAILED` and increment `memory_distill_failed_total`.
+
+**Worst-case capacity (Capacity rule, `00_journal.md`):** `MEMORY_REDIS_MAX_PENDING_ROUNDS` (default 50) caps Redis list length. Beyond cap, the oldest tail is dropped with `event=memory.dropped reason=distill_backlog` (alerting fires); session is degraded but bounded.
+
+#### 3.8.3 Clear mechanism (具備 clear 機制)
+
+New endpoint **`DELETE /chat/sessions/{session_id}`** (router `chat.py`):
+
+- Auth: `X-User-Id` (P1 OPEN); ownership enforced via `chat_sessions.create_user`.
+- Cascade order (mirrors §3.1 Delete flow — same locking discipline, same Reconciler resume on partial failure):
+  1. **TX-A:** `acquire FOR UPDATE NOWAIT` on `chat_sessions` row → set `status='DELETING'` → commit.
+  2. **Outside tx:** Redis `DEL memory:short:{session_id}` (idempotent).
+  3. **Outside tx:** ES `POST /memory_v1/_delete_by_query {query: {term: {session_id: <id>}}}` (idempotent).
+  4. **TX-B:** `DELETE FROM chat_sessions WHERE session_id=?` → 204.
+- Idempotent: re-DELETE on already-cleared session returns 204; unknown session returns 204 (mirrors `/ingest` S14 — no existence-leak).
+- Any mid-cascade failure → row stays `DELETING`; Reconciler resumes within `MEMORY_RECONCILER_DELETING_STALE_SECONDS` (default 300).
+
+#### 3.8.4 Resilience (Reconciler arms — extends §3.6)
+
+- **`chat_sessions DELETING > 300 s`** → resume cascade clear idempotently (mirrors `documents DELETING`).
+- **Redis overflow orphans** → every Reconciler tick, sample a bounded set of `memory:short:*` keys via `SCAN`; for any `LLEN > MEMORY_SHORT_TERM_ROUNDS`, re-kiq `memory.distill` for the overflow tail (rounds at index `N..-1`).
+- **`memory_v1` orphan vectors** → every cycle, list `chat_sessions WHERE status IN ('ACTIVE','DELETING')`; reconcile against ES `aggs cardinality session_id`; orphan ids → `delete_by_query`.
+
+**State machine:** `chat_sessions.status` is two-state `{ACTIVE, DELETING}`; valid transitions `{ACTIVE→DELETING}`. `update_status` raises `IllegalStateTransition` on any other path.
+
+#### 3.8.5 BDD
+
+- **S40 memory off ⇒ regression-equivalent** — Given `enable_memory=false` (or omitted), When `/chat` runs, Then behaviour is bit-equivalent to §3.4 S6a (no `memory_v1` query, no Redis read/write, no `session_id` in response).
+- **S41 memory on, no session** — Given `enable_memory=true` and no `session_id`, When `/chat` runs, Then a new `chat_sessions` row is created with `create_user=X-User-Id`, the response carries `session_id`, Redis `memory:short:{id}` has the just-completed round, no `memory_v1` rows yet.
+- **S42 memory on, valid session** — Given a session with 3 prior rounds in Redis and 2 distilled rows in `memory_v1`, When `/chat` runs with `enable_memory=true` and that `session_id`, Then the LLM prompt contains: default system + recall-system message (≤ 5 bullets, only rows ≥ min_score) + 3 short-term rounds + new user message, in that order.
+- **S43 memory on, foreign session** — Given a session whose `create_user="alice"`, When `bob` POSTs `/chat` with that `session_id`, Then 403 `application/problem+json` with `error_code=MEMORY_SESSION_FORBIDDEN`; no LLM call, no Redis touch, no ES touch.
+- **S44 memory on, unknown session** — Given a `session_id` with no `chat_sessions` row, When `/chat` runs, Then 404 `MEMORY_SESSION_NOT_FOUND`.
+- **S45 memory flag inconsistent** — Given `session_id` set but `enable_memory=false`, Then 422 `MEMORY_FLAG_INCONSISTENT`; no side effects.
+- **S46 distill on overflow** — Given Redis already holds `MEMORY_SHORT_TERM_ROUNDS` rounds (default 5 entries), When the 6th turn completes, Then the overflow round is captured via `LRANGE N -1` *before* `LTRIM 0 N-1`; `memory.distill` is enqueued exactly once for that captured round; ES `memory_v1` gains one row keyed by `round_id`; Redis `LLEN == 5` (one entry per round).
+- **S47 distill idempotent** — Given `memory.distill(round_id=X)` is delivered twice, When both run, Then `memory_v1/{X}` exists once (PUT-overwrite), no duplicates.
+- **S48 distill failure does not break chat** — Given `memory.distill` raises every time, When subsequent turns run, Then chat still succeeds; `event=memory.distill_failed` is emitted after `attempt > 5`; chat does not degrade beyond losing recall of the failed round.
+- **S49 clear cascade** — Given a session with 3 rounds in Redis + 2 rows in `memory_v1` + 1 `chat_sessions` row, When `DELETE /chat/sessions/{id}` runs, Then all three are removed and 204 is returned.
+- **S50 clear idempotent** — Given a previously-cleared session, When DELETE runs again, Then 204; no errors, no plugin calls.
+- **S51 clear unknown session** — Given an unknown `session_id`, When DELETE runs, Then 204 (no existence leak).
+- **S52 concurrent same-session** — Given two parallel `enable_memory=true` calls on the same session by the same user, When both complete, Then Redis `LLEN ≤ MEMORY_SHORT_TERM_ROUNDS + 1` (one entry per round, overflow capture bound); no error; both rounds eventually distilled.
+- **S53 ES freshness for memory** — Given a round just distilled, When the next chat turn arrives within 1 s, Then it may not yet recall it (eventual; mirrors S32). Within 60 s it is recallable.
+- **S54 production guard** — Given `RAGENT_ENV=staging` AND `RAGENT_AUTH_DISABLED=true`, When the API process starts and registers memory endpoints, Then startup refuses with SystemExit citing the guard rule (extension of T7.5).
+
+---
+
 ## 4. Inventories
 
 ### 4.1 Endpoints
@@ -366,6 +479,7 @@ Retrieval may over-fetch (`K' = K × overfetch_factor`) so that after permission
 | DELETE | `/ingest/{id}`          | `X-User-Id` | — | `204` idempotent |
 | POST   | `/chat`                 | `X-User-Id` | §3.4.1 schema (`messages` required; rest default) | `200 application/json` per §3.4.2 |
 | POST   | `/chat/stream`          | `X-User-Id` | §3.4.1 schema | `text/event-stream` per §3.4.3 (`data: {type:delta\|done\|error}`) |
+| DELETE | `/chat/sessions/{id}`   | `X-User-Id` | — | `204` idempotent — clears MariaDB `chat_sessions` + Redis short-term + ES `memory_v1` (§3.8.3). Foreign session ⇒ 403 `MEMORY_SESSION_FORBIDDEN`. **P4**. |
 | POST   | `/mcp/tools/rag`        | `X-User-Id` | `{ query: str }` | **501** (P1) |
 | GET    | `/livez`                | none        | — | `200 {"status":"ok"}` — process up; no dependency probes |
 | GET    | `/readyz`               | none        | — | `200` if all dep probes pass; else `503 application/problem+json` listing failed deps. Probes: **MariaDB** (`SELECT 1`), **ES** (`GET /_cluster/health` + `analysis-icu` plugin loaded + every `resources/es/*.json` index exists; B26, I5), **Redis broker & rate-limiter** (`PING` against active topology per `REDIS_MODE`; B27), **MinIO** (`ListBuckets`). Each probe ≤ 2 s. |
@@ -417,6 +531,12 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 | `PIPELINE_TIMEOUT`                   | log `event=ingest.failed reason=pipeline_timeout` | Pipeline body exceeds `PIPELINE_TIMEOUT_SECONDS` (B18, S34) | Worker T3.2j |
 | `ES_BBQ_UNSUPPORTED`                 | log `event=es.bbq_unsupported` | Cluster rejected `bbq_hnsw`; bootstrap retried with standard HNSW (B26) | Bootstrap |
 | `RECONCILER_TICK_MISSING`            | Prometheus alert | `reconciler_tick_total` flat > 10 min (R8, S30) | Alerting rule T7.1a |
+| `MEMORY_SESSION_INVALID`             | 422         | `session_id` malformed (not 26-char Crockford Base32) (S45) | Schema P4-E.1 |
+| `MEMORY_FLAG_INCONSISTENT`           | 422         | `session_id` set but `enable_memory=false` (S45) | Schema P4-E.1 |
+| `MEMORY_SESSION_NOT_FOUND`           | 404         | `session_id` references no row, or row is `DELETING` (S44) | Service P4-D.4 |
+| `MEMORY_SESSION_FORBIDDEN`           | 403         | `chat_sessions.create_user != X-User-Id` (S43) | Service P4-D.4 |
+| `MEMORY_DISTILL_FAILED`              | log `event=memory.distill_failed` | `memory.distill > WORKER_MAX_ATTEMPTS` (S48) | Worker P4-C.2 |
+| `MEMORY_BACKLOG_DROPPED`             | log `event=memory.dropped reason=distill_backlog` | `LLEN > MEMORY_REDIS_MAX_PENDING_ROUNDS` (Reconciler arm, §3.8.4) | Reconciler P4-G.4 |
 
 ### 4.2 Supported Formats
 
@@ -439,6 +559,8 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 |---|---|---|---|:---:|
 | **Ingest** | `delete_by_document_id (idempotency) → FileTypeRouter → Converter → DocumentCleaner → LanguageRouter → {cjk_splitter \| en_splitter} (sentence-level, B1) → EmbeddingClient(bge-m3, batch=32) → ChunkRepository.bulk_insert → PluginRegistry.fan_out (per-plugin 60 s)` | Embedder 30 s/batch · ES bulk 60 s · MinIO get 30 s · plugin 60 s | `tests/integration/test_ingest_pipeline.py` | **P1** sync |
 | **Chat** | `QueryEmbedder → ESVector(kNN on `embedding`, `bbq_hnsw` index, optional `term` filter on `source_app`/`source_workspace` — B29) → ESBM25(multi_match `text`+`title^2`, `icu_text` analyzer, B26, same optional filter) → DocumentJoiner (C6 `CHAT_JOIN_MODE`: rrf\|concatenate\|vector_only\|bm25_only) → SourceHydrator(JOIN documents, truncate `excerpt` to 512 chars) → LLMClient.{chat\|stream}` (retrievers sequential in P1; parallel in P2 — see §3.4 P-A) | Embedder 10 s (single query) · ES query 10 s · LLM 120 s · per-batch ingest embed 30 s (asymmetric — query is one string, ingest is up to 32) | `tests/integration/test_chat_endpoint.py` (T3.9), `tests/integration/test_chat_stream_endpoint.py` (T3.11), `tests/integration/test_chat_pipeline_retrieval.py` (T3.5) | **P1** sync |
+| **Chat Memory recall** (P4) | `QueryEmbedder(reuses bge-m3 query embedding from Chat) → MemoryRecallRetriever(ESVector kNN on `memory_v1.embedding`, `term` filter `session_id`, `top_k=MEMORY_LONG_TERM_TOP_K`, score floor `MEMORY_LONG_TERM_MIN_SCORE`) → BulletFormatter(strip role-token prefixes, cap 1 KiB/bullet, fence the block) → prepend as second `system` message in §3.4 prompt assembly` | Embedder 10 s (shared with Chat) · ES query `MEMORY_QUERY_TIMEOUT_SECONDS` (default 10 s) | `tests/unit/test_memory_recall.py`, `tests/unit/test_memory_recall_sanitization.py` (P4-D.1, P4-D.3a) | **P4** sync |
+| **Memory Distill** (P4) | `@broker.task("memory.distill")` worker: payload `{round_id, session_id, user_id, user_text, assistant_text, mode}` → if mode=`summarize`: `LLMClient.chat()` with `MEMORY_DISTILL_SYSTEM_PROMPT` (cap `MEMORY_DISTILL_LLM_MAX_TOKENS`); else mode=`embed`: text = `f"User: {user}\\n\\nAssistant: {assistant}"` → `EmbeddingClient.embed_one(text)` → `PUT memory_v1/_doc/{round_id}` (idempotent) | LLM `MEMORY_DISTILL_TIMEOUT_SECONDS` (default 60 s) · embedder 30 s · ES bulk `MEMORY_BULK_TIMEOUT_SECONDS` (default 60 s) | `tests/integration/test_memory_distill_*.py` (P4-C.1/3/5/6) | **P4** async |
 
 ### 4.4 Plugin Catalog
 
@@ -569,6 +691,25 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `OTEL_TRACES_SAMPLER`                 | `parentbased_traceidratio` | Standard OTEL SDK sampler name. |
 | `OTEL_TRACES_SAMPLER_ARG`             | `0.1`            | Sampling ratio (10% by default; raise to `1.0` in dev). |
 
+#### 4.6.9 Memory (P4)
+
+12 vars governing the chat memory service (§3.8). Subject to the §4.6 inventory rule — `tests/unit/test_env_example_drift.py` enforces symmetry with `.env.example`.
+
+| Variable | Default | Description |
+|---|---|---|
+| `MEMORY_SHORT_TERM_ROUNDS`                 | `5`        | Per-session Redis short-term capacity (rounds; one round = one composite list entry). Overflow predicate: `LLEN > MEMORY_SHORT_TERM_ROUNDS`. |
+| `MEMORY_SHORT_TERM_TTL_SECONDS`            | `86400`    | Sliding TTL on `memory:short:{session_id}`; refreshed each turn. |
+| `MEMORY_LONG_TERM_TOP_K`                   | `5`        | `memory_v1` retriever top-K injected into prompt assembly. |
+| `MEMORY_LONG_TERM_MIN_SCORE`               | `0.3`      | Cosine-similarity floor; rows below this score are omitted from the recall block. |
+| `MEMORY_DISTILL_MODE`                      | `embed`    | `embed` (concatenate `User:/Assistant:` and embed directly — default) \| `summarize` (LLM compress first; opt-in, B34). |
+| `MEMORY_DISTILL_LLM_MAX_TOKENS`            | `512`      | Max tokens for the `summarize`-mode LLM call. |
+| `MEMORY_DISTILL_TIMEOUT_SECONDS`           | `60`       | Per-task ceiling for `memory.distill`. |
+| `MEMORY_DISTILL_SYSTEM_PROMPT`             | `Summarize the following exchange in 2-3 sentences, preserving any factual claims or commitments.` | `summarize` mode prompt. |
+| `MEMORY_REDIS_MAX_PENDING_ROUNDS`          | `50`       | Hard cap on Redis short-term list length (overflow drops oldest with `event=memory.dropped`). |
+| `MEMORY_RECONCILER_DELETING_STALE_SECONDS` | `300`      | Stale `chat_sessions DELETING` re-sweep threshold (§3.8.4). |
+| `MEMORY_QUERY_TIMEOUT_SECONDS`             | `10`       | `memory_v1` ES query budget on the chat side. |
+| `MEMORY_BULK_TIMEOUT_SECONDS`              | `60`       | `memory_v1` ES write budget for the `memory.distill` worker. |
+
 ---
 
 ## 5. Data Structures
@@ -609,6 +750,26 @@ CREATE TABLE chunks (
   lang        VARCHAR(8) NOT NULL,
   INDEX idx_document (document_id)
 );
+
+-- §3.8 — Chat Memory Service (Phase 4). Metadata only;
+-- transcript text lives in Redis (transient) and ES `memory_v1` (distilled).
+CREATE TABLE chat_sessions (
+  session_id              CHAR(26)    PRIMARY KEY,
+  create_user             VARCHAR(64) NOT NULL,
+  status                  ENUM('ACTIVE','DELETING') NOT NULL,
+  round_count             INT         NOT NULL DEFAULT 0,
+  last_distilled_round_id CHAR(26)    NULL,
+  created_at              DATETIME(6) NOT NULL,
+  updated_at              DATETIME(6) NOT NULL,
+  INDEX idx_create_user_session (create_user, session_id),
+  INDEX idx_status_updated      (status, updated_at)
+);
+-- create_user records WHO created the session (audit / "my sessions" list).
+-- It is NOT an authorization field; the Permission Layer (§3.5) is the
+-- authority — chat_sessions.create_user is an audit + ownership-equality
+-- check in P1 OPEN, replaced by JWT-subject equivalence in P2+.
+-- idx_create_user_session supports "list sessions I own".
+-- idx_status_updated supports the Reconciler's DELETING-sweep query.
 ```
 
 No physical FK. ORM-level cascade only.
@@ -672,6 +833,49 @@ No physical FK. ORM-level cascade only.
 
 - `new_id()` → UUIDv7 → Crockford Base32 → 26 chars (lexicographically sortable).
 - `utcnow()` → tz-aware UTC. `to_iso()` → ISO 8601 `...Z`. `from_db(naive)` → attach UTC.
+
+### 5.4 Elasticsearch `memory_v1` (P4)
+
+> **Source of truth:** `resources/es/memory_v1.json` — settings + mappings, checked into git. Bootstrap (§6.1) reads this file and `PUT /memory_v1` if the index does not exist. Drift between this prose and the resource file is a CI failure (`tests/integration/test_es_resource_drift.py` — picks up every `resources/es/*.json`).
+
+```json
+{
+  "settings": {
+    "analysis": {
+      "analyzer": {
+        "icu_text": {
+          "type": "custom",
+          "tokenizer": "icu_tokenizer",
+          "filter": ["icu_folding", "lowercase"]
+        }
+      }
+    }
+  },
+  "mappings": {
+    "properties": {
+      "round_id":   { "type": "keyword" },
+      "session_id": { "type": "keyword" },
+      "user_id":    { "type": "keyword" },
+      "kind":       { "type": "keyword" },
+      "text":       { "type": "text", "analyzer": "icu_text" },
+      "created_at": { "type": "date" },
+      "embedding": {
+        "type": "dense_vector",
+        "dims": 1024,
+        "index": true,
+        "similarity": "cosine",
+        "index_options": { "type": "bbq_hnsw" }
+      }
+    }
+  }
+}
+```
+
+**Symmetric with `chunks_v1` (B26):** same `icu_text` analyzer, same 1024-dim `bbq_hnsw` cosine vector — boot bootstrap, BBQ-fallback, drift test, and `/readyz` ICU plugin probe cover `memory_v1` for free. **Differs in filter fields:** `session_id` (primary scope) and `user_id` (denormalised scope metadata, **not auth** — B14/journal Retrieval-vs-ACL distinction); `kind` discriminates `embed_round` (raw) vs `summary` (LLM-distilled) per `MEMORY_DISTILL_MODE`. **No `source_app`/`source_workspace`** — those are `chunks_v1`-only.
+
+**Idempotency (B33):** `_id = round_id` for every PUT. TaskIQ at-least-once redelivery of `memory.distill` becomes overwrite, never duplicate — same lineage as `chunk_id`-keyed bulk index in §3.1.
+
+**Permission-blind retrieval (B14):** `memory_v1` carries no auth fields. Session ownership is enforced by `chat_sessions.create_user` check **before** the retriever is invoked. `user_id` is denormalised onto rows for future cross-session aggregations and is treated as scope metadata only — never as an ACL signal.
 
 ---
 
@@ -816,3 +1020,8 @@ ragent/
 | **B30** | 2026-05-04 | Operator UX | What does an operator have to do to bring up the system end-to-end? | **Two-command quickstart**: `cp .env.example .env` → fill required vars → `python -m ragent.api` (T7.5d) and `python -m ragent.worker` (T7.5e). All else is automatic: schema/index auto-init runs from FastAPI lifespan + worker startup (T0.8d, idempotent); composition root (T7.5a) wires every dependency from env vars, no per-module env reads; TaskIQ broker module (T0.10) is the single import point for `@broker.task` decorators; `.env.example` (T0.11) is symmetric with spec §4.6 (drift test T0.11a). Project module layout fixed in §6.2 — every plan row produces exactly one file in that tree. Reconciler is K8s-only and not required for the local two-command path (recovery surface, not steady-state). E2E quickstart asserted by T7.2 launching the real entrypoint subprocesses, not internal scaffolding. | (a) Manual `alembic upgrade head` step before boot — adds an operator-facing migration command, defeats "two commands"; (b) per-module env reads — couples every module to env, blocks DI testing; (c) split broker module per task — multiple import paths, decorator misregistration risk; (d) no `.env.example` — operator reads spec §4.6 by hand, easy to miss required vars and discover at first failed request; (e) free-form module layout — names drift between plan and code, integration tests import wrong path. | §1 / §3.1 / §4.6 / §6.1 / §6.2 / T0.10 / T0.11 / T7.5 / T7.5a–f / T7.2 |
 | **B29** | 2026-05-04 | Chat API | Optional retrieval filter by `source_app` / `source_workspace` | **Filter in ES via denormalised keyword fields.** `chunks_v1` mapping gains two `keyword` fields (`source_app`, `source_workspace`) populated by `VectorExtractor` from `documents` at ingest. Chat request schema (§3.4.1) accepts both as optional fields; when present they apply as ES `term` filter in **both** retrievers' `filter` clause (kNN `filter`, BM25 `bool.filter`). AND semantics when both supplied. Empty string ⇒ 422 `CHAT_FILTER_INVALID`. These are scope metadata, not auth fields (B14 distinction preserved); permission gating remains a separate post-retrieval layer (§3.5). | Post-retrieval filter via document JOIN in SourceHydrator (forces over-fetch with unbounded `K' = K × overfetch_factor` — narrow workspaces silently truncate); filter on `documents` only, retrieve all chunks then drop (defeats kNN top-K semantics); add a third retriever per filter combination (mapping bloat, no win). Pre-existing `chunks_v1` data does not exist (still pre-implementation), so single-version mapping update is safe; would otherwise require `chunks_v2` + reindex. | §3.4 / §3.4.1 / §4.3 / §4.4 / §5.2 / `resources/es/chunks_v1.json` / T1.9 / T1.12 / T3.5 |
 | **B28** | 2026-05-04 | Config | Env-var inventory was incomplete — missing datastore connections (MariaDB/ES/MinIO host/creds), J1 client credentials, HTTP bind, OTEL exporter, retry/timeout policy knobs, upload limits, and log level; `RERANK_API_URL` was misspelled `REREANK_API_URL` | **Reorganise §4.6 into 8 subsections** (bootstrap, datastore, redis, third-party clients, worker/reconciler, pipeline/chat, per-call timeouts, observability). **Add 26 new vars** covering every previously implicit literal: `MARIADB_DSN`, `ES_HOSTS`/`ES_USERNAME`/`ES_PASSWORD`/`ES_API_KEY`/`ES_VERIFY_CERTS`, `MINIO_ENDPOINT`/`MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY`/`MINIO_SECURE`, `RAGENT_HOST`/`RAGENT_PORT`/`LOG_LEVEL`, `AI_API_CLIENT_ID`/`AI_API_CLIENT_SECRET`, `WORKER_MAX_ATTEMPTS`, `RECONCILER_PENDING_STALE_SECONDS`/`RECONCILER_UPLOADED_STALE_SECONDS`/`RECONCILER_DELETING_STALE_SECONDS`, `INGEST_MAX_FILE_SIZE_BYTES`, `INGEST_LIST_MAX_LIMIT`, the seven per-call timeouts (`EMBEDDER_INGEST/QUERY`, `ES_BULK/QUERY`, `MINIO_GET/PUT`, `LLM`, `PLUGIN_FAN_OUT`, `READYZ_PROBE`), plus four `OTEL_*` vars. **Fix typo** `REREANK_API_URL` → `RERANK_API_URL`. **Rename** ambiguous `RECONCILER_STALE_AFTER_SECONDS` to per-state `RECONCILER_PENDING_STALE_SECONDS` and add UPLOADED/DELETING siblings. **Change `MINIO_BUCKET` default** from `ragent-staging` → `ragent` (B10/B25 prose updated). Also adds an inventory rule: any literal value read by code that is not represented in §4.6 is a spec drift bug. | Leave datastore connections as "implicit per-environment overrides" (every operator reinvents the wheel; bootstrap module has no canonical names to read); expose only DSN-style strings for ES/MinIO too (forces credential concatenation in URLs, harder to rotate); keep timeouts as code constants only (violates J21 rule "every call site lists per-call timeout AND aggregate ceiling"); ship without J1 creds (TokenManager has a URL but no way to authenticate — boot succeeds but every embedder/LLM call fails on first request). | §1 / §3.1 / §3.6 / §3.7 / §4.5 / §4.6 / §6.1 / T0.8 |
+| **B32** | 2026-05-05 | Memory | Where memory state lives across the three lifetimes (durable / rolling / recall) | **Three-layer split**: meta in MariaDB (`chat_sessions`), short-term in Redis (rate-limiter instance, B27), long-term in ES `memory_v1`. Each layer's lifetime matches its store's durability/cost profile (durable / TTL-bounded / index-bounded). Permission-blind retrieval from ES; ownership enforced upstream by `chat_sessions.create_user`. Source: `docs/team/2026_05_05_phase4_memory_kickoff.md` M1 (6/6). | Single-store (loses cost/latency tiering); in-memory only (loses durability across pod restarts); graph DB (P3 concern, premature). | §3.8 / §4.1 / §4.6.9 / §5.1 / §5.4 |
+| **B33** | 2026-05-05 | Memory | Re-use `chunks_v1` for memory rounds, or stand up a new index? | **Separate `memory_v1` index** with a mapping symmetric to `chunks_v1` (same `icu_text` analyzer, same 1024-dim `bbq_hnsw` cosine vector — bootstrap, drift test, BBQ fallback, ICU plugin probe all reuse). Differs only in filter fields (`session_id`, `user_id`, `kind`). `_id = round_id` for idempotent overwrite under TaskIQ at-least-once redelivery. Source: kickoff M1 (6/6). | Shared index with a `kind` discriminator (couples lifecycles — clearing memory shouldn't risk knowledge rows; B14-style coupling risk); per-user index (sprawl, no real win at our scale). | §3.8 / §5.4 / `resources/es/memory_v1.json` |
+| **B34** | 2026-05-05 | Memory | What does "distill" actually do — embed-only vs LLM-summarisation? | **Default `MEMORY_DISTILL_MODE=embed`**, `summarize` opt-in. Embed-only path embeds `f"User: {u}\\n\\nAssistant: {a}"` directly with bge-m3 — zero LLM cost per overflow round. `summarize` mode prepends an `LLMClient.chat()` compress with `MEMORY_DISTILL_SYSTEM_PROMPT` for richer recall. Both write the same `memory_v1` row shape, distinguished by `kind ∈ {embed_round, summary}`. Source: kickoff M3 (6/6). | Summarize-default (LLM cost on every overflow, surprises operators); no-distill (long sessions silently lose recall once Redis trims); skip Redis and embed every turn live (kills latency budget). | §3.8.2 / §4.6.9 / B27 |
+| **B35** | 2026-05-05 | Memory | Default state of `enable_memory` flag in `ChatRequest` | **Default `false`**. P1 chat surface (§3.4) is bit-equivalent when memory is off (S40 regression invariant — response carries no `session_id` key, no Redis read/write, no `memory_v1` query). When `enable_memory=true` and `session_id` is null, server mints and echoes a new id; subsequent turns pin via response value. `session_id` set with `enable_memory=false` ⇒ 422 `MEMORY_FLAG_INCONSISTENT` (signal inconsistency). Source: kickoff M2 (6/6). | Opt-out (breaks P1 back-compat — every existing chat client suddenly carries memory state); always-on (privacy regression vs P1 OPEN trust model); no flag, infer from `session_id` presence (silent enablement; cannot cleanly distinguish "client wants memory" from "client passed stale id"). | §3.4.1 / §3.8.1 / §4.1.2 |
+| **B36** | 2026-05-05 | Memory | Production rollout gate — does P4 require P2 (auth + Permission Layer)? | **Hard gate in non-dev environments**: `bootstrap/guard.py` refuses to register memory endpoints when `RAGENT_ENV ∈ {staging,prod}` AND `RAGENT_AUTH_DISABLED=true`. Dev/CI may run P4 under the existing P1 OPEN guard. Memory leakage is more sensitive than knowledge over-share (it's the user's own history), so dev-only enforcement isn't enough — the boot guard converts the privacy concern from a runbook item into a startup refusal. Source: kickoff M6 (6/6). | Doc-only (operators forget; first staging-without-auth deploy leaks across users); defer P4 entirely until P2 ships (blocks Phase 4 dev — wastes parallelism); leave to a runtime middleware check (fails open on misconfig — boot guard fails closed). | §3.8.4 / §3.5 / `bootstrap/guard.py` / B30 |

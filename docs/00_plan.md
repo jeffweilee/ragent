@@ -224,3 +224,124 @@
 | P3.3 | Behavioral | `HybridRetrieverWithGraph` SuperComponent + `LightRAGRetriever` (200 ms TO → []). | [ ] | Dev |
 | P3.4 | Governance | Entity soft-delete + ref_count + GC + reconciliation cron. | [ ] | Dev |
 | P3.5 | Gate | P2 stable ≥ 4 weeks AND hybrid alone underperforms on relational queries. | [ ] | PM |
+
+---
+
+## Phase 4 — Chat Memory Service (additive; production rollout gated on P2 — B36)
+
+> Source: `docs/team/2026_05_05_phase4_memory_kickoff.md` (Round 1, 6/6) and the in-plan Round-2 self-audit (12 R-Mem fixes folded in). Spec contract: §3.8, §5.1 `chat_sessions`, §5.4 `memory_v1`, §4.1 `DELETE /chat/sessions/{id}`, §4.1.2 codes `MEMORY_*`, §4.6.9 env vars, B32–B36.
+>
+> User decision (2026-05-05): **Phase 4 Red rows may begin in parallel with Phase 1 finishing.** Production rollout still hard-gated via `bootstrap/guard.py` extension (S54). No P1-completion gate row is added at the top of this phase.
+>
+> Successful criteria (`CLAUDE.md` THE TDD WORKFLOW step 9): every BDD scenario S40–S54 has a passing test row; `chat_sessions DELETE` cascade is round-trip green; the operator-facing curl smoke test (§3.8 quickstart) recalls "teal" by turn 8 and clears with 204.
+
+### Track P4-A — Schema & resources (Structural — must precede every Red row)
+
+| # | Category | Task | Depends On | Status | Owner | Week |
+|---|---|---|---|:---:|---|:---:|
+| P4-A.1 | Structural | `migrations/002_chat_sessions.sql` + `migrations/schema.sql` update — `chat_sessions` DDL per spec §5.1 (B3 forward-only invariant). | T0.8a | [ ] | Dev | — |
+| P4-A.2 | Structural | `resources/es/memory_v1.json` per spec §5.4 (icu_text, bbq_hnsw, mapping symmetric to `chunks_v1`). Drift test `test_es_resource_drift.py` covers the new file automatically (T0.8f). | T0.8e | [ ] | Dev | — |
+| P4-A.3 | Structural | `bootstrap/init_schema.py` — `PUT /memory_v1` if absent, idempotent (extends T0.8d; no code change required since the loop already reads every `resources/es/*.json`). Verify with a unit test that the new file is picked up. | P4-A.2, T0.8d | [ ] | Dev | — |
+| P4-A.4 | Structural | `.env.example` — append §4.6.9 Memory section (12 vars). Drift test `test_env_example_drift.py` (T0.11a) covers symmetry. | T0.11 | [ ] | Dev | — |
+| P4-A.5 | Structural | `state_machine.py` multi-machine refactor — generalise to support `documents` (5 states) AND `chat_sessions` (2-state `{ACTIVE→DELETING}`) on the same module; `update_status` raises `IllegalStateTransition` on either machine's invalid edges. *(R-Mem-11)* | T0.7 | [ ] | Dev | — |
+| P4-A.6 | Structural | Extract Redis topology dispatch from `clients/rate_limiter.py` → `clients/_redis_topology.py` (shared by `RateLimiterClient` + new `MemoryRedisClient`). No behaviour change; verified by re-running T3.13/T3.14 unit tests green. *(R-Mem-12)* | T3.14 | [ ] | Dev | — |
+| P4-A.7 | Structural | §7 Decision Log audit — verify B32–B36 are present in `00_spec.md` and cross-referenced from §3.8; verify `00_journal.md` has the memory/privacy + planning-hygiene reflection rows. *(R-Mem-10)* | — | [ ] | Master | — |
+
+### Track P4-B — Repositories & clients (TDD)
+
+| # | Category | Task | Depends On | Status | Owner | Week |
+|---|---|---|---|:---:|---|:---:|
+| P4-B.1 | Red | `tests/unit/test_chat_session_repository.py` — `create(create_user) → row`; `get(session_id)`; `update_status(ACTIVE→DELETING)` raises on illegal edges; `delete(session_id)` returns row count; `list_for_clear(stale_seconds)` returns DELETING rows older than threshold. | P4-A.1, P4-A.5 | [ ] | QA | — |
+| P4-B.2 | Green | `src/ragent/repositories/chat_session_repository.py` — minimum to pass; reuse `acquire_for_clear` NOWAIT pattern from `document_repository.py` (T2.2). | P4-B.1 | [ ] | Dev | — |
+| P4-B.3 | Red | `tests/unit/test_memory_redis_client.py` — `append_round(session_id, round)` LPUSH composite entry + EXPIRE; `read_history(session_id)` LRANGE all; `clear(session_id)` DEL; `scan_overflow(sample_size)` returns `{session_id: overflow_count}` for keys with `LLEN > N`. | P4-A.6 | [ ] | QA | — |
+| P4-B.3a | Red | `tests/unit/test_memory_redis_client_overflow_capture.py` — contract test: `append_round` MUST capture overflow rounds via `LRANGE N -1` BEFORE `LTRIM 0 N-1`; an `RPOP-after-LTRIM` implementation MUST fail this test (no lossy variant). *(R-Mem-7)* | P4-B.3 | [ ] | QA | — |
+| P4-B.4 | Green | `src/ragent/clients/memory_redis.py` — minimum to pass; reuses `_redis_topology` dispatch from P4-A.6. | P4-B.3, P4-B.3a | [ ] | Dev | — |
+
+### Track P4-C — Distillation worker (TDD)
+
+| # | Category | Task | Depends On | Status | Owner | Week |
+|---|---|---|---|:---:|---|:---:|
+| P4-C.1 | Red | `tests/integration/test_memory_distill_embed.py` — embed-mode path (S46): `memory.distill({round_id, session_id, user_id, user_text, assistant_text, mode:"embed"})` → bge-m3 embed → `PUT memory_v1/_doc/{round_id}` with `kind=embed_round`. | T0.9, P4-A.2 | [ ] | QA | — |
+| P4-C.2 | Green | `src/ragent/workers/memory.py::memory.distill` — `@broker.task` registered on canonical broker (T0.10); embed-mode branch only. | P4-C.1 | [ ] | Dev | — |
+| P4-C.3 | Red | `tests/integration/test_memory_distill_summarize.py` — `mode:"summarize"` calls `LLMClient.chat()` with `MEMORY_DISTILL_SYSTEM_PROMPT`, capped at `MEMORY_DISTILL_LLM_MAX_TOKENS`; the resulting summary is embedded; row is written with `kind=summary`. | P4-C.2 | [ ] | QA | — |
+| P4-C.4 | Green | `memory.distill` summarize-mode branch (extends P4-C.2). | P4-C.3 | [ ] | Dev | — |
+| P4-C.5 | Red | `tests/integration/test_memory_distill_idempotent.py` (S47) — second delivery of `memory.distill(round_id=X)` is a PUT-overwrite; `_count` on `term: round_id=X` returns 1, never 2. | P4-C.2 | [ ] | QA | — |
+| P4-C.6 | Red | `tests/integration/test_memory_distill_failure.py` (S48) — `memory.distill` raising every time does not break subsequent chat turns; after `attempt > WORKER_MAX_ATTEMPTS` log `event=memory.distill_failed error_code=MEMORY_DISTILL_FAILED`; `memory_distill_failed_total` counter increments. | P4-C.2 | [ ] | QA | — |
+
+### Track P4-D — Memory pipeline & service (TDD)
+
+| # | Category | Task | Depends On | Status | Owner | Week |
+|---|---|---|---|:---:|---|:---:|
+| P4-D.1 | Red | `tests/unit/test_memory_recall.py` — `MemoryRecallRetriever(es, embedder).recall(session_id, query)` issues kNN with `term:{session_id:..}`, `top_k=MEMORY_LONG_TERM_TOP_K`, drops rows scoring below `MEMORY_LONG_TERM_MIN_SCORE`. | P4-A.2 | [ ] | QA | — |
+| P4-D.2 | Green | `src/ragent/pipelines/memory.py` — Haystack mini-pipeline `QueryEmbedder → ESVector → BulletFormatter`. | P4-D.1 | [ ] | Dev | — |
+| P4-D.3 | Red | `tests/unit/test_memory_service_compose.py` (S42) — given short-term + long-term + new user message, `MemoryService.compose()` produces `messages[]` in the strict order: default system → recall-system (fenced) → short-term `user`/`assistant` pairs → new user. | P4-D.2 | [ ] | QA | — |
+| P4-D.3a | Red | `tests/unit/test_memory_recall_sanitization.py` — recall bullets with role-token prefixes (`system:`, `user:`, `assistant:`) are stripped; per-bullet length capped at 1 KiB; full block wrapped in fenced ``` ``` ``` ``` ` block (prompt-injection guard). *(R-Mem-8)* | P4-D.2 | [ ] | QA | — |
+| P4-D.4 | Green | `src/ragent/services/memory_service.py` — orchestrates session validation + Redis short-term read + ES long-term recall + sanitised compose; surfaces `MEMORY_SESSION_NOT_FOUND` / `MEMORY_SESSION_FORBIDDEN`. | P4-B.2, P4-B.4, P4-D.3, P4-D.3a | [ ] | Dev | — |
+
+### Track P4-E — Chat schema & router extension (TDD)
+
+| # | Category | Task | Depends On | Status | Owner | Week |
+|---|---|---|---|:---:|---|:---:|
+| P4-E.1 | Red | `tests/unit/test_chat_request_memory_fields.py` (S40, S41, S45) — `enable_memory` default `false`; `session_id` Crockford Base32 validation; `MEMORY_FLAG_INCONSISTENT` when `session_id` set but `enable_memory=false`. | T3.4 | [ ] | QA | — |
+| P4-E.2 | Green | `src/ragent/schemas/chat.py` — extend `ChatRequest` with `enable_memory` + `session_id`; extend `ChatResponse` with `session_id` (B21 snake_case). | P4-E.1 | [ ] | Dev | — |
+| P4-E.3 | Red | `tests/integration/test_chat_memory_off_regression.py` (S40) — assert response body is **byte-equivalent to §3.4.2** when memory is off; specifically, `"session_id"` key is **absent** (not `null`) from the JSON body. *(R-Mem-4)* | P4-E.2, T3.10 | [ ] | QA | — |
+| P4-E.4 | Red | `tests/integration/test_chat_memory_on_new_session.py` (S41) — `enable_memory=true` with no `session_id` mints a row; response carries the new `session_id`; Redis `memory:short:{id}` LLEN==1; no `memory_v1` rows. | P4-E.2, P4-D.4 | [ ] | QA | — |
+| P4-E.5 | Red | `tests/integration/test_chat_memory_on_existing.py` (S42) — given prior rounds + distilled rows, the LLM prompt is composed in spec order. | P4-E.4 | [ ] | QA | — |
+| P4-E.6 | Red | `tests/integration/test_chat_memory_forbidden.py` (S43, S44) — foreign-session 403, unknown-session 404 with proper `error_code`. | P4-E.4 | [ ] | QA | — |
+| P4-E.6a | Red | `tests/integration/test_chat_stream_memory_done_event.py` — SSE terminal `done` event JSON body includes `session_id` (mirrors B12 streaming wire-format invariant). *(R-Mem-3)* | P4-E.2, T3.12 | [ ] | QA | — |
+| P4-E.7a | Green | `routers/chat.py::POST /chat` — JSON path; FastAPI `BackgroundTasks` hook for append-and-maybe-distill; reuses chat rate-limit dep (B31). | P4-E.3, P4-E.4, P4-E.5, P4-E.6 | [ ] | Dev | — |
+| P4-E.7b | Green | `routers/chat.py::POST /chat/stream` — SSE path; `session_id` propagated to terminal `done` event. *(R-Mem-3)* | P4-E.6a, P4-E.7a | [ ] | Dev | — |
+
+### Track P4-F — Clear endpoint (TDD)
+
+| # | Category | Task | Depends On | Status | Owner | Week |
+|---|---|---|---|:---:|---|:---:|
+| P4-F.1 | Red | `tests/integration/test_chat_clear_cascade.py` (S49) — fixture: 3 Redis rounds + 2 `memory_v1` rows + 1 `chat_sessions` row; DELETE removes all three; 204; verify state in each store. | P4-D.4 | [ ] | QA | — |
+| P4-F.2 | Red | `tests/integration/test_chat_clear_idempotent.py` (S50, S51) — re-DELETE on cleared session ⇒ 204; DELETE on unknown id ⇒ 204 (no existence leak). | P4-F.1 | [ ] | QA | — |
+| P4-F.3 | Green | `services/memory_service.py::clear_session` — TX-A → Redis DEL → ES `_delete_by_query` → TX-B (mirror §3.1 Delete cascade). | P4-F.1, P4-F.2 | [ ] | Dev | — |
+| P4-F.4 | Green | `routers/chat.py::DELETE /chat/sessions/{id}` — wires `clear_session`; ownership 403 via service. | P4-F.3 | [ ] | Dev | — |
+
+### Track P4-G — Reconciler arms (TDD)
+
+| # | Category | Task | Depends On | Status | Owner | Week |
+|---|---|---|---|:---:|---|:---:|
+| P4-G.1 | Red | `tests/integration/test_reconciler_chat_session_deleting.py` — given a `chat_sessions` row stuck in `DELETING > MEMORY_RECONCILER_DELETING_STALE_SECONDS`, Reconciler tick resumes the cascade idempotently. | P4-F.3, T5.x | [ ] | QA | — |
+| P4-G.2 | Red | `tests/integration/test_reconciler_memory_overflow.py` — given a session whose Redis LLEN > N, Reconciler tick re-kiqs `memory.distill` for the overflow rounds; if LLEN > `MEMORY_REDIS_MAX_PENDING_ROUNDS`, oldest tail is dropped with `event=memory.dropped`. | P4-B.4 | [ ] | QA | — |
+| P4-G.3 | Red | `tests/integration/test_reconciler_memory_orphan_vectors.py` — given `memory_v1` rows whose `session_id` has no `chat_sessions` row, Reconciler `delete_by_query` removes them. | P4-D.2 | [ ] | QA | — |
+| P4-G.4 | Green | `reconciler.py` extensions — three new arms per §3.6 / §3.8.4 prose. | P4-G.1, P4-G.2, P4-G.3 | [ ] | Dev | — |
+
+### Track P4-H — Concurrency & guard (TDD)
+
+| # | Category | Task | Depends On | Status | Owner | Week |
+|---|---|---|---|:---:|---|:---:|
+| P4-H.1 | Red | `tests/integration/test_chat_memory_concurrent.py` (S52) — two parallel turns on the same session ⇒ `LLEN ≤ MEMORY_SHORT_TERM_ROUNDS + 1`; both rounds eventually distilled. | P4-E.7a | [ ] | QA | — |
+| P4-H.2 | Red | `tests/integration/test_chat_memory_es_freshness.py` (S53) — distilled round may not be visible on the immediately-next turn (eventual ≤ 1 s); is recallable within 60 s. | P4-C.2, P4-D.4 | [ ] | QA | — |
+| P4-H.3 | Red | `tests/unit/test_bootstrap_guard_memory.py` (S54) — `RAGENT_ENV=staging` AND `RAGENT_AUTH_DISABLED=true` ⇒ SystemExit citing memory-endpoint guard rule. | T7.5 | [ ] | QA | — |
+| P4-H.4 | Green | `bootstrap/guard.py` — extend with the memory-endpoint refusal branch. | P4-H.3 | [ ] | Dev | — |
+
+### Track P4-I — Composition root + observability (Structural)
+
+| # | Category | Task | Depends On | Status | Owner | Week |
+|---|---|---|---|:---:|---|:---:|
+| P4-I.1 | Structural | `bootstrap/composition.py` — register `ChatSessionRepository`, `MemoryRedisClient`, memory pipeline factory, memory rate-limit dep (reuse chat dep B31 unless metrics demand split). Sole env-reading site for §4.6.9. | P4-B.2, P4-B.4, P4-D.4 | [ ] | Dev | — |
+| P4-I.2 | Structural | OTEL spans + Prometheus counters: `memory_distill_failed_total`, `memory_recall_hits_total` (label `kind`), `memory_clear_total` (label `outcome`). Update §3.7 prose if needed. | P4-C.2, P4-D.4, P4-F.3 | [ ] | Dev | — |
+| P4-I.3 | Structural | LLM stub provisioning hook in composition root — `LLMClient` may be replaced by a deterministic fixture stub for nightly E2E (`P4-J.3`); removes CI dependency on live LLM. *(R-Mem-6)* | P4-I.1 | [ ] | Dev | — |
+
+### Track P4-J — Acceptance / E2E (manual smoke + nightly stub)
+
+| # | Category | Task | Depends On | Status | Owner | Week |
+|---|---|---|---|:---:|---|:---:|
+| P4-J.1 | Acceptance (manual) | 10-turn conversation: state a fact in turn 1, force overflow + distill by turn 6, recall the fact by turn 8 via long-term memory only (short-term has trimmed it). Run against real LLM; not a CI gate. | P4-E.7b, P4-C.2 | [ ] | manual | — |
+| P4-J.2 | Acceptance (manual) | Clear-and-resume: DELETE the session id; re-create with the same id ⇒ fresh state (no recall of previous facts). | P4-F.4 | [ ] | manual | — |
+| P4-J.3 | Acceptance (CI) | Run J.1 + J.2 against the deterministic LLM stub from P4-I.3 in nightly CI; pass criterion = recall hits the seeded fact, post-clear recall returns no rows. *(R-Mem-6)* | P4-I.3, P4-J.1, P4-J.2 | [ ] | QA | — |
+
+### Track P4 — Definition of Done
+
+- [ ] Every `[ ]` row in P4-A through P4-J is `[x]`.
+- [ ] BDD scenarios S40 – S54 all have a passing test row above (track-completion audit per `00_agent_team.md` step 6 prints the table).
+- [ ] `uv run ruff format . && uv run ruff check . && uv run pytest --cov=src/ragent --cov-branch --cov-fail-under=92` exits 0 (`memory_*` modules included in coverage scope).
+- [ ] `tests/integration/test_es_resource_drift.py` passes against the new `resources/es/memory_v1.json`.
+- [ ] `tests/integration/test_schema_drift.py` passes against `migrations/002_chat_sessions.sql` + updated `schema.sql`.
+- [ ] `tests/unit/test_env_example_drift.py` passes for the new §4.6.9 vars.
+- [ ] `bootstrap/guard.py` refuses memory endpoints under `RAGENT_ENV=staging|prod AND RAGENT_AUTH_DISABLED=true` (S54).
+- [ ] Operator-facing curl smoke test (§3.8 quickstart in spec) recalls "teal" by turn 8 and clears with 204.
