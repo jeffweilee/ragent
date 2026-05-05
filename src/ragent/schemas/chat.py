@@ -129,29 +129,25 @@ def _render_context(docs: list[Any]) -> str:
 
 
 def _wrap_last_user(messages: list[dict[str, Any]], context_block: str) -> list[dict[str, Any]]:
-    out = list(messages)
-    for i in range(len(out) - 1, -1, -1):
-        if out[i].get("role") == "user":
-            original = out[i].get("content", "") or ""
-            out[i] = {
-                **out[i],
+    for i in range(len(messages) - 1, -1, -1):
+        if messages[i].get("role") == "user":
+            original = messages[i].get("content", "") or ""
+            messages[i] = {
+                **messages[i],
                 "content": (
                     f"=== CONTEXT START ===\n{context_block}\n=== CONTEXT END ===\n\n{original}"
                 ),
             }
-            return out
-    return out
+            return messages
+    return messages
 
 
 def build_rag_messages(req: ChatRequest, docs: list[Any] | None) -> list[dict[str, Any]]:
     base = list(req.messages)
     has_user_system = any(m.get("role") == "system" for m in base)
+    if not docs and has_user_system:
+        return base
     if not docs:
-        if has_user_system:
-            return base
         return [{"role": "system", "content": _DEFAULT_SYSTEM_PROMPT}] + base
-    context_block = _render_context(docs)
-    wrapped = _wrap_last_user(base, context_block)
-    if has_user_system:
-        return [{"role": "system", "content": _RAG_GROUNDING_RULES}] + wrapped
-    return [{"role": "system", "content": _DEFAULT_RAG_SYSTEM_PROMPT}] + wrapped
+    system_prompt = _RAG_GROUNDING_RULES if has_user_system else _DEFAULT_RAG_SYSTEM_PROMPT
+    return [{"role": "system", "content": system_prompt}] + _wrap_last_user(base, _render_context(docs))
