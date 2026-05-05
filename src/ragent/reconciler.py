@@ -8,11 +8,12 @@ from __future__ import annotations
 
 import asyncio
 import datetime
-import logging
 import os
 from typing import Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 
 class Reconciler:
@@ -40,7 +41,7 @@ class Reconciler:
         await self._resume_deleting()
         self._repair_multi_ready()
         reconciler_tick_total.inc()
-        logger.info("event=reconciler.tick")
+        logger.info("reconciler.tick")
 
     async def _mark_failed(self) -> None:
         max_attempts = int(os.environ.get("WORKER_MAX_ATTEMPTS", "5"))
@@ -54,14 +55,13 @@ class Reconciler:
                 if self._chunks is not None:
                     self._chunks.delete_by_document_id(doc.document_id)
                 logger.info(
-                    "event=ingest.failed document_id=%s attempt=%d reason=max_attempts_exceeded",
-                    doc.document_id,
-                    doc.attempt,
+                    "ingest.failed",
+                    document_id=doc.document_id,
+                    attempt=doc.attempt,
+                    reason="max_attempts_exceeded",
                 )
             except Exception:
-                logger.exception(
-                    "event=reconciler.mark_failed_error document_id=%s", doc.document_id
-                )
+                logger.exception("reconciler.mark_failed_error", document_id=doc.document_id)
 
     def _redispatch_pending(self) -> None:
         stale_seconds = int(os.environ.get("RECONCILER_PENDING_STALE_SECONDS", "300"))
@@ -76,9 +76,9 @@ class Reconciler:
         for doc in stale:
             self._broker.enqueue("ingest.pipeline", document_id=doc.document_id)
             logger.info(
-                "event=reconciler.redispatch document_id=%s attempt=%d",
-                doc.document_id,
-                doc.attempt,
+                "reconciler.redispatch",
+                document_id=doc.document_id,
+                attempt=doc.attempt,
             )
 
     def _redispatch_uploaded(self) -> None:
@@ -90,8 +90,8 @@ class Reconciler:
         for doc in stale:
             self._broker.enqueue("ingest.pipeline", document_id=doc.document_id)
             logger.info(
-                "event=reconciler.uploaded_redispatch document_id=%s",
-                doc.document_id,
+                "reconciler.uploaded_redispatch",
+                document_id=doc.document_id,
             )
 
     async def _resume_deleting(self) -> None:
@@ -107,11 +107,9 @@ class Reconciler:
                 if self._chunks is not None:
                     self._chunks.delete_by_document_id(doc.document_id)
                 self._repo.delete(doc.document_id)
-                logger.info("event=reconciler.delete_resumed document_id=%s", doc.document_id)
+                logger.info("reconciler.delete_resumed", document_id=doc.document_id)
             except Exception:
-                logger.exception(
-                    "event=reconciler.delete_resume_error document_id=%s", doc.document_id
-                )
+                logger.exception("reconciler.delete_resume_error", document_id=doc.document_id)
 
     def _repair_multi_ready(self) -> None:
         groups = self._repo.find_multi_ready_groups()
@@ -128,10 +126,10 @@ class Reconciler:
                 source_app=source_app,
             )
             logger.info(
-                "event=reconciler.multi_ready_repair source_id=%s source_app=%s survivor_id=%s",
-                source_id,
-                source_app,
-                survivor.document_id,
+                "reconciler.multi_ready_repair",
+                source_id=source_id,
+                source_app=source_app,
+                survivor_id=survivor.document_id,
             )
 
 
@@ -149,5 +147,7 @@ def _build_from_env() -> Reconciler:
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    from ragent.bootstrap.logging_config import configure_logging
+
+    configure_logging("ragent-reconciler")
     _build_from_env().run()

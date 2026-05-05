@@ -423,6 +423,13 @@ Retrieval may over-fetch (`K' = K × overfetch_factor`) so that after permission
 - **Heartbeat metrics (R8):** `reconciler_tick_total` (counter); Prometheus alert when missing > 10 min. Worker emits `worker_pipeline_duration_seconds` (histogram) and `event=ingest.{started,failed,ready}`.
 - **Orphan/leak counters:** `minio_orphan_object_total` (post-commit cleanup failure), `multi_ready_repaired_total` (Reconciler R3 sweep).
 - **ES events (B26):** `event=es.bbq_unsupported` (cluster rejected `bbq_hnsw`; bootstrap retried with standard HNSW); `event=schema.drift` (resource file ↔ live mapping mismatch). Both surface in `/readyz` as degraded (B4).
+- **Structured logging (structlog).** All services (`ragent-api`, `ragent-worker`, `ragent-reconciler`) emit JSON logs to stdout via `ragent.bootstrap.logging_config.configure_logging()`. Four categories:
+  - **API trace logs** (`api.request` / `api.error`): one record per HTTP request with `request_id`, `method`, `path`, `status_code`, `duration_ms`, `user_id`, `trace_id`, `span_id`. Emitted by `RequestLoggingMiddleware`; `/livez`, `/readyz`, `/metrics` excluded; `X-Request-Id` honored when supplied and echoed back on the response.
+  - **Business meaning logs**: `chat.retrieval` / `chat.llm` / `retrieve.pipeline` / `retrieve.dedupe` / `llm.call` / `embedding.call` / `rerank.call` / `reconciler.tick` / `ingest.failed` / `es.index_created` etc., paired with same-named OTEL spans (`chat.request`, `retrieve.request`, `llm.chat`, `embedding.embed`, `rerank.score`, …) so logs and spans share `trace_id`.
+  - **Error logs** (`*.error`, `api.unhandled`): include `error_type`, `error_code`, traceback; redacted of sensitive fields.
+  - **Format**: ISO 8601 UTC timestamps (`YYYY-MM-DDTHH:MM:SS.sssZ`); JSON renderer by default, `LOG_FORMAT=console` for dev. `LOG_LEVEL` (default `INFO`) honored.
+  - **Privacy** (per `docs/00_rule.md` Logging Rule): identity & metric fields only — never raw queries, prompts, completions, chunks, embeddings, document payloads, headers, or tokens. A denylist processor (`query`, `prompt`, `messages`, `completion`, `chunks`, `embedding`, `documents`, `body`, `authorization`, `cookie`, `password`, `token`, `secret`) drops sensitive keys and stamps `content_redacted=true`.
+  - **Haystack 2.x** content tracing pinned off (`HAYSTACK_CONTENT_TRACING_ENABLED` opt-in), preventing prompt/answer leakage into spans.
 
 ---
 

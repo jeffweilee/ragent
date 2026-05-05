@@ -2,24 +2,26 @@
 
 from __future__ import annotations
 
-import logging
 from contextlib import asynccontextmanager
 from typing import Any
 
+import structlog
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
 
 from ragent.bootstrap.guard import enforce
 from ragent.bootstrap.init_schema import init_schema
+from ragent.bootstrap.logging_config import configure_logging
 from ragent.bootstrap.telemetry import setup_tracing
 from ragent.errors.problem import problem
+from ragent.middleware.logging import RequestLoggingMiddleware
 from ragent.routers.chat import create_chat_router
 from ragent.routers.health import create_health_router
 from ragent.routers.ingest import create_router as create_ingest_router
 from ragent.routers.mcp import create_mcp_router
 from ragent.routers.retrieve import create_retrieve_router
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 _NO_USER_ID_PATHS = frozenset({"/livez", "/readyz", "/metrics"})
 
@@ -55,6 +57,7 @@ def _build_probes(container: Any) -> dict:
 
 def create_app() -> FastAPI:
     enforce()
+    configure_logging("ragent-api")
     setup_tracing("ragent-api")
 
     from ragent.bootstrap.broker import broker as taskiq_broker
@@ -102,9 +105,19 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception) -> Response:
-        logger.exception("unhandled exception during request to %s", request.url.path)
+        logger.exception(
+            "api.unhandled",
+            path=request.url.path,
+            method=request.method,
+            error_code="INTERNAL_ERROR",
+            error_type=type(exc).__name__,
+        )
         return problem(500, "INTERNAL_ERROR", "Internal server error")
 
     _x_user_id_middleware(app)
+    # RequestLoggingMiddleware is registered after _x_user_id_middleware so that
+    # it runs FIRST (Starlette wraps middleware in reverse order). This way the
+    # api.request log captures the missing-X-User-Id 422 too.
+    app.add_middleware(RequestLoggingMiddleware)
 
     return app

@@ -49,3 +49,11 @@ def setup_tracing(service_name: str) -> None:
     from haystack.tracing.opentelemetry import OpenTelemetryTracer
 
     haystack.tracing.tracer.actual_tracer = OpenTelemetryTracer(trace.get_tracer(service_name))
+    # Pin content tracing off by default to keep prompts / answers out of spans.
+    # Override only when HAYSTACK_CONTENT_TRACING_ENABLED is explicitly truthy.
+    enable_content = os.environ.get("HAYSTACK_CONTENT_TRACING_ENABLED", "").lower() in (
+        "1",
+        "true",
+        "yes",
+    )
+    haystack.tracing.tracer.is_content_tracing_enabled = enable_content

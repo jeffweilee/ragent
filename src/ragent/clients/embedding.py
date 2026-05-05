@@ -5,8 +5,13 @@ import time as _time
 from collections.abc import Callable
 from typing import Any
 
+import structlog
+from opentelemetry import trace
+
 _EMBED_MODEL = "bge-m3"
 _SUCCESS_CODE = 96200
+logger = structlog.get_logger(__name__)
+_tracer = trace.get_tracer(__name__)
 
 
 class EmbeddingClient:
@@ -42,22 +47,43 @@ class EmbeddingClient:
         return result
 
     def _call(self, texts: list[str], timeout: float) -> list[list[float]]:
-        last_exc: Exception | None = None
-        for attempt in range(3):
-            if attempt:
-                self._sleep(1.0)
-            try:
-                resp = self._http.post(
-                    self._url,
-                    json={"model": _EMBED_MODEL, "texts": texts},
-                    headers={"Authorization": f"Bearer {self._get_token()}"},
-                    timeout=timeout,
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                if data.get("returnCode") != _SUCCESS_CODE:
-                    raise ValueError(f"Unexpected returnCode: {data.get('returnCode')}")
-                return [item["embedding"] for item in data["data"]]
-            except Exception as exc:
-                last_exc = exc
-        raise last_exc  # type: ignore[misc]
+        with _tracer.start_as_current_span("embedding.embed") as span:
+            span.set_attribute("peer.service", "embedding")
+            span.set_attribute("batch_size", len(texts))
+            last_exc: Exception | None = None
+            for attempt in range(3):
+                if attempt:
+                    self._sleep(1.0)
+                try:
+                    span.set_attribute("retry_attempt", attempt)
+                    resp = self._http.post(
+                        self._url,
+                        json={"model": _EMBED_MODEL, "texts": texts},
+                        headers={"Authorization": f"Bearer {self._get_token()}"},
+                        timeout=timeout,
+                    )
+                    span.set_attribute("http.status_code", getattr(resp, "status_code", 0))
+                    resp.raise_for_status()
+                    data = resp.json()
+                    if data.get("returnCode") != _SUCCESS_CODE:
+                        raise ValueError(f"Unexpected returnCode: {data.get('returnCode')}")
+                    out = [item["embedding"] for item in data["data"]]
+                    if out and isinstance(out[0], list):
+                        span.set_attribute("dim", len(out[0]))
+                    logger.info(
+                        "embedding.call",
+                        peer_service="embedding",
+                        batch_size=len(texts),
+                        retry_attempt=attempt,
+                    )
+                    return out
+                except Exception as exc:
+                    last_exc = exc
+            span.record_exception(last_exc)  # type: ignore[arg-type]
+            logger.error(
+                "embedding.error",
+                peer_service="embedding",
+                batch_size=len(texts),
+                error_type=type(last_exc).__name__ if last_exc else None,
+            )
+            raise last_exc  # type: ignore[misc]

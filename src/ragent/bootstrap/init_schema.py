@@ -7,16 +7,16 @@ Schema drift is logged as event=schema.drift and must surface in /readyz.
 
 import base64
 import json
-import logging
 import os
 import ssl
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
+import structlog
 from sqlalchemy import text
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 _MIGRATIONS = Path(__file__).parents[3] / "migrations"
 _ES_RESOURCES = Path(__file__).parents[3] / "resources" / "es"
@@ -81,11 +81,11 @@ def init_es(es_url: str) -> None:
         index_url = f"{base}/{index}"
         existing = _es_request(index_url, method="HEAD")
         if existing is not None:
-            logger.info("event=es.index_exists index=%s", index)
+            logger.info("es.index_exists", index=index)
             continue
         body = json.loads(path.read_text())
         _es_request(index_url, method="PUT", body=body)
-        logger.info("event=es.index_created index=%s", index)
+        logger.info("es.index_created", index=index)
 
 
 def auto_init(db_url: str, es_url: str) -> None:

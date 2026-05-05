@@ -122,6 +122,48 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 
 ---
 
+### Logging: Identity Yes, Content No
+
+- **Rule**: Business logs and API trace logs **must** carry identity fields needed for auditing and trace correlation, and **must not** carry sensitive content data.
+- **Allowed (identity & metric)**: `service`, `request_id`, `trace_id`, `span_id`, `user_id`, `document_id` / `chunk_id` / `task_id` and other internal Crockford-Base32 IDs, `path`, `method`, `status_code`, `duration_ms`, `http.status_code`, counts (`top_k`, `result_count`, `batch_size`, `candidate_count`), sizes (`query_len`, `prompt_tokens`, `completion_tokens`), error metadata (`error_type`, `error_code`, `retry_attempt`).
+- **Prohibited (content)**: raw user query text, prompt bodies, LLM completions, retrieved chunk text, document payloads, embedding vectors, request/response body bytes, `Authorization` / `Cookie` headers, tokens, secrets, passwords, and any field flagged sensitive by the data dictionary or PII catalogue.
+- **Action**: When debugging context is needed, log a length, hash, or count instead of the value. Error logs follow the same rule; tracebacks **must not** be enriched with request body content.
+- **Enforcement**: A denylist processor in `ragent.bootstrap.logging_config` drops the keys `query`, `prompt`, `messages`, `completion`, `chunks`, `embedding`, `documents`, `body`, `authorization`, `cookie`, `password`, `token`, `secret` from every emitted record as a safety net. The allow-list above is the policy contract; the denylist is the runtime guardrail.
+- **Format**: Timestamps are ISO 8601 UTC (`YYYY-MM-DDTHH:MM:SS.sssZ`), aligned with the DateTime rule. Output is JSON to stdout in production (`LOG_FORMAT=json`); developer-friendly key=value rendering is available via `LOG_FORMAT=console`.
+- **Naming convention** (one canonical string per work unit; the **same string** is used for both the OTEL span name and the structlog event name so log↔trace correlation is trivial):
+  - `api.request` / `api.error` — middleware-emitted, exactly one per HTTP request.
+  - `<router>.request` — router entry span (e.g. `chat.request`, `retrieve.request`).
+  - `<router>.<stage>` — sub-step inside a router (e.g. `chat.retrieval`, `chat.build_messages`, `chat.llm`, `retrieve.pipeline`, `retrieve.dedupe`).
+  - `<peer>.<verb>` — outbound HTTP client call (e.g. `llm.chat`, `llm.stream`, `embedding.embed`, `rerank.score`); error variant `<peer>.error`.
+  - `<domain>.<event>` — business state transitions (e.g. `ingest.failed`, `reconciler.tick`, `reconciler.redispatch`, `es.index_created`, `schema.drift`).
+  - All names are lowercase, dot-separated, ≤ 4 segments. New names must follow the same shape; reuse an existing prefix before inventing a new one.
+
+---
+
+### OpenTelemetry: Initialize Once, Re-init After Fork
+
+- **Rule**: The global `TracerProvider` is set **exactly once per OS process**. Do not replace it at runtime; do not call `set_tracer_provider` from request paths, hot-reload paths, or library code.
+  - **Rationale**: `ProxyTracer` (returned by module-level `_tracer = trace.get_tracer(__name__)`) caches its real delegate on first span call. Replacing the global provider afterwards leaks spans to the dead provider — silent data loss in production, flaky tests in CI.
+
+- **Rule: Initialize before any tracer use.** `setup_tracing(service_name)` **must** be the first call in `create_app()`, worker entrypoint, and reconciler entrypoint — before any router/client module is imported into the request path.
+  - **Action**: keep `setup_tracing()` idempotent — if a real `TracerProvider` is already installed, return without re-setting. This protects against in-process module reloads.
+
+- **Rule: Re-initialize after `fork()`.** When deploying under gunicorn `--preload` (or any `os.fork()` model), `BatchSpanProcessor`'s background flush thread does **not** survive the fork; spans queue forever and never export.
+  - **Action**: in `gunicorn.conf.py`, hook `post_fork` to call `shutdown_tracing()` then `setup_tracing(service_name)` inside each worker. Also hook `worker_exit` to `shutdown_tracing()` so the queue flushes before the worker dies.
+  - **`shutdown_tracing()` contract**: call `provider.shutdown()` (flushes BatchSpanProcessor, closes OTLP connection), then reset `opentelemetry.trace._TRACER_PROVIDER_SET_ONCE._done = False` and `_TRACER_PROVIDER = None` so the next `setup_tracing()` succeeds.
+
+- **Rule: Use `BatchSpanProcessor` in production, never `SimpleSpanProcessor`.** Simple exports synchronously on the request thread; batch exports off-thread with bounded queue + drop-on-overflow.
+  - **Action**: tune via env — `OTEL_BSP_MAX_QUEUE_SIZE`, `OTEL_BSP_MAX_EXPORT_BATCH_SIZE`, `OTEL_BSP_EXPORT_TIMEOUT`. `SimpleSpanProcessor` is **only** allowed in `tests/` (see `tests/unit/conftest.py`).
+
+- **Rule: Propagate context across `asyncio.create_task` and thread pools.** OTEL stores the active span in a contextvar; `asyncio.create_task` does **not** automatically copy contextvars to the child task.
+  - **Action**: spans that span async task boundaries must capture `parent_ctx = trace.set_span_in_context(span)` and pass `context=parent_ctx` into `start_as_current_span` inside the child task — exactly the pattern used in `chat_stream`'s `StreamingResponse` generator. Never use `trace.use_span()` across an async-context boundary; it raises "Failed to detach context".
+
+- **Rule: Flush on shutdown.** App lifespan / worker shutdown **must** call `provider.shutdown()` (or rely on `shutdown_tracing()`). Without it, in-flight spans are dropped on SIGTERM and the OTLP connection leaks half-open.
+
+- **Rule: Never touch OTEL private internals from production code.** `_TRACER_PROVIDER_SET_ONCE`, `_TRACER_PROVIDER`, `ProxyTracer._real_tracer` may only be manipulated in `tests/` fixtures or in the single `shutdown_tracing()` helper. Production code uses only the public API.
+
+---
+
 
 
 ## Third-Party API
