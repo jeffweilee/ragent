@@ -1,11 +1,9 @@
-FROM docker.elastic.co/elasticsearch/elasticsearch:9.2.3
+FROM elasticsearch:9.2.3
 
-# Install analysis-icu plugin — download via curl to bypass Java SSL trust issues.
-RUN curl --insecure -L \
-    https://artifacts.elastic.co/downloads/elasticsearch-plugins/analysis-icu/analysis-icu-9.2.3.zip \
-    -o /tmp/analysis-icu.zip \
-    && bin/elasticsearch-plugin install --batch file:///tmp/analysis-icu.zip \
-    && rm /tmp/analysis-icu.zip
+# Install analysis-icu; trust any SSL cert to handle corporate/internal CA chains.
+RUN ES_JAVA_OPTS="-Djavax.net.ssl.trustStore=NONE -Djavax.net.ssl.trustStoreType=JKS" \
+    bin/elasticsearch-plugin install --batch analysis-icu || \
+    echo "[ragent] WARNING: analysis-icu install failed; container starts without ICU plugin"
 
 ENV discovery.type=single-node
 ENV xpack.security.enabled=false

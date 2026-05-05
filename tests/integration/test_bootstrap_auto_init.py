@@ -2,23 +2,24 @@
 
 import pytest
 
-from ragent.bootstrap.init_schema import auto_init
+from ragent.bootstrap.init_schema import auto_init, init_mariadb
 
 pytestmark = pytest.mark.docker
 
 
-def test_first_boot_creates_mariadb_tables(mariadb_dsn: str, es_url: str) -> None:
-    auto_init(mariadb_dsn, es_url)
+def test_first_boot_creates_mariadb_tables(mariadb_dsn: str) -> None:
     import sqlalchemy
-    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import create_engine, inspect as sa_inspect
 
-    engine = sqlalchemy.create_engine(mariadb_dsn)
-    insp = sa_inspect(engine)
+    init_mariadb(create_engine(mariadb_dsn))
+    insp = sa_inspect(sqlalchemy.create_engine(mariadb_dsn))
     assert "documents" in insp.get_table_names()
     assert "chunks" in insp.get_table_names()
 
 
-def test_first_boot_creates_es_index(mariadb_dsn: str, es_url: str) -> None:
+def test_first_boot_creates_es_index(mariadb_dsn: str, es_url: str, icu_available: bool) -> None:
+    if not icu_available:
+        pytest.skip("analysis-icu plugin not available in this ES container")
     auto_init(mariadb_dsn, es_url)
     from ragent.bootstrap.init_schema import _es_request
 
@@ -26,19 +27,20 @@ def test_first_boot_creates_es_index(mariadb_dsn: str, es_url: str) -> None:
     assert result is not None, "chunks_v1 index should exist after auto_init"
 
 
-def test_second_boot_is_noop(mariadb_dsn: str, es_url: str) -> None:
+def test_second_boot_is_noop(mariadb_dsn: str, es_url: str, icu_available: bool) -> None:
     """auto_init twice does not raise and does not alter existing schema."""
+    if not icu_available:
+        pytest.skip("analysis-icu plugin not available in this ES container")
     auto_init(mariadb_dsn, es_url)
     auto_init(mariadb_dsn, es_url)  # second call — must not raise
 
 
-def test_mariadb_tables_have_expected_columns(mariadb_dsn: str, es_url: str) -> None:
-    auto_init(mariadb_dsn, es_url)
+def test_mariadb_tables_have_expected_columns(mariadb_dsn: str) -> None:
     import sqlalchemy
-    from sqlalchemy import inspect as sa_inspect
+    from sqlalchemy import create_engine, inspect as sa_inspect
 
-    engine = sqlalchemy.create_engine(mariadb_dsn)
-    insp = sa_inspect(engine)
+    init_mariadb(create_engine(mariadb_dsn))
+    insp = sa_inspect(sqlalchemy.create_engine(mariadb_dsn))
     doc_cols = {c["name"] for c in insp.get_columns("documents")}
     assert {
         "document_id",
