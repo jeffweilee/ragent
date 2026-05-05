@@ -99,9 +99,11 @@ def test_stream_sources_null_on_empty_retrieval():
 
 
 def test_chat_stream_injects_retrieved_context_into_llm_messages():
-    from haystack.dataclasses import Document
     from unittest.mock import MagicMock
+
     from fastapi import FastAPI
+    from haystack.dataclasses import Document
+
     from ragent.routers.chat import create_chat_router
 
     doc = Document(
@@ -120,7 +122,9 @@ def test_chat_stream_injects_retrieved_context_into_llm_messages():
     llm_client.stream.return_value = iter(["Answer"])
 
     app = FastAPI()
-    app.include_router(create_chat_router(retrieval_pipeline=retrieval_pipeline, llm_client=llm_client))
+    app.include_router(
+        create_chat_router(retrieval_pipeline=retrieval_pipeline, llm_client=llm_client)
+    )
 
     with TestClient(app) as client:
         client.post(

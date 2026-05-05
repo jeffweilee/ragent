@@ -50,7 +50,7 @@ def test_docs_present_prepends_rag_system_at_index_0_and_wraps_last_user():
 
 
 def test_docs_present_with_user_system_uses_rules_only_variant_at_index_0_user_system_at_index_1():
-    from ragent.schemas.chat import _RAG_GROUNDING_RULES, _DEFAULT_RAG_SYSTEM_PROMPT
+    from ragent.schemas.chat import _DEFAULT_RAG_SYSTEM_PROMPT, _RAG_GROUNDING_RULES
 
     doc = _doc("e", source_title="T", document_id="d", source_app="a")
     req = _req(
@@ -85,7 +85,9 @@ def test_wrapped_user_message_contains_context_markers_and_original_query_verbat
 
 
 def test_rendered_chunk_contains_source_app_source_title_document_id_and_excerpt():
-    doc = _doc("The actual excerpt text", source_app="jira", source_title="Issue-42", document_id="DOC99")
+    doc = _doc(
+        "The actual excerpt text", source_app="jira", source_title="Issue-42", document_id="DOC99"
+    )
     req = _req({"role": "user", "content": "q"})
     result = build_rag_messages(req, [doc])
 
@@ -115,7 +117,7 @@ def test_only_last_user_message_wrapped_earlier_user_messages_untouched():
 # --- system template content ---
 
 
-def test_default_system_template_contains_question_summary_generation_intent_blocks_and_dont_know_clause():
+def test_default_system_template_contains_intent_blocks_and_dont_know_clause():
     from ragent.schemas.chat import _DEFAULT_RAG_SYSTEM_PROMPT
 
     assert "QUESTION" in _DEFAULT_RAG_SYSTEM_PROMPT

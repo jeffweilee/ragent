@@ -14,9 +14,7 @@ _DEFAULT_MAX_TOKENS = int(os.environ.get("RAGENT_DEFAULT_MAX_TOKENS", "4096"))
 _DEFAULT_SYSTEM_PROMPT = os.environ.get(
     "RAGENT_DEFAULT_SYSTEM_PROMPT", "You are a helpful assistant"
 )
-_DEFAULT_RAG_SYSTEM_PROMPT = os.environ.get(
-    "RAGENT_DEFAULT_RAG_SYSTEM_PROMPT",
-    """\
+_DEFAULT_RAG_SYSTEM_PROMPT = os.environ.get("RAGENT_DEFAULT_RAG_SYSTEM_PROMPT") or """\
 You are a retrieval-grounded assistant. Every user turn contains an \
 isolated `=== CONTEXT START === ... === CONTEXT END ===` block followed \
 by the user's request. Use ONLY facts from that block; do not rely on \
@@ -60,11 +58,8 @@ Do not invent facts absent from the context.
      Context: [#1] source_title=PR-482 "...fixes login retry loop..."
      Assistant: "Fixed an infinite retry loop on failed logins. [PR-482]"
 
-If the request fits none of the above, default to QUESTION style.""",
-)
-_RAG_GROUNDING_RULES = os.environ.get(
-    "RAGENT_RAG_GROUNDING_RULES",
-    """\
+If the request fits none of the above, default to QUESTION style."""
+_RAG_GROUNDING_RULES = os.environ.get("RAGENT_RAG_GROUNDING_RULES") or """\
 Use ONLY facts from the `=== CONTEXT START === ... === CONTEXT END ===` \
 block in the user turn; do not rely on prior knowledge. If the context \
 is insufficient, reply exactly: \
@@ -76,8 +71,7 @@ mid-sentence. Citations must refer only to entries in the context block.
 
 Detect the user's intent (QUESTION / SUMMARY / GENERATION) and apply \
 the matching response style: direct answer, bullet-point summary, or \
-drafted artefact. Default to QUESTION style when intent is unclear.""",
-)
+drafted artefact. Default to QUESTION style when intent is unclear."""
 _PROVIDER_ALLOWLIST = frozenset({"openai"})
 _FILTER_MAX_LEN = 64
 
@@ -149,5 +143,11 @@ def build_rag_messages(req: ChatRequest, docs: list[Any] | None) -> list[dict[st
         return base
     if not docs:
         return [{"role": "system", "content": _DEFAULT_SYSTEM_PROMPT}] + base
-    system_prompt = _RAG_GROUNDING_RULES if has_user_system else _DEFAULT_RAG_SYSTEM_PROMPT
-    return [{"role": "system", "content": system_prompt}] + _wrap_last_user(base, _render_context(docs))
+    wrapped = _wrap_last_user(base, _render_context(docs))
+    if has_user_system:
+        # Float all system messages to the front (some providers reject non-leading system msgs).
+        # Order: [grounding_rules, caller_system…, remaining_turns…]
+        sys_msgs = [m for m in wrapped if m.get("role") == "system"]
+        other_msgs = [m for m in wrapped if m.get("role") != "system"]
+        return [{"role": "system", "content": _RAG_GROUNDING_RULES}] + sys_msgs + other_msgs
+    return [{"role": "system", "content": _DEFAULT_RAG_SYSTEM_PROMPT}] + wrapped
