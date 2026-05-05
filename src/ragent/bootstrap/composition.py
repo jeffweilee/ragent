@@ -59,6 +59,7 @@ class Container:
 def build_container() -> Container:
     import httpx
     from elasticsearch import Elasticsearch
+    from haystack_integrations.document_stores.elasticsearch import ElasticsearchDocumentStore
     from minio import Minio
     from sqlalchemy import create_engine, text
 
@@ -115,13 +116,20 @@ def build_container() -> Container:
         get_timeout=_float_env("MINIO_GET_TIMEOUT_SECONDS", 30.0),
     )
 
+    es_hosts = _require("ES_HOSTS").split(",")
+    es_verify_certs = os.environ.get("ES_VERIFY_CERTS", "true").lower() == "true"
     es_client = Elasticsearch(
-        hosts=_require("ES_HOSTS").split(","),
+        hosts=es_hosts,
         basic_auth=(
             os.environ.get("ES_USERNAME", "elastic"),
             os.environ.get("ES_PASSWORD", ""),
         ),
-        verify_certs=os.environ.get("ES_VERIFY_CERTS", "true").lower() == "true",
+        verify_certs=es_verify_certs,
+    )
+    document_store = ElasticsearchDocumentStore(
+        hosts=es_hosts,
+        index=os.environ.get("ES_CHUNKS_INDEX", "chunks_v1"),
+        verify_certs=es_verify_certs,
     )
 
     # SQLAlchemy `create_engine` returns an Engine wrapping a QueuePool by
@@ -151,7 +159,7 @@ def build_container() -> Container:
     join_mode = os.environ.get("CHAT_JOIN_MODE", "rrf")
     retrieval_pipeline = build_retrieval_pipeline(
         embedder=embedding_client,
-        document_store=es_client,
+        document_store=document_store,
         doc_repo=doc_repo,
         join_mode=join_mode,
     )
