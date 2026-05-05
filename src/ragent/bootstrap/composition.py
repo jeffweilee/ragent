@@ -3,39 +3,12 @@
 from __future__ import annotations
 
 import os
-import sys
 from dataclasses import dataclass
 from typing import Any
 
-
-def _require(var: str) -> str:
-    val = os.environ.get(var, "")
-    if not val:
-        print(f"[ragent] required env var {var!r} is not set", file=sys.stderr)
-        sys.exit(1)
-    return val
-
-
-def _float_env(var: str, default: float) -> float:
-    raw = os.environ.get(var)
-    if raw is None:
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        print(f"[ragent] {var!r} must be a float, got {raw!r}", file=sys.stderr)
-        sys.exit(1)
-
-
-def _int_env(var: str, default: int) -> int:
-    raw = os.environ.get(var)
-    if raw is None:
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        print(f"[ragent] {var!r} must be an integer, got {raw!r}", file=sys.stderr)
-        sys.exit(1)
+from ragent.utility.env import float_env as _float_env
+from ragent.utility.env import int_env as _int_env
+from ragent.utility.env import require as _require
 
 
 @dataclass
@@ -62,10 +35,13 @@ def build_container() -> Container:
     import nltk
     from elasticsearch import Elasticsearch
 
-    # Punkt is required by DocumentSplitter (EN sentence tokenizer). Download
-    # once at startup so workers don't pay the cost per task and so airgapped
-    # environments can pre-vendor the dataset.
-    nltk.download("punkt_tab", quiet=True)
+    # Punkt is required by the chunker for EN sentence tokenization. Skip the
+    # download (and its network call) when the dataset is already provisioned,
+    # so airgapped environments can vendor it ahead of time.
+    try:
+        nltk.data.find("tokenizers/punkt_tab")
+    except LookupError:
+        nltk.download("punkt_tab", quiet=True)
 
     from haystack_integrations.document_stores.elasticsearch import ElasticsearchDocumentStore
     from minio import Minio

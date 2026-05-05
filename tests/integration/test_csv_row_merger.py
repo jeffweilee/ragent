@@ -7,6 +7,8 @@ import pytest
 from haystack.core.component import component
 from haystack.dataclasses import ByteStream, Document
 
+from tests.conftest import FakeDocumentStore as _FakeStore
+
 pytestmark = pytest.mark.docker
 
 _CHUNK_TARGET_CHARS_CSV = int(__import__("os").environ.get("CHUNK_TARGET_CHARS_CSV", "2000"))
@@ -17,21 +19,6 @@ class _MockEmbedder:
     @component.output_types(documents=list[Document])
     def run(self, documents: list[Document]) -> dict:
         return {"documents": [dataclasses.replace(doc, embedding=[0.0] * 4) for doc in documents]}
-
-
-class _FakeStore:
-    def __init__(self) -> None:
-        self.written: list[Document] = []
-
-    def write_documents(self, documents: list[Document], policy=None) -> int:  # noqa: ANN001
-        self.written.extend(documents)
-        return len(documents)
-
-    def count_documents(self) -> int:
-        return len(self.written)
-
-    def filter_documents(self, filters=None):  # noqa: ANN001
-        return list(self.written)
 
 
 def _make_csv(rows: int, chars_per_row: int = 50) -> ByteStream:

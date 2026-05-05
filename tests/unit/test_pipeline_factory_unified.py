@@ -9,22 +9,7 @@ from haystack.core.component import component
 from haystack.dataclasses import ByteStream, Document
 
 from ragent.pipelines.factory import build_ingest_pipeline
-
-
-class _FakeStore:
-    def __init__(self) -> None:
-        self.written: list[Document] = []
-
-    def write_documents(self, documents: list[Document], policy=None) -> int:  # noqa: ANN001
-        self.written.extend(documents)
-        return len(documents)
-
-    def filter_documents(self, filters: dict | None = None) -> list[Document]:
-        return list(self.written)
-
-    # methods used by Haystack's DocumentWriter interface
-    def count_documents(self) -> int:
-        return len(self.written)
+from tests.conftest import FakeDocumentStore as _FakeStore
 
 
 @component

@@ -5,6 +5,24 @@ import time
 import urllib.request
 
 import pytest
+from haystack.dataclasses import Document
+
+
+class FakeDocumentStore:
+    """In-memory DocumentStore stand-in used by ingest pipeline tests."""
+
+    def __init__(self) -> None:
+        self.written: list[Document] = []
+
+    def write_documents(self, documents: list[Document], policy=None) -> int:  # noqa: ANN001
+        self.written.extend(documents)
+        return len(documents)
+
+    def count_documents(self) -> int:
+        return len(self.written)
+
+    def filter_documents(self, filters=None) -> list[Document]:  # noqa: ANN001
+        return list(self.written)
 
 
 def _wait_es_yellow(url: str, timeout: int = 120) -> None:

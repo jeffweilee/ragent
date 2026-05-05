@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import dataclasses
-import os
 from typing import Any
 
 from haystack.components.joiners import DocumentJoiner
@@ -15,8 +14,10 @@ from haystack_integrations.components.retrievers.elasticsearch import (
     ElasticsearchEmbeddingRetriever,
 )
 
-_EXCERPT_MAX_CHARS = int(os.environ.get("EXCERPT_MAX_CHARS", "512"))
-_DEFAULT_TOP_K = int(os.environ.get("RETRIEVAL_TOP_K", "20"))
+from ragent.utility.env import int_env
+
+_EXCERPT_MAX_CHARS = int_env("EXCERPT_MAX_CHARS", 512)
+_DEFAULT_TOP_K = int_env("RETRIEVAL_TOP_K", 20)
 _VALID_MODES = frozenset({"rrf", "concatenate", "vector_only", "bm25_only"})
 _HAYSTACK_JOIN_MODE = {"rrf": "reciprocal_rank_fusion", "concatenate": "concatenate"}
 

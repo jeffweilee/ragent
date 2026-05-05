@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import dataclasses
-import os
 import re
-from typing import Any
+from typing import Any, Literal
 
 import langdetect
+import nltk
 from haystack.components.converters import TextFileToDocument
 from haystack.components.preprocessors import DocumentCleaner
 from haystack.components.writers import DocumentWriter
@@ -16,19 +16,27 @@ from haystack.core.pipeline import Pipeline
 from haystack.dataclasses import Document
 from haystack.document_stores.types import DuplicatePolicy
 
+from ragent.utility.env import int_env
+
+AtomKind = Literal["line", "cjk_sent", "en_sent"]
+
 # CJK-density profile: scripts that are scriptio-continua (no word spaces) and
 # pack much more semantic content per character than Latin scripts. bge-m3
 # tokenization scales roughly with character count for these scripts, so a
 # smaller char budget keeps the per-chunk token count comparable to EN.
 _CJK_LANGS = frozenset({"zh-cn", "zh-tw", "zh", "ja", "ko", "th", "lo", "km", "my"})
 
-_CHUNK_TARGET_CHARS_EN = int(os.environ.get("CHUNK_TARGET_CHARS_EN", "2000"))
-_CHUNK_OVERLAP_CHARS_EN = int(os.environ.get("CHUNK_OVERLAP_CHARS_EN", "300"))
-_CHUNK_TARGET_CHARS_CJK = int(os.environ.get("CHUNK_TARGET_CHARS_CJK", "500"))
-_CHUNK_OVERLAP_CHARS_CJK = int(os.environ.get("CHUNK_OVERLAP_CHARS_CJK", "100"))
-_CHUNK_TARGET_CHARS_CSV = int(os.environ.get("CHUNK_TARGET_CHARS_CSV", "2000"))
-_CHUNK_OVERLAP_CHARS_CSV = int(os.environ.get("CHUNK_OVERLAP_CHARS_CSV", "0"))
-_CHUNK_HARD_SPLIT_OVERLAP_CHARS = int(os.environ.get("CHUNK_HARD_SPLIT_OVERLAP_CHARS", "200"))
+_CHUNK_TARGET_CHARS_EN = int_env("CHUNK_TARGET_CHARS_EN", 2000)
+_CHUNK_OVERLAP_CHARS_EN = int_env("CHUNK_OVERLAP_CHARS_EN", 300)
+_CHUNK_TARGET_CHARS_CJK = int_env("CHUNK_TARGET_CHARS_CJK", 500)
+_CHUNK_OVERLAP_CHARS_CJK = int_env("CHUNK_OVERLAP_CHARS_CJK", 100)
+_CHUNK_TARGET_CHARS_CSV = int_env("CHUNK_TARGET_CHARS_CSV", 2000)
+_CHUNK_OVERLAP_CHARS_CSV = int_env("CHUNK_OVERLAP_CHARS_CSV", 0)
+_CHUNK_HARD_SPLIT_OVERLAP_CHARS = int_env("CHUNK_HARD_SPLIT_OVERLAP_CHARS", 200)
+
+# Cap on how much text langdetect inspects; prefix is sufficient for accurate
+# detection and avoids quadratic cost on large CSV/JSON dumps.
+_LANG_DETECT_SAMPLE_CHARS = 1024
 _CJK_SENT_SPLIT_RE = re.compile(r"(?<=[。！？.!?।])\s*")
 
 
@@ -49,18 +57,17 @@ class _IdempotencyClean:
         return {"documents": documents}
 
 
-def _select_profile(doc: Document) -> tuple[int, int, str]:
+def _select_profile(doc: Document) -> tuple[int, int, AtomKind]:
     """Pick (target_chars, overlap_chars, atom_kind) for a document.
 
-    atom_kind ∈ {"line", "cjk_sent", "en_sent"}. CSV is detected by
-    content_type meta; otherwise full-text language detection picks
-    between the EN and CJK-density profiles. Detection failures fall
-    back to EN — safer (larger budget) than over-shrinking real prose.
+    Detection failures fall back to EN — safer (larger budget) than
+    over-shrinking real prose.
     """
     if doc.meta.get("content_type") == "text/csv":
         return _CHUNK_TARGET_CHARS_CSV, _CHUNK_OVERLAP_CHARS_CSV, "line"
+    sample = (doc.content or "")[:_LANG_DETECT_SAMPLE_CHARS]
     try:
-        lang = langdetect.detect(doc.content or "")
+        lang = langdetect.detect(sample)
     except langdetect.lang_detect_exception.LangDetectException:
         lang = "en"
     if lang in _CJK_LANGS:
@@ -68,17 +75,14 @@ def _select_profile(doc: Document) -> tuple[int, int, str]:
     return _CHUNK_TARGET_CHARS_EN, _CHUNK_OVERLAP_CHARS_EN, "en_sent"
 
 
-def _segment(content: str, kind: str) -> list[str]:
+def _segment(content: str, kind: AtomKind) -> list[str]:
     if kind == "line":
         return [line for line in content.splitlines() if line]
     if kind == "cjk_sent":
         return [s for s in _CJK_SENT_SPLIT_RE.split(content) if s.strip()]
-    # en_sent — try punkt; fall back to the same regex if unavailable
     try:
-        import nltk
-
         return [s for s in nltk.sent_tokenize(content) if s.strip()]
-    except (LookupError, Exception):  # pragma: no cover - punkt missing
+    except LookupError:  # pragma: no cover - punkt not provisioned
         return [s for s in _CJK_SENT_SPLIT_RE.split(content) if s.strip()]
 
 
@@ -112,15 +116,17 @@ def _pack_atoms(atoms: list[str], target: int, overlap: int, joiner: str) -> lis
         if overlap <= 0:
             buf, buf_len = [], 0
             return
-        carry: list[str] = []
+        # Walk backwards collecting tail atoms until cumulative length covers
+        # overlap, then keep that suffix as the seed for the next chunk.
         carry_len = 0
-        for atom in reversed(buf):
-            carry.insert(0, atom)
-            carry_len += len(atom) + (len(joiner) if len(carry) > 1 else 0)
+        cut = len(buf)
+        for i in range(len(buf) - 1, -1, -1):
+            carry_len += len(buf[i]) + (len(joiner) if cut - i > 1 else 0)
+            cut = i
             if carry_len >= overlap:
                 break
-        buf = carry
-        buf_len = sum(len(a) for a in buf) + max(0, len(buf) - 1) * len(joiner)
+        buf = buf[cut:]
+        buf_len = carry_len
 
     for atom in atoms:
         atom_len = len(atom)
@@ -179,17 +185,17 @@ class _CharBudgetChunker:
             if not atoms:
                 continue
 
-            cursor = 0
+            # Approximate offsets via running cursor; precise offsets would
+            # require expensive substring search per chunk on large docs.
+            offset = 0
             for i, chunk_text in enumerate(_build_chunks(atoms, target, overlap, joiner)):
-                idx = content.find(chunk_text[: min(50, len(chunk_text))], cursor)
-                split_idx_start = idx if idx >= 0 else cursor
-                cursor = max(cursor, split_idx_start + 1)
                 result.append(
                     Document(
                         content=chunk_text,
-                        meta={**doc.meta, "split_id": i, "split_idx_start": split_idx_start},
+                        meta={**doc.meta, "split_id": i, "split_idx_start": offset},
                     )
                 )
+                offset += max(1, len(chunk_text) - overlap)
         return {"documents": result}
 
 

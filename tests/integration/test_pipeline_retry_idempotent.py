@@ -4,24 +4,10 @@ import dataclasses
 from unittest.mock import MagicMock
 
 import pytest
-from haystack.dataclasses import Document
+
+from tests.conftest import FakeDocumentStore as _FakeStore
 
 pytestmark = pytest.mark.docker
-
-
-class _FakeStore:
-    def __init__(self) -> None:
-        self.written: list[Document] = []
-
-    def write_documents(self, documents: list[Document], policy=None) -> int:  # noqa: ANN001
-        self.written.extend(documents)
-        return len(documents)
-
-    def count_documents(self) -> int:
-        return len(self.written)
-
-    def filter_documents(self, filters=None):  # noqa: ANN001
-        return list(self.written)
 
 
 def test_pipeline_clears_chunks_before_rerun():
