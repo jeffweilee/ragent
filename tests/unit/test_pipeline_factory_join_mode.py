@@ -1,6 +1,5 @@
 """T3.5a — Pipeline factory join mode: each CHAT_JOIN_MODE produces correct graph (C6)."""
 
-
 import pytest
 
 

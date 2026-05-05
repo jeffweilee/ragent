@@ -15,7 +15,7 @@ def _make_service(repo=None, storage=None, broker=None):
     storage = storage or MagicMock()
     broker = broker or MagicMock()
     storage.put_object.return_value = "app_sid_DOC"
-    svc = IngestService(repo=repo, storage=storage, broker=broker)
+    svc = IngestService(repo=repo, chunks=MagicMock(), storage=storage, broker=broker)
     return svc, repo, storage, broker
 
 
@@ -89,7 +89,7 @@ def test_create_rollback_row_if_minio_put_fails():
     storage = MagicMock()
     storage.put_object.side_effect = Exception("MinIO down")
     broker = MagicMock()
-    svc = IngestService(repo=repo, storage=storage, broker=broker)
+    svc = IngestService(repo=repo, chunks=MagicMock(), storage=storage, broker=broker)
 
     with pytest.raises(Exception, match="MinIO down"):
         svc.create(

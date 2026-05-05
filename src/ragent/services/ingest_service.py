@@ -35,8 +35,9 @@ class IngestListResult:
 
 
 class IngestService:
-    def __init__(self, repo: Any, storage: Any, broker: Any) -> None:
+    def __init__(self, repo: Any, chunks: Any, storage: Any, broker: Any) -> None:
         self._repo = repo
+        self._chunks = chunks
         self._storage = storage
         self._broker = broker
         self._has_fan_out = hasattr(broker, "fan_out_delete")
@@ -108,7 +109,7 @@ class IngestService:
         if self._has_fan_out:
             self._broker.fan_out_delete(document_id)
 
-        self._repo.delete_chunks(document_id)
+        self._chunks.delete_by_document_id(document_id)
 
         if doc.status in ("UPLOADED", "PENDING"):
             with contextlib.suppress(Exception):
@@ -129,7 +130,7 @@ class IngestService:
             loser = self._repo.pop_oldest_loser_for_supersede(source_id, source_app, survivor_id)
             if loser is None:
                 break
-            self._repo.delete_chunks(loser.document_id)
+            self._chunks.delete_by_document_id(loser.document_id)
             self._repo.delete(loser.document_id)
 
     # ------------------------------------------------------------------

@@ -88,9 +88,7 @@ def test_chat_sources_populated_with_doc_metadata():
 def test_chat_missing_messages_returns_422():
     app = _make_app()
     with TestClient(app) as client:
-        resp = client.post(
-            "/chat", json={}, headers={"X-User-Id": "alice"}
-        )
+        resp = client.post("/chat", json={}, headers={"X-User-Id": "alice"})
     assert resp.status_code == 422
 
 

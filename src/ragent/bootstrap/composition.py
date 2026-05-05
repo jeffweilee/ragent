@@ -140,7 +140,7 @@ def build_container() -> Container:
     registry.register(
         VectorExtractor(
             repo=doc_repo,
-            chunks={},
+            chunks=chunk_repo,
             embedder=embedding_client,
             es=es_client,
         )

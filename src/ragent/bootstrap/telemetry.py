@@ -48,6 +48,4 @@ def setup_tracing(service_name: str) -> None:
     import haystack.tracing
     from haystack.tracing.opentelemetry import OpenTelemetryTracer
 
-    haystack.tracing.tracer.actual_tracer = OpenTelemetryTracer(
-        trace.get_tracer(service_name)
-    )
+    haystack.tracing.tracer.actual_tracer = OpenTelemetryTracer(trace.get_tracer(service_name))

@@ -123,9 +123,7 @@ def build_ingest_pipeline(embedder: Any) -> Pipeline:
     return pipeline
 
 
-def build_idempotent_ingest_pipeline(
-    embedder: Any, chunk_repo: Any, document_id: str
-) -> Pipeline:
+def build_idempotent_ingest_pipeline(embedder: Any, chunk_repo: Any, document_id: str) -> Pipeline:
     """Build ingest pipeline with idempotency-clean step before embedding (R4, S25)."""
     nltk.download("punkt_tab", quiet=True)
 

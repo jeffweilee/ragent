@@ -23,6 +23,7 @@ def _wait_es_yellow(url: str, timeout: int = 120) -> None:
         time.sleep(2)
     raise TimeoutError(f"ES at {url} did not reach yellow status within {timeout}s")
 
+
 try:
     import docker
 

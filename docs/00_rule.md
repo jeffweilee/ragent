@@ -84,6 +84,12 @@
 - **Rule: Mandatory Indexing**
     - **Action**: All query fields used for `WHERE`, `JOIN`, and `ORDER BY` **must** have an established index.
 
+- **Rule: Mandatory Connection Pool**
+    - **Action**: Every DB-bound code path **must** acquire its connection from a pool (SQLAlchemy `engine` with default `QueuePool`, or an async pool such as `asyncmy` / `asyncpg` for async drivers). Acquire on entry to the unit of work, release on exit (`with engine.begin() as conn:` / `async with engine.connect() as conn:`).
+    - **Prohibition**: Do **not** hold a single long-lived `Connection` (or `AsyncConnection`) at module / app-singleton scope and share it across requests, tasks, or threads.
+    - **Rationale**: FastAPI is natively async; the event loop interleaves requests on a single worker, and a shared SQLAlchemy `Connection` is **not** safe for concurrent statements (raises "Packet sequence error" / "command out of sync" under load). Even sync routes get dispatched to a thread pool and hit the same hazard. A pool gives each unit of work an exclusive checkout and recycles the connection on return.
+    - **Boundary**: Repositories accept either an `Engine` (and check out per call) or an injected per-request `Connection` from a `Depends`-driven session factory. Composition root holds the pool, never the connection.
+
 ---
 
 ### ID Generation Strategy: UUIDv7 + Base32

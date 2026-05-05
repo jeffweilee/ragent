@@ -9,7 +9,8 @@ pytestmark = pytest.mark.docker
 
 def test_first_boot_creates_mariadb_tables(mariadb_dsn: str) -> None:
     import sqlalchemy
-    from sqlalchemy import create_engine, inspect as sa_inspect
+    from sqlalchemy import create_engine
+    from sqlalchemy import inspect as sa_inspect
 
     init_mariadb(create_engine(mariadb_dsn))
     insp = sa_inspect(sqlalchemy.create_engine(mariadb_dsn))
@@ -33,7 +34,8 @@ def test_second_boot_is_noop(mariadb_dsn: str, es_url: str) -> None:
 
 def test_mariadb_tables_have_expected_columns(mariadb_dsn: str) -> None:
     import sqlalchemy
-    from sqlalchemy import create_engine, inspect as sa_inspect
+    from sqlalchemy import create_engine
+    from sqlalchemy import inspect as sa_inspect
 
     init_mariadb(create_engine(mariadb_dsn))
     insp = sa_inspect(sqlalchemy.create_engine(mariadb_dsn))

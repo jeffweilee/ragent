@@ -36,12 +36,20 @@ def _build_sources(documents: list[Any]) -> list[dict] | None:
 
 
 def _run_retrieval(retrieval_pipeline: Any, req: ChatRequest) -> list[Any]:
-    last_user = next(
-        (m["content"] for m in reversed(req.messages) if m.get("role") == "user"), ""
-    )
-    filters = None
+    last_user = next((m["content"] for m in reversed(req.messages) if m.get("role") == "user"), "")
+    clauses = []
     if req.source_app:
-        filters = {"field": "source_app", "operator": "==", "value": req.source_app}
+        clauses.append({"field": "source_app", "operator": "==", "value": req.source_app})
+    if req.source_workspace:
+        clauses.append(
+            {"field": "source_workspace", "operator": "==", "value": req.source_workspace}
+        )
+    if not clauses:
+        filters = None
+    elif len(clauses) == 1:
+        filters = clauses[0]
+    else:
+        filters = {"operator": "AND", "conditions": clauses}
     return run_retrieval(retrieval_pipeline, query=last_user, filters=filters)
 
 

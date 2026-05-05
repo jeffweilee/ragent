@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -16,6 +17,8 @@ from ragent.routers.chat import create_chat_router
 from ragent.routers.health import create_health_router
 from ragent.routers.ingest import create_router as create_ingest_router
 from ragent.routers.mcp import create_mcp_router
+
+logger = logging.getLogger(__name__)
 
 _NO_USER_ID_PATHS = frozenset({"/livez", "/readyz", "/metrics"})
 
@@ -58,6 +61,7 @@ def create_app() -> FastAPI:
 
     ingest_svc = IngestService(
         repo=container.doc_repo,
+        chunks=container.chunk_repo,
         storage=container.minio_client,
         broker=taskiq_broker,
     )
@@ -77,6 +81,7 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception) -> Response:
+        logger.exception("unhandled exception during request to %s", request.url.path)
         return problem(500, "INTERNAL_ERROR", "Internal server error")
 
     _x_user_id_middleware(app)
