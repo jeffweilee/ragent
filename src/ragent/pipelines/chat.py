@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import os
 from typing import Any
 
@@ -39,16 +40,22 @@ class _SourceHydrator:
     def run(self, documents: list[Document]) -> dict:
         ids = [d.meta.get("document_id") for d in documents if d.meta.get("document_id")]
         sources = self._repo.get_sources_by_document_ids(ids) if ids else {}
+        result = []
         for doc in documents:
             doc_id = doc.meta.get("document_id")
+            kwargs: dict = {}
             if doc_id and doc_id in sources:
                 source_app, source_id, source_title = sources[doc_id]
-                doc.meta.update(
-                    {"source_app": source_app, "source_id": source_id, "source_title": source_title}
-                )
+                kwargs["meta"] = {
+                    **doc.meta,
+                    "source_app": source_app,
+                    "source_id": source_id,
+                    "source_title": source_title,
+                }
             if doc.content and len(doc.content) > _EXCERPT_MAX_CHARS:
-                doc.content = doc.content[:_EXCERPT_MAX_CHARS]
-        return {"documents": documents}
+                kwargs["content"] = doc.content[:_EXCERPT_MAX_CHARS]
+            result.append(dataclasses.replace(doc, **kwargs) if kwargs else doc)
+        return {"documents": result}
 
 
 def build_retrieval_pipeline(

@@ -204,6 +204,36 @@ class DocumentRepository:
             )
         )
 
+    def list_pending_exceeded(self, attempt_gt: int) -> list[DocumentRow]:
+        return _rows_to_docs(
+            self._fetch_all(
+                text(
+                    """
+                    SELECT * FROM documents
+                    WHERE status = 'PENDING'
+                      AND attempt > :attempt_gt
+                    FOR UPDATE SKIP LOCKED
+                    """
+                ),
+                {"attempt_gt": attempt_gt},
+            )
+        )
+
+    def list_deleting_stale(self, updated_before: datetime.datetime) -> list[DocumentRow]:
+        return _rows_to_docs(
+            self._fetch_all(
+                text(
+                    """
+                    SELECT * FROM documents
+                    WHERE status = 'DELETING'
+                      AND updated_at < :before
+                    FOR UPDATE SKIP LOCKED
+                    """
+                ),
+                {"before": updated_before},
+            )
+        )
+
     def list_uploaded_stale(self, updated_before: datetime.datetime) -> list[DocumentRow]:
         return _rows_to_docs(
             self._fetch_all(

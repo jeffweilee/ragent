@@ -33,6 +33,25 @@ def _x_user_id_middleware(app: FastAPI) -> None:
         return await call_next(request)
 
 
+def _build_probes(container: Any) -> dict:
+    from ragent.routers.health_probes import (
+        probe_es,
+        probe_mariadb,
+        probe_minio,
+        probe_redis,
+    )
+
+    probes: dict = {
+        "mariadb": probe_mariadb(container.engine),
+        "es": probe_es(container.es_client, index_names=["chunks_v1"]),
+        "minio": probe_minio(container.minio_client),
+    }
+    redis_client = getattr(container.rate_limiter, "_redis", None)
+    if redis_client is not None:
+        probes["redis_rate_limiter"] = probe_redis(redis_client)
+    return probes
+
+
 def create_app() -> FastAPI:
     enforce()
     setup_tracing("ragent-api")
@@ -77,7 +96,7 @@ def create_app() -> FastAPI:
         )
     )
     app.include_router(create_mcp_router())
-    app.include_router(create_health_router())
+    app.include_router(create_health_router(probes=_build_probes(container)))
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception) -> Response:
