@@ -119,3 +119,37 @@ def minio_endpoint(minio_container) -> str:
     host = minio_container.get_container_host_ip()
     port = minio_container.get_exposed_port(9000)
     return f"{host}:{port}"
+
+
+@pytest.fixture
+def dev_env(
+    monkeypatch: pytest.MonkeyPatch,
+    mariadb_dsn: str,
+    es_url: str,
+    minio_endpoint: str,
+) -> None:
+    """Apply RAGENT dev-mode env wired to the testcontainer fixtures (B30)."""
+    pairs = {
+        "RAGENT_ENV": "dev",
+        "RAGENT_AUTH_DISABLED": "true",
+        "RAGENT_HOST": "127.0.0.1",
+        "AUTH_URL": "http://localhost:9999/oauth/token",
+        "AUTH_CLIENT_ID": "ragent-test",
+        "AUTH_CLIENT_SECRET": "secret",
+        "EMBEDDING_API_URL": "http://localhost:9999/embed",
+        "LLM_API_URL": "http://localhost:9999/chat",
+        "RERANK_API_URL": "http://localhost:9999/rerank",
+        "MINIO_ENDPOINT": minio_endpoint,
+        "MINIO_ACCESS_KEY": "minioadmin",
+        "MINIO_SECRET_KEY": "minioadmin",
+        "ES_HOSTS": es_url,
+        "ES_VERIFY_CERTS": "false",
+        "MARIADB_DSN": mariadb_dsn,
+        "REDIS_BROKER_URL": "redis://localhost:6379/0",
+        "REDIS_RATELIMIT_URL": "redis://localhost:6379/1",
+    }
+    for key, val in pairs.items():
+        monkeypatch.setenv(key, val)
+    import ragent.bootstrap.composition as comp
+
+    comp._container = None  # noqa: SLF001 — composition root caches singleton

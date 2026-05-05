@@ -8,10 +8,11 @@ from pathlib import Path
 import httpx
 import pytest
 
+from tests.e2e.conftest import API_URL
+
 pytestmark = pytest.mark.docker
 
 GOLDEN = Path(__file__).parent / "golden_set.jsonl"
-API_URL = "http://127.0.0.1:8000"
 THRESHOLD = 0.70
 
 
