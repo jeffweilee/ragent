@@ -1,5 +1,6 @@
 """T3.2e — Pipeline retry: idempotency-clean purges prior chunks before re-indexing (R4, S25)."""
 
+import dataclasses
 from unittest.mock import MagicMock
 
 import pytest
@@ -27,9 +28,9 @@ def test_pipeline_clears_chunks_before_rerun():
     class _MockEmbedder:
         @component.output_types(documents=list[Document])
         def run(self, documents: list[Document]) -> dict:
-            for doc in documents:
-                doc.embedding = [0.0] * 4
-            return {"documents": documents}
+            return {
+                "documents": [dataclasses.replace(doc, embedding=[0.0] * 4) for doc in documents]
+            }
 
     pipeline = build_idempotent_ingest_pipeline(
         embedder=_MockEmbedder(), chunk_repo=chunk_repo, document_id="DOC001"
@@ -62,9 +63,9 @@ def test_pipeline_retry_produces_no_duplicate_chunks():
     class _MockEmbedder:
         @component.output_types(documents=list[Document])
         def run(self, documents: list[Document]) -> dict:
-            for doc in documents:
-                doc.embedding = [0.0] * 4
-            return {"documents": documents}
+            return {
+                "documents": [dataclasses.replace(doc, embedding=[0.0] * 4) for doc in documents]
+            }
 
     text = "One sentence. Two sentences."
 

@@ -1,5 +1,7 @@
 """T3.1 — Ingest pipeline: Convert→Clean→LanguageRouter→{cjk|en}Splitter→Embed (B1)."""
 
+import dataclasses
+
 import pytest
 from haystack.core.component import component
 from haystack.dataclasses import ByteStream, Document
@@ -11,9 +13,7 @@ pytestmark = pytest.mark.docker
 class _MockEmbedder:
     @component.output_types(documents=list[Document])
     def run(self, documents: list[Document]) -> dict:
-        for doc in documents:
-            doc.embedding = [0.0] * 4
-        return {"documents": documents}
+        return {"documents": [dataclasses.replace(doc, embedding=[0.0] * 4) for doc in documents]}
 
 
 def _en_stream() -> ByteStream:

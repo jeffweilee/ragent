@@ -1,5 +1,6 @@
 """T3.2k — CSV RowMerger: 10k-row CSV chunk count bounded; txt bypasses merger (S35, B24)."""
 
+import dataclasses
 import math
 
 import pytest
@@ -15,9 +16,7 @@ _CSV_CHUNK_TARGET_CHARS = int(__import__("os").environ.get("CSV_CHUNK_TARGET_CHA
 class _MockEmbedder:
     @component.output_types(documents=list[Document])
     def run(self, documents: list[Document]) -> dict:
-        for doc in documents:
-            doc.embedding = [0.0] * 4
-        return {"documents": documents}
+        return {"documents": [dataclasses.replace(doc, embedding=[0.0] * 4) for doc in documents]}
 
 
 def _make_csv(rows: int, chars_per_row: int = 50) -> ByteStream:
