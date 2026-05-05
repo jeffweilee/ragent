@@ -129,6 +129,20 @@ except Exception:
     DOCKER_AVAILABLE = False
 
 
+@pytest.fixture(autouse=True)
+def _ragent_logging_configured():
+    """Ensure structlog is configured for ragent loggers regardless of import order.
+
+    Haystack 2.x's import side effects can replace structlog's default processor
+    chain, which breaks ``structlog.testing.capture_logs`` for already-bound
+    proxy loggers. Re-applying our config before each test restores correlation.
+    """
+    from ragent.bootstrap.logging_config import configure_logging
+
+    configure_logging("ragent-test")
+    yield
+
+
 def pytest_configure(config: pytest.Config) -> None:
     config.addinivalue_line(
         "markers", "docker: mark test as requiring Docker (skipped if unavailable)"

@@ -122,6 +122,17 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 
 ---
 
+### Logging: Identity Yes, Content No
+
+- **Rule**: Business logs and API trace logs **must** carry identity fields needed for auditing and trace correlation, and **must not** carry sensitive content data.
+- **Allowed (identity & metric)**: `service`, `request_id`, `trace_id`, `span_id`, `user_id`, `document_id` / `chunk_id` / `task_id` and other internal Crockford-Base32 IDs, `path`, `method`, `status_code`, `duration_ms`, `http.status_code`, counts (`top_k`, `result_count`, `batch_size`, `candidate_count`), sizes (`query_len`, `prompt_tokens`, `completion_tokens`), error metadata (`error_type`, `error_code`, `retry_attempt`).
+- **Prohibited (content)**: raw user query text, prompt bodies, LLM completions, retrieved chunk text, document payloads, embedding vectors, request/response body bytes, `Authorization` / `Cookie` headers, tokens, secrets, passwords, and any field flagged sensitive by the data dictionary or PII catalogue.
+- **Action**: When debugging context is needed, log a length, hash, or count instead of the value. Error logs follow the same rule; tracebacks **must not** be enriched with request body content.
+- **Enforcement**: A denylist processor in `ragent.bootstrap.logging_config` drops the keys `query`, `prompt`, `messages`, `completion`, `chunks`, `embedding`, `documents`, `body`, `authorization`, `cookie`, `password`, `token`, `secret` from every emitted record as a safety net. The allow-list above is the policy contract; the denylist is the runtime guardrail.
+- **Format**: Timestamps are ISO 8601 UTC (`YYYY-MM-DDTHH:MM:SS.sssZ`), aligned with the DateTime rule. Output is JSON to stdout in production (`LOG_FORMAT=json`); developer-friendly key=value rendering is available via `LOG_FORMAT=console`.
+
+---
+
 
 
 ## Third-Party API

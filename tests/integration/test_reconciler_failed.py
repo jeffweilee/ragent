@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import datetime
-import logging
 from unittest.mock import MagicMock
 
 import pytest
@@ -106,11 +105,13 @@ def test_list_pending_exceeded_called_with_max_attempts(monkeypatch: pytest.Monk
 
 def test_exceeded_emits_structured_log(caplog: pytest.LogCaptureFixture):
     """Failing a doc emits event=ingest.failed in the log."""
+    import structlog
+
     repo = _default_repo(exceeded=[_make_doc("DOC001", attempt=6)])
     broker = MagicMock()
 
     rec = _make_reconciler(repo, broker)
-    with caplog.at_level(logging.INFO, logger="ragent.reconciler"):
+    with structlog.testing.capture_logs() as logs:
         rec.run()
 
-    assert any("ingest.failed" in r.message for r in caplog.records)
+    assert any(e.get("event") == "ingest.failed" for e in logs)

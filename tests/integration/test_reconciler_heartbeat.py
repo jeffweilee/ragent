@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import logging
 from unittest.mock import MagicMock
 
 import pytest
@@ -66,10 +65,12 @@ def test_two_runs_increment_by_two():
 
 def test_run_emits_reconciler_tick_log(caplog: pytest.LogCaptureFixture):
     """run() emits a structured-log line with event=reconciler.tick."""
+    import structlog
+
     repo = _default_repo()
     rec = _make_reconciler(repo, MagicMock())
 
-    with caplog.at_level(logging.INFO, logger="ragent.reconciler"):
+    with structlog.testing.capture_logs() as logs:
         rec.run()
 
-    assert any("reconciler.tick" in r.message for r in caplog.records)
+    assert any(e.get("event") == "reconciler.tick" for e in logs)

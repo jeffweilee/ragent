@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import contextlib
-import logging
 from collections.abc import Callable
 from typing import Any
 
+import structlog
+
 from ragent.bootstrap.broker import broker
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 _BACKOFF_BASE = 2.0
 _BACKOFF_CAP = 30.0
