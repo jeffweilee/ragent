@@ -50,34 +50,11 @@ def mariadb_dsn(mariadb_container) -> str:
 
 @pytest.fixture(scope="session")
 def es_container():
-    """ES with analysis-icu plugin if buildable, else plain ES 9.2.3."""
     if not DOCKER_AVAILABLE:
         pytest.skip("Docker not available")
-    import subprocess
-    from pathlib import Path
-
     from testcontainers.elasticsearch import ElasticSearchContainer
 
-    dockerfile = Path(__file__).parents[1] / "Dockerfile.es-test"
-    image = "elasticsearch:9.2.3"
-    icu_built = False
-    if dockerfile.exists():
-        build = subprocess.run(
-            ["docker", "build", "-f", str(dockerfile), "-t", "ragent-es-test:latest", "."],
-            cwd=str(Path(__file__).parents[1]),
-            capture_output=True,
-        )
-        if build.returncode == 0:
-            image = "ragent-es-test:latest"
-            check = subprocess.run(
-                ["docker", "run", "--rm", "ragent-es-test:latest",
-                 "bin/elasticsearch-plugin", "list"],
-                capture_output=True, text=True,
-            )
-            icu_built = "analysis-icu" in check.stdout
-
-    with ElasticSearchContainer(image=image, port=9200) as container:
-        container.icu_available = icu_built
+    with ElasticSearchContainer(image="elasticsearch:9.2.3", port=9200) as container:
         yield container
 
 
@@ -86,11 +63,6 @@ def es_url(es_container) -> str:
     host = es_container.get_container_host_ip()
     port = es_container.get_exposed_port(9200)
     return f"http://{host}:{port}"
-
-
-@pytest.fixture(scope="session")
-def icu_available(es_container) -> bool:
-    return getattr(es_container, "icu_available", False)
 
 
 @pytest.fixture(scope="session")
