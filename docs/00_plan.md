@@ -176,7 +176,7 @@
 
 | # | Category | Task | Depends On | Status | Owner | Phase |
 |---|---|---|---|:---:|---|:---:|
-| T8.1 | Red  | `tests/unit/test_jwt.py` — JWT shape `{"exp": <unix>, "preferred_username": "<user_id>"}`: expired `exp` → 401 problem+json `AUTH_TOKEN_EXPIRED`; missing/empty `preferred_username` → 401 `AUTH_CLAIM_MISSING`; invalid signature → 401 on all `/chat*` and `/ingest*` endpoints. | (entry) | [~] | QA | P2 |
+| T8.1 | Red  | `tests/unit/test_jwt.py` — JWT shape `{"exp": <unix>, "preferred_username": "<user_id>"}`: expired `exp` → 401 `AUTH_TOKEN_EXPIRED`; missing `exp` or missing/empty `preferred_username` → 401 `AUTH_CLAIM_MISSING`; non-numeric/non-integer `exp` → 401 `AUTH_TOKEN_INVALID`; invalid signature → 401 `AUTH_TOKEN_INVALID`; all failure cases apply to every `/chat*` and `/ingest*` endpoint. | (entry) | [~] | QA | P2 |
 | T8.2 | Green | `src/ragent/auth/jwt.py` (FastAPI dependency); validates `exp`, extracts `preferred_username` → `user_id` (the same value carried by `X-User-Id` in P1). When `RAGENT_TRUST_X_USER_ID_HEADER=true`, dependency bypasses JWT and reads `X-User-Id` header as `preferred_username` (§3.5). | T8.1 | [~] | Dev | P2 |
 | T8.3 | Red  | `tests/unit/test_permission_client_protocol.py` — Protocol conformance for `batch_check(user_id, document_ids, relation) -> set[str]` and `list_objects(user_id, relation) -> list[str] \| None`. | T8.2 | [~] | QA | P2 |
 | T8.4 | Green | `src/ragent/auth/permission.py` — `PermissionClient` Protocol + `OpenFGAPermissionClient` implementation (sole module importing the OpenFGA SDK; B14). | T8.3 | [~] | Dev | P2 |

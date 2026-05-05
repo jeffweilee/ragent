@@ -292,7 +292,7 @@ Two distinct concerns, kept architecturally separate from retrieval:
 {"exp": 1666075529, "preferred_username": "xxxxxx"}
 ```
 
-- `exp` — Unix epoch seconds; expired tokens → 401 problem+json (`error_code=AUTH_TOKEN_EXPIRED`).
+- `exp` — Unix epoch seconds (required). Absent → 401 (`error_code=AUTH_CLAIM_MISSING`). Non-numeric/non-integer → 401 (`error_code=AUTH_TOKEN_INVALID`). Expired → 401 (`error_code=AUTH_TOKEN_EXPIRED`).
 - `preferred_username` — the canonical `user_id` (a.k.a. `X-User-Id`). Missing/empty claim → 401 (`error_code=AUTH_CLAIM_MISSING`). Wired into:
   - **Ingest** — written verbatim to `documents.create_user` (audit only; B14).
   - **Chat** — passed to `PermissionClient.batch_check(user_id=…, …)` as the post-retrieval filter subject.
@@ -440,7 +440,8 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 | `ES_BBQ_UNSUPPORTED`                 | log `event=es.bbq_unsupported` | Cluster rejected `bbq_hnsw`; bootstrap retried with standard HNSW (B26) | Bootstrap |
 | `RECONCILER_TICK_MISSING`            | Prometheus alert | `reconciler_tick_total` flat > 10 min (R8, S30) | Alerting rule T7.1a |
 | `AUTH_TOKEN_EXPIRED`                 | 401             | JWT `exp` claim is in the past (T8.1) | Auth dependency T8.2 |
-| `AUTH_CLAIM_MISSING`                 | 401             | `preferred_username` claim absent or empty (T8.1) | Auth dependency T8.2 |
+| `AUTH_CLAIM_MISSING`                 | 401             | `exp` or `preferred_username` claim absent or empty (T8.1) | Auth dependency T8.2 |
+| `AUTH_TOKEN_INVALID`                 | 401             | JWT signature invalid, or `exp` non-numeric/non-integer (T8.1) | Auth dependency T8.2 |
 
 ### 4.2 Supported Formats
 
