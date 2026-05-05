@@ -41,11 +41,13 @@
 
 > **Goal:** Prevent recurrence through actionable, domain-specific guidelines rather than individual blame.
 
-| Date | Domain | Issue Description | Root Cause | Actionable Guideline (Prevention) |
-| :--- | :--- | :--- | :--- | :--- |
-| 2026-05-04 | **Architecture** | Race condition during high-concurrency wallet updates. | Missing atomicity at the DB transaction level. | **[Rule]** All balance-related mutations must use Pessimistic Locking and be wrapped in an atomic decorator. |
-| 2026-05-01 | **SRE** | Production downtime during schema migration. | Migration script lacked backward compatibility with the current API. | **[Rule]** Use "Expand and Contract" pattern for DB changes; never drop a column before the code reference is removed. |
-| 2026-04-25 | **QA** | Missed edge case in discount logic. | TDD Given-When-Then did not account for "Expired" status. | **[Rule]** All state-machine transitions must include a "Negative Path" test case in the Scenario Matrix. |
+**Format:**
+1. **Domain List (TOC)** at the top — a fixed, converged set of domains. New entries MUST be filed under an existing domain; do not invent new domains. Allowed domains: `Architecture`, `SRE`, `QA`, `Security`, `Spec`, `Process`.
+2. **Per-Domain Table** — one section per domain, each containing a 4-column table:
+
+| Date | Description | Root Cause | Actionable Guideline |
+| :--- | :--- | :--- | :--- |
+| 2026-05-04 | Race condition during high-concurrency wallet updates. | Missing atomicity at the DB transaction level. | **[Rule]** All balance-related mutations must use Pessimistic Locking and be wrapped in an atomic decorator. |
 
 
 ---
