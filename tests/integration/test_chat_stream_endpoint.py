@@ -96,3 +96,47 @@ def test_stream_sources_null_on_empty_retrieval():
     events = _parse_sse(resp.text)
     done = next(e for e in events if e.get("type") == "done")
     assert done["sources"] is None
+
+
+def test_chat_stream_injects_retrieved_context_into_llm_messages():
+    from haystack.dataclasses import Document
+    from unittest.mock import MagicMock
+    from fastapi import FastAPI
+    from ragent.routers.chat import create_chat_router
+
+    doc = Document(
+        content="Stream answer here",
+        meta={
+            "document_id": "DOC-S1",
+            "source_app": "confluence",
+            "source_id": "S2",
+            "source_title": "Stream Wiki",
+            "source_workspace": None,
+        },
+    )
+    retrieval_pipeline = MagicMock()
+    retrieval_pipeline.run.return_value = {"source_hydrator": {"documents": [doc]}}
+    llm_client = MagicMock()
+    llm_client.stream.return_value = iter(["Answer"])
+
+    app = FastAPI()
+    app.include_router(create_chat_router(retrieval_pipeline=retrieval_pipeline, llm_client=llm_client))
+
+    with TestClient(app) as client:
+        client.post(
+            "/chat/stream",
+            json={"messages": [{"role": "user", "content": "stream question"}]},
+            headers={"X-User-Id": "alice"},
+        )
+
+    sent_messages = llm_client.stream.call_args.kwargs["messages"]
+    assert sent_messages[0]["role"] == "system"
+    system_content = sent_messages[0]["content"]
+    assert "QUESTION" in system_content
+    assert "SUMMARY" in system_content
+    assert "GENERATION" in system_content
+    last_user = next(m for m in reversed(sent_messages) if m["role"] == "user")
+    assert "=== CONTEXT START ===" in last_user["content"]
+    assert "source_title=Stream Wiki" in last_user["content"]
+    assert "Stream answer here" in last_user["content"]
+    assert "stream question" in last_user["content"]

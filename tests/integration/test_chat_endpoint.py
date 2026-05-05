@@ -101,3 +101,79 @@ def test_chat_invalid_provider_returns_422():
             headers={"X-User-Id": "alice"},
         )
     assert resp.status_code == 422
+
+
+def test_chat_injects_retrieved_context_into_llm_messages():
+    from haystack.dataclasses import Document
+
+    doc = Document(
+        content="The answer is 42",
+        meta={
+            "document_id": "DOC42",
+            "source_app": "confluence",
+            "source_id": "S1",
+            "source_title": "Deep Thought",
+            "source_workspace": None,
+        },
+    )
+    retrieval_pipeline = MagicMock()
+    retrieval_pipeline.run.return_value = {"source_hydrator": {"documents": [doc]}}
+    llm_client = MagicMock()
+    llm_client.chat.return_value = {
+        "content": "42 [Deep Thought]",
+        "usage": {"promptTokens": 10, "completionTokens": 5, "totalTokens": 15},
+    }
+    from fastapi import FastAPI
+    from ragent.routers.chat import create_chat_router
+
+    app = FastAPI()
+    app.include_router(create_chat_router(retrieval_pipeline=retrieval_pipeline, llm_client=llm_client))
+
+    with TestClient(app) as client:
+        client.post(
+            "/chat",
+            json={"messages": [{"role": "user", "content": "What is the answer?"}]},
+            headers={"X-User-Id": "alice"},
+        )
+
+    sent_messages = llm_client.chat.call_args.kwargs["messages"]
+    # system message at index 0 contains the multi-intent RAG template
+    assert sent_messages[0]["role"] == "system"
+    system_content = sent_messages[0]["content"]
+    assert "QUESTION" in system_content
+    assert "SUMMARY" in system_content
+    assert "GENERATION" in system_content
+    # last user message contains context block with doc metadata and original query
+    last_user = next(m for m in reversed(sent_messages) if m["role"] == "user")
+    assert "=== CONTEXT START ===" in last_user["content"]
+    assert "source_title=Deep Thought" in last_user["content"]
+    assert "The answer is 42" in last_user["content"]
+    assert "What is the answer?" in last_user["content"]
+
+
+def test_chat_no_docs_uses_default_system_prompt_unchanged_and_does_not_wrap_user_message():
+    retrieval_pipeline = MagicMock()
+    retrieval_pipeline.run.return_value = {"source_hydrator": {"documents": []}}
+    llm_client = MagicMock()
+    llm_client.chat.return_value = {
+        "content": "I don't know",
+        "usage": {"promptTokens": 5, "completionTokens": 3, "totalTokens": 8},
+    }
+    from fastapi import FastAPI
+    from ragent.routers.chat import create_chat_router
+
+    app = FastAPI()
+    app.include_router(create_chat_router(retrieval_pipeline=retrieval_pipeline, llm_client=llm_client))
+
+    with TestClient(app) as client:
+        client.post(
+            "/chat",
+            json={"messages": [{"role": "user", "content": "mystery question"}]},
+            headers={"X-User-Id": "alice"},
+        )
+
+    sent_messages = llm_client.chat.call_args.kwargs["messages"]
+    assert sent_messages[0]["role"] == "system"
+    assert sent_messages[0]["content"] == "You are a helpful assistant"
+    last_user = next(m for m in reversed(sent_messages) if m["role"] == "user")
+    assert "=== CONTEXT START ===" not in last_user["content"]
