@@ -19,7 +19,7 @@
         "dims": 1024,
         "index": true,
         "similarity": "cosine",
-        "index_options": { "type": "flat" }
+        "index_options": { "type": "bbq_hnsw" }
       }
     }
   }
