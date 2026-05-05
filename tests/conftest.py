@@ -121,12 +121,20 @@ def minio_endpoint(minio_container) -> str:
     return f"{host}:{port}"
 
 
+@pytest.fixture(scope="session")
+def redis_url(redis_container) -> str:
+    host = redis_container.get_container_host_ip()
+    port = redis_container.get_exposed_port(6379)
+    return f"redis://{host}:{port}"
+
+
 @pytest.fixture
 def dev_env(
     monkeypatch: pytest.MonkeyPatch,
     mariadb_dsn: str,
     es_url: str,
     minio_endpoint: str,
+    redis_url: str,
 ) -> None:
     """Apply RAGENT dev-mode env wired to the testcontainer fixtures (B30)."""
     pairs = {
@@ -145,8 +153,8 @@ def dev_env(
         "ES_HOSTS": es_url,
         "ES_VERIFY_CERTS": "false",
         "MARIADB_DSN": mariadb_dsn,
-        "REDIS_BROKER_URL": "redis://localhost:6379/0",
-        "REDIS_RATELIMIT_URL": "redis://localhost:6379/1",
+        "REDIS_BROKER_URL": f"{redis_url}/0",
+        "REDIS_RATELIMIT_URL": f"{redis_url}/1",
     }
     for key, val in pairs.items():
         monkeypatch.setenv(key, val)

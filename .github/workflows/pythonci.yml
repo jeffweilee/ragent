@@ -37,10 +37,10 @@ jobs:
         run: uv run ruff format src/ tests/
 
       - name: Run Tests with Coverage (Pytest)
-        # Skip e2e (need real external APIs) and @pytest.mark.docker tests
-        # (need testcontainers for MariaDB/ES/MinIO/Redis); both are run locally
-        # when Docker is available. Unit + non-docker integration tests run here.
-        run: uv run pytest --cov=src --cov-report=term-missing --ignore=tests/e2e -m 'not docker'
+        # Skip e2e (needs real external APIs — LLM, embedding, rerank endpoints).
+        # Docker-marked tests run here: ubuntu-latest has Docker and testcontainers
+        # spin up MariaDB, ES, MinIO, and Redis for the integration suite.
+        run: uv run pytest --cov=src --cov-report=term-missing --ignore=tests/e2e
 
       - name: Run Security Check (Bandit)
         run: uv run bandit -r src/ --severity-level high --confidence-level high
