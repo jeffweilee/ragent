@@ -7,7 +7,6 @@ import re
 from typing import Any
 
 import langdetect
-import nltk
 from haystack.components.converters import TextFileToDocument
 from haystack.components.preprocessors import DocumentCleaner, DocumentSplitter
 from haystack.core.component import component
@@ -101,8 +100,6 @@ class _IdempotencyClean:
 
 
 def build_ingest_pipeline(embedder: Any) -> Pipeline:
-    nltk.download("punkt_tab", quiet=True)
-
     pipeline = Pipeline()
     pipeline.add_component("converter", TextFileToDocument())
     pipeline.add_component("cleaner", DocumentCleaner())
@@ -125,8 +122,6 @@ def build_ingest_pipeline(embedder: Any) -> Pipeline:
 
 def build_idempotent_ingest_pipeline(embedder: Any, chunk_repo: Any, document_id: str) -> Pipeline:
     """Build ingest pipeline with idempotency-clean step before embedding (R4, S25)."""
-    nltk.download("punkt_tab", quiet=True)
-
     pipeline = Pipeline()
     pipeline.add_component("converter", TextFileToDocument())
     pipeline.add_component("cleaner", DocumentCleaner())
@@ -151,8 +146,6 @@ def build_idempotent_ingest_pipeline(embedder: Any, chunk_repo: Any, document_id
 
 def build_csv_ingest_pipeline(embedder: Any) -> Pipeline:
     """Build ingest pipeline with MIME-conditional RowMerger for CSV (S35, B24)."""
-    nltk.download("punkt_tab", quiet=True)
-
     pipeline = Pipeline()
     pipeline.add_component("converter", TextFileToDocument())
     pipeline.add_component("cleaner", DocumentCleaner())

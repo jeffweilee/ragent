@@ -58,7 +58,14 @@ class Container:
 
 def build_container() -> Container:
     import httpx
+    import nltk
     from elasticsearch import Elasticsearch
+
+    # Punkt is required by DocumentSplitter (EN sentence tokenizer). Download
+    # once at startup so workers don't pay the cost per task and so airgapped
+    # environments can pre-vendor the dataset.
+    nltk.download("punkt_tab", quiet=True)
+
     from haystack_integrations.document_stores.elasticsearch import ElasticsearchDocumentStore
     from minio import Minio
     from sqlalchemy import create_engine, text
