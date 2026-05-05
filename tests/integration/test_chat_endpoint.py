@@ -24,11 +24,11 @@ def _make_app(retrieval_docs=None, llm_content="Hello!", llm_usage=None):
     app = FastAPI()
     router = create_chat_router(retrieval_pipeline=retrieval_pipeline, llm_client=llm_client)
     app.include_router(router)
-    return app
+    return app, llm_client
 
 
 def test_chat_returns_200_with_correct_shape():
-    app = _make_app()
+    app, _ = _make_app()
     with TestClient(app) as client:
         resp = client.post(
             "/chat",
@@ -45,7 +45,7 @@ def test_chat_returns_200_with_correct_shape():
 
 
 def test_chat_sources_null_when_retrieval_empty():
-    app = _make_app(retrieval_docs=[])
+    app, _ = _make_app(retrieval_docs=[])
     with TestClient(app) as client:
         resp = client.post(
             "/chat",
@@ -69,7 +69,7 @@ def test_chat_sources_populated_with_doc_metadata():
             "source_workspace": None,
         },
     )
-    app = _make_app(retrieval_docs=[doc])
+    app, _ = _make_app(retrieval_docs=[doc])
     with TestClient(app) as client:
         resp = client.post(
             "/chat",
@@ -86,14 +86,14 @@ def test_chat_sources_populated_with_doc_metadata():
 
 
 def test_chat_missing_messages_returns_422():
-    app = _make_app()
+    app, _ = _make_app()
     with TestClient(app) as client:
         resp = client.post("/chat", json={}, headers={"X-User-Id": "alice"})
     assert resp.status_code == 422
 
 
 def test_chat_invalid_provider_returns_422():
-    app = _make_app()
+    app, _ = _make_app()
     with TestClient(app) as client:
         resp = client.post(
             "/chat",
@@ -101,3 +101,55 @@ def test_chat_invalid_provider_returns_422():
             headers={"X-User-Id": "alice"},
         )
     assert resp.status_code == 422
+
+
+def test_chat_injects_retrieved_context_into_llm_messages():
+    from haystack.dataclasses import Document
+
+    doc = Document(
+        content="The answer is 42",
+        meta={
+            "document_id": "DOC42",
+            "source_app": "confluence",
+            "source_id": "S1",
+            "source_title": "Deep Thought",
+            "source_workspace": None,
+        },
+    )
+    app, llm_client = _make_app(retrieval_docs=[doc], llm_content="42 [Deep Thought]")
+
+    with TestClient(app) as client:
+        client.post(
+            "/chat",
+            json={"messages": [{"role": "user", "content": "What is the answer?"}]},
+            headers={"X-User-Id": "alice"},
+        )
+
+    sent_messages = llm_client.chat.call_args.kwargs["messages"]
+    assert sent_messages[0]["role"] == "system"
+    system_content = sent_messages[0]["content"]
+    assert "QUESTION" in system_content
+    assert "SUMMARY" in system_content
+    assert "GENERATION" in system_content
+    last_user = next(m for m in reversed(sent_messages) if m["role"] == "user")
+    assert "=== CONTEXT START ===" in last_user["content"]
+    assert "source_title=Deep Thought" in last_user["content"]
+    assert "The answer is 42" in last_user["content"]
+    assert "What is the answer?" in last_user["content"]
+
+
+def test_chat_no_docs_uses_default_system_prompt_unchanged_and_does_not_wrap_user_message():
+    app, llm_client = _make_app(retrieval_docs=[], llm_content="I don't know")
+
+    with TestClient(app) as client:
+        client.post(
+            "/chat",
+            json={"messages": [{"role": "user", "content": "mystery question"}]},
+            headers={"X-User-Id": "alice"},
+        )
+
+    sent_messages = llm_client.chat.call_args.kwargs["messages"]
+    assert sent_messages[0]["role"] == "system"
+    assert sent_messages[0]["content"] == "You are a helpful assistant"
+    last_user = next(m for m in reversed(sent_messages) if m["role"] == "user")
+    assert "=== CONTEXT START ===" not in last_user["content"]
