@@ -7,10 +7,12 @@ import pytest
 def _build(join_mode: str):
     from unittest.mock import MagicMock
 
+    from haystack_integrations.document_stores.elasticsearch import ElasticsearchDocumentStore
+
     from ragent.pipelines.chat import build_retrieval_pipeline
 
     embedder = MagicMock()
-    doc_store = MagicMock()
+    doc_store = MagicMock(spec=ElasticsearchDocumentStore)
     doc_repo = MagicMock()
     return build_retrieval_pipeline(
         embedder=embedder, document_store=doc_store, doc_repo=doc_repo, join_mode=join_mode

@@ -16,11 +16,21 @@ _FIXED_EMBEDDING = [0.1] * _EMBEDDING_DIM
 
 @pytest.fixture(scope="module")
 def es_store(es_url: str):
+    import json
+    import urllib.request
+
     from haystack_integrations.document_stores.elasticsearch import ElasticsearchDocumentStore
 
     from ragent.bootstrap.init_schema import init_es
 
     init_es(es_url)
+    # Wait for the freshly-created index shards to be allocated before searching.
+    with urllib.request.urlopen(
+        f"{es_url}/_cluster/health/chunks_v1?wait_for_status=yellow&timeout=60s", timeout=70
+    ) as resp:
+        health = json.loads(resp.read())
+        if health.get("status") not in ("yellow", "green"):
+            raise RuntimeError(f"chunks_v1 index not ready: {health}")
     return ElasticsearchDocumentStore(
         hosts=es_url,
         index="chunks_v1",

@@ -1,6 +1,27 @@
 """Session-scoped testcontainer fixtures for integration tests (T0.9)."""
 
+import json
+import time
+import urllib.request
+
 import pytest
+
+
+def _wait_es_yellow(url: str, timeout: int = 120) -> None:
+    """Block until ES cluster health is at least yellow (shards allocated)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(
+                f"{url}/_cluster/health?wait_for_status=yellow&timeout=10s", timeout=15
+            ) as resp:
+                health = json.loads(resp.read())
+                if health.get("status") in ("yellow", "green"):
+                    return
+        except Exception:
+            pass
+        time.sleep(2)
+    raise TimeoutError(f"ES at {url} did not reach yellow status within {timeout}s")
 
 try:
     import docker
@@ -62,7 +83,9 @@ def es_container():
 def es_url(es_container) -> str:
     host = es_container.get_container_host_ip()
     port = es_container.get_exposed_port(9200)
-    return f"http://{host}:{port}"
+    url = f"http://{host}:{port}"
+    _wait_es_yellow(url)
+    return url
 
 
 @pytest.fixture(scope="session")

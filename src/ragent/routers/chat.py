@@ -12,10 +12,8 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from ragent.clients.rate_limiter import RateLimiter
 from ragent.errors.problem import problem
+from ragent.pipelines.chat import run_retrieval
 from ragent.schemas.chat import ChatRequest, normalize_messages
-
-_PIPELINE_INPUT_KEY = "query_embedder"
-_PIPELINE_OUTPUT_KEY = "source_hydrator"
 
 
 def _build_sources(documents: list[Any]) -> list[dict] | None:
@@ -41,8 +39,10 @@ def _run_retrieval(retrieval_pipeline: Any, req: ChatRequest) -> list[Any]:
     last_user = next(
         (m["content"] for m in reversed(req.messages) if m.get("role") == "user"), ""
     )
-    result = retrieval_pipeline.run({_PIPELINE_INPUT_KEY: {"query": last_user}})
-    return result.get(_PIPELINE_OUTPUT_KEY, {}).get("documents", [])
+    filters = None
+    if req.source_app:
+        filters = {"field": "source_app", "operator": "==", "value": req.source_app}
+    return run_retrieval(retrieval_pipeline, query=last_user, filters=filters)
 
 
 def _rate_limit_response(reset_at: float) -> Response:
