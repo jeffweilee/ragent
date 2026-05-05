@@ -9,53 +9,18 @@ from urllib.error import HTTPError
 import pytest
 
 from ragent.bootstrap.init_schema import (
-    ESPluginMissingError,
     _es_auth_headers,
     _es_request,
     auto_init,
-    check_es_plugins,
     init_es,
     init_mariadb,
 )
-
-
-def _node_resp(plugins: list[str]) -> dict:
-    return {
-        "nodes": {
-            "n1": {"plugins": [{"name": p} for p in plugins]},
-        }
-    }
-
-
-# ── check_es_plugins ────────────────────────────────────────────────────────
-
-
-def test_check_es_plugins_returns_empty_when_all_present() -> None:
-    resp = _node_resp(["analysis-icu", "other-plugin"])
-    with patch("ragent.bootstrap.init_schema._es_request", return_value=resp):
-        assert check_es_plugins("http://es:9200") == []
-
-
-def test_check_es_plugins_returns_missing_plugin() -> None:
-    resp = _node_resp(["other-plugin"])
-    with patch("ragent.bootstrap.init_schema._es_request", return_value=resp):
-        missing = check_es_plugins("http://es:9200")
-    assert "analysis-icu" in missing
-
-
-def test_check_es_plugins_all_missing_when_nodes_empty() -> None:
-    with patch("ragent.bootstrap.init_schema._es_request", return_value={"nodes": {}}):
-        missing = check_es_plugins("http://es:9200")
-    assert "analysis-icu" in missing
-
 
 # ── init_es ─────────────────────────────────────────────────────────────────
 
 
 def test_init_es_creates_index_when_absent() -> None:
     def fake_request(url: str, method: str = "GET", body: dict | None = None):
-        if "/_nodes/plugins" in url:
-            return _node_resp(["analysis-icu"])
         if method == "HEAD":
             return None  # index does not exist
         return {}  # PUT success
@@ -69,8 +34,6 @@ def test_init_es_skips_existing_index() -> None:
 
     def fake_request(url: str, method: str = "GET", body: dict | None = None):
         calls.append((method, url))
-        if "/_nodes/plugins" in url:
-            return _node_resp(["analysis-icu"])
         if method == "HEAD":
             return {}  # index exists
         return {}
@@ -80,18 +43,6 @@ def test_init_es_skips_existing_index() -> None:
 
     put_calls = [c for c in calls if c[0] == "PUT"]
     assert not put_calls, "PUT should not be called when index already exists"
-
-
-def test_init_es_raises_plugin_missing_error() -> None:
-    with (
-        patch(
-            "ragent.bootstrap.init_schema._es_request",
-            return_value=_node_resp(["other"]),
-        ),
-        pytest.raises(ESPluginMissingError) as exc_info,
-    ):
-        init_es("http://es:9200")
-    assert "analysis-icu" in exc_info.value.missing
 
 
 # ── init_mariadb ─────────────────────────────────────────────────────────────
@@ -144,12 +95,6 @@ def test_es_request_returns_empty_dict_for_head_with_no_body() -> None:
     assert result == {}
 
 
-def test_check_es_plugins_returns_all_required_when_nodes_unreachable() -> None:
-    with patch("ragent.bootstrap.init_schema._es_request", return_value=None):
-        missing = check_es_plugins("http://es:9200")
-    assert missing == ["analysis-icu"]
-
-
 # ── auto_init ────────────────────────────────────────────────────────────────
 
 
@@ -163,15 +108,6 @@ def test_auto_init_calls_init_mariadb_and_init_es() -> None:
     mock_engine_fn.assert_called_once_with("mysql+pymysql://u:p@h/db")
     mock_db.assert_called_once()
     mock_es.assert_called_once_with("http://es:9200")
-
-
-# ── ESPluginMissingError ─────────────────────────────────────────────────────
-
-
-def test_es_plugin_missing_error_carries_missing_list() -> None:
-    err = ESPluginMissingError(["analysis-icu", "other"])
-    assert err.missing == ["analysis-icu", "other"]
-    assert "analysis-icu" in str(err)
 
 
 # ── ES auth headers ──────────────────────────────────────────────────────────
@@ -202,19 +138,3 @@ def test_es_auth_headers_empty_when_no_credentials() -> None:
     with patch.dict(os.environ, {}, clear=True):
         headers = _es_auth_headers()
     assert headers == {}
-
-
-# ── check_es_plugins intersection ────────────────────────────────────────────
-
-
-def test_check_es_plugins_requires_all_nodes_have_plugin() -> None:
-    """Mixed cluster: only node1 has the plugin → reported as missing."""
-    resp = {
-        "nodes": {
-            "n1": {"plugins": [{"name": "analysis-icu"}]},
-            "n2": {"plugins": []},
-        }
-    }
-    with patch("ragent.bootstrap.init_schema._es_request", return_value=resp):
-        missing = check_es_plugins("http://es:9200")
-    assert "analysis-icu" in missing

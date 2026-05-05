@@ -1,15 +1,4 @@
 {
-  "settings": {
-    "analysis": {
-      "analyzer": {
-        "icu_text": {
-          "type": "custom",
-          "tokenizer": "icu_tokenizer",
-          "filter": ["icu_folding", "lowercase"]
-        }
-      }
-    }
-  },
   "mappings": {
     "properties": {
       "chunk_id":         { "type": "keyword" },
@@ -17,8 +6,8 @@
       "source_app":       { "type": "keyword" },
       "source_workspace": { "type": "keyword" },
       "lang":             { "type": "keyword" },
-      "title":            { "type": "text", "analyzer": "icu_text" },
-      "text":             { "type": "text", "analyzer": "icu_text" },
+      "title":            { "type": "text" },
+      "text":             { "type": "text" },
       "embedding": {
         "type": "dense_vector",
         "dims": 1024,

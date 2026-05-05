@@ -21,14 +21,6 @@ logger = logging.getLogger(__name__)
 _MIGRATIONS = Path(__file__).parents[3] / "migrations"
 _ES_RESOURCES = Path(__file__).parents[3] / "resources" / "es"
 
-_REQUIRED_ES_PLUGINS = ["analysis-icu"]
-
-
-class ESPluginMissingError(Exception):
-    def __init__(self, missing: list[str]) -> None:
-        self.missing = missing
-        super().__init__(f"Required ES plugins not installed: {missing}")
-
 
 def _es_auth_headers() -> dict[str, str]:
     """Build Authorization header from env vars (API key takes precedence over Basic)."""
@@ -66,25 +58,6 @@ def _es_request(url: str, method: str = "GET", body: dict | None = None) -> dict
         raise
 
 
-def check_es_plugins(es_url: str) -> list[str]:
-    """Return required plugins missing from any node in the cluster.
-
-    Uses intersection: every node must have each plugin. A mixed cluster where
-    only some nodes have analysis-icu will still fail analysis on plugin-missing
-    nodes, so we require cluster-wide presence.
-    """
-    url = f"{es_url.rstrip('/')}/_nodes/plugins"
-    info = _es_request(url)
-    if not info:
-        return list(_REQUIRED_ES_PLUGINS)
-    nodes = list(info.get("nodes", {}).values())
-    if not nodes:
-        return list(_REQUIRED_ES_PLUGINS)
-    node_plugin_sets = [{p["name"] for p in node.get("plugins", [])} for node in nodes]
-    installed = set.intersection(*node_plugin_sets)
-    return [p for p in _REQUIRED_ES_PLUGINS if p not in installed]
-
-
 def _strip_comments(sql: str) -> str:
     lines = [ln for ln in sql.splitlines() if not ln.strip().startswith("--")]
     return "\n".join(lines).strip()
@@ -100,11 +73,6 @@ def init_mariadb(engine) -> None:
 
 
 def init_es(es_url: str) -> None:
-    """Raises ESPluginMissingError when a required plugin is absent — propagates to /readyz."""
-    missing = check_es_plugins(es_url)
-    if missing:
-        raise ESPluginMissingError(missing)
-
     base = es_url.rstrip("/")
     for path in sorted(_ES_RESOURCES.glob("*.json")):
         index = path.stem
