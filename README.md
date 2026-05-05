@@ -223,7 +223,7 @@ curl -X POST http://localhost:8000/chat \
       "source_app": "confluence",
       "source_id": "DOC-123",
       "type": "knowledge",
-      "title": "Q3 OKR Planning",
+      "source_title": "Q3 OKR Planning",
       "excerpt": "Key results for Q3 include..."
     }
   ]
@@ -248,6 +248,49 @@ data: {"type": "done", "content": "Based on the documents...", "model": "gptoss-
 ```
 
 Error event: `{"type": "error", "error_code": "LLM_ERROR", "message": "..."}`
+
+---
+
+### Retrieve
+
+#### `POST /retrieve` — Retrieve chunks without LLM
+
+Runs the full retrieval pipeline (embed → kNN + BM25 → RRF join → source hydration) and returns ranked chunks directly, without invoking the LLM. Useful for debugging retrieval quality or building custom UIs.
+
+```bash
+curl -X POST http://localhost:8000/retrieve \
+  -H "Content-Type: application/json" \
+  -H "X-User-Id: user-123" \
+  -d '{
+    "query": "What are our Q3 OKRs?",
+    "source_app": "confluence",
+    "source_workspace": "engineering"
+  }'
+```
+
+```json
+// 200 OK
+{
+  "chunks": [
+    {
+      "document_id": "01J9ABCDEFGHJKMNPQRSTVWXYZ",
+      "source_app": "confluence",
+      "source_id": "DOC-123",
+      "type": "knowledge",
+      "source_title": "Q3 OKR Planning",
+      "excerpt": "Key results for Q3 include..."
+    }
+  ]
+}
+```
+
+**Request fields:**
+
+| Field | Type | Required | Notes |
+|---|---|---|---|
+| `query` | `string` | Yes | The retrieval query text |
+| `source_app` | `string` | No | ES filter; omit for unrestricted retrieval |
+| `source_workspace` | `string` | No | ES filter; ANDed with `source_app` when both supplied |
 
 ---
 
@@ -285,7 +328,8 @@ curl http://localhost:8000/metrics
 ┌─────────────────────────────────────────────────────────────────┐
 │                       FastAPI Router                            │
 │   POST /ingest   GET /ingest   DELETE /ingest   POST /chat      │
-│   POST /chat/stream   GET /livez   GET /readyz   GET /metrics   │
+│   POST /chat/stream   POST /retrieve                            │
+│   GET /livez   GET /readyz   GET /metrics                       │
 └──────┬───────────────────────────────────────┬──────────────────┘
        │ kiq task                              │ sync pipeline
        ▼                                       ▼
