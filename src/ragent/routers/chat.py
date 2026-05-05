@@ -14,7 +14,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from ragent.clients.rate_limiter import RateLimiter
 from ragent.errors.problem import problem
 from ragent.pipelines.chat import run_retrieval
-from ragent.schemas.chat import ChatRequest, normalize_messages
+from ragent.schemas.chat import ChatRequest, build_rag_messages
 
 
 def _build_sources(documents: list[Any]) -> list[dict] | None:
@@ -87,8 +87,8 @@ def create_chat_router(
     ) -> Response:
         if (blocked := _check_rate(x_user_id)) is not None:
             return blocked
-        messages = normalize_messages(body)
         docs = await run_in_threadpool(_run_retrieval, retrieval_pipeline, body)
+        messages = build_rag_messages(body, docs)
         result = await run_in_threadpool(
             llm_client.chat,
             messages=messages,
@@ -113,8 +113,8 @@ def create_chat_router(
     ) -> Response:
         if (blocked := _check_rate(x_user_id)) is not None:
             return blocked
-        messages = normalize_messages(body)
         docs = await run_in_threadpool(_run_retrieval, retrieval_pipeline, body)
+        messages = build_rag_messages(body, docs)
         sources = _build_sources(docs)
 
         def _generate():
