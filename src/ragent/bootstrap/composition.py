@@ -166,11 +166,13 @@ def build_container() -> Container:
     registry.register(StubGraphExtractor())
 
     join_mode = os.environ.get("CHAT_JOIN_MODE", "rrf")
+    enable_rerank = os.environ.get("CHAT_RERANK_ENABLED", "true").lower() == "true"
     retrieval_pipeline = build_retrieval_pipeline(
         embedder=embedding_client,
         document_store=document_store,
         doc_repo=doc_repo,
         join_mode=join_mode,
+        rerank_client=rerank_client if enable_rerank else None,
     )
 
     ingest_pipeline = build_ingest_pipeline(
