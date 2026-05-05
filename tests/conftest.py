@@ -24,6 +24,102 @@ def _wait_es_yellow(url: str, timeout: int = 120) -> None:
     raise TimeoutError(f"ES at {url} did not reach yellow status within {timeout}s")
 
 
+def _wait_wiremock_ready(url: str, timeout: int = 30) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            with urllib.request.urlopen(f"{url}/__admin/health", timeout=5) as resp:
+                if resp.status == 200:
+                    return
+        except Exception:
+            pass
+        time.sleep(1)
+    raise TimeoutError(f"WireMock at {url} did not become ready within {timeout}s")
+
+
+def _configure_wiremock_stubs(base_url: str) -> None:
+    """Register default stubs for all external API endpoints."""
+    # Expiry far in the future so the token is never refreshed during tests.
+    _future_ms = 9_999_999_999_000
+    stubs = [
+        # Auth: POST /auth/api/accesstoken
+        {
+            "request": {"method": "POST", "urlPath": "/auth/api/accesstoken"},
+            "response": {
+                "status": 200,
+                "headers": {"Content-Type": "application/json"},
+                "jsonBody": {"access_token": "test-token", "expiresAt": _future_ms},
+            },
+        },
+        # Embedding: POST /text_embedding — returns one 1024-dim zero vector.
+        # Set EMBEDDER_BATCH_SIZE=1 in dev_env so each request sends exactly one
+        # text and the fixed single-vector response stays consistent.
+        {
+            "request": {"method": "POST", "urlPath": "/text_embedding"},
+            "response": {
+                "status": 200,
+                "headers": {"Content-Type": "application/json"},
+                "jsonBody": {
+                    "returnCode": 96200,
+                    "data": [{"embedding": [0.0] * 1024}],
+                },
+            },
+        },
+        # LLM non-streaming: body contains "stream": false
+        {
+            "request": {
+                "method": "POST",
+                "urlPath": "/gpt_oss_120b/v1/chat/completions",
+                "bodyPatterns": [{"matchesJsonPath": "$[?(@.stream == false)]"}],
+            },
+            "response": {
+                "status": 200,
+                "headers": {"Content-Type": "application/json"},
+                "jsonBody": {
+                    "choices": [{"message": {"content": "test response"}}],
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 5,
+                        "total_tokens": 15,
+                    },
+                },
+            },
+        },
+        # LLM streaming: body contains "stream": true — respond with SSE
+        {
+            "request": {
+                "method": "POST",
+                "urlPath": "/gpt_oss_120b/v1/chat/completions",
+                "bodyPatterns": [{"matchesJsonPath": "$[?(@.stream == true)]"}],
+            },
+            "response": {
+                "status": 200,
+                "headers": {"Content-Type": "text/event-stream"},
+                "body": ('data: {"choices":[{"delta":{"content":"ok"}}]}\n\ndata: [DONE]\n\n'),
+            },
+        },
+        # Rerank: POST /rerank
+        {
+            "request": {"method": "POST", "urlPath": "/rerank"},
+            "response": {
+                "status": 200,
+                "headers": {"Content-Type": "application/json"},
+                "jsonBody": {"results": [{"index": 0, "score": 0.9}]},
+            },
+        },
+    ]
+    for stub in stubs:
+        data = json.dumps(stub).encode()
+        req = urllib.request.Request(
+            f"{base_url}/__admin/mappings",
+            data=data,
+            method="POST",
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(req) as _:
+            pass
+
+
 try:
     import docker
 
@@ -128,6 +224,28 @@ def redis_url(redis_container) -> str:
     return f"redis://{host}:{port}"
 
 
+@pytest.fixture(scope="session")
+def wiremock_container():
+    if not DOCKER_AVAILABLE:
+        pytest.skip("Docker not available")
+    from testcontainers.core.container import DockerContainer
+
+    container = DockerContainer("wiremock/wiremock:latest")
+    container.with_exposed_ports(8080)
+    with container as c:
+        yield c
+
+
+@pytest.fixture(scope="session")
+def wiremock_url(wiremock_container) -> str:
+    host = wiremock_container.get_container_host_ip()
+    port = wiremock_container.get_exposed_port(8080)
+    url = f"http://{host}:{port}"
+    _wait_wiremock_ready(url)
+    _configure_wiremock_stubs(url)
+    return url
+
+
 @pytest.fixture
 def dev_env(
     monkeypatch: pytest.MonkeyPatch,
@@ -135,18 +253,21 @@ def dev_env(
     es_url: str,
     minio_endpoint: str,
     redis_url: str,
+    wiremock_url: str,
 ) -> None:
     """Apply RAGENT dev-mode env wired to the testcontainer fixtures (B30)."""
     pairs = {
         "RAGENT_ENV": "dev",
         "RAGENT_AUTH_DISABLED": "true",
         "RAGENT_HOST": "127.0.0.1",
-        "AUTH_URL": "http://localhost:9999/oauth/token",
+        "AUTH_URL": wiremock_url,
         "AUTH_CLIENT_ID": "ragent-test",
         "AUTH_CLIENT_SECRET": "secret",
-        "EMBEDDING_API_URL": "http://localhost:9999/embed",
-        "LLM_API_URL": "http://localhost:9999/chat",
-        "RERANK_API_URL": "http://localhost:9999/rerank",
+        "EMBEDDING_API_URL": wiremock_url,
+        "LLM_API_URL": wiremock_url,
+        "RERANK_API_URL": f"{wiremock_url}/rerank",
+        # 1 text per batch → the single-embedding WireMock stub stays consistent.
+        "EMBEDDER_BATCH_SIZE": "1",
         "MINIO_ENDPOINT": minio_endpoint,
         "MINIO_ACCESS_KEY": "minioadmin",
         "MINIO_SECRET_KEY": "minioadmin",
