@@ -29,10 +29,11 @@ uv sync
 
 ```bash
 # Required
-export DATABASE_URL="mysql+pymysql://user:pass@localhost:3306/ragent"
+export MARIADB_DSN="mysql+pymysql://user:pass@localhost:3306/ragent"
+export REDIS_MODE=sentinel
 export REDIS_SENTINEL_HOSTS="localhost:26379"
-export REDIS_SENTINEL_MASTER="mymaster"
-export ES_HOST="http://localhost:9200"
+export REDIS_BROKER_SENTINEL_MASTER="mymaster"
+export ES_HOSTS="http://localhost:9200"
 export MINIO_ENDPOINT="localhost:9000"
 export MINIO_ACCESS_KEY="minioadmin"
 export MINIO_SECRET_KEY="minioadmin"
@@ -63,13 +64,13 @@ uv run alembic upgrade head
 ### 4. Start the API server
 
 ```bash
-uv run uvicorn ragent.api:app --host 0.0.0.0 --port 8000 --reload
+python -m ragent.api
 ```
 
 ### 5. Start the background worker
 
 ```bash
-uv run taskiq worker ragent.broker:broker ragent.tasks
+python -m ragent.worker
 ```
 
 ### 6. Verify
