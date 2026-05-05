@@ -55,8 +55,7 @@ class _IdempotencyClean:
     def run(self, documents: list[Document], document_id: str) -> dict:
         self._repo.delete_by_document_id(document_id)
         stamped = [
-            dataclasses.replace(d, meta={**d.meta, "document_id": document_id})
-            for d in documents
+            dataclasses.replace(d, meta={**d.meta, "document_id": document_id}) for d in documents
         ]
         return {"documents": stamped}
 
@@ -193,7 +192,7 @@ class _CharBudgetChunker:
             for i, chunk_text in enumerate(_build_chunks(atoms, target, overlap, joiner)):
                 # Search forward from offset to find the chunk's actual start
                 # in the original content; avoids drift from variable carry length.
-                key = chunk_text[:min(40, len(chunk_text))]
+                key = chunk_text[: min(40, len(chunk_text))]
                 found = content.find(key, offset)
                 if found >= 0:
                     offset = found
