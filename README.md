@@ -82,11 +82,21 @@ curl http://localhost:8000/livez
 
 ### Development
 
+**Linux / macOS**
+
 ```bash
 make check        # format + lint + test
 make test         # pytest with 92% coverage gate
 make format       # ruff format
 make lint         # ruff check --fix
+```
+
+**Windows** (run targets individually via `uv`)
+
+```powershell
+uv run ruff format .                                                          # format
+uv run ruff check . --fix                                                     # lint
+uv run pytest --cov=src/ragent --cov-branch --cov-fail-under=92              # test
 ```
 
 ---
