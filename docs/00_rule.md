@@ -387,8 +387,9 @@ Before running `uv run pytest`, ensure the Docker daemon is running:
 docker ps &>/dev/null && echo "Docker ready" || {
     # 2. Start daemon in background if not running
     sudo dockerd --host=unix:///var/run/docker.sock &>/tmp/dockerd.log &
-    # 3. Wait until socket is available (up to 30 s)
-    until docker ps &>/dev/null; do sleep 1; done
+    # 3. Wait until socket is available (timeout after 30 s to avoid hanging)
+    for i in {1..30}; do docker ps &>/dev/null && break; sleep 1; done
+    docker ps &>/dev/null || { echo "Docker daemon failed to start within 30s — check /tmp/dockerd.log"; exit 1; }
     echo "Docker daemon started"
 }
 ```
@@ -402,12 +403,12 @@ docker ps &>/dev/null && echo "Docker ready" || {
 
 ```bash
 # 0. Start Docker daemon FIRST (see Docker section above) — required before pytest
-docker ps &>/dev/null || { sudo dockerd --host=unix:///var/run/docker.sock &>/tmp/dockerd.log & until docker ps &>/dev/null; do sleep 1; done; }
+docker ps &>/dev/null || { sudo dockerd --host=unix:///var/run/docker.sock &>/tmp/dockerd.log & for i in {1..30}; do docker ps &>/dev/null && break; sleep 1; done; docker ps &>/dev/null || { echo "Docker daemon failed to start within 30s"; exit 1; }; }
 
-# 1-4. Quality gate
-uv run ruff format .
-uv run ruff check . --fix
-uv run pytest --ignore=tests/e2e   # MUST include @pytest.mark.docker integration tests — never skip
+# 1-4. Quality gate (use `make` so pre-commit and CI run identical commands, incl. coverage)
+make format
+make lint
+make test   # MUST include @pytest.mark.docker integration tests — never skip; enforces --cov-fail-under=92
 uv run bandit -r src/ --severity-level high --confidence-level high
 ```
 
