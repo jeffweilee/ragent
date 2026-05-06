@@ -1,71 +1,90 @@
-"""T2.14 / TA.6 — Ingest router: POST/GET/DELETE/LIST endpoints (spec §4.1, B5, B11, S23).
+"""T2v.25 — Ingest router v2: JSON-only POST /ingest (spec §4.1).
 
-Service methods are async, so routes await them directly (no run_in_threadpool).
+Discriminated body validates via Pydantic before reaching the service.
+Multipart is not supported — old callers fall through to a clean 415/422
+because `content-type: multipart/...` cannot satisfy the JSON discriminator.
 """
 
 from __future__ import annotations
 
-import io
 from typing import Annotated, Any
 
-from fastapi import APIRouter, File, Form, Header, Query, Response, UploadFile
+from fastapi import APIRouter, Header, Query, Request, Response
 from fastapi.responses import JSONResponse
+from pydantic import ValidationError
 
 from ragent.errors.problem import problem
-from ragent.services.ingest_service import FileTooLarge, MimeNotAllowed
+from ragent.schemas.ingest import IngestRequest
+from ragent.services.ingest_service import (
+    FileTooLarge,
+    MimeNotAllowed,
+    ObjectNotFoundError,
+    UnknownMinioSiteError,
+)
 
 
-def create_router(svc: Any) -> APIRouter:  # noqa: B008
+def _is_mime_error(errors: list[dict]) -> bool:
+    return any(any(part == "content_type" for part in e.get("loc", ())) for e in errors)
+
+
+def _validation_problem(exc: ValidationError):
+    raw = exc.errors()
+    flat = [
+        {"field": ".".join(str(p) for p in e.get("loc", ())), "message": e.get("msg", "")}
+        for e in raw
+    ]
+    if _is_mime_error(raw):
+        return problem(
+            415,
+            "INGEST_MIME_UNSUPPORTED",
+            "Unsupported media type",
+            errors=flat,
+        )
+    return problem(
+        422,
+        "INGEST_VALIDATION",
+        "Validation error",
+        detail="Request body failed validation",
+        errors=flat,
+    )
+
+
+def create_router(svc: Any) -> APIRouter:
     router = APIRouter()
 
     @router.post("/ingest", status_code=202)
-    async def create_document(  # noqa: B008
-        file: Annotated[UploadFile, File()],
-        source_id: Annotated[str | None, Form()] = None,
-        source_app: Annotated[str | None, Form()] = None,
-        source_title: Annotated[str | None, Form()] = None,
-        source_workspace: Annotated[str | None, Form()] = None,
+    async def create_document(
+        request: Request,
         x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
     ):
-        field_errors = []
-        if not source_id:
-            field_errors.append({"field": "source_id", "message": "required"})
-        if not source_app:
-            field_errors.append({"field": "source_app", "message": "required"})
-        if not source_title:
-            field_errors.append({"field": "source_title", "message": "required"})
-        if field_errors:
-            return problem(
-                422,
-                "INGEST_VALIDATION",
-                "Validation error",
-                detail="Required fields missing",
-                errors=field_errors,
-            )
-
-        data = await file.read()
         try:
-            doc_id = await svc.create(
-                create_user=x_user_id,
-                source_id=source_id,
-                source_app=source_app,
-                source_title=source_title,
-                source_workspace=source_workspace,
-                file_data=io.BytesIO(data),
-                file_size=len(data),
-                content_type=file.content_type or "application/octet-stream",
-            )
+            body = await request.json()
+        except Exception:
+            return problem(415, "INGEST_MIME_UNSUPPORTED", "JSON body required")
+        from pydantic import TypeAdapter
+
+        try:
+            payload = TypeAdapter(IngestRequest).validate_python(body)
+        except ValidationError as exc:
+            return _validation_problem(exc)
+
+        try:
+            doc_id = await svc.create(create_user=x_user_id, request=payload)
         except MimeNotAllowed:
             return problem(415, "INGEST_MIME_UNSUPPORTED", "Unsupported media type")
         except FileTooLarge:
-            return problem(413, "INGEST_FILE_TOO_LARGE", "File too large")
+            return problem(413, "INGEST_FILE_TOO_LARGE", "Inline content too large")
+        except UnknownMinioSiteError:
+            return problem(422, "INGEST_MINIO_SITE_UNKNOWN", "Unknown minio_site")
+        except ObjectNotFoundError:
+            return problem(
+                422, "INGEST_OBJECT_NOT_FOUND", "Object not found at minio_site/object_key"
+            )
 
         return JSONResponse({"task_id": doc_id}, status_code=202)
 
     @router.get("/ingest/{document_id}")
-    async def get_document(
-        document_id: str,
-    ):
+    async def get_document(document_id: str):
         doc = await svc.get(document_id)
         if doc is None:
             return problem(404, "INGEST_NOT_FOUND", "Document not found")
@@ -77,9 +96,7 @@ def create_router(svc: Any) -> APIRouter:  # noqa: B008
         }
 
     @router.delete("/ingest/{document_id}", status_code=204)
-    async def delete_document(
-        document_id: str,
-    ):
+    async def delete_document(document_id: str):
         await svc.delete(document_id)
         return Response(status_code=204)
 

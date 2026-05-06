@@ -21,6 +21,7 @@ class Container:
     llm_client: Any
     rerank_client: Any
     minio_client: Any
+    minio_registry: Any
     es_client: Any
     engine: Any
     rate_limiter: Any
@@ -65,6 +66,7 @@ def build_container() -> Container:
     from ragent.repositories.chunk_repository import ChunkRepository
     from ragent.repositories.document_repository import DocumentRepository
     from ragent.storage.minio_client import MinIOClient
+    from ragent.storage.minio_registry import MinioSiteRegistry
 
     http = httpx.Client(timeout=60.0)
     auth_http = httpx.Client(timeout=10.0)  # dedicated client for token exchange (10 s per spec)
@@ -137,6 +139,10 @@ def build_container() -> Container:
         get_timeout=_float_env("MINIO_GET_TIMEOUT_SECONDS", 30.0),
     )
 
+    # v2: MinioSiteRegistry — fail-fast on missing __default__; falls back to
+    # legacy single-MinIO env vars when MINIO_SITES is unset (synthesised entry).
+    minio_registry = MinioSiteRegistry.from_env()
+
     es_hosts = _require("ES_HOSTS").split(",")
     es_verify_certs = os.environ.get("ES_VERIFY_CERTS", "true").lower() == "true"
     _es_password = os.environ.get("ES_PASSWORD")
@@ -198,6 +204,7 @@ def build_container() -> Container:
         llm_client=llm_client,
         rerank_client=rerank_client,
         minio_client=minio_client,
+        minio_registry=minio_registry,
         es_client=es_client,
         engine=engine,
         rate_limiter=rate_limiter,
