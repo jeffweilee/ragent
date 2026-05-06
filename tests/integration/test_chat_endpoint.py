@@ -150,6 +150,7 @@ def test_chat_no_docs_uses_default_system_prompt_unchanged_and_does_not_wrap_use
 
     sent_messages = llm_client.chat.call_args.kwargs["messages"]
     assert sent_messages[0]["role"] == "system"
-    assert sent_messages[0]["content"] == "You are a helpful assistant"
+    assert sent_messages[0]["content"].startswith("You are a helpful assistant")
+    assert "markdown" in sent_messages[0]["content"].lower()
     last_user = next(m for m in reversed(sent_messages) if m["role"] == "user")
     assert "=== CONTEXT START ===" not in last_user["content"]

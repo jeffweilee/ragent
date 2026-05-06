@@ -11,12 +11,17 @@ _DEFAULT_PROVIDER = os.environ.get("RAGENT_DEFAULT_LLM_PROVIDER", "openai")
 _DEFAULT_MODEL = os.environ.get("RAGENT_DEFAULT_LLM_MODEL", "gptoss-120b")
 _DEFAULT_TEMPERATURE = float(os.environ.get("RAGENT_DEFAULT_TEMPERATURE", "0.7"))
 _DEFAULT_MAX_TOKENS = int(os.environ.get("RAGENT_DEFAULT_MAX_TOKENS", "4096"))
-_DEFAULT_SYSTEM_PROMPT = os.environ.get(
-    "RAGENT_DEFAULT_SYSTEM_PROMPT", "You are a helpful assistant"
+_MARKDOWN_OUTPUT_RULE = (
+    "Always format your response in Markdown (headings, lists, code fences, "
+    "emphasis as appropriate). Output Markdown only — no surrounding code "
+    "fence wrapping the entire reply."
 )
-_DEFAULT_RAG_SYSTEM_PROMPT = (
-    os.environ.get("RAGENT_DEFAULT_RAG_SYSTEM_PROMPT")
-    or """\
+_DEFAULT_SYSTEM_PROMPT = os.environ.get(
+    "RAGENT_DEFAULT_SYSTEM_PROMPT",
+    f"You are a helpful assistant. {_MARKDOWN_OUTPUT_RULE}",
+)
+_DEFAULT_RAG_SYSTEM_PROMPT = os.environ.get("RAGENT_DEFAULT_RAG_SYSTEM_PROMPT") or (
+    """\
 You are a retrieval-grounded assistant. Every user turn contains an \
 isolated `=== CONTEXT START === ... === CONTEXT END ===` block followed \
 by the user's request. Use ONLY facts from that block; do not rely on \
@@ -60,11 +65,13 @@ Do not invent facts absent from the context.
      Context: [#1] source_title=PR-482 "...fixes login retry loop..."
      Assistant: "Fixed an infinite retry loop on failed logins. [PR-482]"
 
-If the request fits none of the above, default to QUESTION style."""
+If the request fits none of the above, default to QUESTION style.
+
+"""
+    + _MARKDOWN_OUTPUT_RULE
 )
-_RAG_GROUNDING_RULES = (
-    os.environ.get("RAGENT_RAG_GROUNDING_RULES")
-    or """\
+_RAG_GROUNDING_RULES = os.environ.get("RAGENT_RAG_GROUNDING_RULES") or (
+    """\
 Use ONLY facts from the `=== CONTEXT START === ... === CONTEXT END ===` \
 block in the user turn; do not rely on prior knowledge. If the context \
 is insufficient, reply exactly: \
@@ -76,7 +83,10 @@ mid-sentence. Citations must refer only to entries in the context block.
 
 Detect the user's intent (QUESTION / SUMMARY / GENERATION) and apply \
 the matching response style: direct answer, bullet-point summary, or \
-drafted artefact. Default to QUESTION style when intent is unclear."""
+drafted artefact. Default to QUESTION style when intent is unclear.
+
+"""
+    + _MARKDOWN_OUTPUT_RULE
 )
 _PROVIDER_ALLOWLIST = frozenset({"openai"})
 _FILTER_MAX_LEN = 64
