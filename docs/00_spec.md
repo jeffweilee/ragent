@@ -535,7 +535,7 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 
 | Client | Endpoint | Auth | Phase |
 |---|---|---|:---:|
-| `TokenManager`    | `AI_API_AUTH_URL/auth/api/accesstoken`          | J1 → J2 | **P1** |
+| `TokenManager` (×3 local / ×1 K8s) | `AI_API_AUTH_URL/auth/api/accesstoken` | J1 `{"key":…}` → J2 | **P1** |
 | `EmbeddingClient` | `EMBEDDING_API_URL/text_embedding`              | J2 | **P1** |
 | `LLMClient`       | `LLM_API_URL/gpt_oss_120b/v1/chat/completions` | J2 | **P1** |
 | `RerankClient`    | `RERANK_API_URL/`                               | J2 | P1 unit / P2 wired |
@@ -543,7 +543,7 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 
 All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on client.
 
-**TokenManager refresh discipline (P-F):** the J1→J2 refresh path is **single-flight** — concurrent callers around the `expiresAt − 5 min` boundary share one in-flight refresh (in-process `asyncio.Lock` / `threading.Lock` keyed on the J1 token), avoiding stampede. The cached J2 is shared by Embedding/LLM/Rerank clients.
+**TokenManager refresh discipline (P-F):** each `TokenManager` instance has its own `threading.Lock`; concurrent callers around the `expiresAt − 5 min` boundary share one in-flight refresh per manager. Local mode: three independent managers (`AI_LLM/EMBEDDING/RERANK_API_J1_TOKEN`), each caching its own J2. K8s mode (`AI_USE_K8S_SERVICE_ACCOUNT_TOKEN=true`): one shared manager reads the SA token file per refresh and its J2 is shared across all three clients.
 
 ### 4.6 Environment Variables (C2 + B28)
 
@@ -593,9 +593,11 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 
 | Variable | Default | Description |
 |---|---|---|
-| `AI_API_AUTH_URL`                     | (required)       | TokenManager J1→J2 endpoint. |
-| `AI_API_CLIENT_ID`                    | (required)       | J1 identity POSTed to `AI_API_AUTH_URL/auth/api/accesstoken`. **Never logged, never echoed in error responses.** |
-| `AI_API_CLIENT_SECRET`                | (required)       | J1 secret. **Never logged, never echoed.** |
+| `AI_API_AUTH_URL`                     | (required)       | TokenManager J1→J2 endpoint (`POST /auth/api/accesstoken`). |
+| `AI_LLM_API_J1_TOKEN`                 | (required, local) | J1 token for LLM service. POSTed as `{"key": value}`. **Never logged, never echoed.** |
+| `AI_EMBEDDING_API_J1_TOKEN`           | (required, local) | J1 token for Embedding service. **Never logged, never echoed.** |
+| `AI_RERANK_API_J1_TOKEN`              | (required, local) | J1 token for Rerank service. **Never logged, never echoed.** |
+| `AI_USE_K8S_SERVICE_ACCOUNT_TOKEN`    | `false`          | When `true`, reads J1 from `/var/run/secrets/kubernetes.io/serviceaccount/token`; single shared J2 across all three services. Overrides the three `J1_TOKEN` vars. |
 | `EMBEDDING_API_URL`                   | (required)       | bge-m3 endpoint. |
 | `LLM_API_URL`                         | (required)       | gptoss-120b endpoint. |
 | `RERANK_API_URL`                      | (required P2)    | Rerank endpoint (P1 unit-tests only; wired in P2). |
