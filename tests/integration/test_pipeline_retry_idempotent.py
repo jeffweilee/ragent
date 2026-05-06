@@ -1,13 +1,27 @@
 """T3.2e — Pipeline retry: idempotency-clean purges prior chunks before re-indexing (R4, S25)."""
 
 import dataclasses
-from unittest.mock import MagicMock
+from typing import Any
+from unittest.mock import AsyncMock
 
+import anyio
 import pytest
 
 from tests.conftest import FakeDocumentStore as _FakeStore
 
 pytestmark = pytest.mark.docker
+
+
+def _run_pipeline_in_thread(pipeline, inputs: dict, **kwargs: Any) -> dict:
+    """Run a Haystack pipeline through anyio.to_thread.run_sync so that sync
+    pipeline components can call anyio.from_thread.run() to invoke async repos
+    — the same bridge FastAPI's run_in_threadpool provides in production.
+    """
+
+    async def _async_run() -> dict:
+        return await anyio.to_thread.run_sync(lambda: pipeline.run(inputs, **kwargs))
+
+    return anyio.run(_async_run)
 
 
 def test_pipeline_clears_chunks_before_rerun():
@@ -17,7 +31,7 @@ def test_pipeline_clears_chunks_before_rerun():
     delete_calls: list[str] = []
     insert_calls: list[str] = []
 
-    chunk_repo = MagicMock()
+    chunk_repo = AsyncMock()
     chunk_repo.delete_by_document_id.side_effect = lambda doc_id: delete_calls.append(doc_id)
     chunk_repo.bulk_insert.side_effect = lambda chunks: insert_calls.extend(
         [c["document_id"] for c in chunks]
@@ -41,7 +55,8 @@ def test_pipeline_clears_chunks_before_rerun():
     from haystack.dataclasses import ByteStream
 
     text = "Hello world. Second sentence. Third sentence."
-    result = pipeline.run(
+    result = _run_pipeline_in_thread(
+        pipeline,
         {
             "converter": {"sources": [ByteStream(data=text.encode())]},
             "idempotency_clean": {"document_id": "DOC001"},
@@ -63,7 +78,7 @@ def test_pipeline_retry_produces_no_duplicate_chunks():
     from ragent.pipelines.factory import build_ingest_pipeline
 
     chunks: list[dict] = []
-    chunk_repo = MagicMock()
+    chunk_repo = AsyncMock()
     chunk_repo.delete_by_document_id.side_effect = lambda doc_id: chunks.clear()
     chunk_repo.bulk_insert.side_effect = chunks.extend
 
@@ -81,11 +96,12 @@ def test_pipeline_retry_produces_no_duplicate_chunks():
         pipeline = build_ingest_pipeline(
             embedder=_MockEmbedder(), document_store=_FakeStore(), chunk_repo=chunk_repo
         )
-        pipeline.run(
+        _run_pipeline_in_thread(
+            pipeline,
             {
                 "converter": {"sources": [ByteStream(data=text.encode())]},
                 "idempotency_clean": {"document_id": "DOC001"},
-            }
+            },
         )
 
     _run()

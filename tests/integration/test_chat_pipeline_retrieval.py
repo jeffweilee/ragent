@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from haystack.dataclasses import Document
@@ -57,10 +57,22 @@ def _pipeline(es_store, mock_embedder, doc_repo, join_mode="rrf"):
 
 
 def _run(pipeline, query: str, filters: dict | None = None) -> list[Document]:
-    """Run retrieval pipeline; returns hydrated documents."""
+    """Run retrieval pipeline; returns hydrated documents.
+
+    Wrapped via ``anyio.to_thread.run_sync`` so the sync ``_SourceHydrator``
+    component can bridge back to the async ``doc_repo`` via ``anyio.from_thread.run``
+    — the same bridge FastAPI's ``run_in_threadpool`` provides in production.
+    """
+    import anyio
+
     from ragent.pipelines.chat import run_retrieval
 
-    return run_retrieval(pipeline, query=query, filters=filters)
+    async def _async_run() -> list[Document]:
+        return await anyio.to_thread.run_sync(
+            lambda: run_retrieval(pipeline, query=query, filters=filters)
+        )
+
+    return anyio.run(_async_run)
 
 
 def _write_and_refresh(es_store, docs: list[Document]) -> None:
@@ -73,7 +85,7 @@ def _write_and_refresh(es_store, docs: list[Document]) -> None:
 
 
 def test_empty_index_returns_no_documents(es_store, mock_embedder) -> None:
-    doc_repo = MagicMock()
+    doc_repo = AsyncMock()
     doc_repo.get_sources_by_document_ids.return_value = {}
 
     pipeline = _pipeline(es_store, mock_embedder, doc_repo)
@@ -100,7 +112,7 @@ def test_bm25_retrieves_matching_document(es_store, mock_embedder) -> None:
             )
         ],
     )
-    doc_repo = MagicMock()
+    doc_repo = AsyncMock()
     doc_repo.get_sources_by_document_ids.return_value = {
         "doc-bm25": ("app_bm25", "src-bm25", "BM25 Title")
     }
@@ -132,7 +144,7 @@ def test_vector_retrieves_document_by_embedding(es_store, mock_embedder) -> None
             )
         ],
     )
-    doc_repo = MagicMock()
+    doc_repo = AsyncMock()
     doc_repo.get_sources_by_document_ids.return_value = {}
 
     pipeline = _pipeline(es_store, mock_embedder, doc_repo, join_mode="vector_only")
@@ -160,7 +172,7 @@ def test_source_hydrator_enriches_documents(es_store, mock_embedder) -> None:
             )
         ],
     )
-    doc_repo = MagicMock()
+    doc_repo = AsyncMock()
     doc_repo.get_sources_by_document_ids.return_value = {
         "doc-hydrate": ("app_h", "src-xyz", "Hydrated Title")
     }
@@ -196,7 +208,7 @@ def test_pipeline_returns_full_content_untruncated(es_store, mock_embedder) -> N
             )
         ],
     )
-    doc_repo = MagicMock()
+    doc_repo = AsyncMock()
     doc_repo.get_sources_by_document_ids.return_value = {}
 
     pipeline = _pipeline(es_store, mock_embedder, doc_repo, join_mode="vector_only")
@@ -234,7 +246,7 @@ def test_filter_source_app_isolates_results(es_store, mock_embedder) -> None:
             ),
         ],
     )
-    doc_repo = MagicMock()
+    doc_repo = AsyncMock()
     doc_repo.get_sources_by_document_ids.return_value = {}
 
     pipeline = _pipeline(es_store, mock_embedder, doc_repo, join_mode="bm25_only")
