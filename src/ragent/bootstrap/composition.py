@@ -139,7 +139,12 @@ def build_container() -> Container:
 
     es_hosts = _require("ES_HOSTS").split(",")
     es_verify_certs = os.environ.get("ES_VERIFY_CERTS", "true").lower() == "true"
-    es_basic_auth = (os.environ.get("ES_USERNAME", "elastic"), os.environ.get("ES_PASSWORD", ""))
+    _es_password = os.environ.get("ES_PASSWORD")
+    es_basic_auth = (
+        (os.environ.get("ES_USERNAME", "elastic"), _es_password)
+        if _es_password is not None
+        else None
+    )
     es_client = Elasticsearch(
         hosts=es_hosts,
         basic_auth=es_basic_auth,
