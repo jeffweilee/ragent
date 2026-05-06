@@ -72,6 +72,9 @@ def build_container() -> Container:
     auth_url = _require("AI_API_AUTH_URL")
     use_k8s = _bool_env("AI_USE_K8S_SERVICE_ACCOUNT_TOKEN", False)
 
+    join_mode = os.environ.get("CHAT_JOIN_MODE", "rrf")
+    enable_rerank = _bool_env("CHAT_RERANK_ENABLED", True)
+
     if use_k8s:
         # Single SA token exchanged for J2; shared across all three services.
         _shared = TokenManager(
@@ -88,8 +91,15 @@ def build_container() -> Container:
         embedding_tm = TokenManager(
             auth_url=auth_url, j1_token=_require("AI_EMBEDDING_API_J1_TOKEN"), http=auth_http
         )
-        rerank_tm = TokenManager(
-            auth_url=auth_url, j1_token=_require("AI_RERANK_API_J1_TOKEN"), http=auth_http
+        # Only require rerank credentials when reranking is enabled.
+        rerank_tm = (
+            TokenManager(
+                auth_url=auth_url,
+                j1_token=_require("AI_RERANK_API_J1_TOKEN"),
+                http=auth_http,
+            )
+            if enable_rerank
+            else None
         )
 
     embedding_client = EmbeddingClient(
@@ -104,13 +114,11 @@ def build_container() -> Container:
         get_token=llm_tm.get_token,
     )
 
-    join_mode = os.environ.get("CHAT_JOIN_MODE", "rrf")
-    enable_rerank = os.environ.get("CHAT_RERANK_ENABLED", "true").lower() == "true"
     rerank_client = (
         RerankClient(
             api_url=_require("RERANK_API_URL"),
             http=http,
-            get_token=rerank_tm.get_token,
+            get_token=rerank_tm.get_token,  # type: ignore[union-attr]
         )
         if enable_rerank
         else None

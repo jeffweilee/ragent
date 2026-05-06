@@ -36,7 +36,7 @@ class TokenManager:
         try:
             return Path(self._k8s_path).read_text().strip()  # type: ignore[arg-type]
         except OSError as exc:
-            raise RuntimeError("Token refresh failed") from exc
+            raise RuntimeError("Failed to read Kubernetes service account token") from exc
 
     def get_token(self) -> str:
         with self._lock:
@@ -51,10 +51,10 @@ class TokenManager:
             resp = self._http.post(self._url, json={"key": j1})
             resp.raise_for_status()
             data = resp.json()
-        except RuntimeError:
-            raise
         except Exception as exc:
             raise RuntimeError("Token refresh failed") from exc
-        dt = datetime.strptime(data["expiresAt"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        dt = datetime.fromisoformat(data["expiresAt"])
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
         self._expires_at = dt.timestamp()
         return data["token"]

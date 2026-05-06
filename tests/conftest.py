@@ -58,15 +58,15 @@ def _wait_wiremock_ready(url: str, timeout: int = 30) -> None:
 def _configure_wiremock_stubs(base_url: str) -> None:
     """Register default stubs for all external API endpoints."""
     # Expiry far in the future so the token is never refreshed during tests.
-    _future_ms = 9_999_999_999_000
+    _future_iso = "2999-01-01T00:00:00Z"
     stubs = [
-        # Auth: POST /auth/api/accesstoken
+        # Auth: POST /auth/api/accesstoken — {"key": j1} → {"token": j2, "expiresAt": ISO}
         {
             "request": {"method": "POST", "urlPath": "/auth/api/accesstoken"},
             "response": {
                 "status": 200,
                 "headers": {"Content-Type": "application/json"},
-                "jsonBody": {"access_token": "test-token", "expiresAt": _future_ms},
+                "jsonBody": {"token": "test-j2-token", "expiresAt": _future_iso},
             },
         },
         # Embedding: POST /text_embedding — returns one 1024-dim zero vector.

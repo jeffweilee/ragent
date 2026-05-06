@@ -72,6 +72,9 @@ def create_app() -> FastAPI:
         yield
         container.http.close()
         container.auth_http.close()
+        import ragent.bootstrap.composition as _comp
+
+        _comp._container = None  # noqa: SLF001 — prevent reuse of closed clients
         from opentelemetry import trace
 
         provider = trace.get_tracer_provider()

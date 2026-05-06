@@ -238,7 +238,7 @@ def test_k8s_mode_raises_when_sa_file_missing():
         http=http,
         clock=time.time,
     )
-    with pytest.raises(RuntimeError, match="Token refresh failed"):
+    with pytest.raises(RuntimeError, match="Kubernetes service account token"):
         mgr.get_token()
 
 
