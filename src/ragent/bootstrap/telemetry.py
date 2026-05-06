@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import os
 
+# Haystack's module-level default is True; enforce privacy-by-default before
+# any haystack import triggers the PostHog initialisation check.
+os.environ.setdefault("HAYSTACK_TELEMETRY_ENABLED", "false")
+
 from prometheus_client import Counter, Histogram
 
 reconciler_tick_total = Counter(
