@@ -32,18 +32,19 @@ def _make_doc(doc_id: str, attempt: int = 6, seconds_ago: int = 600) -> Document
     )
 
 
-def _make_reconciler(repo: MagicMock, broker: MagicMock):
+def _make_reconciler(repo: AsyncMock, broker: MagicMock):
     from ragent.reconciler import Reconciler
 
     return Reconciler(repo=repo, broker=broker)
 
 
-def _default_repo(exceeded: list | None = None) -> MagicMock:
-    repo = MagicMock()
+def _default_repo(exceeded: list | None = None) -> AsyncMock:
+    repo = AsyncMock()
     repo.list_pending_stale.return_value = []
     repo.list_pending_exceeded.return_value = exceeded or []
     repo.find_multi_ready_groups.return_value = []
     repo.list_uploaded_stale.return_value = []
+    repo.list_deleting_stale.return_value = []
     return repo
 
 

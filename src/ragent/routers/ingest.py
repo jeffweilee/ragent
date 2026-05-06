@@ -1,4 +1,7 @@
-"""T2.14 — Ingest router: POST/GET/DELETE/LIST endpoints (spec §4.1, B5, B11, S23)."""
+"""T2.14 / TA.6 — Ingest router: POST/GET/DELETE/LIST endpoints (spec §4.1, B5, B11, S23).
+
+Service methods are async, so routes await them directly (no run_in_threadpool).
+"""
 
 from __future__ import annotations
 
@@ -6,7 +9,6 @@ import io
 from typing import Annotated, Any
 
 from fastapi import APIRouter, File, Form, Header, Query, Response, UploadFile
-from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 
 from ragent.errors.problem import problem
@@ -43,8 +45,7 @@ def create_router(svc: Any) -> APIRouter:  # noqa: B008
 
         data = await file.read()
         try:
-            doc_id = await run_in_threadpool(
-                svc.create,
+            doc_id = await svc.create(
                 create_user=x_user_id,
                 source_id=source_id,
                 source_app=source_app,
@@ -65,7 +66,7 @@ def create_router(svc: Any) -> APIRouter:  # noqa: B008
     async def get_document(
         document_id: str,
     ):
-        doc = await run_in_threadpool(svc.get, document_id)
+        doc = await svc.get(document_id)
         if doc is None:
             return problem(404, "INGEST_NOT_FOUND", "Document not found")
         return {
@@ -79,7 +80,7 @@ def create_router(svc: Any) -> APIRouter:  # noqa: B008
     async def delete_document(
         document_id: str,
     ):
-        await run_in_threadpool(svc.delete, document_id)
+        await svc.delete(document_id)
         return Response(status_code=204)
 
     @router.get("/ingest")
@@ -87,7 +88,7 @@ def create_router(svc: Any) -> APIRouter:  # noqa: B008
         after: str | None = Query(None),
         limit: int = Query(100),
     ):
-        result = await run_in_threadpool(svc.list, after=after, limit=limit)
+        result = await svc.list(after=after, limit=limit)
         items = [
             {
                 "document_id": doc.document_id,

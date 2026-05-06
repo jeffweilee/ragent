@@ -66,11 +66,13 @@ def create_app() -> FastAPI:
     import ragent.workers.ingest  # noqa: F401
     from ragent.bootstrap.broker import broker as taskiq_broker
     from ragent.bootstrap.composition import get_container
-    from ragent.bootstrap.dispatcher import BlockingTaskiqDispatcher, TaskiqDispatcher
+    from ragent.bootstrap.dispatcher import TaskiqDispatcher
     from ragent.services.ingest_service import IngestService
 
     container = get_container()
-    dispatcher = BlockingTaskiqDispatcher(TaskiqDispatcher(taskiq_broker))
+    # IngestService is async (post-aiomysql migration); FastAPI awaits it directly,
+    # so the producer-side dispatcher must also be async to avoid blocking the loop.
+    dispatcher = TaskiqDispatcher(taskiq_broker)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):

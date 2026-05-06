@@ -1,4 +1,4 @@
-"""T2.8/T2.10/T2.12 — IngestService: create / delete / list (spec §3.1, §4.1)."""
+"""T2.8/T2.10/T2.12 / TA.4 — IngestService: async create / delete / list (spec §3.1, §4.1)."""
 
 from __future__ import annotations
 
@@ -46,7 +46,7 @@ class IngestService:
     # Create (T2.8)
     # ------------------------------------------------------------------
 
-    def create(
+    async def create(
         self,
         create_user: str,
         source_id: str,
@@ -73,7 +73,7 @@ class IngestService:
             length=file_size,
             content_type=content_type,
         )
-        self._repo.create(
+        await self._repo.create(
             document_id=document_id,
             create_user=create_user,
             source_id=source_id,
@@ -82,64 +82,59 @@ class IngestService:
             source_workspace=source_workspace,
             object_key=object_key,
         )
-        self._broker.enqueue("ingest.pipeline", document_id=document_id)
+        await self._broker.enqueue("ingest.pipeline", document_id=document_id)
         return document_id
 
     # ------------------------------------------------------------------
     # Get (used by router)
     # ------------------------------------------------------------------
 
-    def get(self, document_id: str) -> Any | None:
-        return self._repo.get(document_id)
+    async def get(self, document_id: str) -> Any | None:
+        return await self._repo.get(document_id)
 
     # ------------------------------------------------------------------
     # Delete (T2.10)
     # ------------------------------------------------------------------
 
-    def delete(self, document_id: str) -> None:
+    async def delete(self, document_id: str) -> None:
         try:
-            doc = self._repo.acquire_nowait(document_id)
+            doc = await self._repo.claim_for_deletion(document_id)
         except LockNotAvailable:
             return  # not found or contended — both are idempotent 204
-
-        # Short TX-A: transition to DELETING (commit in repo layer)
-        self._repo.update_status(document_id, from_status=doc.status, to_status="DELETING")
 
         # Outside any DB tx: fan_out_delete → chunk delete → MinIO (if staged)
         if self._has_fan_out:
             self._broker.fan_out_delete(document_id)
 
-        self._chunks.delete_by_document_id(document_id)
+        await self._chunks.delete_by_document_id(document_id)
 
         if doc.status in ("UPLOADED", "PENDING"):
             with contextlib.suppress(Exception):
                 self._storage.delete_object(doc.object_key)
 
-        self._repo.delete(document_id)
-
-    # ------------------------------------------------------------------
-    # List (T2.12)
-    # ------------------------------------------------------------------
+        await self._repo.delete(document_id)
 
     # ------------------------------------------------------------------
     # Supersede (T3.2d)
     # ------------------------------------------------------------------
 
-    def supersede(self, survivor_id: str, source_id: str, source_app: str) -> None:
+    async def supersede(self, survivor_id: str, source_id: str, source_app: str) -> None:
         while True:
-            loser = self._repo.pop_oldest_loser_for_supersede(source_id, source_app, survivor_id)
+            loser = await self._repo.pop_oldest_loser_for_supersede(
+                source_id, source_app, survivor_id
+            )
             if loser is None:
                 break
-            self._chunks.delete_by_document_id(loser.document_id)
-            self._repo.delete(loser.document_id)
+            await self._chunks.delete_by_document_id(loser.document_id)
+            await self._repo.delete(loser.document_id)
 
     # ------------------------------------------------------------------
     # List (T2.12)
     # ------------------------------------------------------------------
 
-    def list(self, after: str | None = None, limit: int = _LIST_MAX) -> IngestListResult:
+    async def list(self, after: str | None = None, limit: int = _LIST_MAX) -> IngestListResult:
         limit = min(limit, _LIST_MAX)
-        rows = self._repo.list(after=after, limit=limit + 1)
+        rows = await self._repo.list(after=after, limit=limit + 1)
         has_more = len(rows) > limit
         items = rows[:limit]
         next_cursor = items[-1].document_id if has_more and items else None

@@ -35,11 +35,11 @@ def test_readyz_200_when_all_deps_up(
     from elasticsearch import Elasticsearch
     from minio import Minio
     from redis import Redis
-    from sqlalchemy import create_engine
+    from sqlalchemy.ext.asyncio import create_async_engine
 
     from ragent.storage.minio_client import MinIOClient
 
-    engine = create_engine(mariadb_dsn)
+    engine = create_async_engine(mariadb_dsn)
     es_client = Elasticsearch(hosts=[es_url], verify_certs=False)
     redis_host = redis_container.get_container_host_ip()
     redis_port = redis_container.get_exposed_port(6379)

@@ -1,11 +1,12 @@
 """T3.2e — Pipeline retry: idempotency-clean purges prior chunks before re-indexing (R4, S25)."""
 
 import dataclasses
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
 from tests.conftest import FakeDocumentStore as _FakeStore
+from tests.conftest import run_in_threadpool
 
 pytestmark = pytest.mark.docker
 
@@ -17,7 +18,7 @@ def test_pipeline_clears_chunks_before_rerun():
     delete_calls: list[str] = []
     insert_calls: list[str] = []
 
-    chunk_repo = MagicMock()
+    chunk_repo = AsyncMock()
     chunk_repo.delete_by_document_id.side_effect = lambda doc_id: delete_calls.append(doc_id)
     chunk_repo.bulk_insert.side_effect = lambda chunks: insert_calls.extend(
         [c["document_id"] for c in chunks]
@@ -41,12 +42,14 @@ def test_pipeline_clears_chunks_before_rerun():
     from haystack.dataclasses import ByteStream
 
     text = "Hello world. Second sentence. Third sentence."
-    result = pipeline.run(
-        {
-            "converter": {"sources": [ByteStream(data=text.encode())]},
-            "idempotency_clean": {"document_id": "DOC001"},
-        },
-        include_outputs_from={"embedder"},
+    result = run_in_threadpool(
+        lambda: pipeline.run(
+            {
+                "converter": {"sources": [ByteStream(data=text.encode())]},
+                "idempotency_clean": {"document_id": "DOC001"},
+            },
+            include_outputs_from={"embedder"},
+        )
     )
     docs = result["embedder"]["documents"]
 
@@ -63,7 +66,7 @@ def test_pipeline_retry_produces_no_duplicate_chunks():
     from ragent.pipelines.factory import build_ingest_pipeline
 
     chunks: list[dict] = []
-    chunk_repo = MagicMock()
+    chunk_repo = AsyncMock()
     chunk_repo.delete_by_document_id.side_effect = lambda doc_id: chunks.clear()
     chunk_repo.bulk_insert.side_effect = chunks.extend
 
@@ -81,11 +84,13 @@ def test_pipeline_retry_produces_no_duplicate_chunks():
         pipeline = build_ingest_pipeline(
             embedder=_MockEmbedder(), document_store=_FakeStore(), chunk_repo=chunk_repo
         )
-        pipeline.run(
-            {
-                "converter": {"sources": [ByteStream(data=text.encode())]},
-                "idempotency_clean": {"document_id": "DOC001"},
-            }
+        run_in_threadpool(
+            lambda: pipeline.run(
+                {
+                    "converter": {"sources": [ByteStream(data=text.encode())]},
+                    "idempotency_clean": {"document_id": "DOC001"},
+                }
+            )
         )
 
     _run()

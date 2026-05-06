@@ -50,7 +50,7 @@ def build_container() -> Container:
 
     from haystack_integrations.document_stores.elasticsearch import ElasticsearchDocumentStore
     from minio import Minio
-    from sqlalchemy import create_engine, text
+    from sqlalchemy.ext.asyncio import create_async_engine
 
     from ragent.clients.auth import TokenManager
     from ragent.clients.embedding import EmbeddingClient
@@ -153,13 +153,10 @@ def build_container() -> Container:
         verify_certs=es_verify_certs,
     )
 
-    # SQLAlchemy `create_engine` returns an Engine wrapping a QueuePool by
-    # default. Repos receive the Engine and check out a connection per call
-    # (00_rule.md → Mandatory Connection Pool). The startup ping below uses
-    # a transient checkout and releases it immediately.
-    engine = create_engine(_require("MARIADB_DSN"))
-    with engine.connect() as _ping:
-        _ping.execute(text("SELECT 1"))
+    # MARIADB_DSN may use either pymysql:// or aiomysql:// — async engine needs aiomysql.
+    from ragent.bootstrap.init_schema import to_async_dsn
+
+    engine = create_async_engine(to_async_dsn(_require("MARIADB_DSN")))
 
     doc_repo = DocumentRepository(engine=engine)
     chunk_repo = ChunkRepository(engine=engine)

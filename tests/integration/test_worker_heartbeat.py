@@ -3,7 +3,7 @@
 import datetime
 import threading
 import time
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -15,7 +15,7 @@ def test_heartbeat_updates_updated_at_periodically():
     from ragent.workers.heartbeat import run_heartbeat
 
     heartbeat_calls: list[float] = []
-    repo = MagicMock()
+    repo = AsyncMock()
     repo.update_heartbeat.side_effect = lambda doc_id: heartbeat_calls.append(time.monotonic())
 
     stop = threading.Event()
@@ -39,7 +39,7 @@ def test_heartbeat_stops_when_event_set():
     """Heartbeat thread terminates promptly when stop event is set."""
     from ragent.workers.heartbeat import run_heartbeat
 
-    repo = MagicMock()
+    repo = AsyncMock()
     stop = threading.Event()
     thread = threading.Thread(
         target=run_heartbeat,
@@ -54,8 +54,6 @@ def test_heartbeat_stops_when_event_set():
 
 def test_stale_sweep_skips_fresh_heartbeat_row():
     """list_pending_stale does not return rows whose updated_at is within the threshold."""
-    # This is a unit-level check on the query contract: the Reconciler threshold uses
-    # updated_at, and the worker heartbeat keeps it fresh. We verify the boundary here.
     repo = MagicMock()
     now = datetime.datetime.now(datetime.UTC)
     threshold = now - datetime.timedelta(minutes=5)

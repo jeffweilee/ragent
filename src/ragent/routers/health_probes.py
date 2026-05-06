@@ -31,11 +31,8 @@ def probe_mariadb(engine: Any) -> Callable[[], Awaitable[None]]:
     async def _p() -> None:
         from sqlalchemy import text
 
-        def _ping() -> None:
-            with engine.connect() as conn:
-                conn.execute(text("SELECT 1"))
-
-        await _run(_ping)
+        async with engine.connect() as conn:
+            await conn.execute(text("SELECT 1"))
 
     return _p
 

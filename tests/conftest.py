@@ -3,9 +3,43 @@
 import json
 import time
 import urllib.request
+from collections.abc import Callable
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
 
+import anyio
 import pytest
 from haystack.dataclasses import Document
+
+
+def run_in_threadpool(fn: Callable[[], Any]) -> Any:
+    """Run a sync callable inside ``anyio.to_thread.run_sync``.
+
+    Pipeline components like ``_SourceHydrator`` and ``_IdempotencyClean`` use
+    ``anyio.from_thread.run`` to bridge sync→async, which only works when the
+    caller is on an anyio worker thread. Tests that invoke the pipeline directly
+    (no FastAPI ``run_in_threadpool`` wrapper) must establish the bridge here.
+    """
+
+    async def _wrap() -> Any:
+        return await anyio.to_thread.run_sync(fn)
+
+    return anyio.run(_wrap)
+
+
+def make_ingest_container(doc: Any, *, pipeline_side_effect: Any = None) -> MagicMock:
+    """Mock composition container used by ``ingest_pipeline_task`` tests."""
+    container = MagicMock()
+    container.doc_repo = AsyncMock()
+    container.doc_repo.claim_for_processing.return_value = doc
+    container.minio_client = MagicMock()
+    container.minio_client.get_object.return_value = b"data"
+    if pipeline_side_effect is not None:
+        container.ingest_pipeline.run.side_effect = pipeline_side_effect
+    else:
+        container.ingest_pipeline.run.return_value = {"writer": {"documents_written": []}}
+    container.registry = AsyncMock()
+    return container
 
 
 class FakeDocumentStore:
@@ -192,7 +226,7 @@ def mariadb_container():
 def mariadb_dsn(mariadb_container) -> str:
     host = mariadb_container.get_container_host_ip()
     port = mariadb_container.get_exposed_port(3306)
-    return f"mysql+pymysql://ragent:ragent@{host}:{port}/ragent?charset=utf8mb4"
+    return f"mysql+aiomysql://ragent:ragent@{host}:{port}/ragent?charset=utf8mb4"
 
 
 @pytest.fixture(scope="session")

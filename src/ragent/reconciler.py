@@ -1,7 +1,9 @@
-"""T5.2 — Reconciler: one-shot stale-document recovery (B9, B16, S2, S3, S24, S26, S30).
+"""T5.2 / TA.8 — Reconciler: one-shot stale-document recovery (B9, B16, S2, S3, S24, S26, S30).
 
 Run via:  python -m ragent.reconciler
 Scheduled as K8s CronJob (*/5 * * * *, concurrencyPolicy: Forbid).
+
+All methods are async; the sync entrypoint wraps via asyncio.run().
 """
 
 from __future__ import annotations
@@ -45,15 +47,17 @@ class Reconciler:
 
     async def _mark_failed(self) -> None:
         max_attempts = int(os.environ.get("WORKER_MAX_ATTEMPTS", "5"))
-        exceeded = self._repo.list_pending_exceeded(attempt_gt=max_attempts)
+        exceeded = await self._repo.list_pending_exceeded(attempt_gt=max_attempts)
         for doc in exceeded:
             try:
                 # Commit terminal status first (Rule 21), then best-effort cleanup
-                self._repo.update_status(doc.document_id, from_status="PENDING", to_status="FAILED")
+                await self._repo.update_status(
+                    doc.document_id, from_status="PENDING", to_status="FAILED"
+                )
                 if self._registry is not None:
                     await self._registry.fan_out_delete(doc.document_id)
                 if self._chunks is not None:
-                    self._chunks.delete_by_document_id(doc.document_id)
+                    await self._chunks.delete_by_document_id(doc.document_id)
                 logger.info(
                     "ingest.failed",
                     document_id=doc.document_id,
@@ -69,7 +73,7 @@ class Reconciler:
         updated_before = datetime.datetime.now(datetime.UTC) - datetime.timedelta(
             seconds=stale_seconds
         )
-        stale = self._repo.list_pending_stale(
+        stale = await self._repo.list_pending_stale(
             updated_before=updated_before,
             attempt_le=max_attempts,
         )
@@ -86,7 +90,7 @@ class Reconciler:
         updated_before = datetime.datetime.now(datetime.UTC) - datetime.timedelta(
             seconds=stale_seconds
         )
-        stale = self._repo.list_uploaded_stale(updated_before=updated_before)
+        stale = await self._repo.list_uploaded_stale(updated_before=updated_before)
         for doc in stale:
             await self._broker.enqueue("ingest.pipeline", document_id=doc.document_id)
             logger.info(
@@ -99,26 +103,26 @@ class Reconciler:
         updated_before = datetime.datetime.now(datetime.UTC) - datetime.timedelta(
             seconds=stale_seconds
         )
-        stale = self._repo.list_deleting_stale(updated_before=updated_before)
+        stale = await self._repo.list_deleting_stale(updated_before=updated_before)
         for doc in stale:
             try:
                 if self._registry is not None:
                     await self._registry.fan_out_delete(doc.document_id)
                 if self._chunks is not None:
-                    self._chunks.delete_by_document_id(doc.document_id)
-                self._repo.delete(doc.document_id)
+                    await self._chunks.delete_by_document_id(doc.document_id)
+                await self._repo.delete(doc.document_id)
                 logger.info("reconciler.delete_resumed", document_id=doc.document_id)
             except Exception:
                 logger.exception("reconciler.delete_resume_error", document_id=doc.document_id)
 
     async def _repair_multi_ready(self) -> None:
-        groups = self._repo.find_multi_ready_groups()
+        groups = await self._repo.find_multi_ready_groups()
         for source_id, source_app in groups:
-            docs = self._repo.list_ready_by_source(source_id=source_id, source_app=source_app)
+            docs = await self._repo.list_ready_by_source(source_id=source_id, source_app=source_app)
             if not docs:
                 continue
-            # Survivor is the doc with the latest created_at (last in ASC-ordered list)
-            survivor = docs[-1]  # list_ready_by_source returns ASC by created_at; last is newest
+            # list_ready_by_source returns ASC by created_at; last is newest
+            survivor = docs[-1]
             await self._broker.enqueue(
                 "ingest.supersede",
                 survivor_id=survivor.document_id,

@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 from typing import Any
 
+import anyio.from_thread
 from haystack.components.joiners import DocumentJoiner
 from haystack.core.component import component
 from haystack.core.pipeline import Pipeline
@@ -70,7 +71,7 @@ class _SourceHydrator:
     @component.output_types(documents=list[Document])
     def run(self, documents: list[Document]) -> dict:
         ids = [d.meta.get("document_id") for d in documents if d.meta.get("document_id")]
-        sources = self._repo.get_sources_by_document_ids(ids) if ids else {}
+        sources = anyio.from_thread.run(self._repo.get_sources_by_document_ids, ids) if ids else {}
         result = []
         for doc in documents:
             doc_id = doc.meta.get("document_id")

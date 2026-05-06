@@ -206,6 +206,28 @@
 
 ---
 
+## Track TA — aiomysql Adoption (async DB layer) — 2026-05-06
+
+> Decision doc: `docs/team/2026_05_06_aiomysql_adoption.md`
+> Goal: replace blocking `pymysql` + sync engine with `aiomysql` + `AsyncEngine` throughout the FastAPI/TaskIQ async path.
+
+| # | Category | Task | Status | Owner |
+|---|---|---|:---:|---|
+| TA.1 | Red | • **Achieve:** Pin async contract for DocumentRepository and ChunkRepository.<br>• **Deliver:** `tests/unit/test_async_repository_contract.py` — asserts all public methods are coroutine functions (`asyncio.iscoroutinefunction`); `AsyncMock` engine; `await repo.create/get/update_status/delete/list/...` all pass. | [x] | QA |
+| TA.2 | Green | • **Achieve:** Convert both repos to `async def` with SQLAlchemy `AsyncEngine`.<br>• **Deliver:** `src/ragent/repositories/document_repository.py` + `chunk_repository.py` — `async with self._engine.begin() as conn: await conn.execute(...)`. | [x] | Dev |
+| TA.3 | Red | • **Achieve:** Pin async IngestService contract.<br>• **Deliver:** Updated `tests/unit/test_ingest_service_create.py`, `test_ingest_service_delete.py`, `test_ingest_service_list.py` — all service methods `async def`; `await svc.create/get/delete/list/supersede`. | [x] | QA |
+| TA.4 | Green | • **Achieve:** Convert IngestService to async.<br>• **Deliver:** `src/ragent/services/ingest_service.py` — all methods `async def`; `await self._repo.*` and `await self._chunks.*`. | [x] | Dev |
+| TA.5 | Red | • **Achieve:** Pin router drops `run_in_threadpool`.<br>• **Deliver:** Updated `tests/unit/test_ingest_router.py` — routes call `await svc.method()` without thread dispatch. | [x] | QA |
+| TA.6 | Green | • **Achieve:** Simplify ingest router to direct `await` calls.<br>• **Deliver:** `src/ragent/routers/ingest.py` — remove `run_in_threadpool`; routes are pure `async def` with direct `await svc.*`. | [x] | Dev |
+| TA.7 | Red | • **Achieve:** Pin reconciler fully-async contract.<br>• **Deliver:** Updated reconciler tests — all `_mark_failed`, `_redispatch_pending`, `_redispatch_uploaded`, `_resume_deleting`, `_repair_multi_ready` are `async def`; `AsyncMock` repos. | [x] | QA |
+| TA.8 | Green | • **Achieve:** Convert Reconciler to fully async.<br>• **Deliver:** `src/ragent/reconciler.py` — all methods `async def`; `await self._repo.*` and `await self._chunks.*`. | [x] | Dev |
+| TA.9 | Red | • **Achieve:** Pin ingest worker direct `await` on repos (no `to_thread.run_sync` for repo calls).<br>• **Deliver:** Updated `tests/integration/test_worker_minio_cleanup.py` + `test_worker_acquire_nowait.py` with async repo mocks. | [x] | QA |
+| TA.10 | Green | • **Achieve:** Refactor ingest worker to `await` repos directly + pipeline bridge via `anyio.from_thread.run`.<br>• **Deliver:** `src/ragent/workers/ingest.py` — async task `await repo.*`; pipeline Haystack components use `anyio.from_thread.run(async_fn, *args)` bridge; heartbeat uses `asyncio.new_event_loop()` per thread. | [x] | Dev |
+| TA.11 | Green | • **Achieve:** Wire async engine in composition root + native async health probe.<br>• **Deliver:** `src/ragent/bootstrap/composition.py` — `create_async_engine(aiomysql_dsn)`; `src/ragent/routers/health_probes.py` — `probe_mariadb` uses `async with engine.connect()`; `src/ragent/bootstrap/init_schema.py` — retains sync `pymysql` engine; `pyproject.toml` adds `aiomysql>=0.2.0` + `pytest-asyncio>=0.24` dev dep. | [x] | Dev |
+| TA.12 | Refactor | • **Achieve:** Green tests stay green after structural cleanup.<br>• **Deliver:** `uv run ruff format . && uv run ruff check . --fix && uv run pytest --ignore=tests/e2e` all green; `test_async_repository_contract.py` and updated test files pass. | [x] | Reviewer |
+
+---
+
 ## Phase 2 — Production Quality (+3 weeks) — *not started*
 
 | # | Category | Task | Status | Owner |

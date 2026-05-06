@@ -2,13 +2,20 @@
 
 import os
 import re
+import shutil
 import subprocess
 
 import pytest
 
 from ragent.bootstrap.init_schema import _strip_comments
 
-pytestmark = pytest.mark.docker
+pytestmark = [
+    pytest.mark.docker,
+    pytest.mark.skipif(
+        shutil.which("mysqldump") is None,
+        reason="mysqldump binary not available on PATH",
+    ),
+]
 
 
 def _mysqldump(dsn: str) -> str:
