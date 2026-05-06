@@ -1,5 +1,6 @@
 import os
 from logging.config import fileConfig
+from pathlib import Path
 
 from alembic import context
 from sqlalchemy import create_engine, pool
@@ -7,6 +8,14 @@ from sqlalchemy import create_engine, pool
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
+
+# Load .env from project root if python-dotenv is available
+_env_file = Path(__file__).parent.parent / ".env"
+try:
+    from dotenv import load_dotenv
+    load_dotenv(_env_file, override=False)
+except ImportError:
+    pass
 
 
 def run_migrations_offline() -> None:
