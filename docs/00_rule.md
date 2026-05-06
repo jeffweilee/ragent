@@ -4,7 +4,7 @@
    - `docs/00_spec.md`: Specification Standards
    - `docs/00_plan.md`: Master TDD Implementation Checklist
    - `docs/00_journal.md` (Blameless Team Reflection)
-- **(Mandatory)** Execute the full pre-commit sequence (format → lint → **full test suite including integration tests** → security scan) before every commit. Skipped docker tests are a blocking violation. See `# Command` section.
+- **(Mandatory)** Execute the full pre-commit sequence (**start Docker daemon** → format → lint → **full test suite including docker testcontainers integration tests** → security scan) before every commit. Do **not** skip `@pytest.mark.docker` tests; skipped docker tests are a blocking violation. Start the Docker daemon **in advance** so testcontainers (MariaDB, ES, Redis, MinIO) actually run. See `# Command` section.
 - **Always** refer to `00_agent_team.md` and use "RAGENT Agent Team" workflow for planning, implementation, delivery.
 - **Always** refer to "Context7" MCP for any library and framework standard spec and example.
 
@@ -398,16 +398,21 @@ docker ps &>/dev/null && echo "Docker ready" || {
 
 ## Python
 
-**(Mandatory) Full pre-commit sequence — no commit is valid unless all four steps are green:**
+**(Mandatory) Full pre-commit sequence — no commit is valid unless every step is green:**
 
 ```bash
+# 0. Start Docker daemon FIRST (see Docker section above) — required before pytest
+docker ps &>/dev/null || { sudo dockerd --host=unix:///var/run/docker.sock &>/tmp/dockerd.log & until docker ps &>/dev/null; do sleep 1; done; }
+
+# 1-4. Quality gate
 uv run ruff format .
 uv run ruff check . --fix
-uv run pytest --ignore=tests/e2e   # includes @pytest.mark.docker integration tests
+uv run pytest --ignore=tests/e2e   # MUST include @pytest.mark.docker integration tests — never skip
 uv run bandit -r src/ --severity-level high --confidence-level high
 ```
 
 **Enforcement rules:**
-- All four commands must exit 0 before `git commit`.
-- `pytest` must run the **full suite including integration tests** (`@pytest.mark.docker`). Skipped docker tests due to a missing Docker daemon are **not acceptable** — start the daemon first (see Docker section above).
+- All commands must exit 0 before `git commit`.
+- **Start the Docker daemon in advance.** `pytest` must run the **full suite including docker testcontainers integration tests** (`@pytest.mark.docker`). Skipping (via `-m "not docker"`, `--deselect`, env flags, or a missing daemon) is **forbidden**.
+- Verify `pytest` output reports **0 skipped** for `@pytest.mark.docker` tests. If any docker test is skipped, fix the daemon and re-run — do not commit.
 - Committing with only unit tests green (docker tests skipped) is a process violation; the CI failure that follows is the direct consequence.
