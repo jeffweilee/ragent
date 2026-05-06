@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-import os
+# load_env() must run before any ragent.* imports so that module-level
+# os.environ.get() calls (e.g. in schemas/chat.py) see .env values.
+from ragent.config import load_env
 
 import uvicorn
 
-from ragent.bootstrap.app import create_app
-
 if __name__ == "__main__":
-    host = os.environ.get("RAGENT_HOST", "127.0.0.1")
-    port = int(os.environ.get("RAGENT_PORT", "8000"))
-    log_level = os.environ.get("LOG_LEVEL", "INFO").lower()
+    settings = load_env()
+
+    from ragent.bootstrap.app import create_app
 
     app = create_app()
-    uvicorn.run(app, host=host, port=port, log_level=log_level)
+    uvicorn.run(app, host=settings.ragent_host, port=settings.ragent_port, log_level=settings.log_level.lower())
