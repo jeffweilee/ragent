@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import datetime
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from ragent.repositories.document_repository import DocumentRow
 
@@ -35,8 +35,8 @@ def _make_doc(
     )
 
 
-def _default_repo(groups: list | None = None, ready_docs: list | None = None) -> MagicMock:
-    repo = MagicMock()
+def _default_repo(groups: list | None = None, ready_docs: list | None = None) -> AsyncMock:
+    repo = AsyncMock()
     repo.list_pending_stale.return_value = []
     repo.list_pending_exceeded.return_value = []
     repo.list_deleting_stale.return_value = []
@@ -46,7 +46,7 @@ def _default_repo(groups: list | None = None, ready_docs: list | None = None) ->
     return repo
 
 
-def _make_reconciler(repo: MagicMock, broker: MagicMock):
+def _make_reconciler(repo: AsyncMock, broker: MagicMock):
     from ragent.reconciler import Reconciler
 
     return Reconciler(repo=repo, broker=broker)

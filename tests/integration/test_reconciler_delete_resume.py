@@ -32,8 +32,8 @@ def _make_doc(doc_id: str, status: str = "DELETING", seconds_ago: int = 600) -> 
     )
 
 
-def _default_repo(deleting: list | None = None) -> MagicMock:
-    repo = MagicMock()
+def _default_repo(deleting: list | None = None) -> AsyncMock:
+    repo = AsyncMock()
     repo.list_pending_stale.return_value = []
     repo.list_pending_exceeded.return_value = []
     repo.list_deleting_stale.return_value = deleting or []
@@ -43,9 +43,9 @@ def _default_repo(deleting: list | None = None) -> MagicMock:
 
 
 def _make_reconciler(
-    repo: MagicMock,
+    repo: AsyncMock,
     broker: MagicMock,
-    chunks: MagicMock | None = None,
+    chunks: AsyncMock | None = None,
     registry: MagicMock | None = None,
 ):
     from ragent.reconciler import Reconciler
@@ -62,7 +62,7 @@ def test_stale_deleting_resumes_cascade():
     """Stale DELETING row: chunks deleted then doc row deleted."""
     repo = _default_repo(deleting=[_make_doc("DOC001")])
     broker = MagicMock()
-    chunks = MagicMock()
+    chunks = AsyncMock()
 
     rec = _make_reconciler(repo, broker, chunks=chunks)
     rec.run()
@@ -75,7 +75,7 @@ def test_stale_deleting_no_redispatch():
     """Stale DELETING rows must not be re-enqueued to ingest.pipeline."""
     repo = _default_repo(deleting=[_make_doc("DOC001")])
     broker = MagicMock()
-    chunks = MagicMock()
+    chunks = AsyncMock()
 
     rec = _make_reconciler(repo, broker, chunks=chunks)
     rec.run()
@@ -88,7 +88,7 @@ def test_multiple_stale_deleting_all_resumed():
     docs = [_make_doc(f"DOC{i:03d}") for i in range(1, 4)]
     repo = _default_repo(deleting=docs)
     broker = MagicMock()
-    chunks = MagicMock()
+    chunks = AsyncMock()
 
     rec = _make_reconciler(repo, broker, chunks=chunks)
     rec.run()
@@ -101,7 +101,7 @@ def test_stale_deleting_cascade_is_idempotent():
     """Re-running reconciler on same stale DELETING row is safe (each call cleans up)."""
     repo = _default_repo(deleting=[_make_doc("DOC001")])
     broker = MagicMock()
-    chunks = MagicMock()
+    chunks = AsyncMock()
 
     rec = _make_reconciler(repo, broker, chunks=chunks)
     rec.run()
@@ -114,7 +114,7 @@ def test_stale_deleting_calls_fan_out_delete_when_registry_present():
     """When registry is provided, fan_out_delete is invoked before chunk/doc cleanup."""
     repo = _default_repo(deleting=[_make_doc("DOC001")])
     broker = MagicMock()
-    chunks = MagicMock()
+    chunks = AsyncMock()
     registry = MagicMock()
     registry.fan_out_delete = AsyncMock(return_value=[])
 

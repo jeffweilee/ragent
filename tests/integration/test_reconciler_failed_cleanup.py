@@ -30,8 +30,8 @@ def _make_exceeded_doc(doc_id: str, attempt: int = 6) -> DocumentRow:
     )
 
 
-def _default_repo(exceeded: list | None = None) -> MagicMock:
-    repo = MagicMock()
+def _default_repo(exceeded: list | None = None) -> AsyncMock:
+    repo = AsyncMock()
     repo.list_pending_stale.return_value = []
     repo.list_pending_exceeded.return_value = exceeded or []
     repo.list_deleting_stale.return_value = []
@@ -41,9 +41,9 @@ def _default_repo(exceeded: list | None = None) -> MagicMock:
 
 
 def _make_reconciler(
-    repo: MagicMock,
+    repo: AsyncMock,
     broker: MagicMock,
-    chunks: MagicMock | None = None,
+    chunks: AsyncMock | None = None,
     registry: MagicMock | None = None,
 ):
     from ragent.reconciler import Reconciler
@@ -60,7 +60,7 @@ def test_failed_status_committed_before_chunks_cleanup():
     """update_status(FAILED) is called before chunks.delete_by_document_id (Rule 21)."""
     repo = _default_repo(exceeded=[_make_exceeded_doc("DOC001")])
     broker = MagicMock()
-    chunks = MagicMock()
+    chunks = AsyncMock()
 
     call_order: list[str] = []
     chunks.delete_by_document_id.side_effect = lambda doc_id: call_order.append("chunks_delete")
@@ -107,7 +107,7 @@ def test_failed_cleanup_chunks_receives_correct_doc_id():
     """Chunks cleanup is called with the correct document_id."""
     repo = _default_repo(exceeded=[_make_exceeded_doc("DOC999")])
     broker = MagicMock()
-    chunks = MagicMock()
+    chunks = AsyncMock()
 
     rec = _make_reconciler(repo, broker, chunks=chunks)
     rec.run()

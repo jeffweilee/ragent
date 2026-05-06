@@ -1,18 +1,17 @@
 """T3.2a — Worker: terminal status committed before MinIO delete; orphan logged on error."""
 
-from unittest.mock import MagicMock
+import datetime
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from ragent.repositories.document_repository import DocumentRow
 
 pytestmark = pytest.mark.docker
 
 
-def _make_repo(doc_status="PENDING"):
-    import datetime
-
-    from ragent.repositories.document_repository import DocumentRow
-
-    doc = DocumentRow(
+def _make_doc(doc_status: str = "UPLOADED") -> DocumentRow:
+    return DocumentRow(
         document_id="DOC001",
         create_user="alice",
         source_id="S1",
@@ -25,76 +24,72 @@ def _make_repo(doc_status="PENDING"):
         created_at=datetime.datetime.now(datetime.UTC),
         updated_at=datetime.datetime.now(datetime.UTC),
     )
-    repo = MagicMock()
-    repo.acquire_nowait.return_value = doc
-    return repo, doc
 
 
-def test_terminal_status_committed_before_minio_delete():
+def _make_container(doc: DocumentRow, pipeline_raises: bool = False) -> MagicMock:
+    """Build a mock composition container for ingest_pipeline_task."""
+    container = MagicMock()
+    container.doc_repo = AsyncMock()
+    container.doc_repo.acquire_nowait.return_value = doc
+    container.minio_client = MagicMock()
+    container.minio_client.get_object.return_value = b"data"
+
+    if pipeline_raises:
+        container.ingest_pipeline.run.side_effect = RuntimeError("pipeline failed")
+    else:
+        container.ingest_pipeline.run.return_value = {"writer": {"documents_written": []}}
+
+    container.registry = AsyncMock()
+    return container
+
+
+async def test_terminal_status_committed_before_minio_delete():
     """READY status must be committed before MinIOClient.delete_object is called (S16)."""
-    from ragent.workers.ingest import run_pipeline_task
+    from ragent.workers.ingest import ingest_pipeline_task
 
-    call_order = []
-    repo, doc = _make_repo()
-    storage = MagicMock()
-    broker = MagicMock()
-    broker.fan_out_delete = MagicMock()
+    doc = _make_doc()
+    container = _make_container(doc)
 
-    repo.update_status.side_effect = lambda *a, **kw: call_order.append("status_ready")
-    storage.delete_object.side_effect = lambda *a: call_order.append("minio_delete")
-
-    def mock_pipeline(doc_id):
-        return []  # empty chunks — success
-
-    run_pipeline_task(
-        document_id="DOC001",
-        repo=repo,
-        storage=storage,
-        broker=broker,
-        pipeline_fn=mock_pipeline,
+    call_order: list[str] = []
+    container.doc_repo.update_status.side_effect = lambda *a, **kw: call_order.append(
+        f"status_{kw.get('to_status', a[2] if len(a) > 2 else '?')}"
     )
-    assert call_order.index("status_ready") < call_order.index("minio_delete")
+    container.minio_client.delete_object.side_effect = lambda *a: call_order.append("minio_delete")
+
+    with patch("ragent.workers.ingest.get_container", return_value=container):
+        await ingest_pipeline_task("DOC001")
+
+    assert "status_READY" in call_order
+    assert "minio_delete" in call_order
+    assert call_order.index("status_READY") < call_order.index("minio_delete")
 
 
-def test_minio_delete_error_does_not_prevent_ready_status():
-    """If MinIO delete raises, row is still READY and orphan event is emitted (S21)."""
-    from ragent.workers.ingest import run_pipeline_task
+async def test_minio_delete_error_does_not_prevent_ready_status():
+    """If MinIO delete raises, row is still READY and orphan is tolerated (S21)."""
+    from ragent.workers.ingest import ingest_pipeline_task
 
-    repo, doc = _make_repo()
-    storage = MagicMock()
-    storage.delete_object.side_effect = Exception("minio error")
-    broker = MagicMock()
+    doc = _make_doc()
+    container = _make_container(doc)
+    container.minio_client.delete_object.side_effect = Exception("minio error")
 
-    run_pipeline_task(
-        document_id="DOC001",
-        repo=repo,
-        storage=storage,
-        broker=broker,
-        pipeline_fn=lambda doc_id: [],
-    )
-    # update_status to READY must still have been called
-    assert any(
-        call_args[1].get("to_status") == "READY" or (call_args[0] and "READY" in call_args[0])
-        for call_args in repo.update_status.call_args_list
-    )
+    with patch("ragent.workers.ingest.get_container", return_value=container):
+        await ingest_pipeline_task("DOC001")
+
+    to_statuses = [
+        c.kwargs.get("to_status") or (c.args[2] if len(c.args) > 2 else None)
+        for c in container.doc_repo.update_status.call_args_list
+    ]
+    assert "READY" in to_statuses
 
 
-def test_pending_retry_does_not_delete_minio():
-    """On retry path (still PENDING, exception raised), MinIO object must not be deleted."""
-    from ragent.workers.ingest import run_pipeline_task
+async def test_pending_retry_does_not_delete_minio():
+    """On pipeline failure, MinIO object must not be deleted."""
+    from ragent.workers.ingest import ingest_pipeline_task
 
-    repo, doc = _make_repo()
-    storage = MagicMock()
-    broker = MagicMock()
+    doc = _make_doc()
+    container = _make_container(doc, pipeline_raises=True)
 
-    def failing_pipeline(doc_id):
-        raise RuntimeError("pipeline failed")
+    with patch("ragent.workers.ingest.get_container", return_value=container):
+        await ingest_pipeline_task("DOC001")
 
-    run_pipeline_task(
-        document_id="DOC001",
-        repo=repo,
-        storage=storage,
-        broker=broker,
-        pipeline_fn=failing_pipeline,
-    )
-    storage.delete_object.assert_not_called()
+    container.minio_client.delete_object.assert_not_called()
