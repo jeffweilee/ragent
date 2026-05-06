@@ -156,31 +156,6 @@ async def test_get_returns_all_fields():
 
 
 # ---------------------------------------------------------------------------
-# acquire_nowait
-# ---------------------------------------------------------------------------
-
-
-async def test_acquire_nowait_returns_document_row_on_success():
-    row = _row(status="UPLOADED")
-    engine, _ = _mock_engine(rows=[row])
-    repo = DocumentRepository(engine)
-    doc = await repo.acquire_nowait("ID1")
-    assert doc.status == "UPLOADED"
-
-
-async def test_acquire_nowait_raises_on_lock_contention():
-    from sqlalchemy.exc import OperationalError
-
-    engine, conn = _mock_engine()
-    conn.execute.side_effect = OperationalError(
-        "Statement", {}, Exception("Lock wait timeout exceeded")
-    )
-    repo = DocumentRepository(engine)
-    with pytest.raises(LockNotAvailable):
-        await repo.acquire_nowait("ID1")
-
-
-# ---------------------------------------------------------------------------
 # update_status
 # ---------------------------------------------------------------------------
 

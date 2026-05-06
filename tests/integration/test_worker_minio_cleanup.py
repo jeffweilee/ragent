@@ -1,11 +1,12 @@
 """T3.2a — Worker: terminal status committed before MinIO delete; orphan logged on error."""
 
 import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from ragent.repositories.document_repository import DocumentRow
+from tests.conftest import make_ingest_container
 
 pytestmark = pytest.mark.docker
 
@@ -26,29 +27,12 @@ def _make_doc(doc_status: str = "UPLOADED") -> DocumentRow:
     )
 
 
-def _make_container(doc: DocumentRow, pipeline_raises: bool = False) -> MagicMock:
-    """Build a mock composition container for ingest_pipeline_task."""
-    container = MagicMock()
-    container.doc_repo = AsyncMock()
-    container.doc_repo.claim_for_processing.return_value = doc
-    container.minio_client = MagicMock()
-    container.minio_client.get_object.return_value = b"data"
-
-    if pipeline_raises:
-        container.ingest_pipeline.run.side_effect = RuntimeError("pipeline failed")
-    else:
-        container.ingest_pipeline.run.return_value = {"writer": {"documents_written": []}}
-
-    container.registry = AsyncMock()
-    return container
-
-
 async def test_terminal_status_committed_before_minio_delete():
     """READY status must be committed before MinIOClient.delete_object is called (S16)."""
     from ragent.workers.ingest import ingest_pipeline_task
 
     doc = _make_doc()
-    container = _make_container(doc)
+    container = make_ingest_container(doc)
 
     call_order: list[str] = []
     container.doc_repo.update_status.side_effect = lambda *a, **kw: call_order.append(
@@ -69,7 +53,7 @@ async def test_minio_delete_error_does_not_prevent_ready_status():
     from ragent.workers.ingest import ingest_pipeline_task
 
     doc = _make_doc()
-    container = _make_container(doc)
+    container = make_ingest_container(doc)
     container.minio_client.delete_object.side_effect = Exception("minio error")
 
     with patch("ragent.bootstrap.composition.get_container", return_value=container):
@@ -87,7 +71,7 @@ async def test_pending_retry_does_not_delete_minio():
     from ragent.workers.ingest import ingest_pipeline_task
 
     doc = _make_doc()
-    container = _make_container(doc, pipeline_raises=True)
+    container = make_ingest_container(doc, pipeline_side_effect=RuntimeError("pipeline failed"))
 
     with patch("ragent.bootstrap.composition.get_container", return_value=container):
         await ingest_pipeline_task("DOC001")

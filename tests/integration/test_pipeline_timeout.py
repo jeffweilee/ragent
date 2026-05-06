@@ -1,11 +1,12 @@
 """T3.2j — Pipeline timeout: overrun → FAILED status; MinIO not deleted (S34, B18)."""
 
 import datetime
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
 from ragent.repositories.document_repository import DocumentRow
+from tests.conftest import make_ingest_container
 
 pytestmark = pytest.mark.docker
 
@@ -26,23 +27,13 @@ def _make_doc() -> DocumentRow:
     )
 
 
-def _make_container(doc: DocumentRow) -> MagicMock:
-    container = MagicMock()
-    container.doc_repo = AsyncMock()
-    container.doc_repo.claim_for_processing.return_value = doc
-    container.minio_client = MagicMock()
-    container.minio_client.get_object.return_value = b"data"
-    container.ingest_pipeline.run.side_effect = TimeoutError("pipeline timeout")
-    container.registry = AsyncMock()
-    return container
-
-
 async def test_pipeline_timeout_transitions_to_failed():
     """TimeoutError in pipeline body → update_status to FAILED (S34)."""
     from ragent.workers.ingest import ingest_pipeline_task
 
-    doc = _make_doc()
-    container = _make_container(doc)
+    container = make_ingest_container(
+        _make_doc(), pipeline_side_effect=TimeoutError("pipeline timeout")
+    )
 
     with patch("ragent.bootstrap.composition.get_container", return_value=container):
         await ingest_pipeline_task("DOC001")
@@ -58,8 +49,9 @@ async def test_pipeline_timeout_does_not_delete_minio():
     """On timeout, MinIO object is NOT deleted (pipeline did not fully process file)."""
     from ragent.workers.ingest import ingest_pipeline_task
 
-    doc = _make_doc()
-    container = _make_container(doc)
+    container = make_ingest_container(
+        _make_doc(), pipeline_side_effect=TimeoutError("pipeline timeout")
+    )
 
     with patch("ragent.bootstrap.composition.get_container", return_value=container):
         await ingest_pipeline_task("DOC001")

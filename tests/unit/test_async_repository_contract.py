@@ -14,7 +14,6 @@ from ragent.repositories.chunk_repository import ChunkRepository
 from ragent.repositories.document_repository import (
     DocumentRepository,
     DocumentRow,
-    LockNotAvailable,
 )
 
 # ---------------------------------------------------------------------------
@@ -73,7 +72,6 @@ def _make_async_engine(rows=None, rowcount=1):
 DOC_REPO_ASYNC_METHODS = [
     "create",
     "get",
-    "acquire_nowait",
     "claim_for_processing",
     "claim_for_deletion",
     "update_status",
@@ -148,16 +146,6 @@ async def test_async_get_returns_none_for_missing() -> None:
     engine, _ = _make_async_engine(rows=[])
     repo = DocumentRepository(engine)
     assert await repo.get("MISSING") is None
-
-
-async def test_async_acquire_nowait_raises_lock_not_available_on_operational_error() -> None:
-    from sqlalchemy.exc import OperationalError
-
-    engine, conn = _make_async_engine()
-    conn.execute.side_effect = OperationalError("s", {}, Exception("lock"))
-    repo = DocumentRepository(engine)
-    with pytest.raises(LockNotAvailable):
-        await repo.acquire_nowait("ID1")
 
 
 async def test_async_update_status_valid_transition() -> None:

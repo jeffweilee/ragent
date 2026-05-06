@@ -48,15 +48,11 @@ def _make_service(doc=None, lock_raises=False):
 async def test_delete_ready_doc_calls_cascade_in_order():
     """claim_for_deletion atomically sets DELETING before any external calls (spec §3.1)."""
     call_order = []
-    svc, repo, chunks, storage, registry = _make_service()
-
-    captured_doc = repo.claim_for_deletion.return_value
-
-    def _claim_side(doc_id):
-        call_order.append("claim_for_deletion")
-        return captured_doc
-
-    repo.claim_for_deletion.side_effect = _claim_side
+    doc = _make_doc()
+    svc, repo, chunks, storage, registry = _make_service(doc=doc)
+    repo.claim_for_deletion.side_effect = lambda doc_id: (
+        call_order.append("claim_for_deletion") or doc
+    )
     registry.fan_out_delete = MagicMock(side_effect=lambda *a: call_order.append("fan_out_delete"))
     chunks.delete_by_document_id.side_effect = AsyncMock(
         side_effect=lambda *a: call_order.append("delete_chunks")

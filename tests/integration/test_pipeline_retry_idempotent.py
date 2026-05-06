@@ -1,27 +1,14 @@
 """T3.2e — Pipeline retry: idempotency-clean purges prior chunks before re-indexing (R4, S25)."""
 
 import dataclasses
-from typing import Any
 from unittest.mock import AsyncMock
 
-import anyio
 import pytest
 
 from tests.conftest import FakeDocumentStore as _FakeStore
+from tests.conftest import run_in_threadpool
 
 pytestmark = pytest.mark.docker
-
-
-def _run_pipeline_in_thread(pipeline, inputs: dict, **kwargs: Any) -> dict:
-    """Run a Haystack pipeline through anyio.to_thread.run_sync so that sync
-    pipeline components can call anyio.from_thread.run() to invoke async repos
-    — the same bridge FastAPI's run_in_threadpool provides in production.
-    """
-
-    async def _async_run() -> dict:
-        return await anyio.to_thread.run_sync(lambda: pipeline.run(inputs, **kwargs))
-
-    return anyio.run(_async_run)
 
 
 def test_pipeline_clears_chunks_before_rerun():
@@ -55,13 +42,14 @@ def test_pipeline_clears_chunks_before_rerun():
     from haystack.dataclasses import ByteStream
 
     text = "Hello world. Second sentence. Third sentence."
-    result = _run_pipeline_in_thread(
-        pipeline,
-        {
-            "converter": {"sources": [ByteStream(data=text.encode())]},
-            "idempotency_clean": {"document_id": "DOC001"},
-        },
-        include_outputs_from={"embedder"},
+    result = run_in_threadpool(
+        lambda: pipeline.run(
+            {
+                "converter": {"sources": [ByteStream(data=text.encode())]},
+                "idempotency_clean": {"document_id": "DOC001"},
+            },
+            include_outputs_from={"embedder"},
+        )
     )
     docs = result["embedder"]["documents"]
 
@@ -96,12 +84,13 @@ def test_pipeline_retry_produces_no_duplicate_chunks():
         pipeline = build_ingest_pipeline(
             embedder=_MockEmbedder(), document_store=_FakeStore(), chunk_repo=chunk_repo
         )
-        _run_pipeline_in_thread(
-            pipeline,
-            {
-                "converter": {"sources": [ByteStream(data=text.encode())]},
-                "idempotency_clean": {"document_id": "DOC001"},
-            },
+        run_in_threadpool(
+            lambda: pipeline.run(
+                {
+                    "converter": {"sources": [ByteStream(data=text.encode())]},
+                    "idempotency_clean": {"document_id": "DOC001"},
+                }
+            )
         )
 
     _run()

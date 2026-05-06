@@ -57,22 +57,11 @@ def _pipeline(es_store, mock_embedder, doc_repo, join_mode="rrf"):
 
 
 def _run(pipeline, query: str, filters: dict | None = None) -> list[Document]:
-    """Run retrieval pipeline; returns hydrated documents.
-
-    Wrapped via ``anyio.to_thread.run_sync`` so the sync ``_SourceHydrator``
-    component can bridge back to the async ``doc_repo`` via ``anyio.from_thread.run``
-    — the same bridge FastAPI's ``run_in_threadpool`` provides in production.
-    """
-    import anyio
-
+    """Run retrieval pipeline through the anyio bridge; returns hydrated documents."""
     from ragent.pipelines.chat import run_retrieval
+    from tests.conftest import run_in_threadpool
 
-    async def _async_run() -> list[Document]:
-        return await anyio.to_thread.run_sync(
-            lambda: run_retrieval(pipeline, query=query, filters=filters)
-        )
-
-    return anyio.run(_async_run)
+    return run_in_threadpool(lambda: run_retrieval(pipeline, query=query, filters=filters))
 
 
 def _write_and_refresh(es_store, docs: list[Document]) -> None:

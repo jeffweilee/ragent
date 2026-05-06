@@ -133,91 +133,39 @@ class DocumentRepository:
     # Locking
     # ------------------------------------------------------------------
 
-    async def acquire_nowait(self, document_id: str) -> DocumentRow:
-        try:
-            row = await self._fetch_first(
-                text("SELECT * FROM documents WHERE document_id = :id FOR UPDATE NOWAIT"),
-                {"id": document_id},
+    async def _claim(self, document_id: str, to_status: str, extra_set: str = "") -> DocumentRow:
+        """Single-tx SELECT FOR UPDATE NOWAIT + UPDATE.
+
+        Holds the row lock across both statements so a concurrent caller cannot
+        observe the pre-transition status after we've decided to advance it (S28).
+        """
+        async with self._engine.begin() as conn:
+            try:
+                result = await conn.execute(
+                    text("SELECT * FROM documents WHERE document_id = :id FOR UPDATE NOWAIT"),
+                    {"id": document_id},
+                )
+            except OperationalError as exc:
+                raise LockNotAvailable(document_id) from exc
+            row = result.mappings().first()
+            if row is None:
+                raise LockNotAvailable(document_id)
+            doc = DocumentRow.from_mapping(row)
+            assert_transition(doc.status, to_status)
+            await conn.execute(
+                text(
+                    f"UPDATE documents SET status=:to_status{extra_set},"
+                    " updated_at=NOW(6) WHERE document_id=:id"
+                ),
+                {"id": document_id, "to_status": to_status},
             )
-        except OperationalError as exc:
-            raise LockNotAvailable(document_id) from exc
-        if row is None:
-            raise LockNotAvailable(document_id)
-        return DocumentRow.from_mapping(row)
+            return doc
 
     async def claim_for_processing(self, document_id: str) -> DocumentRow:
-        """Atomically SELECT FOR UPDATE NOWAIT + UPDATE status=PENDING in one transaction.
-
-        Holds the lock across both statements, preventing the race where another
-        worker observes the same UPLOADED row before the status is committed (Fix #1).
-        Returns the pre-PENDING DocumentRow so callers can use object_key etc.
-        """
-        async with self._engine.begin() as conn:
-            try:
-                row = (
-                    (
-                        await conn.execute(
-                            text(
-                                "SELECT * FROM documents WHERE document_id = :id FOR UPDATE NOWAIT"
-                            ),
-                            {"id": document_id},
-                        )
-                    )
-                    .mappings()
-                    .first()
-                )
-            except OperationalError as exc:
-                raise LockNotAvailable(document_id) from exc
-            if row is None:
-                raise LockNotAvailable(document_id)
-            doc = DocumentRow.from_mapping(row)
-            assert_transition(doc.status, "PENDING")
-            await conn.execute(
-                text(
-                    "UPDATE documents"
-                    " SET status='PENDING', attempt=attempt+1, updated_at=NOW(6)"
-                    " WHERE document_id=:id"
-                ),
-                {"id": document_id},
-            )
-            return doc
+        return await self._claim(document_id, "PENDING", extra_set=", attempt=attempt+1")
 
     async def claim_for_deletion(self, document_id: str) -> DocumentRow:
-        """Atomically SELECT FOR UPDATE NOWAIT + UPDATE status=DELETING in one transaction.
-
-        Holds the lock across both statements, preventing the race where a concurrent
-        delete request acts on stale status (Fix #1 — delete path).
-        Returns the pre-DELETING DocumentRow so callers can inspect original status.
-        """
-        async with self._engine.begin() as conn:
-            try:
-                row = (
-                    (
-                        await conn.execute(
-                            text(
-                                "SELECT * FROM documents WHERE document_id = :id FOR UPDATE NOWAIT"
-                            ),
-                            {"id": document_id},
-                        )
-                    )
-                    .mappings()
-                    .first()
-                )
-            except OperationalError as exc:
-                raise LockNotAvailable(document_id) from exc
-            if row is None:
-                raise LockNotAvailable(document_id)
-            doc = DocumentRow.from_mapping(row)
-            assert_transition(doc.status, "DELETING")
-            await conn.execute(
-                text(
-                    "UPDATE documents"
-                    " SET status='DELETING', updated_at=NOW(6)"
-                    " WHERE document_id=:id"
-                ),
-                {"id": document_id},
-            )
-            return doc
+        return await self._claim(document_id, "DELETING")
 
     # ------------------------------------------------------------------
     # Status mutations

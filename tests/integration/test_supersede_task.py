@@ -48,7 +48,6 @@ def _make_service(side_effects: list) -> tuple:
 
     # pop_oldest_loser returns each doc in order, then None (convergence)
     repo.pop_oldest_loser_for_supersede.side_effect = side_effects + [None]
-    repo.acquire_nowait.side_effect = lambda doc_id: _make_doc(doc_id)
 
     svc = IngestService(repo=repo, chunks=chunks, storage=storage, broker=broker)
     return svc, repo, chunks, storage, broker
