@@ -7,10 +7,13 @@ event loop for its entire lifetime so the async repo pool is reused across ticks
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import os
 import threading
 from typing import Any
+
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 _DEFAULT_INTERVAL = float(os.environ.get("WORKER_HEARTBEAT_INTERVAL_SECONDS", "30"))
 
@@ -25,7 +28,9 @@ def run_heartbeat(
     asyncio.set_event_loop(loop)
     try:
         while not stop.wait(timeout=interval):
-            with contextlib.suppress(Exception):
+            try:
                 loop.run_until_complete(repo.update_heartbeat(document_id))
+            except Exception as exc:
+                logger.warning("heartbeat.update_failed", document_id=document_id, error=str(exc))
     finally:
         loop.close()

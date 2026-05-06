@@ -9,6 +9,7 @@ import structlog
 from anyio import to_thread
 
 from ragent.bootstrap.broker import broker
+from ragent.repositories.document_repository import LockNotAvailable
 
 logger = structlog.get_logger(__name__)
 
@@ -30,8 +31,8 @@ async def ingest_pipeline_task(document_id: str) -> None:
     # TX-A: acquire NOWAIT; fail fast on contention (R7, S28)
     try:
         doc = await repo.acquire_nowait(document_id)
-    except Exception:
-        # re-kiq with backoff handled by caller; just return
+    except LockNotAvailable:
+        logger.info("ingest.lock_contention", document_id=document_id)
         return
 
     await repo.update_status(
