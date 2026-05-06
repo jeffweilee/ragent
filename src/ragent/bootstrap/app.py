@@ -70,6 +70,8 @@ def create_app() -> FastAPI:
     async def lifespan(app: FastAPI):
         init_schema()
         yield
+        container.http.close()
+        container.auth_http.close()
         from opentelemetry import trace
 
         provider = trace.get_tracer_provider()

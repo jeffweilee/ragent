@@ -25,6 +25,13 @@ def int_env(var: str, default: int) -> int:
         sys.exit(1)
 
 
+def bool_env(var: str, default: bool) -> bool:
+    raw = os.environ.get(var)
+    if raw is None:
+        return default
+    return raw.lower() in ("1", "true", "yes")
+
+
 def float_env(var: str, default: float) -> float:
     raw = os.environ.get(var)
     if raw is None:

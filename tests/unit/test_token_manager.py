@@ -10,9 +10,9 @@ Spec: docs/00_rule.md §"LLM & Embedding & Re-rank Auth API (Token Exchange)"
 
 import threading
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 

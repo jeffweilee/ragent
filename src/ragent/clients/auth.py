@@ -1,15 +1,10 @@
-"""T4.2 — TokenManager: J1→J2 single-flight refresh with 5-min boundary (S9, P-F).
-
-Spec: docs/00_rule.md §"LLM & Embedding & Re-rank Auth API (Token Exchange)"
-- POST {"key": j1_token} → {"token": j2, "expiresAt": "2026-01-07T13:20:36Z"}
-- Local mode:  j1_token supplied directly (from AI_LLM/EMBEDDING/RERANK_API_J1_TOKEN)
-- K8s mode:    j1_token=None + k8s_sa_token_path reads file each refresh
-"""
+"""T4.2 — TokenManager: J1→J2 single-flight refresh with 5-min boundary (S9, P-F)."""
 
 import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 
@@ -38,10 +33,8 @@ class TokenManager:
     def _get_j1(self) -> str:
         if self._j1_token is not None:
             return self._j1_token
-        # K8s mode: read fresh from SA file each refresh
         try:
-            with open(self._k8s_path) as f:  # type: ignore[arg-type]
-                return f.read().strip()
+            return Path(self._k8s_path).read_text().strip()  # type: ignore[arg-type]
         except OSError as exc:
             raise RuntimeError("Token refresh failed") from exc
 

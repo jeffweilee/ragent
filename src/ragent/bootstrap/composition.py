@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from ragent.utility.env import bool_env as _bool_env
 from ragent.utility.env import float_env as _float_env
 from ragent.utility.env import int_env as _int_env
 from ragent.utility.env import require as _require
@@ -30,6 +31,8 @@ class Container:
     ingest_pipeline: Any
     rate_limit: int
     rate_limit_window: int
+    http: Any  # shared httpx.Client for embedding/LLM/rerank; closed at shutdown
+    auth_http: Any  # httpx.Client for token exchange (10s timeout); closed at shutdown
 
 
 def build_container() -> Container:
@@ -67,7 +70,7 @@ def build_container() -> Container:
     auth_http = httpx.Client(timeout=10.0)  # dedicated client for token exchange (10 s per spec)
 
     auth_url = _require("AI_API_AUTH_URL")
-    use_k8s = os.environ.get("AI_USE_K8S_SERVICE_ACCOUNT_TOKEN", "false").lower() == "true"
+    use_k8s = _bool_env("AI_USE_K8S_SERVICE_ACCOUNT_TOKEN", False)
 
     if use_k8s:
         # Single SA token exchanged for J2; shared across all three services.
@@ -196,6 +199,8 @@ def build_container() -> Container:
         ingest_pipeline=ingest_pipeline,
         rate_limit=_int_env("CHAT_RATE_LIMIT_PER_MINUTE", 60),
         rate_limit_window=_int_env("CHAT_RATE_LIMIT_WINDOW_SECONDS", 60),
+        http=http,
+        auth_http=auth_http,
     )
 
 
