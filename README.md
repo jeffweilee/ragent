@@ -4,6 +4,8 @@ Enterprise internal knowledge retrieval backend — streaming RAG answers ground
 
 **Phase 1:** Ingest CRUD + Indexing Pipeline + Chat (non-streaming & SSE). Auth disabled (`X-User-Id` header trusted, audit only).
 
+**Phase 1 v2 (2026-05-06):** Ingest API replaced with JSON-only `POST /ingest` (no multipart); discriminator `ingest_type ∈ {inline, file}` selects in-body content vs. caller-owned MinIO object; MIME allow-list trimmed to `{text/plain, text/markdown, text/html}`; pipeline split into MIME-aware AST splitters (mistletoe, selectolax) feeding a single mime-agnostic char-budget chunker (1000/1500/100); ES `chunks_v1` adds a `raw_content` field (`_source`-only) so chat citations and LLM context render the original markdown/HTML faithfully. Chunks live only in ES — the MariaDB `chunks` table is dropped. See `docs/team/2026_05_06_ingest_api_v2.md`.
+
 ---
 
 ## Quick Start
@@ -34,9 +36,9 @@ export REDIS_MODE=sentinel
 export REDIS_SENTINEL_HOSTS="localhost:26379"
 export REDIS_BROKER_SENTINEL_MASTER="mymaster"
 export ES_HOSTS="http://localhost:9200"
-export MINIO_ENDPOINT="localhost:9000"
-export MINIO_ACCESS_KEY="minioadmin"
-export MINIO_SECRET_KEY="minioadmin"
+export MINIO_SITES='[{"name":"__default__","endpoint":"localhost:9000","access_key":"minioadmin","secret_key":"minioadmin","bucket":"ragent","secure":false}]'
+# Add additional sites for ingest_type=file from caller-owned buckets:
+# export MINIO_SITES='[{"name":"__default__",...}, {"name":"tenant-eu-1","endpoint":"eu.example:9000","access_key":"...","secret_key":"...","bucket":"tenant-eu","secure":true,"read_only":true}]'
 
 # P1 open mode (required)
 export RAGENT_AUTH_DISABLED=true
@@ -52,7 +54,11 @@ export CHAT_JOIN_MODE="rrf"
 export EXCERPT_MAX_CHARS=512
 export WORKER_HEARTBEAT_INTERVAL_SECONDS=30
 export PIPELINE_TIMEOUT_SECONDS=1800
-export INGEST_MAX_FILE_SIZE_BYTES=52428800
+export INGEST_INLINE_MAX_BYTES=10485760
+export INGEST_FILE_MAX_BYTES=52428800
+export CHUNK_TARGET_CHARS=1000
+export CHUNK_MAX_CHARS=1500
+export CHUNK_OVERLAP_CHARS=100
 ```
 
 ### 3. Run database migrations
@@ -105,26 +111,60 @@ uv run pytest --cov=src/ragent --cov-branch --cov-fail-under=92              # t
 
 All endpoints return RFC 9457 problem+json on errors. `X-User-Id` header is recorded for audit in Phase 1.
 
-### Ingest
+### Ingest (v2 — JSON only)
 
-#### `POST /ingest` — Upload a document
+`POST /ingest` accepts a JSON body with discriminator `ingest_type ∈ {inline, file}`.
+Supported MIME types (`content_type`): `text/plain`, `text/markdown`, `text/html`. CSV is no longer accepted.
 
-Accepts `multipart/form-data`. Supported MIME types: `text/plain`, `text/markdown`, `text/csv`.
+#### `POST /ingest` — `ingest_type=inline` (content in body)
+
+Cap: `INGEST_INLINE_MAX_BYTES` (default 10 MB) on the UTF-8 byte length of `content`.
 
 ```bash
 curl -X POST http://localhost:8000/ingest \
-  -H "X-User-Id: user-123" \
-  -F "file=@report.txt" \
-  -F "source_id=DOC-123" \
-  -F "source_app=confluence" \
-  -F "source_title=Q3 OKR Planning" \
-  -F "source_workspace=engineering"
+  -H "X-User-Id: user-123" -H "Content-Type: application/json" \
+  -d '{
+    "ingest_type":      "inline",
+    "content_type":     "text/markdown",
+    "content":          "# Q3 OKRs\n\n```python\npool = create_pool()\n```",
+    "source_id":        "DOC-123",
+    "source_app":       "confluence",
+    "source_title":     "Q3 OKR Planning",
+    "source_workspace": "engineering",
+    "source_url":       "https://wiki.example/q3-okr"
+  }'
+```
+
+#### `POST /ingest` — `ingest_type=file` (object in MinIO)
+
+The server reads from `(minio_site, object_key)` directly — no copy, no post-READY delete (we don't own the object). `minio_site` must be a name configured in `MINIO_SITES`. Cap: `INGEST_FILE_MAX_BYTES` (default 50 MB) verified at API time via HEAD-probe.
+
+```bash
+curl -X POST http://localhost:8000/ingest \
+  -H "X-User-Id: user-123" -H "Content-Type: application/json" \
+  -d '{
+    "ingest_type":      "file",
+    "content_type":     "text/html",
+    "minio_site":       "tenant-eu-1",
+    "object_key":       "reports/2025.html",
+    "source_id":        "DOC-456",
+    "source_app":       "s3-importer",
+    "source_title":     "Annual Report 2025",
+    "source_url":       "https://example.com/reports/2025"
+  }'
 ```
 
 ```json
-// 202 Accepted
+// 202 Accepted (both forms)
 { "task_id": "01J9ABCDEFGHJKMNPQRSTVWXYZ" }
 ```
+
+**Errors (RFC 9457 problem+json):**
+- `415 INGEST_MIME_UNSUPPORTED` — `content_type` not in allow-list.
+- `413 INGEST_FILE_TOO_LARGE` — inline content or file size exceeds the cap.
+- `422 INGEST_VALIDATION` — discriminator/required-field shape errors.
+- `422 INGEST_MINIO_SITE_UNKNOWN` — `minio_site` not in registry.
+- `422 INGEST_OBJECT_NOT_FOUND` — `(minio_site, object_key)` HEAD-probe miss.
 
 #### `GET /ingest/{document_id}` — Get document status
 
