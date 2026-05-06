@@ -15,7 +15,7 @@
       "lang":             { "type": "keyword" },
       "title":            { "type": "text" },
       "text":             { "type": "text" },
-      "raw_content":      { "type": "text", "index": false, "doc_values": false },
+      "raw_content":      { "type": "text", "index": false },
       "embedding": {
         "type": "dense_vector",
         "dims": 1024,
