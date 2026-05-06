@@ -151,6 +151,10 @@ def build_container() -> Container:
         hosts=es_hosts,
         index=os.environ.get("ES_CHUNKS_INDEX", "chunks_v1"),
         verify_certs=es_verify_certs,
+        basic_auth=(
+            os.environ.get("ES_USERNAME", "elastic"),
+            os.environ.get("ES_PASSWORD", ""),
+        ),
     )
 
     # SQLAlchemy `create_engine` returns an Engine wrapping a QueuePool by
