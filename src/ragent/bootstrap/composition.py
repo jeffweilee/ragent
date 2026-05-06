@@ -139,18 +139,22 @@ def build_container() -> Container:
 
     es_hosts = _require("ES_HOSTS").split(",")
     es_verify_certs = os.environ.get("ES_VERIFY_CERTS", "true").lower() == "true"
+    _es_password = os.environ.get("ES_PASSWORD")
+    es_basic_auth = (
+        (os.environ.get("ES_USERNAME", "elastic"), _es_password)
+        if _es_password is not None
+        else None
+    )
     es_client = Elasticsearch(
         hosts=es_hosts,
-        basic_auth=(
-            os.environ.get("ES_USERNAME", "elastic"),
-            os.environ.get("ES_PASSWORD", ""),
-        ),
+        basic_auth=es_basic_auth,
         verify_certs=es_verify_certs,
     )
     document_store = ElasticsearchDocumentStore(
         hosts=es_hosts,
         index=os.environ.get("ES_CHUNKS_INDEX", "chunks_v1"),
         verify_certs=es_verify_certs,
+        basic_auth=es_basic_auth,
     )
 
     # MARIADB_DSN may use either pymysql:// or aiomysql:// — async engine needs aiomysql.
