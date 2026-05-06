@@ -58,15 +58,15 @@ def _wait_wiremock_ready(url: str, timeout: int = 30) -> None:
 def _configure_wiremock_stubs(base_url: str) -> None:
     """Register default stubs for all external API endpoints."""
     # Expiry far in the future so the token is never refreshed during tests.
-    _future_ms = 9_999_999_999_000
+    _future_iso = "2999-01-01T00:00:00Z"
     stubs = [
-        # Auth: POST /auth/api/accesstoken
+        # Auth: POST /auth/api/accesstoken — {"key": j1} → {"token": j2, "expiresAt": ISO}
         {
             "request": {"method": "POST", "urlPath": "/auth/api/accesstoken"},
             "response": {
                 "status": 200,
                 "headers": {"Content-Type": "application/json"},
-                "jsonBody": {"access_token": "test-token", "expiresAt": _future_ms},
+                "jsonBody": {"token": "test-j2-token", "expiresAt": _future_iso},
             },
         },
         # Embedding: POST /text_embedding — returns one 1024-dim zero vector.
@@ -289,9 +289,10 @@ def dev_env(
         "RAGENT_ENV": "dev",
         "RAGENT_AUTH_DISABLED": "true",
         "RAGENT_HOST": "127.0.0.1",
-        "AUTH_URL": wiremock_url,
-        "AUTH_CLIENT_ID": "ragent-test",
-        "AUTH_CLIENT_SECRET": "secret",
+        "AI_API_AUTH_URL": wiremock_url,
+        "AI_LLM_API_J1_TOKEN": "test-llm-j1",
+        "AI_EMBEDDING_API_J1_TOKEN": "test-embedding-j1",
+        "AI_RERANK_API_J1_TOKEN": "test-rerank-j1",
         "EMBEDDING_API_URL": wiremock_url,
         "LLM_API_URL": wiremock_url,
         "RERANK_API_URL": f"{wiremock_url}/rerank",

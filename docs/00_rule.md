@@ -4,7 +4,7 @@
    - `docs/00_spec.md`: Specification Standards
    - `docs/00_plan.md`: Master TDD Implementation Checklist
    - `docs/00_journal.md` (Blameless Team Reflection)
-- **Always** execute "Commands" (format, lint, test) before commit.
+- **(Mandatory)** Execute the full pre-commit sequence (format → lint → **full test suite including integration tests** → security scan) before every commit. Skipped docker tests are a blocking violation. See `# Command` section.
 - **Always** refer to `00_agent_team.md` and use "RAGENT Agent Team" workflow for planning, implementation, delivery.
 - **Always** refer to "Context7" MCP for any library and framework standard spec and example.
 
@@ -397,6 +397,17 @@ docker ps &>/dev/null && echo "Docker ready" || {
 > Without it, all `@pytest.mark.docker` tests are skipped and remain `[ ]` in plan.md.
 
 ## Python
-- Format: `uv run ruff format .`
-- Lint: `uv run ruff check . --fix`
-- Test: `uv run pytest`
+
+**(Mandatory) Full pre-commit sequence — no commit is valid unless all four steps are green:**
+
+```bash
+uv run ruff format .
+uv run ruff check . --fix
+uv run pytest --ignore=tests/e2e   # includes @pytest.mark.docker integration tests
+uv run bandit -r src/ --severity-level high --confidence-level high
+```
+
+**Enforcement rules:**
+- All four commands must exit 0 before `git commit`.
+- `pytest` must run the **full suite including integration tests** (`@pytest.mark.docker`). Skipped docker tests due to a missing Docker daemon are **not acceptable** — start the daemon first (see Docker section above).
+- Committing with only unit tests green (docker tests skipped) is a process violation; the CI failure that follows is the direct consequence.

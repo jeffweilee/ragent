@@ -3,6 +3,8 @@
 import threading
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 
@@ -12,19 +14,29 @@ class TokenManager:
     def __init__(
         self,
         auth_url: str,
-        client_id: str,
-        client_secret: str,
         http: Any,
+        j1_token: str | None = None,
+        k8s_sa_token_path: str | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
+        if j1_token is None and k8s_sa_token_path is None:
+            raise ValueError("Either j1_token or k8s_sa_token_path must be provided")
         self._url = auth_url.rstrip("/") + "/auth/api/accesstoken"
-        self._client_id = client_id
-        self._client_secret = client_secret
+        self._j1_token = j1_token
+        self._k8s_path = k8s_sa_token_path
         self._http = http
         self._clock = clock
         self._token: str | None = None
         self._expires_at: float = 0.0
         self._lock = threading.Lock()
+
+    def _get_j1(self) -> str:
+        if self._j1_token is not None:
+            return self._j1_token
+        try:
+            return Path(self._k8s_path).read_text().strip()  # type: ignore[arg-type]
+        except OSError as exc:
+            raise RuntimeError("Failed to read Kubernetes service account token") from exc
 
     def get_token(self) -> str:
         with self._lock:
@@ -34,14 +46,15 @@ class TokenManager:
             return self._token
 
     def _refresh(self) -> str:
+        j1 = self._get_j1()
         try:
-            resp = self._http.post(
-                self._url,
-                json={"clientId": self._client_id, "clientSecret": self._client_secret},
-            )
+            resp = self._http.post(self._url, json={"key": j1})
             resp.raise_for_status()
             data = resp.json()
         except Exception as exc:
             raise RuntimeError("Token refresh failed") from exc
-        self._expires_at = data["expiresAt"] / 1000.0
-        return data["access_token"]
+        dt = datetime.fromisoformat(data["expiresAt"])
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC)
+        self._expires_at = dt.timestamp()
+        return data["token"]

@@ -6,14 +6,17 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from ragent.utility.env import bool_env as _bool_env
 from ragent.utility.env import float_env as _float_env
 from ragent.utility.env import int_env as _int_env
 from ragent.utility.env import require as _require
 
+_K8S_SA_TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
 
 @dataclass
 class Container:
-    token_manager: Any
+    token_managers: Any  # tuple[TokenManager, TokenManager, TokenManager] — LLM, Embedding, Rerank
     embedding_client: Any
     llm_client: Any
     rerank_client: Any
@@ -28,6 +31,8 @@ class Container:
     ingest_pipeline: Any
     rate_limit: int
     rate_limit_window: int
+    http: Any  # shared httpx.Client for embedding/LLM/rerank; closed at shutdown
+    auth_http: Any  # httpx.Client for token exchange (10s timeout); closed at shutdown
 
 
 def build_container() -> Container:
@@ -62,33 +67,58 @@ def build_container() -> Container:
     from ragent.storage.minio_client import MinIOClient
 
     http = httpx.Client(timeout=60.0)
+    auth_http = httpx.Client(timeout=10.0)  # dedicated client for token exchange (10 s per spec)
 
-    token_manager = TokenManager(
-        auth_url=_require("AUTH_URL"),
-        client_id=_require("AUTH_CLIENT_ID"),
-        client_secret=_require("AUTH_CLIENT_SECRET"),
-        http=http,
-    )
+    auth_url = _require("AI_API_AUTH_URL")
+    use_k8s = _bool_env("AI_USE_K8S_SERVICE_ACCOUNT_TOKEN", False)
+
+    join_mode = os.environ.get("CHAT_JOIN_MODE", "rrf")
+    enable_rerank = _bool_env("CHAT_RERANK_ENABLED", True)
+
+    if use_k8s:
+        # Single SA token exchanged for J2; shared across all three services.
+        _shared = TokenManager(
+            auth_url=auth_url,
+            j1_token=None,
+            k8s_sa_token_path=_K8S_SA_TOKEN_PATH,
+            http=auth_http,
+        )
+        llm_tm = embedding_tm = rerank_tm = _shared
+    else:
+        llm_tm = TokenManager(
+            auth_url=auth_url, j1_token=_require("AI_LLM_API_J1_TOKEN"), http=auth_http
+        )
+        embedding_tm = TokenManager(
+            auth_url=auth_url, j1_token=_require("AI_EMBEDDING_API_J1_TOKEN"), http=auth_http
+        )
+        # Only require rerank credentials when reranking is enabled.
+        rerank_tm = (
+            TokenManager(
+                auth_url=auth_url,
+                j1_token=_require("AI_RERANK_API_J1_TOKEN"),
+                http=auth_http,
+            )
+            if enable_rerank
+            else None
+        )
 
     embedding_client = EmbeddingClient(
         api_url=_require("EMBEDDING_API_URL"),
         http=http,
-        get_token=token_manager.get_token,
+        get_token=embedding_tm.get_token,
     )
 
     llm_client = LLMClient(
         api_url=_require("LLM_API_URL"),
         http=http,
-        get_token=token_manager.get_token,
+        get_token=llm_tm.get_token,
     )
 
-    join_mode = os.environ.get("CHAT_JOIN_MODE", "rrf")
-    enable_rerank = os.environ.get("CHAT_RERANK_ENABLED", "true").lower() == "true"
     rerank_client = (
         RerankClient(
             api_url=_require("RERANK_API_URL"),
             http=http,
-            get_token=token_manager.get_token,
+            get_token=rerank_tm.get_token,  # type: ignore[union-attr]
         )
         if enable_rerank
         else None
@@ -162,7 +192,7 @@ def build_container() -> Container:
     )
 
     return Container(
-        token_manager=token_manager,
+        token_managers=(llm_tm, embedding_tm, rerank_tm),
         embedding_client=embedding_client,
         llm_client=llm_client,
         rerank_client=rerank_client,
@@ -177,6 +207,8 @@ def build_container() -> Container:
         ingest_pipeline=ingest_pipeline,
         rate_limit=_int_env("CHAT_RATE_LIMIT_PER_MINUTE", 60),
         rate_limit_window=_int_env("CHAT_RATE_LIMIT_WINDOW_SECONDS", 60),
+        http=http,
+        auth_http=auth_http,
     )
 
 
