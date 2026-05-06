@@ -12,7 +12,8 @@ _DEFAULT_MODEL = os.environ.get("RAGENT_DEFAULT_LLM_MODEL", "gptoss-120b")
 _DEFAULT_TEMPERATURE = float(os.environ.get("RAGENT_DEFAULT_TEMPERATURE", "0.7"))
 _DEFAULT_MAX_TOKENS = int(os.environ.get("RAGENT_DEFAULT_MAX_TOKENS", "4096"))
 _DEFAULT_SYSTEM_PROMPT = os.environ.get(
-    "RAGENT_DEFAULT_SYSTEM_PROMPT", "You are a helpful assistant"
+    "RAGENT_DEFAULT_SYSTEM_PROMPT",
+    "You are a helpful assistant. Always format your response in Markdown.",
 )
 _DEFAULT_RAG_SYSTEM_PROMPT = (
     os.environ.get("RAGENT_DEFAULT_RAG_SYSTEM_PROMPT")
@@ -22,6 +23,10 @@ isolated `=== CONTEXT START === ... === CONTEXT END ===` block followed \
 by the user's request. Use ONLY facts from that block; do not rely on \
 prior knowledge. If the context is insufficient, reply exactly: \
 "I don't know based on the provided context."
+
+Always format your response in Markdown (headings, lists, code fences, \
+emphasis as appropriate). Output Markdown only — no surrounding code \
+fence wrapping the entire reply.
 
 At most one citation per paragraph, placed at the paragraph end as \
 [source_title] (or [document_id] if title is missing). Do not cite \
@@ -76,7 +81,11 @@ mid-sentence. Citations must refer only to entries in the context block.
 
 Detect the user's intent (QUESTION / SUMMARY / GENERATION) and apply \
 the matching response style: direct answer, bullet-point summary, or \
-drafted artefact. Default to QUESTION style when intent is unclear."""
+drafted artefact. Default to QUESTION style when intent is unclear.
+
+Always format your response in Markdown (headings, lists, code fences, \
+emphasis as appropriate). Output Markdown only — no surrounding code \
+fence wrapping the entire reply."""
 )
 _PROVIDER_ALLOWLIST = frozenset({"openai"})
 _FILTER_MAX_LEN = 64

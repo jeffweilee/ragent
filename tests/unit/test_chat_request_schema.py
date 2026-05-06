@@ -106,6 +106,48 @@ def test_source_workspace_empty_string_rejected():
     assert any("source_workspace" in str(e["loc"]) for e in errors)
 
 
+def test_default_system_prompt_enforces_markdown():
+    """Chat LLM output must be formatted as Markdown."""
+    from ragent.schemas.chat import ChatRequest as _CR
+    from ragent.schemas.chat import normalize_messages
+
+    req = _CR(messages=[{"role": "user", "content": "hi"}])
+    msgs = normalize_messages(req)
+    assert msgs[0]["role"] == "system"
+    assert "markdown" in msgs[0]["content"].lower()
+
+
+def test_rag_system_prompt_enforces_markdown():
+    """RAG-grounded chat LLM output must be formatted as Markdown."""
+    from types import SimpleNamespace
+
+    from ragent.schemas.chat import ChatRequest, build_rag_messages
+
+    req = ChatRequest(messages=[{"role": "user", "content": "hi"}])
+    docs = [SimpleNamespace(content="ctx", meta={"source_title": "S"})]
+    msgs = build_rag_messages(req, docs)
+    assert msgs[0]["role"] == "system"
+    assert "markdown" in msgs[0]["content"].lower()
+
+
+def test_rag_grounding_rules_enforces_markdown():
+    """When caller provides a system prompt, grounding rules still mandate Markdown."""
+    from types import SimpleNamespace
+
+    from ragent.schemas.chat import ChatRequest, build_rag_messages
+
+    req = ChatRequest(
+        messages=[
+            {"role": "system", "content": "custom"},
+            {"role": "user", "content": "hi"},
+        ]
+    )
+    docs = [SimpleNamespace(content="ctx", meta={"source_title": "S"})]
+    msgs = build_rag_messages(req, docs)
+    assert msgs[0]["role"] == "system"
+    assert "markdown" in msgs[0]["content"].lower()
+
+
 def test_source_workspace_too_long_rejected():
     ChatRequest, _ = _import()
     with pytest.raises(ValidationError) as exc_info:
