@@ -1,7 +1,7 @@
 """T2.7 — IngestService.create: validation, MIME, MinIO, repo, kiq, rollback (S23, B11, C1)."""
 
 import io
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -11,17 +11,17 @@ ALLOWED_MIMES = ["text/plain", "text/markdown", "text/html", "text/csv"]
 
 
 def _make_service(repo=None, storage=None, broker=None):
-    repo = repo or MagicMock()
+    repo = repo or AsyncMock()
     storage = storage or MagicMock()
     broker = broker or MagicMock()
     storage.put_object.return_value = "app_sid_DOC"
-    svc = IngestService(repo=repo, chunks=MagicMock(), storage=storage, broker=broker)
+    svc = IngestService(repo=repo, chunks=AsyncMock(), storage=storage, broker=broker)
     return svc, repo, storage, broker
 
 
-def test_create_happy_path_returns_document_id():
+async def test_create_happy_path_returns_document_id():
     svc, repo, storage, broker = _make_service()
-    doc_id = svc.create(
+    doc_id = await svc.create(
         create_user="alice",
         source_id="DOC-1",
         source_app="confluence",
@@ -36,9 +36,9 @@ def test_create_happy_path_returns_document_id():
     broker.enqueue.assert_called_once()
 
 
-def test_create_persists_source_fields():
+async def test_create_persists_source_fields():
     svc, repo, storage, _ = _make_service()
-    svc.create(
+    await svc.create(
         create_user="bob",
         source_id="DOC-2",
         source_app="slack",
@@ -55,10 +55,10 @@ def test_create_persists_source_fields():
     assert kwargs["source_workspace"] == "eng"
 
 
-def test_create_raises_on_unsupported_mime():
+async def test_create_raises_on_unsupported_mime():
     svc, _, _, _ = _make_service()
     with pytest.raises(MimeNotAllowed):
-        svc.create(
+        await svc.create(
             create_user="alice",
             source_id="S",
             source_app="app",
@@ -69,11 +69,11 @@ def test_create_raises_on_unsupported_mime():
         )
 
 
-def test_create_raises_on_file_too_large():
+async def test_create_raises_on_file_too_large():
     svc, _, _, _ = _make_service()
     too_large = 52_428_801
     with pytest.raises(FileTooLarge):
-        svc.create(
+        await svc.create(
             create_user="alice",
             source_id="S",
             source_app="app",
@@ -84,15 +84,15 @@ def test_create_raises_on_file_too_large():
         )
 
 
-def test_create_rollback_row_if_minio_put_fails():
-    repo = MagicMock()
+async def test_create_rollback_row_if_minio_put_fails():
+    repo = AsyncMock()
     storage = MagicMock()
     storage.put_object.side_effect = Exception("MinIO down")
     broker = MagicMock()
-    svc = IngestService(repo=repo, chunks=MagicMock(), storage=storage, broker=broker)
+    svc = IngestService(repo=repo, chunks=AsyncMock(), storage=storage, broker=broker)
 
     with pytest.raises(Exception, match="MinIO down"):
-        svc.create(
+        await svc.create(
             create_user="alice",
             source_id="S",
             source_app="app",
@@ -105,9 +105,9 @@ def test_create_rollback_row_if_minio_put_fails():
     assert repo.create.call_count == 0 or repo.delete.call_count >= 1
 
 
-def test_create_dispatches_pipeline_task():
+async def test_create_dispatches_pipeline_task():
     svc, repo, _, broker = _make_service()
-    doc_id = svc.create(
+    doc_id = await svc.create(
         create_user="alice",
         source_id="S",
         source_app="app",
@@ -118,14 +118,13 @@ def test_create_dispatches_pipeline_task():
     )
     broker.enqueue.assert_called_once()
     call_args = broker.enqueue.call_args
-    # task name should reference ingest pipeline
     assert "ingest" in str(call_args).lower() or doc_id in str(call_args)
 
 
-def test_create_stores_object_key_from_storage():
+async def test_create_stores_object_key_from_storage():
     svc, repo, storage, _ = _make_service()
     storage.put_object.return_value = "confluence_DOC-1_NEWID"
-    svc.create(
+    await svc.create(
         create_user="alice",
         source_id="DOC-1",
         source_app="confluence",
@@ -139,9 +138,9 @@ def test_create_stores_object_key_from_storage():
 
 
 @pytest.mark.parametrize("mime", ALLOWED_MIMES)
-def test_create_allows_all_p1_mimes(mime):
+async def test_create_allows_all_p1_mimes(mime):
     svc, _, _, _ = _make_service()
-    doc_id = svc.create(
+    doc_id = await svc.create(
         create_user="alice",
         source_id="S",
         source_app="app",
@@ -150,4 +149,4 @@ def test_create_allows_all_p1_mimes(mime):
         file_size=4,
         content_type=mime,
     )
-    assert doc_id  # no exception raised
+    assert doc_id

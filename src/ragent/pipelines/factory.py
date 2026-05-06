@@ -53,7 +53,9 @@ class _IdempotencyClean:
 
     @component.output_types(documents=list[Document])
     def run(self, documents: list[Document], document_id: str) -> dict:
-        self._repo.delete_by_document_id(document_id)
+        import anyio.from_thread
+
+        anyio.from_thread.run(self._repo.delete_by_document_id, document_id)
         stamped = [
             dataclasses.replace(d, meta={**d.meta, "document_id": document_id}) for d in documents
         ]

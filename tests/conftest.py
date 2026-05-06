@@ -192,7 +192,7 @@ def mariadb_container():
 def mariadb_dsn(mariadb_container) -> str:
     host = mariadb_container.get_container_host_ip()
     port = mariadb_container.get_exposed_port(3306)
-    return f"mysql+pymysql://ragent:ragent@{host}:{port}/ragent?charset=utf8mb4"
+    return f"mysql+aiomysql://ragent:ragent@{host}:{port}/ragent?charset=utf8mb4"
 
 
 @pytest.fixture(scope="session")

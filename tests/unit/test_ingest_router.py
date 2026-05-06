@@ -1,7 +1,7 @@
 """T2.13 — IngestRouter: validation, error codes, RFC 9457 problem+json (S23, B5, B11)."""
 
 import datetime
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock
 
 from fastapi.testclient import TestClient
 
@@ -16,7 +16,7 @@ def _dt():
 def _make_client(svc=None):
     from fastapi import FastAPI
 
-    svc = svc or MagicMock()
+    svc = svc or AsyncMock()
     app = FastAPI()
     router = create_router(svc=svc)
     app.include_router(router)
@@ -24,7 +24,7 @@ def _make_client(svc=None):
 
 
 def test_post_ingest_returns_202_with_task_id():
-    svc = MagicMock()
+    svc = AsyncMock()
     svc.create.return_value = "AAAAAAAAAAAAAAAAAAAAAAAAAAA"
     client, _ = _make_client(svc)
     resp = client.post(
@@ -79,7 +79,7 @@ def test_post_ingest_missing_source_title_returns_422():
 
 
 def test_post_ingest_unsupported_mime_returns_415():
-    svc = MagicMock()
+    svc = AsyncMock()
     svc.create.side_effect = MimeNotAllowed("image/png")
     client, _ = _make_client(svc)
     resp = client.post(
@@ -94,7 +94,7 @@ def test_post_ingest_unsupported_mime_returns_415():
 
 
 def test_post_ingest_file_too_large_returns_413():
-    svc = MagicMock()
+    svc = AsyncMock()
     svc.create.side_effect = FileTooLarge("too big")
     client, _ = _make_client(svc)
     resp = client.post(
@@ -140,7 +140,7 @@ def test_get_ingest_by_id():
         created_at=_dt(),
         updated_at=_dt(),
     )
-    svc = MagicMock()
+    svc = AsyncMock()
     svc.get.return_value = doc
     client, _ = _make_client(svc)
     resp = client.get("/ingest/ID1", headers={"X-User-Id": "alice"})
@@ -151,7 +151,7 @@ def test_get_ingest_by_id():
 
 
 def test_get_ingest_by_id_not_found():
-    svc = MagicMock()
+    svc = AsyncMock()
     svc.get.return_value = None
     client, _ = _make_client(svc)
     resp = client.get("/ingest/NOTEXIST", headers={"X-User-Id": "alice"})
@@ -161,7 +161,7 @@ def test_get_ingest_by_id_not_found():
 
 
 def test_delete_ingest_returns_204():
-    svc = MagicMock()
+    svc = AsyncMock()
     svc.delete.return_value = None
     client, _ = _make_client(svc)
     resp = client.delete("/ingest/ID1", headers={"X-User-Id": "alice"})
@@ -169,7 +169,7 @@ def test_delete_ingest_returns_204():
 
 
 def test_list_ingest_returns_200():
-    svc = MagicMock()
+    svc = AsyncMock()
     svc.list.return_value = IngestListResult(items=[], next_cursor=None)
     client, _ = _make_client(svc)
     resp = client.get("/ingest", headers={"X-User-Id": "alice"})
@@ -184,7 +184,7 @@ def test_missing_x_user_id_returns_422():
 
     from ragent.bootstrap.app import _x_user_id_middleware
 
-    svc = MagicMock()
+    svc = AsyncMock()
     app = FastAPI()
     app.include_router(create_router(svc=svc))
     _x_user_id_middleware(app)

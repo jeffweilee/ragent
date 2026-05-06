@@ -69,8 +69,10 @@ class _SourceHydrator:
 
     @component.output_types(documents=list[Document])
     def run(self, documents: list[Document]) -> dict:
+        import anyio.from_thread
+
         ids = [d.meta.get("document_id") for d in documents if d.meta.get("document_id")]
-        sources = self._repo.get_sources_by_document_ids(ids) if ids else {}
+        sources = anyio.from_thread.run(self._repo.get_sources_by_document_ids, ids) if ids else {}
         result = []
         for doc in documents:
             doc_id = doc.meta.get("document_id")

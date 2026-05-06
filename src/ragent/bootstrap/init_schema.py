@@ -88,10 +88,15 @@ def init_es(es_url: str) -> None:
         logger.info("es.index_created", index=index)
 
 
+def _to_sync_dsn(dsn: str) -> str:
+    """Convert aiomysql DSN to pymysql so init_schema can use a sync engine."""
+    return dsn.replace("mysql+aiomysql://", "mysql+pymysql://")
+
+
 def auto_init(db_url: str, es_url: str) -> None:
     from sqlalchemy import create_engine
 
-    engine = create_engine(db_url)
+    engine = create_engine(_to_sync_dsn(db_url))
     init_mariadb(engine)
     init_es(es_url)
 
