@@ -82,7 +82,7 @@ class IngestService:
             source_workspace=source_workspace,
             object_key=object_key,
         )
-        self._broker.enqueue("ingest.pipeline", document_id=document_id)
+        await self._broker.enqueue("ingest.pipeline", document_id=document_id)
         return document_id
 
     # ------------------------------------------------------------------

@@ -13,7 +13,7 @@ ALLOWED_MIMES = ["text/plain", "text/markdown", "text/html", "text/csv"]
 def _make_service(repo=None, storage=None, broker=None):
     repo = repo or AsyncMock()
     storage = storage or MagicMock()
-    broker = broker or MagicMock()
+    broker = broker or AsyncMock()
     storage.put_object.return_value = "app_sid_DOC"
     svc = IngestService(repo=repo, chunks=AsyncMock(), storage=storage, broker=broker)
     return svc, repo, storage, broker
@@ -88,7 +88,7 @@ async def test_create_rollback_row_if_minio_put_fails():
     repo = AsyncMock()
     storage = MagicMock()
     storage.put_object.side_effect = Exception("MinIO down")
-    broker = MagicMock()
+    broker = AsyncMock()
     svc = IngestService(repo=repo, chunks=AsyncMock(), storage=storage, broker=broker)
 
     with pytest.raises(Exception, match="MinIO down"):

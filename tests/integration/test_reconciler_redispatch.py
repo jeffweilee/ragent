@@ -61,7 +61,7 @@ def _default_repo(pending_stale: list | None = None) -> AsyncMock:
 def test_stale_pending_is_redispatched():
     """PENDING row older than threshold is re-enqueued to ingest.pipeline."""
     repo = _default_repo(pending_stale=[_make_doc("DOC001", attempt=1)])
-    broker = MagicMock()
+    broker = AsyncMock()
 
     rec = _make_reconciler(repo, broker)
     rec.run()
@@ -73,7 +73,7 @@ def test_multiple_stale_pending_all_redispatched():
     """All stale PENDING rows are re-enqueued."""
     stale_docs = [_make_doc(f"DOC{i:03d}", attempt=i) for i in range(1, 4)]
     repo = _default_repo(pending_stale=stale_docs)
-    broker = MagicMock()
+    broker = AsyncMock()
 
     rec = _make_reconciler(repo, broker)
     rec.run()
@@ -85,7 +85,7 @@ def test_multiple_stale_pending_all_redispatched():
 def test_fresh_pending_not_redispatched():
     """Empty stale list (fresh rows excluded by query) → no dispatch."""
     repo = _default_repo()
-    broker = MagicMock()
+    broker = AsyncMock()
 
     rec = _make_reconciler(repo, broker)
     rec.run()
@@ -104,7 +104,7 @@ def test_list_pending_stale_called_with_attempt_le(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("RECONCILER_PENDING_STALE_SECONDS", "300")
 
     repo = _default_repo()
-    broker = MagicMock()
+    broker = AsyncMock()
 
     rec = _make_reconciler(repo, broker)
     rec.run()
@@ -127,7 +127,7 @@ def test_list_pending_stale_custom_max_attempts(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("WORKER_MAX_ATTEMPTS", "3")
 
     repo = _default_repo()
-    broker = MagicMock()
+    broker = AsyncMock()
 
     rec = _make_reconciler(repo, broker)
     rec.run()
@@ -145,7 +145,7 @@ def test_list_pending_stale_custom_max_attempts(monkeypatch: pytest.MonkeyPatch)
 def test_idempotent_second_run_dispatches_again():
     """Re-running the reconciler re-dispatches still-stale rows each cycle (S2)."""
     repo = _default_repo(pending_stale=[_make_doc("DOC001")])
-    broker = MagicMock()
+    broker = AsyncMock()
 
     rec = _make_reconciler(repo, broker)
     rec.run()

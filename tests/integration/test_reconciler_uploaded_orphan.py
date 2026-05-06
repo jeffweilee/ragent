@@ -56,7 +56,7 @@ def _make_reconciler(repo: AsyncMock, broker: MagicMock):
 def test_stale_uploaded_is_redispatched():
     """UPLOADED row older than threshold is re-enqueued to ingest.pipeline."""
     repo = _default_repo(uploaded=[_make_doc("DOC001")])
-    broker = MagicMock()
+    broker = AsyncMock()
 
     rec = _make_reconciler(repo, broker)
     rec.run()
@@ -67,7 +67,7 @@ def test_stale_uploaded_is_redispatched():
 def test_multiple_stale_uploaded_all_redispatched():
     """All stale UPLOADED rows are re-enqueued."""
     repo = _default_repo(uploaded=[_make_doc(f"DOC{i:03d}") for i in range(1, 4)])
-    broker = MagicMock()
+    broker = AsyncMock()
 
     rec = _make_reconciler(repo, broker)
     rec.run()
@@ -79,7 +79,7 @@ def test_multiple_stale_uploaded_all_redispatched():
 def test_fresh_uploaded_not_redispatched():
     """Empty stale-uploaded list → no dispatch."""
     repo = _default_repo(uploaded=[])
-    broker = MagicMock()
+    broker = AsyncMock()
 
     rec = _make_reconciler(repo, broker)
     rec.run()
@@ -92,7 +92,7 @@ def test_list_uploaded_stale_called_with_threshold(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("RECONCILER_UPLOADED_STALE_SECONDS", "300")
 
     repo = _default_repo()
-    broker = MagicMock()
+    broker = AsyncMock()
 
     rec = _make_reconciler(repo, broker)
     rec.run()

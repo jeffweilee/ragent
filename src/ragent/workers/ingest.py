@@ -65,3 +65,24 @@ async def ingest_pipeline_task(document_id: str) -> None:
 
     # Fan out to downstream plugins (vector / graph) once the row is READY
     await container.registry.fan_out(document_id)
+
+
+@broker.task("ingest.supersede")
+async def ingest_supersede_task(survivor_id: str, source_id: str, source_app: str) -> None:
+    """T3.2d — Supersede worker task (R3, S26).
+
+    Pops oldest losers for ``(source_id, source_app)`` and cascade-deletes
+    them, keeping ``survivor_id`` (= MAX(created_at)).
+    """
+    from ragent.bootstrap.composition import get_container
+    from ragent.services.ingest_service import IngestService
+
+    container = get_container()
+    svc = IngestService(
+        repo=container.doc_repo,
+        chunks=container.chunk_repo,
+        storage=container.minio_client,
+        broker=container.registry,
+    )
+
+    await svc.supersede(survivor_id, source_id, source_app)

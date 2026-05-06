@@ -62,7 +62,7 @@ def test_multi_ready_enqueues_supersede():
     older = _make_doc("DOC001", created_offset=0)
     newer = _make_doc("DOC002", created_offset=10)
     repo = _default_repo(groups=[("S1", "confluence")], ready_docs=[older, newer])
-    broker = MagicMock()
+    broker = AsyncMock()
 
     rec = _make_reconciler(repo, broker)
     rec.run()
@@ -78,7 +78,7 @@ def test_multi_ready_enqueues_supersede():
 def test_no_multi_ready_no_supersede():
     """No multi-READY groups → no supersede enqueued."""
     repo = _default_repo(groups=[])
-    broker = MagicMock()
+    broker = AsyncMock()
 
     rec = _make_reconciler(repo, broker)
     rec.run()
@@ -100,7 +100,7 @@ def test_multiple_groups_each_get_supersede():
         [older_a, newer_a],
         [older_b, newer_b],
     ]
-    broker = MagicMock()
+    broker = AsyncMock()
 
     rec = _make_reconciler(repo, broker)
     rec.run()
@@ -120,7 +120,7 @@ def test_survivor_is_newest_created_at():
         groups=[("S1", "confluence")],
         ready_docs=[oldest, middle, newest],
     )
-    broker = MagicMock()
+    broker = AsyncMock()
 
     rec = _make_reconciler(repo, broker)
     rec.run()
