@@ -33,7 +33,6 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(
-        "ALTER TABLE documents "
-        "DROP COLUMN ingest_type, DROP COLUMN minio_site, DROP COLUMN source_url"
-    )
+    op.drop_column("documents", "source_url")
+    op.drop_column("documents", "minio_site")
+    op.drop_column("documents", "ingest_type")

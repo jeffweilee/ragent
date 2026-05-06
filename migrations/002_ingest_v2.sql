@@ -3,9 +3,14 @@
 -- The `chunks` table is retained at this commit; deleted in C6 once the v2
 -- pipeline (C4) has stopped writing to it. Each commit must be independently
 -- applicable.
+--
+-- Columns are appended to the end of the table (no AFTER clause): MariaDB
+-- 10.6 ALGORITHM=INSTANT only supports appending. `schema.sql` mirrors this
+-- ordering so `mysqldump` of `alembic upgrade head` matches `mysqldump` of
+-- `schema.sql` byte-for-byte (T0.8b drift test).
 
 ALTER TABLE documents
-  ADD COLUMN ingest_type ENUM('inline','file') NOT NULL DEFAULT 'inline' AFTER object_key,
-  ADD COLUMN minio_site  VARCHAR(64)  NULL                                AFTER ingest_type,
-  ADD COLUMN source_url  VARCHAR(2048) NULL                               AFTER source_workspace,
+  ADD COLUMN ingest_type ENUM('inline','file') NOT NULL DEFAULT 'inline',
+  ADD COLUMN minio_site  VARCHAR(64)  NULL,
+  ADD COLUMN source_url  VARCHAR(2048) NULL,
   ALGORITHM=INSTANT;
