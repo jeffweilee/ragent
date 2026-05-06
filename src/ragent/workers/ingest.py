@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import tempfile
-from typing import Any
 
 import structlog
 from anyio import to_thread
@@ -12,14 +11,6 @@ from anyio import to_thread
 from ragent.bootstrap.broker import broker
 
 logger = structlog.get_logger(__name__)
-
-_BACKOFF_BASE = 2.0
-_BACKOFF_CAP = 30.0
-
-
-def handle_lock_contention(document_id: str, current_attempt: int, repo: Any) -> float:
-    """Return re-kiq delay (seconds) without incrementing attempt (R7, S28)."""
-    return min(_BACKOFF_BASE ** (current_attempt + 1), _BACKOFF_CAP)
 
 
 @broker.task("ingest.pipeline")

@@ -153,12 +153,10 @@ def build_container() -> Container:
         verify_certs=es_verify_certs,
     )
 
-    # SQLAlchemy AsyncEngine + aiomysql: async pool, one connection per unit of
-    # work (00_rule.md → Mandatory Connection Pool). Convert pymysql DSN to
-    # aiomysql transparently so operators keep the same MARIADB_DSN format.
-    _raw_dsn = _require("MARIADB_DSN")
-    _async_dsn = _raw_dsn.replace("mysql+pymysql://", "mysql+aiomysql://")
-    engine = create_async_engine(_async_dsn)
+    # MARIADB_DSN may use either pymysql:// or aiomysql:// — async engine needs aiomysql.
+    from ragent.bootstrap.init_schema import to_async_dsn
+
+    engine = create_async_engine(to_async_dsn(_require("MARIADB_DSN")))
 
     doc_repo = DocumentRepository(engine=engine)
     chunk_repo = ChunkRepository(engine=engine)

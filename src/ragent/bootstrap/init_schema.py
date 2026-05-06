@@ -89,8 +89,11 @@ def init_es(es_url: str) -> None:
 
 
 def _to_sync_dsn(dsn: str) -> str:
-    """Convert aiomysql DSN to pymysql so init_schema can use a sync engine."""
     return dsn.replace("mysql+aiomysql://", "mysql+pymysql://")
+
+
+def to_async_dsn(dsn: str) -> str:
+    return dsn.replace("mysql+pymysql://", "mysql+aiomysql://")
 
 
 def auto_init(db_url: str, es_url: str) -> None:
