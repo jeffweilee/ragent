@@ -34,7 +34,7 @@ def test_vector_extractor_receives_same_dependency_instances(dev_env) -> None:
 
 def test_missing_required_env_var_exits_eagerly(monkeypatch: pytest.MonkeyPatch) -> None:
     """SystemExit at construction, not lazy at first request (B30 fail-fast)."""
-    for var in ("AUTH_URL", "MARIADB_DSN", "EMBEDDING_API_URL"):
+    for var in ("AI_API_AUTH_URL", "MARIADB_DSN", "EMBEDDING_API_URL"):
         monkeypatch.delenv(var, raising=False)
     import ragent.bootstrap.composition as comp
 
