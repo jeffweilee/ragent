@@ -61,7 +61,7 @@ def _make_reconciler(
 def test_stale_deleting_resumes_cascade():
     """Stale DELETING row: chunks deleted then doc row deleted."""
     repo = _default_repo(deleting=[_make_doc("DOC001")])
-    broker = MagicMock()
+    broker = AsyncMock()
     chunks = MagicMock()
 
     rec = _make_reconciler(repo, broker, chunks=chunks)
@@ -74,7 +74,7 @@ def test_stale_deleting_resumes_cascade():
 def test_stale_deleting_no_redispatch():
     """Stale DELETING rows must not be re-enqueued to ingest.pipeline."""
     repo = _default_repo(deleting=[_make_doc("DOC001")])
-    broker = MagicMock()
+    broker = AsyncMock()
     chunks = MagicMock()
 
     rec = _make_reconciler(repo, broker, chunks=chunks)
@@ -87,7 +87,7 @@ def test_multiple_stale_deleting_all_resumed():
     """Multiple stale DELETING rows are all cascade-deleted."""
     docs = [_make_doc(f"DOC{i:03d}") for i in range(1, 4)]
     repo = _default_repo(deleting=docs)
-    broker = MagicMock()
+    broker = AsyncMock()
     chunks = MagicMock()
 
     rec = _make_reconciler(repo, broker, chunks=chunks)
@@ -100,7 +100,7 @@ def test_multiple_stale_deleting_all_resumed():
 def test_stale_deleting_cascade_is_idempotent():
     """Re-running reconciler on same stale DELETING row is safe (each call cleans up)."""
     repo = _default_repo(deleting=[_make_doc("DOC001")])
-    broker = MagicMock()
+    broker = AsyncMock()
     chunks = MagicMock()
 
     rec = _make_reconciler(repo, broker, chunks=chunks)
@@ -113,7 +113,7 @@ def test_stale_deleting_cascade_is_idempotent():
 def test_stale_deleting_calls_fan_out_delete_when_registry_present():
     """When registry is provided, fan_out_delete is invoked before chunk/doc cleanup."""
     repo = _default_repo(deleting=[_make_doc("DOC001")])
-    broker = MagicMock()
+    broker = AsyncMock()
     chunks = MagicMock()
     registry = MagicMock()
     registry.fan_out_delete = AsyncMock(return_value=[])
@@ -129,7 +129,7 @@ def test_list_deleting_stale_called_with_threshold(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("RECONCILER_DELETING_STALE_SECONDS", "300")
 
     repo = _default_repo()
-    broker = MagicMock()
+    broker = AsyncMock()
 
     rec = _make_reconciler(repo, broker)
     rec.run()

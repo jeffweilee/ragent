@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import datetime
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -51,7 +51,7 @@ def _make_reconciler(repo: MagicMock, broker: MagicMock):
 def test_stale_pending_is_redispatched():
     """PENDING row older than threshold is re-enqueued to ingest.pipeline."""
     repo = MagicMock()
-    broker = MagicMock()
+    broker = AsyncMock()
 
     repo.list_pending_stale.return_value = [_make_doc("DOC001", attempt=1)]
     repo.find_multi_ready_groups.return_value = []
@@ -66,7 +66,7 @@ def test_stale_pending_is_redispatched():
 def test_multiple_stale_pending_all_redispatched():
     """All stale PENDING rows are re-enqueued."""
     repo = MagicMock()
-    broker = MagicMock()
+    broker = AsyncMock()
 
     stale_docs = [_make_doc(f"DOC{i:03d}", attempt=i) for i in range(1, 4)]
     repo.list_pending_stale.return_value = stale_docs
@@ -83,7 +83,7 @@ def test_multiple_stale_pending_all_redispatched():
 def test_fresh_pending_not_redispatched():
     """Empty stale list (fresh rows excluded by query) → no dispatch."""
     repo = MagicMock()
-    broker = MagicMock()
+    broker = AsyncMock()
 
     repo.list_pending_stale.return_value = []
     repo.find_multi_ready_groups.return_value = []
@@ -106,7 +106,7 @@ def test_list_pending_stale_called_with_attempt_le(monkeypatch: pytest.MonkeyPat
     monkeypatch.setenv("RECONCILER_PENDING_STALE_SECONDS", "300")
 
     repo = MagicMock()
-    broker = MagicMock()
+    broker = AsyncMock()
     repo.list_pending_stale.return_value = []
     repo.find_multi_ready_groups.return_value = []
     repo.list_uploaded_stale.return_value = []
@@ -132,7 +132,7 @@ def test_list_pending_stale_custom_max_attempts(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("WORKER_MAX_ATTEMPTS", "3")
 
     repo = MagicMock()
-    broker = MagicMock()
+    broker = AsyncMock()
     repo.list_pending_stale.return_value = []
     repo.find_multi_ready_groups.return_value = []
     repo.list_uploaded_stale.return_value = []
@@ -153,7 +153,7 @@ def test_list_pending_stale_custom_max_attempts(monkeypatch: pytest.MonkeyPatch)
 def test_idempotent_second_run_dispatches_again():
     """Re-running the reconciler re-dispatches still-stale rows each cycle (S2)."""
     repo = MagicMock()
-    broker = MagicMock()
+    broker = AsyncMock()
 
     repo.list_pending_stale.return_value = [_make_doc("DOC001")]
     repo.find_multi_ready_groups.return_value = []

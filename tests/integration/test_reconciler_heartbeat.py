@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -36,7 +36,7 @@ def test_run_increments_reconciler_tick_total():
     before = reconciler_tick_total._value.get()
 
     repo = _default_repo()
-    rec = _make_reconciler(repo, MagicMock())
+    rec = _make_reconciler(repo, AsyncMock())
     rec.run()
 
     after = reconciler_tick_total._value.get()
@@ -50,7 +50,7 @@ def test_two_runs_increment_by_two():
     before = reconciler_tick_total._value.get()
 
     repo = _default_repo()
-    rec = _make_reconciler(repo, MagicMock())
+    rec = _make_reconciler(repo, AsyncMock())
     rec.run()
     rec.run()
 
@@ -68,7 +68,7 @@ def test_run_emits_reconciler_tick_log(caplog: pytest.LogCaptureFixture):
     import structlog
 
     repo = _default_repo()
-    rec = _make_reconciler(repo, MagicMock())
+    rec = _make_reconciler(repo, AsyncMock())
 
     with structlog.testing.capture_logs() as logs:
         rec.run()
