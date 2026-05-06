@@ -23,6 +23,10 @@ from anyio.from_thread import run as _run_from_thread
 from taskiq import AsyncBroker
 
 
+class TaskNotRegisteredError(Exception):
+    """Raised when a task label has no matching `@broker.task` registration."""
+
+
 class TaskiqDispatcher:
     """Async-native dispatcher: `await dispatcher.enqueue(label, **kwargs)`."""
 
@@ -32,7 +36,7 @@ class TaskiqDispatcher:
     async def enqueue(self, label: str, **kwargs: Any) -> None:
         task = self._broker.find_task(label)
         if task is None:
-            raise RuntimeError(f"taskiq task {label!r} is not registered")
+            raise TaskNotRegisteredError(f"taskiq task {label!r} is not registered")
         await task.kiq(**kwargs)
 
 

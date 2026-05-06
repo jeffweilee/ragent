@@ -16,6 +16,7 @@ from taskiq.brokers.inmemory_broker import InMemoryBroker
 from ragent.bootstrap.dispatcher import (
     BlockingTaskiqDispatcher,
     TaskiqDispatcher,
+    TaskNotRegisteredError,
 )
 
 
@@ -53,7 +54,7 @@ def test_async_dispatcher_raises_for_unregistered_label(broker_with_task) -> Non
     async def _go() -> None:
         await broker.startup()
         try:
-            with pytest.raises(RuntimeError, match="not registered"):
+            with pytest.raises(TaskNotRegisteredError, match="not registered"):
                 await dispatcher.enqueue("ingest.unknown", document_id="X")
         finally:
             await broker.shutdown()
