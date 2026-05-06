@@ -98,12 +98,9 @@ class IngestService:
 
     async def delete(self, document_id: str) -> None:
         try:
-            doc = await self._repo.acquire_nowait(document_id)
+            doc = await self._repo.claim_for_deletion(document_id)
         except LockNotAvailable:
             return  # not found or contended — both are idempotent 204
-
-        # Short TX-A: transition to DELETING (commit in repo layer)
-        await self._repo.update_status(document_id, from_status=doc.status, to_status="DELETING")
 
         # Outside any DB tx: fan_out_delete → chunk delete → MinIO (if staged)
         if self._has_fan_out:

@@ -74,6 +74,8 @@ DOC_REPO_ASYNC_METHODS = [
     "create",
     "get",
     "acquire_nowait",
+    "claim_for_processing",
+    "claim_for_deletion",
     "update_status",
     "update_heartbeat",
     "list_pending_stale",

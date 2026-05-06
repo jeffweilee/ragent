@@ -276,6 +276,83 @@ async def test_delete_executes_delete_sql():
 
 
 # ---------------------------------------------------------------------------
+# claim_for_processing
+# ---------------------------------------------------------------------------
+
+
+async def test_claim_for_processing_returns_document_row():
+    row = _row(status="UPLOADED")
+    engine, _ = _mock_engine(rows=[row])
+    repo = DocumentRepository(engine)
+    doc = await repo.claim_for_processing("ID1")
+    assert doc.status == "UPLOADED"
+    assert doc.document_id == "AAAAAAAAAAAAAAAAAAAAAAAAAAA"
+
+
+async def test_claim_for_processing_raises_on_lock_contention():
+    from sqlalchemy.exc import OperationalError
+
+    engine, conn = _mock_engine()
+    conn.execute.side_effect = OperationalError("s", {}, Exception("lock"))
+    repo = DocumentRepository(engine)
+    with pytest.raises(LockNotAvailable):
+        await repo.claim_for_processing("ID1")
+
+
+async def test_claim_for_processing_raises_when_row_not_found():
+    engine, _ = _mock_engine(rows=[])
+    repo = DocumentRepository(engine)
+    with pytest.raises(LockNotAvailable):
+        await repo.claim_for_processing("MISSING")
+
+
+async def test_claim_for_processing_executes_select_and_update():
+    row = _row(status="UPLOADED")
+    engine, conn = _mock_engine(rows=[row])
+    repo = DocumentRepository(engine)
+    await repo.claim_for_processing("ID1")
+    assert conn.execute.call_count == 2  # SELECT FOR UPDATE NOWAIT + UPDATE
+
+
+# ---------------------------------------------------------------------------
+# claim_for_deletion
+# ---------------------------------------------------------------------------
+
+
+async def test_claim_for_deletion_returns_document_row():
+    row = _row(status="READY")
+    engine, _ = _mock_engine(rows=[row])
+    repo = DocumentRepository(engine)
+    doc = await repo.claim_for_deletion("ID1")
+    assert doc.status == "READY"
+
+
+async def test_claim_for_deletion_raises_on_lock_contention():
+    from sqlalchemy.exc import OperationalError
+
+    engine, conn = _mock_engine()
+    conn.execute.side_effect = OperationalError("s", {}, Exception("lock"))
+    repo = DocumentRepository(engine)
+    with pytest.raises(LockNotAvailable):
+        await repo.claim_for_deletion("ID1")
+
+
+async def test_claim_for_deletion_raises_when_row_not_found():
+    engine, _ = _mock_engine(rows=[])
+    repo = DocumentRepository(engine)
+    with pytest.raises(LockNotAvailable):
+        await repo.claim_for_deletion("MISSING")
+
+
+async def test_claim_for_deletion_executes_select_and_update():
+    row = _row(status="READY")
+    engine, conn = _mock_engine(rows=[row])
+    repo = DocumentRepository(engine)
+    await repo.claim_for_deletion("ID1")
+    assert conn.execute.call_count == 2  # SELECT FOR UPDATE NOWAIT + UPDATE
+
+
+# ---------------------------------------------------------------------------
 # list_ready_by_source
 # ---------------------------------------------------------------------------
 

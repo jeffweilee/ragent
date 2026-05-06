@@ -28,16 +28,12 @@ async def ingest_pipeline_task(document_id: str) -> None:
     repo = container.doc_repo
     storage = container.minio_client
 
-    # TX-A: acquire NOWAIT; fail fast on contention (R7, S28)
+    # TX-A: atomic SELECT FOR UPDATE NOWAIT + UPDATE PENDING in one transaction (Fix #1, R7, S28)
     try:
-        doc = await repo.acquire_nowait(document_id)
+        doc = await repo.claim_for_processing(document_id)
     except LockNotAvailable:
         logger.info("ingest.lock_contention", document_id=document_id)
         return
-
-    await repo.update_status(
-        document_id, from_status=doc.status, to_status="PENDING", attempt=doc.attempt
-    )
 
     # Pipeline body: blocking IO runs in anyio-managed thread.
     # _IdempotencyClean and _SourceHydrator bridge back via anyio.from_thread.run().

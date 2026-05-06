@@ -145,6 +145,80 @@ class DocumentRepository:
             raise LockNotAvailable(document_id)
         return DocumentRow.from_mapping(row)
 
+    async def claim_for_processing(self, document_id: str) -> DocumentRow:
+        """Atomically SELECT FOR UPDATE NOWAIT + UPDATE status=PENDING in one transaction.
+
+        Holds the lock across both statements, preventing the race where another
+        worker observes the same UPLOADED row before the status is committed (Fix #1).
+        Returns the pre-PENDING DocumentRow so callers can use object_key etc.
+        """
+        async with self._engine.begin() as conn:
+            try:
+                row = (
+                    (
+                        await conn.execute(
+                            text(
+                                "SELECT * FROM documents WHERE document_id = :id FOR UPDATE NOWAIT"
+                            ),
+                            {"id": document_id},
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+            except OperationalError as exc:
+                raise LockNotAvailable(document_id) from exc
+            if row is None:
+                raise LockNotAvailable(document_id)
+            doc = DocumentRow.from_mapping(row)
+            assert_transition(doc.status, "PENDING")
+            await conn.execute(
+                text(
+                    "UPDATE documents"
+                    " SET status='PENDING', attempt=attempt+1, updated_at=NOW(6)"
+                    " WHERE document_id=:id"
+                ),
+                {"id": document_id},
+            )
+            return doc
+
+    async def claim_for_deletion(self, document_id: str) -> DocumentRow:
+        """Atomically SELECT FOR UPDATE NOWAIT + UPDATE status=DELETING in one transaction.
+
+        Holds the lock across both statements, preventing the race where a concurrent
+        delete request acts on stale status (Fix #1 — delete path).
+        Returns the pre-DELETING DocumentRow so callers can inspect original status.
+        """
+        async with self._engine.begin() as conn:
+            try:
+                row = (
+                    (
+                        await conn.execute(
+                            text(
+                                "SELECT * FROM documents WHERE document_id = :id FOR UPDATE NOWAIT"
+                            ),
+                            {"id": document_id},
+                        )
+                    )
+                    .mappings()
+                    .first()
+                )
+            except OperationalError as exc:
+                raise LockNotAvailable(document_id) from exc
+            if row is None:
+                raise LockNotAvailable(document_id)
+            doc = DocumentRow.from_mapping(row)
+            assert_transition(doc.status, "DELETING")
+            await conn.execute(
+                text(
+                    "UPDATE documents"
+                    " SET status='DELETING', updated_at=NOW(6)"
+                    " WHERE document_id=:id"
+                ),
+                {"id": document_id},
+            )
+            return doc
+
     # ------------------------------------------------------------------
     # Status mutations
     # ------------------------------------------------------------------
@@ -197,7 +271,6 @@ class DocumentRepository:
                 WHERE status = 'PENDING'
                   AND updated_at < :before
                   AND attempt <= :attempt_le
-                FOR UPDATE SKIP LOCKED
                 """
             ),
             {"before": updated_before, "attempt_le": attempt_le},
@@ -211,7 +284,6 @@ class DocumentRepository:
                 SELECT * FROM documents
                 WHERE status = 'PENDING'
                   AND attempt > :attempt_gt
-                FOR UPDATE SKIP LOCKED
                 """
             ),
             {"attempt_gt": attempt_gt},
@@ -225,7 +297,6 @@ class DocumentRepository:
                 SELECT * FROM documents
                 WHERE status = 'DELETING'
                   AND updated_at < :before
-                FOR UPDATE SKIP LOCKED
                 """
             ),
             {"before": updated_before},
@@ -239,7 +310,6 @@ class DocumentRepository:
                 SELECT * FROM documents
                 WHERE status = 'UPLOADED'
                   AND updated_at < :before
-                FOR UPDATE SKIP LOCKED
                 """
             ),
             {"before": updated_before},
@@ -301,7 +371,6 @@ class DocumentRepository:
                 SELECT * FROM documents
                 WHERE source_id = :source_id AND source_app = :source_app AND status = 'READY'
                 ORDER BY created_at ASC
-                FOR UPDATE SKIP LOCKED
                 """
             ),
             {"source_id": source_id, "source_app": source_app},
@@ -321,7 +390,6 @@ class DocumentRepository:
                   AND document_id != :survivor_id
                 ORDER BY created_at ASC
                 LIMIT 1
-                FOR UPDATE SKIP LOCKED
                 """
             ),
             {"source_id": source_id, "source_app": source_app, "survivor_id": survivor_id},

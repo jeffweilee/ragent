@@ -33,9 +33,9 @@ def _make_service(doc=None, lock_raises=False):
     repo = AsyncMock()
     doc = doc or _make_doc()
     if lock_raises:
-        repo.acquire_nowait.side_effect = LockNotAvailable("DOCID001")
+        repo.claim_for_deletion.side_effect = LockNotAvailable("DOCID001")
     else:
-        repo.acquire_nowait.return_value = doc
+        repo.claim_for_deletion.return_value = doc
 
     chunks = AsyncMock()
     storage = MagicMock()
@@ -46,12 +46,17 @@ def _make_service(doc=None, lock_raises=False):
 
 
 async def test_delete_ready_doc_calls_cascade_in_order():
-    """DELETING status set before any external calls (spec §3.1)."""
+    """claim_for_deletion atomically sets DELETING before any external calls (spec §3.1)."""
     call_order = []
     svc, repo, chunks, storage, registry = _make_service()
-    repo.update_status.side_effect = AsyncMock(
-        side_effect=lambda *a, **kw: call_order.append("status_deleting")
-    )
+
+    captured_doc = repo.claim_for_deletion.return_value
+
+    def _claim_side(doc_id):
+        call_order.append("claim_for_deletion")
+        return captured_doc
+
+    repo.claim_for_deletion.side_effect = _claim_side
     registry.fan_out_delete = MagicMock(side_effect=lambda *a: call_order.append("fan_out_delete"))
     chunks.delete_by_document_id.side_effect = AsyncMock(
         side_effect=lambda *a: call_order.append("delete_chunks")
@@ -61,14 +66,14 @@ async def test_delete_ready_doc_calls_cascade_in_order():
 
     await svc.delete("DOCID001")
 
-    assert call_order[0] == "status_deleting"
+    assert call_order[0] == "claim_for_deletion"
     assert call_order[-1] == "delete_row"
 
 
 async def test_delete_idempotent_on_missing_doc():
     """Re-DELETE of already-deleted document returns without error (S14)."""
     repo = AsyncMock()
-    repo.acquire_nowait.side_effect = LockNotAvailable("NONEXISTENT")
+    repo.claim_for_deletion.side_effect = LockNotAvailable("NONEXISTENT")
     svc = IngestService(repo=repo, chunks=AsyncMock(), storage=MagicMock(), broker=MagicMock())
     await svc.delete("NONEXISTENT")  # must not raise
     repo.delete.assert_not_called()

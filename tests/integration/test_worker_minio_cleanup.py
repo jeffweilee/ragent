@@ -30,7 +30,7 @@ def _make_container(doc: DocumentRow, pipeline_raises: bool = False) -> MagicMoc
     """Build a mock composition container for ingest_pipeline_task."""
     container = MagicMock()
     container.doc_repo = AsyncMock()
-    container.doc_repo.acquire_nowait.return_value = doc
+    container.doc_repo.claim_for_processing.return_value = doc
     container.minio_client = MagicMock()
     container.minio_client.get_object.return_value = b"data"
 
@@ -56,7 +56,7 @@ async def test_terminal_status_committed_before_minio_delete():
     )
     container.minio_client.delete_object.side_effect = lambda *a: call_order.append("minio_delete")
 
-    with patch("ragent.workers.ingest.get_container", return_value=container):
+    with patch("ragent.bootstrap.composition.get_container", return_value=container):
         await ingest_pipeline_task("DOC001")
 
     assert "status_READY" in call_order
@@ -72,7 +72,7 @@ async def test_minio_delete_error_does_not_prevent_ready_status():
     container = _make_container(doc)
     container.minio_client.delete_object.side_effect = Exception("minio error")
 
-    with patch("ragent.workers.ingest.get_container", return_value=container):
+    with patch("ragent.bootstrap.composition.get_container", return_value=container):
         await ingest_pipeline_task("DOC001")
 
     to_statuses = [
@@ -89,7 +89,7 @@ async def test_pending_retry_does_not_delete_minio():
     doc = _make_doc()
     container = _make_container(doc, pipeline_raises=True)
 
-    with patch("ragent.workers.ingest.get_container", return_value=container):
+    with patch("ragent.bootstrap.composition.get_container", return_value=container):
         await ingest_pipeline_task("DOC001")
 
     container.minio_client.delete_object.assert_not_called()
