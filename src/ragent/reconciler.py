@@ -36,10 +36,10 @@ class Reconciler:
         from ragent.bootstrap.telemetry import reconciler_tick_total
 
         await self._mark_failed()
-        self._redispatch_pending()
-        self._redispatch_uploaded()
+        await self._redispatch_pending()
+        await self._redispatch_uploaded()
         await self._resume_deleting()
-        self._repair_multi_ready()
+        await self._repair_multi_ready()
         reconciler_tick_total.inc()
         logger.info("reconciler.tick")
 
@@ -63,7 +63,7 @@ class Reconciler:
             except Exception:
                 logger.exception("reconciler.mark_failed_error", document_id=doc.document_id)
 
-    def _redispatch_pending(self) -> None:
+    async def _redispatch_pending(self) -> None:
         stale_seconds = int(os.environ.get("RECONCILER_PENDING_STALE_SECONDS", "300"))
         max_attempts = int(os.environ.get("WORKER_MAX_ATTEMPTS", "5"))
         updated_before = datetime.datetime.now(datetime.UTC) - datetime.timedelta(
@@ -74,21 +74,21 @@ class Reconciler:
             attempt_le=max_attempts,
         )
         for doc in stale:
-            self._broker.enqueue("ingest.pipeline", document_id=doc.document_id)
+            await self._broker.enqueue("ingest.pipeline", document_id=doc.document_id)
             logger.info(
                 "reconciler.redispatch",
                 document_id=doc.document_id,
                 attempt=doc.attempt,
             )
 
-    def _redispatch_uploaded(self) -> None:
+    async def _redispatch_uploaded(self) -> None:
         stale_seconds = int(os.environ.get("RECONCILER_UPLOADED_STALE_SECONDS", "300"))
         updated_before = datetime.datetime.now(datetime.UTC) - datetime.timedelta(
             seconds=stale_seconds
         )
         stale = self._repo.list_uploaded_stale(updated_before=updated_before)
         for doc in stale:
-            self._broker.enqueue("ingest.pipeline", document_id=doc.document_id)
+            await self._broker.enqueue("ingest.pipeline", document_id=doc.document_id)
             logger.info(
                 "reconciler.uploaded_redispatch",
                 document_id=doc.document_id,
@@ -111,7 +111,7 @@ class Reconciler:
             except Exception:
                 logger.exception("reconciler.delete_resume_error", document_id=doc.document_id)
 
-    def _repair_multi_ready(self) -> None:
+    async def _repair_multi_ready(self) -> None:
         groups = self._repo.find_multi_ready_groups()
         for source_id, source_app in groups:
             docs = self._repo.list_ready_by_source(source_id=source_id, source_app=source_app)
@@ -119,7 +119,7 @@ class Reconciler:
                 continue
             # Survivor is the doc with the latest created_at (last in ASC-ordered list)
             survivor = docs[-1]  # list_ready_by_source returns ASC by created_at; last is newest
-            self._broker.enqueue(
+            await self._broker.enqueue(
                 "ingest.supersede",
                 survivor_id=survivor.document_id,
                 source_id=source_id,
@@ -134,20 +134,35 @@ class Reconciler:
 
 
 def _build_from_env() -> Reconciler:
+    # Importing the workers module triggers `@broker.task` registration
+    # so dispatcher.enqueue() can resolve task labels (B25).
+    import ragent.workers.ingest  # noqa: F401
     from ragent.bootstrap.broker import broker as taskiq_broker
     from ragent.bootstrap.composition import get_container
+    from ragent.bootstrap.dispatcher import TaskiqDispatcher
 
     container = get_container()
     return Reconciler(
         repo=container.doc_repo,
-        broker=taskiq_broker,
+        broker=TaskiqDispatcher(taskiq_broker),
         chunks=container.chunk_repo,
         registry=container.registry,
     )
+
+
+async def _main_async() -> None:
+    """Producer-side broker startup/shutdown around the tick (B27)."""
+    from ragent.bootstrap.broker import broker as taskiq_broker
+
+    await taskiq_broker.startup()
+    try:
+        await _build_from_env()._run_async()
+    finally:
+        await taskiq_broker.shutdown()
 
 
 if __name__ == "__main__":
     from ragent.bootstrap.logging_config import configure_logging
 
     configure_logging("ragent-reconciler")
-    _build_from_env().run()
+    asyncio.run(_main_async())

@@ -59,7 +59,7 @@ def _make_reconciler(
 def test_failed_status_committed_before_chunks_cleanup():
     """update_status(FAILED) is called before chunks.delete_by_document_id (Rule 21)."""
     repo = _default_repo(exceeded=[_make_exceeded_doc("DOC001")])
-    broker = MagicMock()
+    broker = AsyncMock()
     chunks = MagicMock()
 
     call_order: list[str] = []
@@ -77,7 +77,7 @@ def test_failed_status_committed_before_chunks_cleanup():
 def test_failed_status_committed_before_fan_out_cleanup():
     """update_status(FAILED) is called before registry.fan_out_delete (Rule 21)."""
     repo = _default_repo(exceeded=[_make_exceeded_doc("DOC001")])
-    broker = MagicMock()
+    broker = AsyncMock()
     registry = MagicMock()
     registry.fan_out_delete = AsyncMock(return_value=[])
 
@@ -95,7 +95,7 @@ def test_failed_status_committed_before_fan_out_cleanup():
 def test_failed_cleanup_no_chunks_still_marks_failed():
     """Without chunks, FAILED transition still happens."""
     repo = _default_repo(exceeded=[_make_exceeded_doc("DOC001")])
-    broker = MagicMock()
+    broker = AsyncMock()
 
     rec = _make_reconciler(repo, broker, chunks=None, registry=None)
     rec.run()
@@ -106,7 +106,7 @@ def test_failed_cleanup_no_chunks_still_marks_failed():
 def test_failed_cleanup_chunks_receives_correct_doc_id():
     """Chunks cleanup is called with the correct document_id."""
     repo = _default_repo(exceeded=[_make_exceeded_doc("DOC999")])
-    broker = MagicMock()
+    broker = AsyncMock()
     chunks = MagicMock()
 
     rec = _make_reconciler(repo, broker, chunks=chunks)

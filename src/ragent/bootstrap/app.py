@@ -23,7 +23,7 @@ from ragent.routers.retrieve import create_retrieve_router
 
 logger = structlog.get_logger(__name__)
 
-_NO_USER_ID_PATHS = frozenset({"/livez", "/readyz", "/metrics"})
+_NO_USER_ID_PATHS = frozenset({"/livez", "/readyz", "/metrics", "/docs", "/redoc", "/openapi.json"})
 
 
 def _x_user_id_middleware(app: FastAPI) -> None:
@@ -60,26 +60,39 @@ def create_app() -> FastAPI:
     configure_logging("ragent-api")
     setup_tracing("ragent-api")
 
+    # Importing the workers module triggers `@broker.task` decorator
+    # registration so that `dispatcher.enqueue(label, ...)` can resolve
+    # task labels at producer side (B25).
+    import ragent.workers.ingest  # noqa: F401
     from ragent.bootstrap.broker import broker as taskiq_broker
     from ragent.bootstrap.composition import get_container
+    from ragent.bootstrap.dispatcher import BlockingTaskiqDispatcher, TaskiqDispatcher
     from ragent.services.ingest_service import IngestService
 
     container = get_container()
+    dispatcher = BlockingTaskiqDispatcher(TaskiqDispatcher(taskiq_broker))
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
+        # TaskIQ producers must call `await broker.startup()` before
+        # `kiq()` (B27). Failure here aborts boot — surfacing through
+        # /readyz instead of silently 500-ing on first ingest.
+        await taskiq_broker.startup()
         init_schema()
-        yield
-        container.http.close()
-        container.auth_http.close()
-        import ragent.bootstrap.composition as _comp
+        try:
+            yield
+        finally:
+            await taskiq_broker.shutdown()
+            container.http.close()
+            container.auth_http.close()
+            import ragent.bootstrap.composition as _comp
 
-        _comp._container = None  # noqa: SLF001 — prevent reuse of closed clients
-        from opentelemetry import trace
+            _comp._container = None  # noqa: SLF001 — prevent reuse of closed clients
+            from opentelemetry import trace
 
-        provider = trace.get_tracer_provider()
-        if hasattr(provider, "shutdown"):
-            provider.shutdown()
+            provider = trace.get_tracer_provider()
+            if hasattr(provider, "shutdown"):
+                provider.shutdown()
 
     app = FastAPI(title="ragent", lifespan=lifespan)
 
@@ -91,7 +104,7 @@ def create_app() -> FastAPI:
         repo=container.doc_repo,
         chunks=container.chunk_repo,
         storage=container.minio_client,
-        broker=taskiq_broker,
+        broker=dispatcher,
     )
 
     app.include_router(create_ingest_router(svc=ingest_svc))

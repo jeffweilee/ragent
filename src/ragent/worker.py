@@ -13,8 +13,12 @@ if __name__ == "__main__":
     setup_tracing("ragent-worker")
     init_schema()
 
-    # Import task modules so @broker.task decorators register before broker starts
-    import ragent.workers.ingest  # noqa: F401
-    from ragent.bootstrap.broker import broker
+    from taskiq.cli.worker.args import WorkerArgs
+    from taskiq.cli.worker.run import start_listen
 
-    broker.run()
+    start_listen(
+        WorkerArgs(
+            broker="ragent.bootstrap.broker:broker",
+            modules=["ragent.workers.ingest"],
+        ),
+    )

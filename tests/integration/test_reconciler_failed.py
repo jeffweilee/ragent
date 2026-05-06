@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import datetime
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -55,7 +55,7 @@ def _default_repo(exceeded: list | None = None) -> MagicMock:
 def test_exceeded_attempt_transitions_to_failed():
     """PENDING doc with attempt > WORKER_MAX_ATTEMPTS is transitioned to FAILED."""
     repo = _default_repo(exceeded=[_make_doc("DOC001", attempt=6)])
-    broker = MagicMock()
+    broker = AsyncMock()
 
     rec = _make_reconciler(repo, broker)
     rec.run()
@@ -66,7 +66,7 @@ def test_exceeded_attempt_transitions_to_failed():
 def test_exceeded_attempt_does_not_redispatch():
     """Doc exceeding max attempts must not be re-enqueued to ingest.pipeline."""
     repo = _default_repo(exceeded=[_make_doc("DOC001", attempt=6)])
-    broker = MagicMock()
+    broker = AsyncMock()
 
     rec = _make_reconciler(repo, broker)
     rec.run()
@@ -77,7 +77,7 @@ def test_exceeded_attempt_does_not_redispatch():
 def test_multiple_exceeded_all_failed():
     """All PENDING docs exceeding max attempts are transitioned to FAILED."""
     repo = _default_repo(exceeded=[_make_doc(f"DOC{i:03d}", attempt=6) for i in range(1, 4)])
-    broker = MagicMock()
+    broker = AsyncMock()
 
     rec = _make_reconciler(repo, broker)
     rec.run()
@@ -92,7 +92,7 @@ def test_list_pending_exceeded_called_with_max_attempts(monkeypatch: pytest.Monk
     monkeypatch.setenv("WORKER_MAX_ATTEMPTS", "5")
 
     repo = _default_repo()
-    broker = MagicMock()
+    broker = AsyncMock()
 
     rec = _make_reconciler(repo, broker)
     rec.run()
@@ -108,7 +108,7 @@ def test_exceeded_emits_structured_log(caplog: pytest.LogCaptureFixture):
     import structlog
 
     repo = _default_repo(exceeded=[_make_doc("DOC001", attempt=6)])
-    broker = MagicMock()
+    broker = AsyncMock()
 
     rec = _make_reconciler(repo, broker)
     with structlog.testing.capture_logs() as logs:
