@@ -1,119 +1,167 @@
-"""T4.1 — TokenManager: J1→J2 refresh, boundary clock, single-flight (S9, P-F)."""
+"""T4.1 — TokenManager: J1→J2 refresh, boundary clock, single-flight (S9, P-F).
+
+Spec: docs/00_rule.md §"LLM & Embedding & Re-rank Auth API (Token Exchange)"
+- Request body:  {"key": "<j1-token>"}
+- Response body: {"token": "<j2-token>", "expiresAt": "2026-01-07T13:20:36Z"}
+- K8s mode: reads SA token from /var/run/secrets/kubernetes.io/serviceaccount/token
+- Refresh margin: 5 min before expiresAt
+- Single-flight: threading.Lock prevents concurrent refresh stampede
+"""
 
 import threading
 import time
-from unittest.mock import MagicMock
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from ragent.clients.auth import TokenManager
 
 
-def _make_response(token: str, expires_in_seconds: int, now: float) -> dict:
-    return {"access_token": token, "expiresAt": int((now + expires_in_seconds) * 1000)}
+def _iso(ts: float) -> str:
+    return datetime.fromtimestamp(ts, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def test_get_token_fetches_on_first_call():
+def _make_response(token: str, expires_at_ts: float) -> dict:
+    return {"token": token, "expiresAt": _iso(expires_at_ts)}
+
+
+def _make_mgr(j1: str, http: MagicMock, clock) -> TokenManager:
+    return TokenManager(
+        auth_url="https://auth.example.com",
+        j1_token=j1,
+        http=http,
+        clock=clock,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Request format
+# ---------------------------------------------------------------------------
+
+
+def test_request_body_uses_key_field():
+    """POST body must be {"key": j1_token}, not clientId/clientSecret."""
     now = time.time()
-    resp = _make_response("tok-abc", 3600, now)
     http = MagicMock()
-    http.post.return_value.json.return_value = resp
+    http.post.return_value.json.return_value = _make_response("tok", now + 3600)
     http.post.return_value.raise_for_status = MagicMock()
 
-    mgr = TokenManager(
-        auth_url="https://auth.example.com",
-        client_id="id",
-        client_secret="secret",
-        http=http,
-        clock=lambda: now,
-    )
-    token = mgr.get_token()
-    assert token == "tok-abc"
-    assert http.post.call_count == 1
+    _make_mgr("my-j1", http, lambda: now).get_token()
+
     body = http.post.call_args[1]["json"]
-    assert body["clientId"] == "id"
-    assert body["clientSecret"] == "secret"
+    assert body == {"key": "my-j1"}, f"unexpected body: {body}"
 
 
-def test_get_token_caches_within_window():
+def test_request_posts_to_auth_accesstoken_url():
+    """URL must contain auth/api/accesstoken."""
     now = time.time()
-    resp = _make_response("tok-cached", 3600, now)
     http = MagicMock()
-    http.post.return_value.json.return_value = resp
+    http.post.return_value.json.return_value = _make_response("tok", now + 3600)
     http.post.return_value.raise_for_status = MagicMock()
 
-    mgr = TokenManager(
-        auth_url="https://auth.example.com",
-        client_id="id",
-        client_secret="secret",
-        http=http,
-        clock=lambda: now,
-    )
+    _make_mgr("j1", http, lambda: now).get_token()
+
+    url = http.post.call_args[0][0] if http.post.call_args[0] else http.post.call_args[1].get("url")
+    assert "auth/api/accesstoken" in url
+
+
+# ---------------------------------------------------------------------------
+# Response parsing
+# ---------------------------------------------------------------------------
+
+
+def test_response_reads_token_field():
+    """Response field is 'token', not 'access_token'."""
+    now = time.time()
+    http = MagicMock()
+    http.post.return_value.json.return_value = _make_response("tok-abc", now + 3600)
+    http.post.return_value.raise_for_status = MagicMock()
+
+    result = _make_mgr("j1", http, lambda: now).get_token()
+    assert result == "tok-abc"
+
+
+def test_response_parses_iso8601_expires_at():
+    """expiresAt is ISO-8601 string, not numeric milliseconds."""
+    now = time.time()
+    # Token expires in exactly 3600 s; clock at now+3299 (still valid, no refresh)
+    http = MagicMock()
+    http.post.return_value.json.return_value = _make_response("tok", now + 3600)
+    http.post.return_value.raise_for_status = MagicMock()
+
+    mgr = _make_mgr("j1", http, lambda: now)
+    mgr.get_token()  # first call fetches
+    mgr.get_token()  # second call must use cache (no extra HTTP)
+    assert http.post.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Cache & refresh boundary
+# ---------------------------------------------------------------------------
+
+
+def test_caches_within_valid_window():
+    now = time.time()
+    http = MagicMock()
+    http.post.return_value.json.return_value = _make_response("tok-cached", now + 3600)
+    http.post.return_value.raise_for_status = MagicMock()
+
+    mgr = _make_mgr("j1", http, lambda: now)
     mgr.get_token()
     mgr.get_token()
     assert http.post.call_count == 1
 
 
-def test_refreshes_at_expiry_boundary():
-    """Token is refreshed when wall-clock >= expiresAt - 5min (300 s)."""
+def test_refreshes_at_5min_boundary():
+    """Refresh triggers when wall-clock >= expiresAt - 300 s."""
     now = time.time()
-    # First token expires in 3600 s
-    resp1 = _make_response("tok-1", 3600, now)
-    # Second token (after refresh) expires in 3600 s from the boundary moment
-    boundary = now + 3600 - 300  # exactly at expiresAt − 5min
-    resp2 = _make_response("tok-2", 3600, boundary)
+    expires_1 = now + 3600
+    boundary = expires_1 - 300  # exactly 5 min before expiry
 
     call_count = [0]
 
-    def post_side_effect(*args, **kwargs):
+    def post_side(*_, **__):
         call_count[0] += 1
-        mock_resp = MagicMock()
-        mock_resp.raise_for_status = MagicMock()
+        m = MagicMock()
+        m.raise_for_status = MagicMock()
         if call_count[0] == 1:
-            mock_resp.json.return_value = resp1
+            m.json.return_value = _make_response("tok-1", expires_1)
         else:
-            mock_resp.json.return_value = resp2
-        return mock_resp
+            m.json.return_value = _make_response("tok-2", boundary + 3600)
+        return m
 
     http = MagicMock()
-    http.post.side_effect = post_side_effect
+    http.post.side_effect = post_side
 
     clock = [now]
-    mgr = TokenManager(
-        auth_url="https://auth.example.com",
-        client_id="id",
-        client_secret="secret",
-        http=http,
-        clock=lambda: clock[0],
-    )
+    mgr = _make_mgr("j1", http, lambda: clock[0])
 
     assert mgr.get_token() == "tok-1"
     assert http.post.call_count == 1
 
-    # Advance clock to boundary
     clock[0] = boundary
     assert mgr.get_token() == "tok-2"
     assert http.post.call_count == 2
 
 
+# ---------------------------------------------------------------------------
+# Single-flight (P-F)
+# ---------------------------------------------------------------------------
+
+
 def test_single_flight_100_concurrent_callers():
-    """100 concurrent callers at boundary share exactly one HTTP exchange (P-F)."""
+    """100 concurrent callers at boundary share exactly one HTTP exchange."""
     now = time.time()
-    # Token already at boundary: expires soon
-    boundary = now + 299  # less than 300 s left → needs refresh
-    resp = _make_response("tok-shared", 3600, now + 3600)
+    # Token already needs refresh (< 300 s left)
+    boundary = now + 299
 
     http = MagicMock()
-    http.post.return_value.json.return_value = resp
+    http.post.return_value.json.return_value = _make_response("tok-shared", now + 3600)
     http.post.return_value.raise_for_status = MagicMock()
 
-    mgr = TokenManager(
-        auth_url="https://auth.example.com",
-        client_id="id",
-        client_secret="secret",
-        http=http,
-        clock=lambda: boundary,
-    )
+    mgr = _make_mgr("j1", http, lambda: boundary)
 
     results: list[str] = []
     lock = threading.Lock()
@@ -134,41 +182,71 @@ def test_single_flight_100_concurrent_callers():
     assert http.post.call_count == 1
 
 
-def test_credentials_not_in_exception_message():
-    """Client credentials must not surface in exception text (security)."""
+# ---------------------------------------------------------------------------
+# Security
+# ---------------------------------------------------------------------------
+
+
+def test_j1_token_not_in_exception_message():
+    """J1 token must not appear in exception text."""
     http = MagicMock()
     http.post.side_effect = Exception("connection refused")
 
-    mgr = TokenManager(
-        auth_url="https://auth.example.com",
-        client_id="secret-id",
-        client_secret="super-secret",
-        http=http,
-        clock=time.time,
-    )
+    mgr = _make_mgr("super-secret-j1", http, time.time)
 
     with pytest.raises(Exception) as exc_info:
         mgr.get_token()
 
-    msg = str(exc_info.value)
-    assert "secret-id" not in msg
-    assert "super-secret" not in msg
+    assert "super-secret-j1" not in str(exc_info.value)
 
 
-def test_posts_to_correct_url():
+# ---------------------------------------------------------------------------
+# Kubernetes service-account mode
+# ---------------------------------------------------------------------------
+
+
+def test_k8s_mode_reads_sa_token_from_file(tmp_path: Path):
+    """When j1_token not given, TokenManager reads from SA token file."""
+    sa_file = tmp_path / "token"
+    sa_file.write_text("sa-token-value")
+
     now = time.time()
-    resp = _make_response("tok", 3600, now)
     http = MagicMock()
-    http.post.return_value.json.return_value = resp
+    http.post.return_value.json.return_value = _make_response("j2-from-sa", now + 3600)
     http.post.return_value.raise_for_status = MagicMock()
 
     mgr = TokenManager(
         auth_url="https://auth.example.com",
-        client_id="id",
-        client_secret="secret",
+        j1_token=None,
+        k8s_sa_token_path=str(sa_file),
         http=http,
         clock=lambda: now,
     )
-    mgr.get_token()
-    url = http.post.call_args[0][0] if http.post.call_args[0] else http.post.call_args[1].get("url")
-    assert "auth/api/accesstoken" in url
+    result = mgr.get_token()
+    assert result == "j2-from-sa"
+    body = http.post.call_args[1]["json"]
+    assert body == {"key": "sa-token-value"}
+
+
+def test_k8s_mode_raises_when_sa_file_missing():
+    """Missing SA token file raises RuntimeError at refresh time."""
+    http = MagicMock()
+    mgr = TokenManager(
+        auth_url="https://auth.example.com",
+        j1_token=None,
+        k8s_sa_token_path="/nonexistent/token",
+        http=http,
+        clock=time.time,
+    )
+    with pytest.raises(RuntimeError, match="Token refresh failed"):
+        mgr.get_token()
+
+
+def test_k8s_mode_requires_path_when_j1_is_none():
+    """Constructing with j1_token=None and no k8s path raises ValueError."""
+    with pytest.raises(ValueError):
+        TokenManager(
+            auth_url="https://auth.example.com",
+            j1_token=None,
+            http=MagicMock(),
+        )
