@@ -648,11 +648,12 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `ES_PASSWORD`                         | (optional)       | Basic-auth password. |
 | `ES_API_KEY`                          | (optional)       | Alternative to user/password (mutually exclusive). |
 | `ES_VERIFY_CERTS`                     | `true`           | Set `false` for self-signed dev clusters. |
-| `MINIO_ENDPOINT`                      | (required)       | `host:port` (no scheme). |
-| `MINIO_ACCESS_KEY`                    | (required)       | |
-| `MINIO_SECRET_KEY`                    | (required)       | |
-| `MINIO_SECURE`                        | `false`          | `true` ⇒ HTTPS. |
-| `MINIO_BUCKET`                        | `ragent`         | Single staging bucket (B10). |
+| `MINIO_SITES`                         | (required)       | v2: JSON list of `{name, endpoint, access_key, secret_key, bucket, secure?, read_only?}`. Must include `name="__default__"` (used by inline ingest). Replaces the legacy single-site `MINIO_*` vars below. |
+| `MINIO_ENDPOINT`                      | (optional, legacy) | DEPRECATED — superseded by `MINIO_SITES`. Removed in C6 cleanup. |
+| `MINIO_ACCESS_KEY`                    | (optional, legacy) | DEPRECATED. |
+| `MINIO_SECRET_KEY`                    | (optional, legacy) | DEPRECATED. |
+| `MINIO_SECURE`                        | `false`          | DEPRECATED. |
+| `MINIO_BUCKET`                        | `ragent`         | DEPRECATED. |
 
 #### 4.6.3 Redis (B27)
 
@@ -694,15 +695,12 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 
 | Variable | Default | Description |
 |---|---|---|
-| `INGEST_MAX_FILE_SIZE_BYTES`          | `52428800`       | 50 MB upload cap (B2); 413 on overrun. |
+| `INGEST_INLINE_MAX_BYTES`             | `10485760`       | v2: 10 MB cap on inline `content` UTF-8 byte length; 413 on overrun. |
+| `INGEST_FILE_MAX_BYTES`                | `52428800`      | v2: 50 MB cap on file-type ingest size (HEAD-probe at API time); 413 on overrun. |
 | `INGEST_LIST_MAX_LIMIT`               | `100`            | `GET /ingest?limit=` upper bound (§4.1, B7). |
-| `CHUNK_TARGET_CHARS_EN`               | `2000`           | `_CharBudgetChunker` EN/other-language target chars (B1). |
-| `CHUNK_OVERLAP_CHARS_EN`              | `300`            | `_CharBudgetChunker` EN/other overlap chars between chunks. |
-| `CHUNK_TARGET_CHARS_CJK`              | `500`            | `_CharBudgetChunker` CJK-density target (zh/ja/ko/th/lo/km/my). |
-| `CHUNK_OVERLAP_CHARS_CJK`             | `100`            | `_CharBudgetChunker` CJK overlap chars between chunks. |
-| `CHUNK_TARGET_CHARS_CSV`              | `2000`           | `_CharBudgetChunker` CSV row-packed target (B24). |
-| `CHUNK_OVERLAP_CHARS_CSV`             | `0`              | `_CharBudgetChunker` CSV overlap (no row overlap). |
-| `CHUNK_HARD_SPLIT_OVERLAP_CHARS`      | `200`            | Fallback overlap when an atom exceeds the budget. |
+| `CHUNK_TARGET_CHARS`                  | `1000`           | v2 `_BudgetChunker` target chars (mime-agnostic). |
+| `CHUNK_MAX_CHARS`                     | `1500`           | v2 `_BudgetChunker` hard cap; atoms above this are hard-split. |
+| `CHUNK_OVERLAP_CHARS`                 | `100`            | v2 `_BudgetChunker` overlap between adjacent chunks. |
 | `EMBEDDER_BATCH_SIZE`                 | `32`             | Chunks per embedder HTTP call (P-B). |
 | `CHAT_JOIN_MODE`                      | `rrf`            | `rrf` \| `concatenate` \| `vector_only` \| `bm25_only` (C6). |
 | `CHAT_RERANK_ENABLED`                 | `true`           | Insert `_Reranker` between joiner and `_SourceHydrator` (F1). |
@@ -816,9 +814,11 @@ No physical FK. ORM-level cascade only.
       "document_id":      { "type": "keyword" },
       "source_app":       { "type": "keyword" },
       "source_workspace": { "type": "keyword" },
+      "source_url":       { "type": "keyword" },
       "lang":             { "type": "keyword" },
       "title":            { "type": "text" },
       "text":             { "type": "text" },
+      "raw_content":      { "type": "text", "index": false, "doc_values": false },
       "embedding": {
         "type": "dense_vector",
         "dims": 1024,
