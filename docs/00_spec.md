@@ -336,8 +336,8 @@ Retrieval may over-fetch (`K' = K × overfetch_factor`) so that after permission
 - **Heartbeat (R8):** every tick increments `reconciler_tick_total` and emits `event=reconciler.tick`. Prometheus alert fires if no tick observed for > 10 min (Reconciler is itself a single point of failure).
 - **Memory arms (P4 — see §3.8.4 for prose):**
   - **`chat_sessions DELETING > MEMORY_RECONCILER_DELETING_STALE_SECONDS`** (default 300) → resume cascade clear (mirror of `documents DELETING`).
-  - **Redis short-term overflow** → every tick, `SCAN` a bounded sample of `memory:short:*` keys; for any key with `LLEN > MEMORY_SHORT_TERM_ROUNDS`, re-kiq `memory.distill` for the overflow rounds; if `LLEN > MEMORY_REDIS_MAX_PENDING_ROUNDS` (default 50) drop the oldest tail with `event=memory.dropped reason=distill_backlog`.
-  - **`memory_v1` orphan vectors** → list `chat_sessions WHERE status IN ('ACTIVE','DELETING')` and reconcile against ES `aggs cardinality session_id`; orphan ids → `delete_by_query`.
+  - **Redis short-term overflow** → every tick, `SCAN` a bounded sample of `memory:short:*` keys; for any key with `LLEN > MEMORY_SHORT_TERM_ROUNDS`, run the same atomic Lua script as §3.8.2 (`memory_short_append.lua` with an empty append: pass an `ARGV[1]=""` sentinel that the script treats as "capture-and-trim only, no LPUSH"; or use a sibling script `memory_short_drain.lua` that performs only `LRANGE N -1` + `LTRIM 0 N-1` atomically). Re-kiq `memory.distill` for each captured round. **Without the trim**, the Reconciler would re-find the same overflow on every tick and re-kiq forever (G4); the atomic capture-and-trim closes that loop. If `LLEN > MEMORY_REDIS_MAX_PENDING_ROUNDS` (default 50) drop the oldest tail (`LTRIM 0 N-1` after capture) with `event=memory.dropped reason=distill_backlog`.
+  - **`memory_v1` orphan vectors** *(deferred to P5 unless an operational gap demands it sooner)* → ES `cardinality` aggregations are HyperLogLog approximate counts and **cannot enumerate orphan ids**; the correct query is a **composite aggregation** on `session_id` (paginated via `after_key` for unbounded distinct values) or a scrolled `_search` returning unique `session_id` keys. Algorithm: page through ES distinct `session_id` values; for each batch, `SELECT session_id FROM chat_sessions WHERE session_id IN (?...)` to find orphans; ES `_delete_by_query` each missing id. **Defer rationale**: cascade-delete (§3.8.3) + Reconciler `DELETING` resume cover the documented failure modes; the orphan sweep is a belt-and-braces arm whose cost (full-index distinct scan per tick) outweighs its catch rate at P4 scale. Re-evaluate when Phase 2 ships a long-running prod cluster with observed orphan counts.
 
 **BDD:**
 - **S2** Given a `PENDING` document older than 5 min with `attempt ≤ 5`, When the reconciler runs, Then it re-kiqs `ingest.pipeline` exactly once per cycle (idempotent across redelivery).
@@ -367,7 +367,7 @@ Memory is **per-session, per-user, additive context** layered onto the existing 
 
 | Layer | Store | Lifetime | Purpose |
 |---|---|---|---|
-| **Meta** | MariaDB `chat_sessions` | Durable | Session existence + ownership + distill cursor |
+| **Meta** | MariaDB `chat_sessions` | Durable | Session existence + ownership |
 | **Short-term** | Redis list `memory:short:{session_id}` (rate-limiter Redis instance, B27) | Sliding TTL `MEMORY_SHORT_TERM_TTL_SECONDS` (default 86400) | Last `MEMORY_SHORT_TERM_ROUNDS` (default 5) rounds verbatim |
 | **Long-term** | ES `memory_v1` (separate index from `chunks_v1`, B33) | Until session DELETE | Distilled rounds embedded for kNN recall |
 
@@ -389,7 +389,16 @@ Both `/chat` and `/chat/stream` (§3.4.1) accept two new optional fields:
 
 - `enable_memory: bool` (default `false`). When `false` (or omitted) chat behaves exactly as §3.4 — full back-compat.
 - `session_id: string | null` (CHAR(26), Crockford Base32). Optional. When `enable_memory=true` and `session_id` is null, the server **mints a new session** (`new_id()`), persists `chat_sessions` row, and echoes the id back in the response.
-- Response (§3.4.2 update): `{..., "session_id": "01J9..." | null}` — populated only when memory was used in this turn.
+- Response (§3.4.2 update): when memory was used in this turn, the body gains a top-level `"session_id": "01J9..."` key. **When `enable_memory=false` (or omitted), the `session_id` key is absent from the response body — not present-with-`null`.** This is the S40 byte-equivalence invariant; clients differentiate "memory not used" from "memory used with no session" by **key presence**, not by value. `null` is never emitted for `session_id`.
+
+**Client message contract under `enable_memory=true` (G2 — no server-side dedup):**
+
+When `enable_memory=true` is sent, the server replays the last `MEMORY_SHORT_TERM_ROUNDS` rounds from Redis as the conversation history. **Clients SHOULD send only the new user turn in `messages[]`** — typically a single `{role:"user", content:...}` entry. The server **does not** deduplicate `messages[]` against Redis history; if a client sends the full thread, the prior turns will be replayed twice (once from Redis, once from the request) and the LLM will see duplicated history. Two valid client patterns:
+
+1. **Memory-managed** (recommended): `enable_memory=true` + `session_id=<echoed>` + `messages=[{role:"user", content:"<new turn only>"}]`. Server owns history.
+2. **Client-managed**: `enable_memory=false` + `messages=[<full thread>]`. Client owns history (legacy §3.4 behaviour).
+
+Mixing modes (sending the full thread *and* `enable_memory=true`) is supported but not recommended; `MEMORY_FLAG_INCONSISTENT` does not fire because the server cannot distinguish "client meant to dedup" from "client wants intentional repetition".
 
 **Validation (§4.1.2 codes):**
 - `MEMORY_FLAG_INCONSISTENT` (422) — `session_id` present but `enable_memory=false`.
@@ -410,10 +419,24 @@ Knowledge retrieval (§3.4) and memory retrieval are **independent branches**: `
 
 Every chat turn that returns 200 to the client triggers a FastAPI `BackgroundTasks` hook **after** the response is flushed (so the client never blocks on memory writes):
 
-1. `LPUSH memory:short:{session_id}` with **one composite JSON entry per round**: `{round_id, user_text, assistant_text, created_at}`. (One round = one list entry — chosen so list length maps 1:1 to round count; overflow predicate is `LLEN > N`, not `N × 2`.)
-2. Refresh sliding TTL: `EXPIRE memory:short:{session_id} MEMORY_SHORT_TERM_TTL_SECONDS`.
-3. If `LLEN > MEMORY_SHORT_TERM_ROUNDS`, **capture overflow before trim** with `LRANGE N -1` (the oldest rounds at the tail), then `LTRIM 0 N-1` to drop them from the list. For each captured round, `kiq memory.distill(payload)`. **Order is critical**: `LTRIM` discards the tail, so a subsequent `RPOP` would return the *new* tail, not the popped overflow — `LRANGE → LTRIM` is the only lossless sequence.
-4. Update `chat_sessions.round_count` + `updated_at`.
+1. **Atomic append + capture-overflow (single Redis `EVAL` — Lua script `memory_short_append.lua`):**
+   ```lua
+   -- KEYS[1] = memory:short:{session_id}
+   -- ARGV[1] = JSON of {round_id, user_text, assistant_text, created_at}
+   -- ARGV[2] = MEMORY_SHORT_TERM_ROUNDS (N)
+   -- ARGV[3] = MEMORY_SHORT_TERM_TTL_SECONDS
+   redis.call('LPUSH', KEYS[1], ARGV[1])
+   redis.call('EXPIRE', KEYS[1], ARGV[3])
+   local n = tonumber(ARGV[2])
+   local len = redis.call('LLEN', KEYS[1])
+   if len <= n then return {} end
+   local overflow = redis.call('LRANGE', KEYS[1], n, -1)
+   redis.call('LTRIM', KEYS[1], 0, n - 1)
+   return overflow
+   ```
+   Why a script: Redis serialises every script under a single logical instruction, so a concurrent `LPUSH` from another turn (S52) **cannot interleave** between `LRANGE` and `LTRIM` — without atomicity the trim can drop an uncaptured tail element. The two-command application-side `LRANGE → LTRIM` sequence (the previous spec wording) was correct only against single-writer access; under realistic concurrency it leaks rounds.
+2. The script returns the captured overflow rounds (possibly empty); for each captured round, `kiq memory.distill(payload)` from the application.
+3. Update `chat_sessions.round_count` + `updated_at` (separate transaction; idempotent under retry).
 
 **Distill task `memory.distill(payload, mode)`** — `@broker.task` registered on the canonical broker (T0.10):
 
@@ -442,8 +465,8 @@ New endpoint **`DELETE /chat/sessions/{session_id}`** (router `chat.py`):
 #### 3.8.4 Resilience (Reconciler arms — extends §3.6)
 
 - **`chat_sessions DELETING > 300 s`** → resume cascade clear idempotently (mirrors `documents DELETING`).
-- **Redis overflow orphans** → every Reconciler tick, sample a bounded set of `memory:short:*` keys via `SCAN`; for any `LLEN > MEMORY_SHORT_TERM_ROUNDS`, re-kiq `memory.distill` for the overflow tail (rounds at index `N..-1`).
-- **`memory_v1` orphan vectors** → every cycle, list `chat_sessions WHERE status IN ('ACTIVE','DELETING')`; reconcile against ES `aggs cardinality session_id`; orphan ids → `delete_by_query`.
+- **Redis overflow orphans (G3 + G4 atomicity-fix):** every Reconciler tick, sample a bounded set of `memory:short:*` keys via `SCAN`; for any `LLEN > MEMORY_SHORT_TERM_ROUNDS`, run the **atomic Lua drain script** (capture-overflow-and-trim in one `EVAL` — same atomicity contract as §3.8.2 Step 1; reusing the script avoids the lossy `LRANGE → LTRIM` race under concurrent application-side `LPUSH`). Re-kiq `memory.distill` for each captured round. **The arm MUST trim** — without `LTRIM`, the Reconciler re-finds the same overflow each tick and re-kiqs forever (G4 from external review).
+- **`memory_v1` orphan vectors (deferred to P5):** ES `aggs cardinality` returns an approximate HyperLogLog count, not the actual id set, and cannot drive a deterministic `delete_by_query`. The correct shape is a **composite aggregation** on `session_id` (paginated via `after_key`) or a scrolled `_search` of unique `session_id` keys; orphans are then computed by anti-joining each batch against `chat_sessions`. **Deferred rationale**: §3.8.3 cascade-delete + the Reconciler `DELETING > 300 s` arm cover all documented failure modes; the orphan sweep is a belt-and-braces arm whose cost (full-index distinct scan per tick) exceeds its catch-rate at P4 scale. Re-evaluate when Phase 2 ships prod telemetry on observed orphan counts.
 
 **State machine:** `chat_sessions.status` is two-state `{ACTIVE, DELETING}`; valid transitions `{ACTIVE→DELETING}`. `update_status` raises `IllegalStateTransition` on any other path.
 
@@ -455,7 +478,7 @@ New endpoint **`DELETE /chat/sessions/{session_id}`** (router `chat.py`):
 - **S43 memory on, foreign session** — Given a session whose `create_user="alice"`, When `bob` POSTs `/chat` with that `session_id`, Then 403 `application/problem+json` with `error_code=MEMORY_SESSION_FORBIDDEN`; no LLM call, no Redis touch, no ES touch.
 - **S44 memory on, unknown session** — Given a `session_id` with no `chat_sessions` row, When `/chat` runs, Then 404 `MEMORY_SESSION_NOT_FOUND`.
 - **S45 memory flag inconsistent** — Given `session_id` set but `enable_memory=false`, Then 422 `MEMORY_FLAG_INCONSISTENT`; no side effects.
-- **S46 distill on overflow** — Given Redis already holds `MEMORY_SHORT_TERM_ROUNDS` rounds (default 5 entries), When the 6th turn completes, Then the overflow round is captured via `LRANGE N -1` *before* `LTRIM 0 N-1`; `memory.distill` is enqueued exactly once for that captured round; ES `memory_v1` gains one row keyed by `round_id`; Redis `LLEN == 5` (one entry per round).
+- **S46 distill on overflow** — Given Redis already holds `MEMORY_SHORT_TERM_ROUNDS` rounds (default 5 entries), When the 6th turn completes, Then the **atomic Lua script** `memory_short_append.lua` (§3.8.2 Step 1) returns the captured overflow round; `memory.distill` is enqueued exactly once for that captured round; ES `memory_v1` gains one row keyed by `round_id`; Redis `LLEN == 5` (one entry per round). A non-atomic application-side `LRANGE → LTRIM` MUST fail this scenario when a concurrent `LPUSH` interleaves between the two commands.
 - **S47 distill idempotent** — Given `memory.distill(round_id=X)` is delivered twice, When both run, Then `memory_v1/{X}` exists once (PUT-overwrite), no duplicates.
 - **S48 distill failure does not break chat** — Given `memory.distill` raises every time, When subsequent turns run, Then chat still succeeds; `event=memory.distill_failed` is emitted after `attempt > 5`; chat does not degrade beyond losing recall of the failed round.
 - **S49 clear cascade** — Given a session with 3 rounds in Redis + 2 rows in `memory_v1` + 1 `chat_sessions` row, When `DELETE /chat/sessions/{id}` runs, Then all three are removed and 204 is returned.
@@ -754,13 +777,12 @@ CREATE TABLE chunks (
 -- §3.8 — Chat Memory Service (Phase 4). Metadata only;
 -- transcript text lives in Redis (transient) and ES `memory_v1` (distilled).
 CREATE TABLE chat_sessions (
-  session_id              CHAR(26)    PRIMARY KEY,
-  create_user             VARCHAR(64) NOT NULL,
-  status                  ENUM('ACTIVE','DELETING') NOT NULL,
-  round_count             INT         NOT NULL DEFAULT 0,
-  last_distilled_round_id CHAR(26)    NULL,
-  created_at              DATETIME(6) NOT NULL,
-  updated_at              DATETIME(6) NOT NULL,
+  session_id   CHAR(26)    PRIMARY KEY,
+  create_user  VARCHAR(64) NOT NULL,
+  status       ENUM('ACTIVE','DELETING') NOT NULL,
+  round_count  INT         NOT NULL DEFAULT 0,
+  created_at   DATETIME(6) NOT NULL,
+  updated_at   DATETIME(6) NOT NULL,
   INDEX idx_create_user_session (create_user, session_id),
   INDEX idx_status_updated      (status, updated_at)
 );
@@ -770,6 +792,11 @@ CREATE TABLE chat_sessions (
 -- check in P1 OPEN, replaced by JWT-subject equivalence in P2+.
 -- idx_create_user_session supports "list sessions I own".
 -- idx_status_updated supports the Reconciler's DELETING-sweep query.
+-- NOTE: an earlier draft carried `last_distilled_round_id CHAR(26) NULL` as a
+-- distill-recovery cursor. Removed (YAGNI) — no consumer was wired (`memory.distill`
+-- did not update it; no Reconciler arm read it). If a future cursor-based
+-- recovery becomes necessary (e.g. to replace the Redis SCAN sweep at scale),
+-- re-introduce in a forward migration with the consumer in the same commit.
 ```
 
 No physical FK. ORM-level cascade only.

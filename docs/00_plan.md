@@ -254,8 +254,9 @@
 | P4-B.1 | Red | `tests/unit/test_chat_session_repository.py` — `create(create_user) → row`; `get(session_id)`; `update_status(ACTIVE→DELETING)` raises on illegal edges; `delete(session_id)` returns row count; `list_for_clear(stale_seconds)` returns DELETING rows older than threshold. | P4-A.1, P4-A.5 | [ ] | QA | — |
 | P4-B.2 | Green | `src/ragent/repositories/chat_session_repository.py` — minimum to pass; reuse `acquire_for_clear` NOWAIT pattern from `document_repository.py` (T2.2). | P4-B.1 | [ ] | Dev | — |
 | P4-B.3 | Red | `tests/unit/test_memory_redis_client.py` — `append_round(session_id, round)` LPUSH composite entry + EXPIRE; `read_history(session_id)` LRANGE all; `clear(session_id)` DEL; `scan_overflow(sample_size)` returns `{session_id: overflow_count}` for keys with `LLEN > N`. | P4-A.6 | [ ] | QA | — |
-| P4-B.3a | Red | `tests/unit/test_memory_redis_client_overflow_capture.py` — contract test: `append_round` MUST capture overflow rounds via `LRANGE N -1` BEFORE `LTRIM 0 N-1`; an `RPOP-after-LTRIM` implementation MUST fail this test (no lossy variant). *(R-Mem-7)* | P4-B.3 | [ ] | QA | — |
-| P4-B.4 | Green | `src/ragent/clients/memory_redis.py` — minimum to pass; reuses `_redis_topology` dispatch from P4-A.6. | P4-B.3, P4-B.3a | [ ] | Dev | — |
+| P4-B.3a | Red | `tests/unit/test_memory_redis_client_overflow_capture.py` — contract test: `append_round` MUST execute the append + capture-overflow + trim as a **single atomic Redis `EVAL`** (Lua script `memory_short_append.lua`, per spec §3.8.2 Step 1). The test stages a concurrent `LPUSH` between the script's logical phases (via a fake clock or instrumented redis-py mock that interleaves a write call) and asserts no round is dropped uncaptured; a non-atomic `LRANGE` → `LTRIM` implementation MUST fail this test. *(R-Mem-7 + external review G3)* | P4-B.3 | [ ] | QA | — |
+| P4-B.3b | Red | `tests/unit/test_memory_redis_drain_script.py` — contract test for the sibling `memory_short_drain.lua` script consumed by the Reconciler arm (P4-G.2): captures-and-trims atomically with no append. Assert the script returns the captured rounds and `LLEN` ≤ `MEMORY_SHORT_TERM_ROUNDS` post-call. *(external review G4)* | P4-B.3 | [ ] | QA | — |
+| P4-B.4 | Green | `src/ragent/clients/memory_redis.py` — minimum to pass; reuses `_redis_topology` dispatch from P4-A.6. Loads both Lua scripts via `SCRIPT LOAD` at construction time; calls via `EVALSHA` (fall back to `EVAL` on `NOSCRIPT`). | P4-B.3, P4-B.3a, P4-B.3b | [ ] | Dev | — |
 
 ### Track P4-C — Distillation worker (TDD)
 
@@ -306,9 +307,9 @@
 | # | Category | Task | Depends On | Status | Owner | Week |
 |---|---|---|---|:---:|---|:---:|
 | P4-G.1 | Red | `tests/integration/test_reconciler_chat_session_deleting.py` — given a `chat_sessions` row stuck in `DELETING > MEMORY_RECONCILER_DELETING_STALE_SECONDS`, Reconciler tick resumes the cascade idempotently. | P4-F.3, T5.x | [ ] | QA | — |
-| P4-G.2 | Red | `tests/integration/test_reconciler_memory_overflow.py` — given a session whose Redis LLEN > N, Reconciler tick re-kiqs `memory.distill` for the overflow rounds; if LLEN > `MEMORY_REDIS_MAX_PENDING_ROUNDS`, oldest tail is dropped with `event=memory.dropped`. | P4-B.4 | [ ] | QA | — |
-| P4-G.3 | Red | `tests/integration/test_reconciler_memory_orphan_vectors.py` — given `memory_v1` rows whose `session_id` has no `chat_sessions` row, Reconciler `delete_by_query` removes them. | P4-D.2 | [ ] | QA | — |
-| P4-G.4 | Green | `reconciler.py` extensions — three new arms per §3.6 / §3.8.4 prose. | P4-G.1, P4-G.2, P4-G.3 | [ ] | Dev | — |
+| P4-G.2 | Red | `tests/integration/test_reconciler_memory_overflow.py` — given a session whose Redis LLEN > N, Reconciler tick **calls `memory_short_drain.lua` (atomic capture-and-trim)** and re-kiqs `memory.distill` for each captured round. Assert `LLEN ≤ N` after the tick (regression guard against G4: an arm that re-kiqs without trimming would re-find the same overflow on every tick and re-kiq forever). If LLEN > `MEMORY_REDIS_MAX_PENDING_ROUNDS`, oldest tail is dropped with `event=memory.dropped`. *(external review G3 + G4)* | P4-B.4 | [ ] | QA | — |
+| P4-G.3 | Deferred to P5 | `memory_v1` orphan vectors arm — **deferred** per spec §3.8.4 (cascade-delete + DELETING-resume cover documented failure modes; ES `aggs cardinality` cannot enumerate orphan ids; the correct shape is composite-aggregation/scroll, but the cost outweighs catch-rate at P4 scale). Re-evaluate when prod telemetry exists. *(external review G1+C1)* | P4-D.2 | [~] | SRE | — |
+| P4-G.4 | Green | `reconciler.py` extensions — two new arms (DELETING-resume + Redis overflow drain) per §3.6 / §3.8.4 prose. | P4-G.1, P4-G.2 | [ ] | Dev | — |
 
 ### Track P4-H — Concurrency & guard (TDD)
 
