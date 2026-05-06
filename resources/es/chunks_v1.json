@@ -11,9 +11,11 @@
       "document_id":      { "type": "keyword" },
       "source_app":       { "type": "keyword" },
       "source_workspace": { "type": "keyword" },
+      "source_url":       { "type": "keyword" },
       "lang":             { "type": "keyword" },
       "title":            { "type": "text" },
       "text":             { "type": "text" },
+      "raw_content":      { "type": "text", "index": false },
       "embedding": {
         "type": "dense_vector",
         "dims": 1024,

@@ -251,3 +251,54 @@
 | P3.3 | Behavioral | • **Achieve:** Add graph retrieval branch to chat pipeline.<br>• **Deliver:** `HybridRetrieverWithGraph` SuperComponent + `LightRAGRetriever` (200 ms TO → []). | [ ] | Dev |
 | P3.4 | Governance | • **Achieve:** Govern entity lifecycle in the graph store.<br>• **Deliver:** Entity soft-delete + ref_count + GC + reconciliation cron. | [ ] | Dev |
 | P3.5 | Gate | • **Achieve:** Confirm graph track is justified before spend.<br>• **Deliver:** Gate decision: P2 stable ≥ 4 weeks AND hybrid alone underperforms on relational queries. | [ ] | PM |
+
+---
+
+## Phase 1 v2 — Ingest API breaking-change refactor (2026-05-06)
+
+> Source of truth: `docs/team/2026_05_06_ingest_api_v2.md` (6/6 PASS).
+> Supersedes the v1 ingest stack (multipart upload, lang-aware chunker,
+> chunks DB table, single-MinIO env). Six TIDY-FIRST commits C1–C6, each
+> independently `make check` green.
+
+### Tasks superseded by v2
+
+The following v1 tasks are **superseded** (their `[x]` reflects v1 history;
+v2 replaces the underlying behavior in C2–C6):
+
+- T0.8 `chunks` DB table → **dropped**, ES is sole chunk store.
+- T2.3 / T2.4 `ChunkRepository` → **deleted** in C6.
+- T2.7 / T2.8 ingest-create multipart contract → **rewritten** by T2v.22–T2v.27 (C3).
+- T2.13 / T2.14 multipart router → **replaced** by T2v.24–T2v.25 (C3).
+- T3.1 / T3.2 lang-routed pipeline; T3.2k / T3.2l CSV row-merger → **replaced** by T2v.30–T2v.37 (C4).
+
+### v2 task block (Track T2v)
+
+| # | Category | Task | Commit | Status | Owner |
+|---|---|---|:-:|:-:|---|
+| T2v.20 | Structural | • **Achieve:** Add v2 documents columns + drop chunks table.<br>• **Deliver:** Alembic revision adding `ingest_type ENUM('inline','file')`, `minio_site VARCHAR(64) NULL`, `source_url VARCHAR(2048) NULL`; **DROP TABLE chunks**; schema-drift test green; `migrations/schema.sql` updated. | C2 | [ ] | Dev |
+| T2v.21 | Structural | • **Achieve:** Add ES `raw_content` field to `chunks_v1`.<br>• **Deliver:** `resources/es/chunks_v1.json` adds `"raw_content": {"type":"text","index":false,"doc_values":false}`; spec §5.2 sync; ES drift test green. | C2 | [ ] | Dev |
+| T2v.22 | Red  | • **Achieve:** Pin v2 request schema (discriminated union + validators).<br>• **Deliver:** `tests/unit/test_ingest_request_schema_v2.py` — `ingest_type` discriminator; `content_type ∈ {text/plain, text/markdown, text/html}` (415 outside set); `inline.content` non-empty UTF-8 string ≤ `INGEST_INLINE_MAX_BYTES`; `file.minio_site` validated against runtime registry; `source_url` opaque ≤ 2048; missing required → 422 with `errors[]`. | C3 | [ ] | QA |
+| T2v.23 | Green | • **Achieve:** Implement Pydantic discriminated request models.<br>• **Deliver:** `src/ragent/schemas/ingest.py` — `IngestMime` enum, `InlineIngestRequest`, `FileIngestRequest`, discriminated union with `discriminator="ingest_type"`. | C3 | [ ] | Dev |
+| T2v.24 | Red  | • **Achieve:** Pin v2 router contract (JSON only, no multipart).<br>• **Deliver:** `tests/unit/test_ingest_router_v2.py` — 202 happy path inline + file; 415 bad MIME; 413 inline overflow; 422 shape; old multipart `multipart/form-data` → 415. | C3 | [ ] | QA |
+| T2v.25 | Green | • **Achieve:** Implement v2 router (JSON-only).<br>• **Deliver:** `src/ragent/routers/ingest.py` — replace `UploadFile` handler with `IngestRequest` body; remove `python-multipart` import. **Breaking change.** | C3 | [ ] | Dev |
+| T2v.26 | Red  | • **Achieve:** Pin service `create` branching contract.<br>• **Deliver:** `tests/unit/test_ingest_service_v2.py` — inline → stage to `__default__` MinIO + `documents.ingest_type='inline'`; file → HEAD-probe caller's `(minio_site, object_key)`, no copy, `documents.ingest_type='file', minio_site=...`; HEAD miss → 422 `INGEST_OBJECT_NOT_FOUND`; readonly site refuses post-READY delete. | C3 | [ ] | QA |
+| T2v.27 | Green | • **Achieve:** Implement branched create + structured business log.<br>• **Deliver:** `src/ragent/services/ingest_service.py::create` — discriminated dispatch; emit `event=ingest.received {document_id, ingest_type, content_type, source_id, source_app}`. | C3 | [ ] | Dev |
+| T2v.28 | Red  | • **Achieve:** Pin `MinioSiteRegistry` semantics.<br>• **Deliver:** `tests/unit/test_minio_site_registry.py` — boot fails fast on missing `__default__`; per-site client cached; `get(name)` raises `UnknownMinioSite` on miss; `read_only` flag exposed; HEAD-probe helper (`stat_object`) returns size. | C3 | [ ] | QA |
+| T2v.29 | Green | • **Achieve:** Implement registry + composition wiring.<br>• **Deliver:** `src/ragent/storage/minio_registry.py` (parses `MINIO_SITES` JSON env) + `bootstrap/composition.py` adds `MinioSiteRegistry` singleton. | C3 | [ ] | Dev |
+| T2v.30 | Red  | • **Achieve:** Pin `_TextLoader` Haystack component.<br>• **Deliver:** `tests/unit/test_text_loader.py` — accepts inline `str` or worker-fetched `bytes`+`mime_type`; returns `Document(content=str, meta={mime_type, document_id, source_url, source_title, source_app, source_workspace})`. | C4 | [ ] | QA |
+| T2v.31 | Green | • **Achieve:** Implement `_TextLoader` (~10 LOC).<br>• **Deliver:** `src/ragent/pipelines/factory.py::_TextLoader`. | C4 | [ ] | Dev |
+| T2v.32 | Red  | • **Achieve:** Pin `_MarkdownASTSplitter` (mistletoe).<br>• **Deliver:** `tests/unit/test_markdown_ast_splitter.py` — atoms: heading-section, fenced code, list, table, blockquote, paragraph; **never split inside** a fenced code block; `meta["raw_content"]` round-trips byte-for-byte; deterministic across re-runs. | C4 | [ ] | QA |
+| T2v.33 | Green | • **Achieve:** Implement `_MarkdownASTSplitter` via mistletoe AST walk.<br>• **Deliver:** `src/ragent/pipelines/factory.py::_MarkdownASTSplitter`. | C4 | [ ] | Dev |
+| T2v.34 | Red  | • **Achieve:** Pin `_HtmlASTSplitter` (selectolax).<br>• **Deliver:** `tests/unit/test_html_ast_splitter.py` — drops `<script>/<style>/<nav>/<aside>/<footer>/<header>` (when not nested in `<article>/<main>`); atoms: heading-section, `<pre>`, `<table>`, `<article>` paragraphs; `meta["raw_content"]` is well-formed serialized HTML fragment; deterministic. | C4 | [ ] | QA |
+| T2v.35 | Green | • **Achieve:** Implement `_HtmlASTSplitter` via selectolax DOM walk.<br>• **Deliver:** `src/ragent/pipelines/factory.py::_HtmlASTSplitter`. | C4 | [ ] | Dev |
+| T2v.36 | Red  | • **Achieve:** Pin `_BudgetChunker` (mime-agnostic, 1000/1500/100).<br>• **Deliver:** `tests/unit/test_budget_chunker.py` — greedy-pack atoms ≤ `CHUNK_TARGET_CHARS` (1000); atoms > `CHUNK_MAX_CHARS` (1500) hard-split with `CHUNK_OVERLAP_CHARS` (100); concatenated `meta["raw_content"]` matches union of source atom raws. | C4 | [ ] | QA |
+| T2v.37 | Green | • **Achieve:** Implement `_BudgetChunker`.<br>• **Deliver:** `src/ragent/pipelines/factory.py::_BudgetChunker` (replaces `_CharBudgetChunker`). | C4 | [ ] | Dev |
+| T2v.38 | Red  | • **Achieve:** Pin `FileTypeRouter` wiring + unroutable failure path.<br>• **Deliver:** `tests/unit/test_pipeline_routing_v2.py` — each MIME routes to its splitter; unknown MIME → `_RaiseUnroutable` → worker FAILED with `error_code=PIPELINE_UNROUTABLE` (mirrors PIPELINE_TIMEOUT). | C4 | [ ] | QA |
+| T2v.39 | Green | • **Achieve:** Wire pipeline graph: `_TextLoader → FileTypeRouter → {DocumentSplitter \| _MarkdownASTSplitter \| _HtmlASTSplitter} → DocumentJoiner → _IdempotencyClean → _BudgetChunker → DocumentEmbedder → DocumentWriter(ES only)`. **DocumentWriter writes to ES only — no chunks DB.** | C4 | [ ] | Dev |
+| T2v.40 | Red  | • **Achieve:** Pin chat read-path uses `raw_content` with `content` fallback.<br>• **Deliver:** `tests/unit/test_chat_uses_raw_content.py` — LLM-context builder + `_ExcerptTruncator` use `doc.meta.get("raw_content") or doc.content`; reranker still scores on `content`; `sources[].source_url` populated. | C5 | [ ] | QA |
+| T2v.41 | Green | • **Achieve:** Implement chat read-path + `source_url` in citations.<br>• **Deliver:** `src/ragent/pipelines/chat.py` updates; `routers/retrieve.py` exposes `source_url` in chunk envelope. | C5 | [ ] | Dev |
+| T2v.42 | Red  | • **Achieve:** Pin per-step business + failure logs (Logging Rule extension).<br>• **Deliver:** `tests/unit/test_pipeline_logging.py` — each pipeline component (`_TextLoader`, splitter, `_BudgetChunker`, embedder, writer) emits `event=ingest.step.{started,ok,failed}` carrying `{document_id, step, mime_type, atoms_in?, chunks_out?, duration_ms, error_code?, error?}`. Failures map to `PIPELINE_UNROUTABLE` / `EMBEDDER_ERROR` / `ES_WRITE_ERROR` / `PIPELINE_TIMEOUT`; happy-path emits `event=ingest.ready` with chunk count. | C5 | [ ] | QA |
+| T2v.43 | Green | • **Achieve:** Wire structlog per-step events + correlate via OTEL.<br>• **Deliver:** Each component logs via `structlog.get_logger("ragent.ingest")` with `document_id` bound; reuse existing OTEL span context (T7.1b). | C5 | [ ] | Dev |
+| T2v.44 | Refactor | • **Achieve:** Delete dead v1 code.<br>• **Deliver:** Remove `_CharBudgetChunker` lang branches, CJK constants, `langdetect`/`nltk` deps, `python-multipart` dep, `ChunkRepository`, multipart imports, T3.2l RowMerger, v1 chunker env vars. | C6 | [ ] | Dev |
+| T2v.45 | Acceptance | • **Achieve:** Golden end-to-end test with wiremock embedding + testcontainers.<br>• **Deliver:** `tests/e2e/test_ingest_v2_golden.py` — fixtures spin up MariaDB + Redis + ES + MinIO via testcontainers; `pytest-httpserver` mocks Embedding API; for each `(ingest_type, mime) ∈ {inline, file} × {text/plain, text/markdown, text/html}` (6 combos): POST → broker → real worker → real pipeline → assert (a) ES `chunks_v1` rows exist with both `content` (normalized) and `raw_content` (original); (b) MariaDB `documents` row reaches `READY` with correct `ingest_type`/`minio_site`/`source_url`/`source_title`; (c) **no `chunks` table reads** (table dropped); (d) per-step structured-log events present in captured stream; (e) markdown fenced code survives in `raw_content`, HTML `<script>/<nav>` excluded from both fields. | C6 | [ ] | QA |

@@ -34,6 +34,30 @@
 
 ### 3.1 Ingest Lifecycle
 
+> **v2 OVERRIDE (2026-05-06)** — see `docs/team/2026_05_06_ingest_api_v2.md` for the full team decision; the operative contract below supersedes the v1 multipart description further down.
+>
+> **API:** `POST /ingest` is **JSON only** (no multipart). Body discriminator `ingest_type ∈ {inline, file}`:
+> - `inline` → `{ingest_type, content_type, content: str, source_id, source_app, source_title, source_workspace?, source_url?}`. `content` is UTF-8; size ceiling `INGEST_INLINE_MAX_BYTES` (default 10 MB) on the encoded byte length. API stages the content to MinIO `__default__` site.
+> - `file` → `{ingest_type, content_type, minio_site, object_key, source_id, source_app, source_title, source_workspace?, source_url?}`. API HEAD-probes `(minio_site, object_key)`; absent → 422 `INGEST_OBJECT_NOT_FOUND`; size > `INGEST_FILE_MAX_BYTES` (50 MB) → 413. **No copy** — worker reads from caller's bucket.
+>
+> **MIME allow-list:** `text/plain`, `text/markdown`, `text/html`. Anything else → 415 `INGEST_MIME_UNSUPPORTED`. **CSV is dropped** (was v1).
+>
+> **Source columns:** `source_id`, `source_app`, `source_title`, `source_workspace?` (existing) **plus new `source_url`** (opaque ≤ 2048 chars, display-only in citations).
+>
+> **MinIO multi-site:** server reads `MINIO_SITES` JSON env at boot → `MinioSiteRegistry`. `__default__` is mandatory (used by inline). Sites with `read_only=true` refuse post-READY delete (`file` ingests against caller-owned buckets).
+>
+> **Cleanup branching by `documents.ingest_type`:**
+> | `ingest_type` | Worker reads from | Post-READY delete |
+> |---|---|---|
+> | `inline` | `__default__/<object_key=document_id>` | yes (same as v1) |
+> | `file` | caller's `(minio_site, object_key)` | **no** (object isn't ours) |
+>
+> **Storage model (revised):** chunks live **only** in ES `chunks_v1`. The MariaDB `chunks` table is **dropped**. `documents` keeps metadata. Two stores total: `documents` (MariaDB, metadata) + `chunks_v1` (ES, content + embedding + raw_content).
+>
+> **Per-step structured logging (Logging Rule extension):** every pipeline component emits `event=ingest.step.{started,ok,failed}` with `{document_id, step, mime_type, duration_ms, error_code?, error?}`. Failures map to a small enum (`PIPELINE_UNROUTABLE`, `EMBEDDER_ERROR`, `ES_WRITE_ERROR`, `PIPELINE_TIMEOUT`). Happy path emits `event=ingest.ready` with chunk count. This is how operators answer "which doc, which step, why failed" from logs alone.
+>
+> **State machine, locking, heartbeat, supersede, reconciler arms — unchanged from v1.** Only the ingress and pipeline interior change.
+
 **State machine:** `UPLOADED → PENDING → READY | FAILED`; `DELETING` transient on delete.
 
 **Locking discipline:**
@@ -103,6 +127,30 @@
 ---
 
 ### 3.2 Indexing Pipeline
+
+> **v2 OVERRIDE** — supersedes the v1 graph below.
+>
+> ```
+> _TextLoader → FileTypeRouter
+>    ├ text/plain    → DocumentSplitter (Haystack stock, by passage)
+>    ├ text/markdown → _MarkdownASTSplitter (mistletoe AST walk)
+>    ├ text/html     → _HtmlASTSplitter    (selectolax DOM walk)
+>    └ unclassified  → _RaiseUnroutable    (worker → FAILED + PIPELINE_UNROUTABLE)
+> → DocumentJoiner → _IdempotencyClean (ES delete by document_id)
+> → _BudgetChunker (1000 target / 1500 max / 100 overlap, mime-agnostic)
+> → DocumentEmbedder (bge-m3 batched)
+> → DocumentWriter (ES chunks_v1 only — no DB chunks)
+> ```
+>
+> **Splitter atom contract:** every Document emitted by a splitter carries `meta["raw_content"]` = exact byte slice of source input for that atom. Splitters are byte-stable (R4/S25). `_BudgetChunker` is the single chunk-budget enforcer for all MIMEs (the v1 `_CharBudgetChunker` lang/CSV branches are removed).
+>
+> **MD/HTML splitter rules:**
+> - **Markdown** (mistletoe): atomic units = heading-section / fenced code block / list / table / blockquote / paragraph. Never splits inside a fenced code block.
+> - **HTML** (selectolax): drops `<script>/<style>/<nav>/<aside>/<footer>/<header>` (when not nested in `<article>/<main>`). Atoms: heading-section, `<pre>`, `<table>`, `<article>` paragraphs.
+>
+> **Dual-field ES `chunks_v1`** (see §5.2): `content` (normalized text — embedded by bge-m3 + BM25-analyzed) and `raw_content` (`index: false`, `_source`-only — the original byte slice). Chat retrieval scores against `content` and forwards `raw_content` to the LLM and citations for faithful display (e.g. fenced code blocks survive end-to-end).
+>
+> **Performance / timeout discipline (unchanged):** `PIPELINE_TIMEOUT_SECONDS` ceiling, embedder 30 s/batch, ES bulk 60 s, MinIO get 30 s.
 
 ```
 FileTypeRouter → Converter → [RowMerger (CSV path only)] → DocumentCleaner → LanguageRouter → {cjk_splitter | en_splitter} → EmbeddingClient → ChunkRepository → PluginRegistry.fan_out()
@@ -437,9 +485,24 @@ Retrieval may over-fetch (`K' = K × overfetch_factor`) so that after permission
 
 ### 4.1 Endpoints
 
+> **v2 OVERRIDE for `POST /ingest`** — JSON body only (no multipart).
+> ```jsonc
+> // ingest_type=inline
+> { "ingest_type":"inline", "content_type":"text/markdown", "content":"# Title\n…",
+>   "source_id":"DOC-1", "source_app":"confluence", "source_title":"Q3 OKR",
+>   "source_workspace":"eng",         // optional
+>   "source_url":"https://wiki/…" }   // optional, opaque ≤ 2048
+> // ingest_type=file
+> { "ingest_type":"file", "content_type":"text/html",
+>   "minio_site":"tenant-eu-1", "object_key":"reports/2025.html",
+>   "source_id":"DOC-2", "source_app":"s3-importer", "source_title":"Annual Report",
+>   "source_workspace":"finance", "source_url":"https://…" }
+> ```
+> Validation order: discriminator-shape (422) → `content_type ∈ {text/plain,text/markdown,text/html}` (415) → inline `len(content.encode("utf-8")) ≤ INGEST_INLINE_MAX_BYTES` / file HEAD-probe size ≤ `INGEST_FILE_MAX_BYTES` (413) → `minio_site` resolved against `MinioSiteRegistry` (422 `INGEST_MINIO_SITE_UNKNOWN`) → file HEAD-probe object exists (422 `INGEST_OBJECT_NOT_FOUND`).
+
 | Method | Path | P1 Auth | Request | Response |
 |---|---|---|---|---|
-| POST   | `/ingest`               | `X-User-Id` | `multipart/form-data: file` (≤ 50 MB, MIME ∈ §4.2), `source_id` (≤ 128, **mandatory**), `source_app` (≤ 64, **mandatory**), `source_title` (≤ 256, **mandatory**), `source_workspace` (≤ 64, optional) | `202 { task_id }` — `task_id` **is** the `document_id` (26-char Crockford Base32). 422 problem+json if any of `source_id` / `source_app` / `source_title` missing/empty. |
+| POST   | `/ingest`               | `X-User-Id` | **JSON** (v2, see override above) | `202 { task_id }` — `task_id` **is** the `document_id`. |
 | GET    | `/ingest/{id}`          | `X-User-Id` | — | `200 { status, attempt, updated_at }` |
 | GET    | `/ingest?after=&limit=` | `X-User-Id` | — | `200 { items, next_cursor }` (limit ≤ 100) |
 | DELETE | `/ingest/{id}`          | `X-User-Id` | — | `204` idempotent |
@@ -549,6 +612,19 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 
 > **Inventory rules (B28):** every external dependency, every per-call timeout, every operational threshold, and every credential MUST appear in this table. Code that reads a literal value not represented here is a spec drift bug. Vars marked `(required)` have no default and refuse boot.
 
+> **v2 OVERRIDE — additions / changes** (the §4.6.2 / §4.6.6 subsections below predate v2; the operative values are):
+>
+> | Var | Required | Default | Purpose |
+> |---|:-:|---|---|
+> | `MINIO_SITES` | yes | — | JSON list of `{name, endpoint, access_key, secret_key, bucket, secure?, read_only?}`. Must include one entry with `name="__default__"` (used by inline ingest). Replaces the v1 single-site `MINIO_*` block. |
+> | `INGEST_INLINE_MAX_BYTES` | no | `10485760` (10 MB) | Cap on inline `content` UTF-8 byte length; 413 on overrun. |
+> | `INGEST_FILE_MAX_BYTES` | no | `52428800` (50 MB) | Cap on file-type ingest size from HEAD-probe; 413 on overrun. |
+> | `CHUNK_TARGET_CHARS` | no | `1000` | `_BudgetChunker` target. Replaces v1 `CHUNK_TARGET_CHARS_EN/CJK/CSV`. |
+> | `CHUNK_MAX_CHARS` | no | `1500` | `_BudgetChunker` hard cap. |
+> | `CHUNK_OVERLAP_CHARS` | no | `100` | `_BudgetChunker` overlap. |
+>
+> **Removed in v2 cleanup (C6):** `MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY/SECURE/BUCKET` (legacy single-site), `INGEST_MAX_FILE_SIZE_BYTES` (split into INLINE/FILE), `CHUNK_TARGET_CHARS_EN/CJK/CSV`, `CHUNK_OVERLAP_CHARS_EN/CJK/CSV`, `CHUNK_HARD_SPLIT_OVERLAP_CHARS`.
+
 #### 4.6.1 Bootstrap & HTTP server
 
 | Variable | Default | Description |
@@ -572,11 +648,12 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `ES_PASSWORD`                         | (optional)       | Basic-auth password. |
 | `ES_API_KEY`                          | (optional)       | Alternative to user/password (mutually exclusive). |
 | `ES_VERIFY_CERTS`                     | `true`           | Set `false` for self-signed dev clusters. |
-| `MINIO_ENDPOINT`                      | (required)       | `host:port` (no scheme). |
-| `MINIO_ACCESS_KEY`                    | (required)       | |
-| `MINIO_SECRET_KEY`                    | (required)       | |
-| `MINIO_SECURE`                        | `false`          | `true` ⇒ HTTPS. |
-| `MINIO_BUCKET`                        | `ragent`         | Single staging bucket (B10). |
+| `MINIO_SITES`                         | (required)       | v2: JSON list of `{name, endpoint, access_key, secret_key, bucket, secure?, read_only?}`. Must include `name="__default__"` (used by inline ingest). Replaces the legacy single-site `MINIO_*` vars below. |
+| `MINIO_ENDPOINT`                      | (optional, legacy) | DEPRECATED — superseded by `MINIO_SITES`. Removed in C6 cleanup. |
+| `MINIO_ACCESS_KEY`                    | (optional, legacy) | DEPRECATED. |
+| `MINIO_SECRET_KEY`                    | (optional, legacy) | DEPRECATED. |
+| `MINIO_SECURE`                        | `false`          | DEPRECATED. |
+| `MINIO_BUCKET`                        | `ragent`         | DEPRECATED. |
 
 #### 4.6.3 Redis (B27)
 
@@ -618,15 +695,12 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 
 | Variable | Default | Description |
 |---|---|---|
-| `INGEST_MAX_FILE_SIZE_BYTES`          | `52428800`       | 50 MB upload cap (B2); 413 on overrun. |
+| `INGEST_INLINE_MAX_BYTES`             | `10485760`       | v2: 10 MB cap on inline `content` UTF-8 byte length; 413 on overrun. |
+| `INGEST_FILE_MAX_BYTES`                | `52428800`      | v2: 50 MB cap on file-type ingest size (HEAD-probe at API time); 413 on overrun. |
 | `INGEST_LIST_MAX_LIMIT`               | `100`            | `GET /ingest?limit=` upper bound (§4.1, B7). |
-| `CHUNK_TARGET_CHARS_EN`               | `2000`           | `_CharBudgetChunker` EN/other-language target chars (B1). |
-| `CHUNK_OVERLAP_CHARS_EN`              | `300`            | `_CharBudgetChunker` EN/other overlap chars between chunks. |
-| `CHUNK_TARGET_CHARS_CJK`              | `500`            | `_CharBudgetChunker` CJK-density target (zh/ja/ko/th/lo/km/my). |
-| `CHUNK_OVERLAP_CHARS_CJK`             | `100`            | `_CharBudgetChunker` CJK overlap chars between chunks. |
-| `CHUNK_TARGET_CHARS_CSV`              | `2000`           | `_CharBudgetChunker` CSV row-packed target (B24). |
-| `CHUNK_OVERLAP_CHARS_CSV`             | `0`              | `_CharBudgetChunker` CSV overlap (no row overlap). |
-| `CHUNK_HARD_SPLIT_OVERLAP_CHARS`      | `200`            | Fallback overlap when an atom exceeds the budget. |
+| `CHUNK_TARGET_CHARS`                  | `1000`           | v2 `_BudgetChunker` target chars (mime-agnostic). |
+| `CHUNK_MAX_CHARS`                     | `1500`           | v2 `_BudgetChunker` hard cap; atoms above this are hard-split. |
+| `CHUNK_OVERLAP_CHARS`                 | `100`            | v2 `_BudgetChunker` overlap between adjacent chunks. |
 | `EMBEDDER_BATCH_SIZE`                 | `32`             | Chunks per embedder HTTP call (P-B). |
 | `CHAT_JOIN_MODE`                      | `rrf`            | `rrf` \| `concatenate` \| `vector_only` \| `bm25_only` (C6). |
 | `CHAT_RERANK_ENABLED`                 | `true`           | Insert `_Reranker` between joiner and `_SourceHydrator` (F1). |
@@ -675,6 +749,8 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 
 ### 5.1 MariaDB
 
+> **v2 OVERRIDE** — `documents` adds `ingest_type ENUM('inline','file') NOT NULL DEFAULT 'inline'`, `minio_site VARCHAR(64) NULL`, `source_url VARCHAR(2048) NULL`. The **`chunks` table is dropped** — chunks live only in ES `chunks_v1`. `object_key` semantics: for `inline` it points into `__default__` MinIO site; for `file` it is the caller-supplied key in the named site (no copy).
+
 ```sql
 CREATE TABLE documents (
   document_id      CHAR(26)     PRIMARY KEY,
@@ -720,6 +796,8 @@ No physical FK. ORM-level cascade only.
 
 ### 5.2 Elasticsearch `chunks_v1`
 
+> **v2 OVERRIDE** — adds `raw_content` field (`type: text, index: false`, `_source`-only). `content` (existing `text` column, may also be exposed under that legacy name) holds the **normalized** view embedded by bge-m3 + BM25-analyzed; `raw_content` holds the **original byte slice** the splitter captured (markdown fences, HTML tags, etc.). Chat retrieval scores against `content`, but the LLM context and `sources[].excerpt` use `raw_content` (with `content` fallback for legacy chunks). `source_url` is added as a `keyword` field for citation rendering.
+
 > **Source of truth (B26):** `resources/es/chunks_v1.json` — settings + mappings, checked into git. Bootstrap (§6.1) reads this file and `PUT /chunks_v1` if the index does not exist. The block below is the canonical content; any drift between this spec snippet and the resource file is a CI failure (`tests/integration/test_es_resource_drift.py`).
 
 ```json
@@ -736,9 +814,11 @@ No physical FK. ORM-level cascade only.
       "document_id":      { "type": "keyword" },
       "source_app":       { "type": "keyword" },
       "source_workspace": { "type": "keyword" },
+      "source_url":       { "type": "keyword" },
       "lang":             { "type": "keyword" },
       "title":            { "type": "text" },
       "text":             { "type": "text" },
+      "raw_content":      { "type": "text", "index": false },
       "embedding": {
         "type": "dense_vector",
         "dims": 1024,

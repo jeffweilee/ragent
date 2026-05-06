@@ -15,6 +15,11 @@ CREATE TABLE IF NOT EXISTS documents (
   attempt          INT          NOT NULL DEFAULT 0,
   created_at       DATETIME(6)  NOT NULL,
   updated_at       DATETIME(6)  NOT NULL,
+  -- v2 columns (002_ingest_v2.sql). Appended at end so ALGORITHM=INSTANT
+  -- in alembic ALTER produces an identical column ordering (drift test).
+  ingest_type      ENUM('inline','file') NOT NULL DEFAULT 'inline',
+  minio_site       VARCHAR(64)  NULL,
+  source_url       VARCHAR(2048) NULL,
   PRIMARY KEY (document_id),
   INDEX idx_status_updated (status, updated_at),
   INDEX idx_source_app_id_status_created (source_app, source_id, status, created_at),

@@ -37,6 +37,10 @@ class DocumentRow:
     attempt: int
     created_at: datetime.datetime
     updated_at: datetime.datetime
+    # v2 columns (002_ingest_v2.sql). Defaults keep test fixtures green.
+    ingest_type: str = "inline"
+    minio_site: str | None = None
+    source_url: str | None = None
 
     @classmethod
     def from_mapping(cls, m: Any) -> DocumentRow:
@@ -52,6 +56,9 @@ class DocumentRow:
             attempt=m["attempt"],
             created_at=m["created_at"],
             updated_at=m["updated_at"],
+            ingest_type=m.get("ingest_type") or "inline",
+            minio_site=m.get("minio_site"),
+            source_url=m.get("source_url"),
         )
 
 
@@ -94,16 +101,21 @@ class DocumentRepository:
         source_title: str,
         object_key: str,
         source_workspace: str | None = None,
+        source_url: str | None = None,
+        ingest_type: str = "inline",
+        minio_site: str | None = None,
     ) -> str:
         await self._execute(
             text(
                 """
                 INSERT INTO documents
                     (document_id, create_user, source_id, source_app, source_title,
-                     source_workspace, object_key, status, attempt, created_at, updated_at)
+                     source_workspace, source_url, object_key, ingest_type, minio_site,
+                     status, attempt, created_at, updated_at)
                 VALUES
                     (:document_id, :create_user, :source_id, :source_app, :source_title,
-                     :source_workspace, :object_key, 'UPLOADED', 0, NOW(6), NOW(6))
+                     :source_workspace, :source_url, :object_key, :ingest_type, :minio_site,
+                     'UPLOADED', 0, NOW(6), NOW(6))
                 """
             ),
             {
@@ -113,7 +125,10 @@ class DocumentRepository:
                 "source_app": source_app,
                 "source_title": source_title,
                 "source_workspace": source_workspace,
+                "source_url": source_url,
                 "object_key": object_key,
+                "ingest_type": ingest_type,
+                "minio_site": minio_site,
             },
         )
         return document_id
