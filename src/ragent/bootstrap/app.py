@@ -23,7 +23,7 @@ from ragent.routers.retrieve import create_retrieve_router
 
 logger = structlog.get_logger(__name__)
 
-_NO_USER_ID_PATHS = frozenset({"/livez", "/readyz", "/metrics"})
+_NO_USER_ID_PATHS = frozenset({"/livez", "/readyz", "/metrics", "/docs", "/redoc", "/openapi.json"})
 
 
 def _x_user_id_middleware(app: FastAPI) -> None:
