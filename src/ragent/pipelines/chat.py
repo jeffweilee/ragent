@@ -37,13 +37,15 @@ def build_es_filters(source_app: str | None, source_workspace: str | None) -> di
 
 def doc_to_source_entry(doc: Any) -> dict:
     meta = doc.meta or {}
+    excerpt_src = meta.get("raw_content") or (doc.content or "")
     return {
         "document_id": meta.get("document_id"),
         "source_app": meta.get("source_app"),
         "source_id": meta.get("source_id"),
         "type": "knowledge",
         "source_title": meta.get("source_title"),
-        "excerpt": (doc.content or "")[:_EXCERPT_MAX_CHARS],
+        "source_url": meta.get("source_url"),
+        "excerpt": excerpt_src[:_EXCERPT_MAX_CHARS],
     }
 
 
@@ -156,8 +158,12 @@ class _ExcerptTruncator:
     def run(self, documents: list[Document]) -> dict:
         result = []
         for doc in documents:
-            if doc.content and len(doc.content) > self._max:
-                result.append(dataclasses.replace(doc, content=doc.content[: self._max]))
+            # Display layer prefers raw byte slice; fall back to normalized
+            # content for legacy chunks predating raw_content.
+            source = (doc.meta or {}).get("raw_content") or (doc.content or "")
+            truncated = source[: self._max]
+            if truncated != doc.content:
+                result.append(dataclasses.replace(doc, content=truncated))
             else:
                 result.append(doc)
         return {"documents": result}

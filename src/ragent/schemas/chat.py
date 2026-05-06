@@ -129,11 +129,14 @@ def _render_context(docs: list[Any]) -> str:
     parts = []
     for i, doc in enumerate(docs, start=1):
         meta = getattr(doc, "meta", None) or {}
+        # Prefer the original byte-faithful slice for LLM display; fall back
+        # to normalized content when chunks predate the raw_content field.
+        body = meta.get("raw_content") or (getattr(doc, "content", "") or "")
         parts.append(
             f"[#{i}] source_app={meta.get('source_app', 'unknown')} "
             f"source_title={meta.get('source_title', 'unknown')} "
             f"document_id={meta.get('document_id', 'unknown')}\n"
-            f"{getattr(doc, 'content', '') or ''}\n---"
+            f"{body}\n---"
         )
     return "\n".join(parts)
 

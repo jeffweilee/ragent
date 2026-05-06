@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import contextlib
 import tempfile
+import time
 
 import structlog
 from anyio import to_thread
 
 from ragent.bootstrap.broker import broker
+from ragent.pipelines.observability import IngestStepError, bind_ingest_context, log_ingest_step
 from ragent.repositories.document_repository import LockNotAvailable
 
 logger = structlog.get_logger(__name__)
@@ -50,11 +52,30 @@ async def ingest_pipeline_task(document_id: str) -> None:
             )
         return result.get("writer", {}).get("documents_written", [])
 
-    try:
-        await to_thread.run_sync(_run_pipeline)
-    except Exception:
-        await repo.update_status(document_id, from_status="PENDING", to_status="FAILED")
-        return
+    started = time.monotonic()
+    with bind_ingest_context(document_id=document_id):
+        try:
+            written = await to_thread.run_sync(_run_pipeline)
+        except Exception as exc:
+            # Haystack wraps component errors in PipelineRuntimeError; the
+            # original IngestStepError (if any) is preserved on __cause__.
+            cause = exc.__cause__ if isinstance(exc.__cause__, IngestStepError) else None
+            error_code = cause.error_code if cause is not None else "PIPELINE_TIMEOUT"
+            log_ingest_step.failed(
+                document_id=document_id,
+                reason=f"{type(exc).__name__}: {exc}",
+                error_code=error_code,
+            )
+            await repo.update_status(document_id, from_status="PENDING", to_status="FAILED")
+            return
+
+        duration_ms_total = int((time.monotonic() - started) * 1000)
+        chunks_total = len(written) if isinstance(written, list) else 0
+        log_ingest_step.ready(
+            document_id=document_id,
+            chunks_total=chunks_total,
+            duration_ms_total=duration_ms_total,
+        )
 
     # TX-B: commit READY *before* MinIO cleanup (S16)
     await repo.update_status(document_id, from_status="PENDING", to_status="READY")
