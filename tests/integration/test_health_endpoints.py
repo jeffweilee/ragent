@@ -85,10 +85,12 @@ def test_readyz_503_when_mariadb_down() -> None:
 def test_metrics_endpoint_exposes_required_counters() -> None:
     """T7.7 spec: /metrics exposes reconciler_tick_total, worker_pipeline_duration_seconds,
     minio_orphan_object_total, multi_ready_repaired_total."""
+    from ragent.bootstrap.metrics import setup_metrics
     from ragent.routers.health import create_health_router
 
     app = FastAPI()
     app.include_router(create_health_router())
+    setup_metrics(app)
     with TestClient(app) as client:
         body = client.get("/metrics").text
         for name in (
