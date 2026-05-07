@@ -11,21 +11,27 @@ from tests.conftest import run_in_threadpool
 pytestmark = pytest.mark.docker
 
 
+def _loader_input(text: str, document_id: str) -> dict:
+    return {
+        "loader": {
+            "content": text,
+            "mime_type": "text/plain",
+            "document_id": document_id,
+        },
+        "idempotency_clean": {"document_id": document_id},
+    }
+
+
 def test_pipeline_clears_chunks_before_rerun():
     """On retry, delete_by_document_id runs before new chunks are written."""
+    from haystack.core.component import component
+    from haystack.dataclasses import Document
+
     from ragent.pipelines.factory import build_ingest_pipeline
 
     delete_calls: list[str] = []
-    insert_calls: list[str] = []
-
     chunk_repo = AsyncMock()
     chunk_repo.delete_by_document_id.side_effect = lambda doc_id: delete_calls.append(doc_id)
-    chunk_repo.bulk_insert.side_effect = lambda chunks: insert_calls.extend(
-        [c["document_id"] for c in chunks]
-    )
-
-    from haystack.core.component import component
-    from haystack.dataclasses import Document
 
     @component
     class _MockEmbedder:
@@ -39,21 +45,12 @@ def test_pipeline_clears_chunks_before_rerun():
         embedder=_MockEmbedder(), document_store=_FakeStore(), chunk_repo=chunk_repo
     )
 
-    from haystack.dataclasses import ByteStream
-
     text = "Hello world. Second sentence. Third sentence."
     result = run_in_threadpool(
-        lambda: pipeline.run(
-            {
-                "converter": {"sources": [ByteStream(data=text.encode())]},
-                "idempotency_clean": {"document_id": "DOC001"},
-            },
-            include_outputs_from={"embedder"},
-        )
+        lambda: pipeline.run(_loader_input(text, "DOC001"), include_outputs_from={"embedder"})
     )
     docs = result["embedder"]["documents"]
 
-    # Idempotency-clean step must have run delete before any inserts
     assert "DOC001" in delete_calls
     assert len(docs) > 0
 
@@ -61,14 +58,14 @@ def test_pipeline_clears_chunks_before_rerun():
 def test_pipeline_retry_produces_no_duplicate_chunks():
     """Running the pipeline twice on same document_id produces exactly one set of chunks."""
     from haystack.core.component import component
-    from haystack.dataclasses import ByteStream, Document
+    from haystack.dataclasses import Document
 
     from ragent.pipelines.factory import build_ingest_pipeline
 
-    chunks: list[dict] = []
+    store = _FakeStore()
     chunk_repo = AsyncMock()
-    chunk_repo.delete_by_document_id.side_effect = lambda doc_id: chunks.clear()
-    chunk_repo.bulk_insert.side_effect = chunks.extend
+    # Simulate idempotency: delete prior writes before each rerun.
+    chunk_repo.delete_by_document_id.side_effect = lambda doc_id: store.written.clear()
 
     @component
     class _MockEmbedder:
@@ -80,20 +77,13 @@ def test_pipeline_retry_produces_no_duplicate_chunks():
 
     text = "One sentence. Two sentences."
 
-    def _run():
+    def _run() -> None:
         pipeline = build_ingest_pipeline(
-            embedder=_MockEmbedder(), document_store=_FakeStore(), chunk_repo=chunk_repo
+            embedder=_MockEmbedder(), document_store=store, chunk_repo=chunk_repo
         )
-        run_in_threadpool(
-            lambda: pipeline.run(
-                {
-                    "converter": {"sources": [ByteStream(data=text.encode())]},
-                    "idempotency_clean": {"document_id": "DOC001"},
-                }
-            )
-        )
+        run_in_threadpool(lambda: pipeline.run(_loader_input(text, "DOC001")))
 
     _run()
-    first_count = len(chunks)
+    first_count = len(store.written)
     _run()
-    assert len(chunks) == first_count  # no duplicates after retry
+    assert len(store.written) == first_count  # no duplicates after retry

@@ -120,7 +120,7 @@ def test_wrap_failure_with_explicit_error_code_via_exception() -> None:
 
 
 def test_build_ingest_pipeline_wraps_steps_in_order(monkeypatch) -> None:
-    """Run the v1 pipeline end-to-end with mocks; assert step events emitted in order."""
+    """Run the v2 pipeline end-to-end with mocks; assert step events emitted in order."""
     from unittest.mock import MagicMock
 
     from haystack_integrations.document_stores.elasticsearch import ElasticsearchDocumentStore
@@ -137,27 +137,28 @@ def test_build_ingest_pipeline_wraps_steps_in_order(monkeypatch) -> None:
 
     pipe = build_ingest_pipeline(embedder=embedder, document_store=document_store)
 
-    import tempfile
-
     with (
         structlog.testing.capture_logs() as logs,
         bind_ingest_context(document_id="DOC-PIPE", mime_type="text/plain"),
     ):
-        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
-            f.write("hello world. this is a sentence. and another.")
-            path = f.name
-        pipe.run({"converter": {"sources": [path]}})
+        pipe.run(
+            {
+                "loader": {
+                    "content": "hello world. this is a sentence. and another.",
+                    "mime_type": "text/plain",
+                    "document_id": "DOC-PIPE",
+                }
+            }
+        )
 
     step_events = [e for e in logs if e.get("event", "").startswith("ingest.step.")]
-    # Each component yields a started then ok event in order.
     pairs: list[tuple[str, str]] = []
     for ev in step_events:
         pairs.append((ev["event"].split(".")[-1], ev["step"]))
-    # Strip duplicates from any retries; keep the first occurrence for each step.
     started_steps = [s for k, s in pairs if k == "started"]
     ok_steps = [s for k, s in pairs if k == "ok"]
-    # Must contain in order: convert → clean → chunker → embedder → writer.
-    expected = ["convert", "clean", "chunker", "embedder", "writer"]
+    # v2 graph: load → split → chunker → embedder → writer.
+    expected = ["load", "split", "chunker", "embedder", "writer"]
     assert started_steps == expected
     assert ok_steps == expected
     for ev in step_events:
