@@ -31,11 +31,23 @@ def es_store(es_url: str):
         health = json.loads(resp.read())
         if health.get("status") not in ("yellow", "green"):
             raise RuntimeError(f"chunks_v1 index not ready: {health}")
-    return ElasticsearchDocumentStore(
+    store = ElasticsearchDocumentStore(
         hosts=es_url,
         index="chunks_v1",
         embedding_similarity_function="cosine",
     )
+    # Other test modules in the suite may have populated chunks_v1. Empty it
+    # before this module's first test so test_empty_index_returns_no_documents
+    # actually sees zero documents.
+    delete_req = urllib.request.Request(
+        f"{es_url}/chunks_v1/_delete_by_query?refresh=true",
+        method="POST",
+        data=b'{"query":{"match_all":{}}}',
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(delete_req, timeout=30) as resp:
+        resp.read()
+    return store
 
 
 @pytest.fixture(scope="module")

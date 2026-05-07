@@ -31,7 +31,7 @@ def _make_reconciler(repo: AsyncMock, broker: MagicMock):
 def test_run_increments_reconciler_tick_total():
     """Each run() call increments reconciler_tick_total by 1."""
 
-    from ragent.bootstrap.telemetry import reconciler_tick_total
+    from ragent.bootstrap.metrics import reconciler_tick_total
 
     before = reconciler_tick_total._value.get()
 
@@ -45,7 +45,7 @@ def test_run_increments_reconciler_tick_total():
 
 def test_two_runs_increment_by_two():
     """Two run() calls increment the counter by 2."""
-    from ragent.bootstrap.telemetry import reconciler_tick_total
+    from ragent.bootstrap.metrics import reconciler_tick_total
 
     before = reconciler_tick_total._value.get()
 

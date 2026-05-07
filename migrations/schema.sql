@@ -20,6 +20,8 @@ CREATE TABLE IF NOT EXISTS documents (
   ingest_type      ENUM('inline','file') NOT NULL DEFAULT 'inline',
   minio_site       VARCHAR(64)  NULL,
   source_url       VARCHAR(2048) NULL,
+  -- 004_documents_mime_type.sql: appended NULL to keep ALGORITHM=INSTANT online.
+  mime_type        VARCHAR(64)  NULL,
   PRIMARY KEY (document_id),
   INDEX idx_status_updated (status, updated_at),
   INDEX idx_source_app_id_status_created (source_app, source_id, status, created_at),
