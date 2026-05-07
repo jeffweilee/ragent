@@ -11,7 +11,7 @@
 -- need no backfill — emission code treats NULL as `text/plain` (the v2 router
 -- default for unknown mime is to fail, so existing READY rows that were
 -- ingested before this column existed are necessarily one of the supported
--- mimes; treating them as `text/plain` is a safe metric bucket).
+-- mimes, treating them as `text/plain` is a safe metric bucket).
 
 ALTER TABLE documents
   ADD COLUMN mime_type VARCHAR(64) NULL,

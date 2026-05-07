@@ -110,7 +110,7 @@ def test_embed_batches_by_batch_size(monkeypatch):
         mock.raise_for_status = MagicMock()
         mock.json.return_value = {
             "returnCode": 96200,
-            "data": [{"embedding": [float(i)]} for i in range(len(json["texts"]))],
+            "data": [{"embedding": [float(i + 1)]} for i in range(len(json["texts"]))],
         }
         return mock
 
@@ -158,3 +158,67 @@ def test_embed_query_uses_query_timeout():
     client.embed(["text"], query=True)
     timeout = http.post.call_args[1]["timeout"]
     assert timeout == 10
+
+
+def test_embed_raises_on_zero_magnitude_vector() -> None:
+    """ES dense_vector cosine rejects zero-magnitude — refuse before write."""
+    from unittest.mock import MagicMock
+
+    http = MagicMock()
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.json.return_value = {
+        "returnCode": 96200,
+        "data": [{"embedding": [0.0, 0.0, 0.0, 0.0]}],
+    }
+    http.post.return_value = resp
+    client = EmbeddingClient(
+        api_url="https://embed.example.com",
+        http=http,
+        get_token=lambda: "tok",
+        sleep=lambda s: None,
+    )
+    with pytest.raises(ValueError, match="zero magnitude"):
+        client.embed(["hello"])
+
+
+def test_embed_raises_on_nan_vector() -> None:
+    from unittest.mock import MagicMock
+
+    http = MagicMock()
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.json.return_value = {
+        "returnCode": 96200,
+        "data": [{"embedding": [0.1, float("nan"), 0.2]}],
+    }
+    http.post.return_value = resp
+    client = EmbeddingClient(
+        api_url="https://embed.example.com",
+        http=http,
+        get_token=lambda: "tok",
+        sleep=lambda s: None,
+    )
+    with pytest.raises(ValueError, match="non-finite"):
+        client.embed(["hello"])
+
+
+def test_embed_accepts_well_formed_vectors() -> None:
+    from unittest.mock import MagicMock
+
+    http = MagicMock()
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.json.return_value = {
+        "returnCode": 96200,
+        "data": [{"embedding": [0.01, 0.02, 0.03]}],
+    }
+    http.post.return_value = resp
+    client = EmbeddingClient(
+        api_url="https://embed.example.com",
+        http=http,
+        get_token=lambda: "tok",
+        sleep=lambda s: None,
+    )
+    out = client.embed(["hello"])
+    assert out == [[0.01, 0.02, 0.03]]

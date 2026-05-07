@@ -14,10 +14,32 @@ import pytest
 API_URL = "http://127.0.0.1:8000"
 
 
+def _ensure_default_bucket(minio_endpoint: str) -> None:
+    """Create the default upload bucket if it doesn't exist.
+
+    The integration `minio_container` fixture spins up a fresh MinIO
+    server with no buckets. Code paths that POST /ingest expect the
+    bucket from MINIO_BUCKET (defaults to "ragent-uploads") to already
+    exist — without this, every e2e ingest 500s on NoSuchBucket.
+    """
+    from minio import Minio
+
+    bucket = os.environ.get("MINIO_BUCKET", "ragent-uploads")
+    client = Minio(
+        minio_endpoint,
+        access_key="minioadmin",
+        secret_key="minioadmin",
+        secure=False,
+    )
+    if not client.bucket_exists(bucket):
+        client.make_bucket(bucket)
+
+
 @pytest.fixture
-def e2e_env(dev_env, monkeypatch: pytest.MonkeyPatch) -> None:
+def e2e_env(dev_env, minio_endpoint: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """E2E env layered on the integration `dev_env` fixture."""
     monkeypatch.setenv("RAGENT_PORT", "8000")
+    _ensure_default_bucket(minio_endpoint)
 
 
 @pytest.fixture

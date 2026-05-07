@@ -194,14 +194,22 @@ class MinioSiteRegistry:
                 return
             raise
 
-    def get_object(self, site: str, object_key: str) -> bytes:
+    def get_object(self, site: str, object_key: str, *, expected_size: int | None = None) -> bytes:
         rec = self.get(site)
         resp = rec.client.get_object(rec.bucket, object_key)
         try:
-            return resp.read()
+            data = resp.read()
         finally:
             resp.close()
             resp.release_conn()
+        if expected_size is not None and len(data) != expected_size:
+            # Network abort mid-stream silently truncates resp.read() — refuse
+            # to feed a partial document into the chunker / embedder.
+            raise OSError(
+                f"MinIO get_object size mismatch for {object_key!r}: "
+                f"expected={expected_size}, got={len(data)}"
+            )
+        return data
 
 
 def _build_minio(*, endpoint: str, access_key: str, secret_key: str, secure: bool) -> Minio:
