@@ -90,7 +90,7 @@ class IngestService:
             object_key=object_key,
             ingest_type=ingest_type,
             minio_site=minio_site,
-            mime_type=request.content_type.value,
+            mime_type=request.mime_type.value,
         )
         await self._broker.enqueue("ingest.pipeline", document_id=document_id)
         logger.info(
