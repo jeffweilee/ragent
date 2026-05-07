@@ -25,6 +25,43 @@ logger = structlog.get_logger(__name__)
 
 _NO_USER_ID_PATHS = frozenset({"/livez", "/readyz", "/metrics", "/docs", "/redoc", "/openapi.json"})
 
+# Producer-side task labels that MUST be registered before traffic. Journal
+# 2026-05-06 (B27): missing registration silently 500s on first dispatch.
+_REQUIRED_TASK_LABELS = ("ingest.pipeline", "ingest.supersede")
+
+
+async def _check_infra_ready(container: Any, broker: Any) -> None:
+    """Verify DB, ES, and TaskIQ broker are ready before serving traffic.
+
+    Raises ``RuntimeError`` on first failure so the lifespan aborts boot
+    rather than silently degrading on first request.
+    """
+    from ragent.routers.health_probes import probe_es, probe_mariadb, run_probe
+
+    db_failure = await run_probe(probe_mariadb(container.engine))
+    if db_failure is not None:
+        raise RuntimeError(f"infra not ready: mariadb {db_failure.error_code}: {db_failure.detail}")
+
+    es_failure = await run_probe(probe_es(container.es_client, index_names=[]))
+    if es_failure is not None:
+        raise RuntimeError(f"infra not ready: es {es_failure.error_code}: {es_failure.detail}")
+
+    for label in _REQUIRED_TASK_LABELS:
+        if broker.find_task(label) is None:
+            raise RuntimeError(f"infra not ready: TaskIQ task not registered: {label!r}")
+
+
+async def _close_infra(container: Any) -> None:
+    """Best-effort close of ES client and DB engine; never raises."""
+    try:
+        container.es_client.close()
+    except Exception:  # noqa: BLE001 — shutdown path; log and continue
+        logger.warning("api.shutdown.es_close_failed", exc_info=True)
+    try:
+        await container.engine.dispose()
+    except Exception:  # noqa: BLE001 — shutdown path; log and continue
+        logger.warning("api.shutdown.engine_dispose_failed", exc_info=True)
+
 
 def _x_user_id_middleware(app: FastAPI) -> None:
     @app.middleware("http")
@@ -81,9 +118,12 @@ def create_app() -> FastAPI:
         # /readyz instead of silently 500-ing on first ingest.
         await taskiq_broker.startup()
         init_schema()
+        await _check_infra_ready(container, taskiq_broker)
+        logger.info("api.startup.infra_ready", db=True, es=True, broker=True)
         try:
             yield
         finally:
+            await _close_infra(container)
             await taskiq_broker.shutdown()
             container.http.close()
             container.auth_http.close()
