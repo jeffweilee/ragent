@@ -187,15 +187,19 @@ class DocumentStatsCollector:
             )
             yield family
             return
+        # Aggregate after normalization: multiple raw source_app values can
+        # collapse to the same fallback bucket, and prometheus_client rejects
+        # duplicate label sets on render.
+        aggregated: dict[tuple[str, str, str], float] = {}
         for status, source_app, mime_type, count in rows:
-            family.add_metric(
-                [
-                    status,
-                    normalize_source_app(source_app),
-                    mime_type or _DEFAULT_MIME_LABEL,
-                ],
-                float(count),
+            key = (
+                status,
+                normalize_source_app(source_app),
+                mime_type or _DEFAULT_MIME_LABEL,
             )
+            aggregated[key] = aggregated.get(key, 0.0) + float(count)
+        for labels, total in aggregated.items():
+            family.add_metric(list(labels), total)
         yield family
 
 

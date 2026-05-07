@@ -63,7 +63,10 @@ def _register_document_stats_collector() -> None:
     dsn = os.environ.get("MARIADB_DSN", "")
     if not dsn:
         return  # tests / dev without DB — collector contributes zero series.
-    sync_dsn = dsn.replace("mysql+aiomysql://", "mysql+pymysql://")
+    # Driver-only swap so it works for any prefix (mysql+aiomysql,
+    # mariadb+aiomysql, etc.). The async-only driver (aiomysql) cannot be
+    # used from a sync sqlalchemy Engine — see make_document_stats_fetcher.
+    sync_dsn = dsn.replace("+aiomysql", "+pymysql")
     fetcher = make_document_stats_fetcher(sync_dsn)
     REGISTRY.register(DocumentStatsCollector(fetch_rows=fetcher))
     _document_stats_registered = True

@@ -103,3 +103,25 @@ def test_collector_swallows_fetch_errors_and_emits_nothing() -> None:
     families = list(collector.collect())
     # Empty family is acceptable (no samples) — scrape stays 200.
     assert all(len(f.samples) == 0 for f in families)
+
+
+def test_collector_aggregates_rows_that_normalize_to_same_labels() -> None:
+    """Two unknown source_apps both collapse to 'other' → one summed sample.
+
+    `prometheus_client.GaugeMetricFamily.add_metric` rejects duplicate label
+    sets on render, so the collector must dedupe before emitting.
+    """
+    collector = DocumentStatsCollector(
+        fetch_rows=lambda: [
+            ("READY", "tenant-a", "text/plain", 3),
+            ("READY", "tenant-b", "text/plain", 4),
+            ("READY", "tenant-c", None, 5),  # mime → text/plain, source_app → other
+        ]
+    )
+    sample = _sample_value(
+        collector,
+        {"status": "READY", "source_app": "other", "mime_type": "text/plain"},
+    )
+    assert sample == 12
+    # And the rendered output must round-trip without error.
+    list(collector.collect())
