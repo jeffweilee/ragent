@@ -1,0 +1,87 @@
+#!/usr/bin/env bash
+# PreToolUse hook on Bash: enforce 00_rule.md §Command before any `git commit`.
+# Reads tool input JSON from stdin; exits 2 to block the commit with a reason.
+set -uo pipefail
+
+INPUT="$(cat)"
+CMD="$(printf '%s' "$INPUT" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("tool_input",{}).get("command",""))' 2>/dev/null || true)"
+
+# Only intercept git commit invocations.
+if ! printf '%s' "$CMD" | grep -qE '(^|[[:space:];&|])git[[:space:]]+commit([[:space:]]|$)'; then
+    exit 0
+fi
+
+block() {
+    # exit 2 → Claude Code surfaces stderr to the model as a blocking reason.
+    printf 'Pre-commit gate FAILED: %s\n' "$1" >&2
+    exit 2
+}
+
+# 1. Commit message must carry [BEHAVIORAL] or [STRUCTURAL] prefix.
+#    Heuristic: the prefix tag must appear somewhere in the commit invocation
+#    (covers both `-m "[STRUCTURAL] ..."` and heredoc `-m "$(cat <<'EOF' ...`).
+if printf '%s' "$CMD" | grep -qE -- '-m[[:space:]]'; then
+    if ! printf '%s' "$CMD" | grep -qE '\[(BEHAVIORAL|STRUCTURAL)\]'; then
+        block "commit message missing [BEHAVIORAL] or [STRUCTURAL] prefix (Tidy First rule)."
+    fi
+fi
+
+# 2. Reject explicit hook/test bypasses (only when used as flags, not when
+#    appearing inside a commit message body).
+GIT_FLAGS="$(printf '%s' "$CMD" | sed -E 's/-m[[:space:]]+("([^"]|\\")*"|'\''([^'\'']|\\'\'')*'\''|\$\([^)]*\))//g')"
+if printf '%s' "$GIT_FLAGS" | grep -qE '(^|[[:space:]])(--no-verify|--no-gpg-sign)([[:space:]]|$)'; then
+    block "--no-verify / --no-gpg-sign are forbidden by 00_rule.md."
+fi
+if printf '%s' "$GIT_FLAGS" | grep -qE '(^|[[:space:]])-m[[:space:]]+["'\''][^"'\'']*not docker'; then
+    block "skipping @pytest.mark.docker is a blocking violation."
+fi
+
+ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
+cd "$ROOT"
+
+# 3. Scope: the heavy quality gate runs only when staged changes touch
+#    src/, tests/, or pyproject.toml. Pure docs / .claude / config commits
+#    skip the gate but still pass the prefix and bypass-flag checks above.
+STAGED="$(git diff --cached --name-only 2>/dev/null || true)"
+TRIGGERS_GATE=0
+if printf '%s\n' "$STAGED" | grep -qE '^(src/|tests/|pyproject\.toml$)'; then
+    TRIGGERS_GATE=1
+fi
+
+# 4. Docs reminder — non-blocking. Whenever code changes, surface a nudge to
+#    update plan.md / spec.md / README.md if the change warrants it.
+if [[ $TRIGGERS_GATE -eq 1 ]]; then
+    DOC_HITS="$(printf '%s\n' "$STAGED" | grep -E '^(docs/00_(plan|spec|journal)\.md|README\.md)$' || true)"
+    if [[ -z "$DOC_HITS" ]]; then
+        printf 'Pre-commit reminder: src/tests/pyproject changes staged but no docs/00_plan.md, docs/00_spec.md, docs/00_journal.md, or README.md update. Update them now if this change adds/alters behavior, contracts, env vars, or lessons learned.\n' >&2
+    fi
+fi
+
+if [[ $TRIGGERS_GATE -eq 0 ]]; then
+    exit 0
+fi
+
+# 5. Docker daemon must be live (testcontainers requirement).
+if ! docker ps &>/dev/null; then
+    block "Docker daemon not running — start it before commit (00_rule.md §Docker)."
+fi
+
+# 6. Quality gate.
+run_step() {
+    local label="$1"; shift
+    if ! "$@" >/tmp/precommit_${label}.log 2>&1; then
+        block "$label failed — see /tmp/precommit_${label}.log"
+    fi
+}
+
+run_step format make format
+run_step lint   make lint
+run_step test   make test
+run_step bandit uv run bandit -r src/ --severity-level high --confidence-level high
+
+# 7. Pytest must report 0 skipped @pytest.mark.docker tests.
+if grep -qE 'docker.*skipped|skipped.*docker' /tmp/precommit_test.log; then
+    block "@pytest.mark.docker tests were skipped — fix daemon and re-run."
+fi
+
+exit 0
