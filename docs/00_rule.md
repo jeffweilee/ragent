@@ -85,6 +85,14 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 
 ### Database Practices
 
+- **Rule: Mandatory Surrogate PK + Business Unique Key**
+    - **Action**: Every new table **must** declare:
+        1. A surrogate primary key `id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY` — used only for storage ordering and joins, never exposed in APIs or logs.
+        2. The Crockford-Base32 business identifier (e.g. `document_id`) as `UNIQUE KEY` — this is the field the application, APIs, and logs reference.
+        3. A `UNIQUE KEY` on the **business identity tuple** (e.g. `(source_id, source_app)`) so the database — not application code — refuses logical duplicates.
+    - **Exception (eventual uniqueness)**: If the spec explicitly defines an **eventual-uniqueness** invariant for a tuple (e.g. supersede / revision-flip patterns where transient duplicates are expected mid-flight), the business-tuple `UNIQUE` is replaced by a non-unique composite index that supports the supersede query, **and** a schema comment in the migration must cite the spec section that authorizes the exception. Eventual uniqueness without a spec citation is forbidden.
+    - **Rationale**: Surrogate PK keeps row width small and inserts append-only; business UNIQUE prevents duplicate-row bugs at the storage layer instead of relying on every code path to check first; the documented exception keeps the rule honest for designs that legitimately need transient duplicates.
+
 - **Rule: No Physical Foreign Keys**
     - **Action**: Foreign key relationships are defined **only** within the application-level ORM models.
     - **Prohibition**: Do not use `FOREIGN KEY` constraints within the database Schema.
