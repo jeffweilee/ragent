@@ -17,7 +17,7 @@ import structlog
 from anyio import to_thread
 
 from ragent.bootstrap.broker import broker
-from ragent.bootstrap.metrics import record_pipeline_outcome
+from ragent.bootstrap.metrics import observe_pipeline_duration, record_pipeline_outcome
 from ragent.pipelines.observability import IngestStepError, bind_ingest_context, log_ingest_step
 from ragent.repositories.document_repository import LockNotAvailable
 
@@ -79,19 +79,25 @@ async def ingest_pipeline_task(document_id: str) -> None:
                 reason=f"{type(exc).__name__}: {exc}",
                 error_code=error_code,
             )
+            observe_pipeline_duration(
+                source_app=doc.source_app,
+                mime_type=doc.mime_type,
+                seconds=time.monotonic() - started,
+            )
             await repo.update_status(document_id, from_status="PENDING", to_status="FAILED")
             record_pipeline_outcome(
                 source_app=doc.source_app, mime_type=doc.mime_type, outcome="failed"
             )
             return
 
-        duration_ms_total = int((time.monotonic() - started) * 1000)
+        elapsed = time.monotonic() - started
         log_ingest_step.ready(
             document_id=document_id,
             chunks_total=chunks_total,
-            duration_ms_total=duration_ms_total,
+            duration_ms_total=int(elapsed * 1000),
         )
 
+    observe_pipeline_duration(source_app=doc.source_app, mime_type=doc.mime_type, seconds=elapsed)
     await repo.update_status(document_id, from_status="PENDING", to_status="READY")
     record_pipeline_outcome(source_app=doc.source_app, mime_type=doc.mime_type, outcome="success")
 

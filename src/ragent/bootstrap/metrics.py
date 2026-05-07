@@ -60,9 +60,21 @@ multi_ready_repaired_total = Counter(
 
 worker_pipeline_duration_seconds = Histogram(
     "worker_pipeline_duration_seconds",
-    "Wall-clock time for the ingest pipeline body",
+    "Wall-clock time for the ingest pipeline body, by source_app and mime_type.",
+    labelnames=("source_app", "mime_type"),
     buckets=(5, 15, 30, 60, 120, 300, 600),
 )
+
+
+def observe_pipeline_duration(
+    *, source_app: str | None, mime_type: str | None, seconds: float
+) -> None:
+    """Record one ingest-pipeline wall-clock duration sample."""
+    worker_pipeline_duration_seconds.labels(
+        source_app=normalize_source_app(source_app),
+        mime_type=mime_type or _DEFAULT_MIME_LABEL,
+    ).observe(seconds)
+
 
 # Outcome counter — drives the fail-rate query in dashboards:
 #   sum by (source_app) (rate(ragent_pipeline_runs_total{outcome="failed"}[5m]))
