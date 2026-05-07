@@ -33,7 +33,7 @@ class Reconciler:
         asyncio.run(self._run_async())
 
     async def _run_async(self) -> None:
-        from ragent.bootstrap.telemetry import reconciler_tick_total
+        from ragent.bootstrap.metrics import reconciler_tick_total
 
         await self._mark_failed()
         await self._redispatch_pending()

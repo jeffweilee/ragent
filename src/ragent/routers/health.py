@@ -9,7 +9,7 @@ from fastapi import APIRouter
 from fastapi.responses import JSONResponse, PlainTextResponse
 from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 
-import ragent.bootstrap.telemetry  # noqa: F401
+import ragent.bootstrap.metrics  # noqa: F401  (registers metrics on default registry)
 from ragent.errors.problem import problem
 from ragent.routers.health_probes import run_probe
 
