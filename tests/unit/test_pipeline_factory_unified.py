@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import dataclasses
-from unittest.mock import MagicMock
 
 from haystack.core.component import component
 from haystack.dataclasses import Document
@@ -32,13 +31,11 @@ def test_v2_builder_basic_graph_has_v2_nodes() -> None:
     assert "row_merger" not in nodes
 
 
-def test_v2_builder_with_chunk_repo_includes_idempotency() -> None:
+def test_v2_builder_no_idempotency_clean_node() -> None:
+    """C6 dropped _IdempotencyClean — retry idempotency is via OVERWRITE policy."""
     store = _FakeStore()
-    chunk_repo = MagicMock()
-    pipeline = build_ingest_pipeline(
-        embedder=_MockEmbedder(), document_store=store, chunk_repo=chunk_repo
-    )
-    assert "idempotency_clean" in pipeline.graph.nodes
+    pipeline = build_ingest_pipeline(embedder=_MockEmbedder(), document_store=store)
+    assert "idempotency_clean" not in pipeline.graph.nodes
 
 
 def test_v2_builder_runs_end_to_end_and_writes() -> None:

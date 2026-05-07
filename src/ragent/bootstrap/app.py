@@ -104,7 +104,6 @@ def create_app() -> FastAPI:
 
     ingest_svc = IngestService(
         repo=container.doc_repo,
-        chunks=container.chunk_repo,
         storage=container.minio_registry,
         broker=dispatcher,
     )

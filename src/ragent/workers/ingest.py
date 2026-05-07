@@ -62,11 +62,7 @@ async def ingest_pipeline_task(document_id: str) -> None:
             "source_app": doc.source_app,
             "source_workspace": doc.source_workspace,
         }
-        run_input = {"loader": loader_kwargs}
-        # idempotency_clean is only present when chunk_repo is wired.
-        if "idempotency_clean" in container.ingest_pipeline.graph.nodes:
-            run_input["idempotency_clean"] = {"document_id": document_id}
-        result = container.ingest_pipeline.run(run_input)
+        result = container.ingest_pipeline.run({"loader": loader_kwargs})
         written = result.get("writer", {}).get("documents_written", 0)
         return written if isinstance(written, int) else len(written)
 
@@ -111,7 +107,6 @@ async def ingest_supersede_task(survivor_id: str, source_id: str, source_app: st
     container = get_container()
     svc = IngestService(
         repo=container.doc_repo,
-        chunks=container.chunk_repo,
         storage=container.minio_client,
         broker=container.registry,
     )

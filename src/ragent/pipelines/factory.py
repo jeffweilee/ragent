@@ -1,7 +1,7 @@
 """C4 / T2v.30-T2v.39 — v2 ingest pipeline factory.
 
-Graph: ``_TextLoader → _MimeAwareSplitter → [_IdempotencyClean] →
-_BudgetChunker → DocumentEmbedder → DocumentWriter`` (ES only).
+Graph: ``_TextLoader → _MimeAwareSplitter → _BudgetChunker →
+DocumentEmbedder → DocumentWriter`` (ES only).
 
 Splitter dispatches per ``meta["mime_type"]``:
 - ``text/plain``    → Haystack ``DocumentSplitter`` (passage)
@@ -19,7 +19,6 @@ from __future__ import annotations
 import dataclasses
 from typing import Any
 
-import anyio.from_thread
 from haystack.components.preprocessors import DocumentSplitter
 from haystack.components.writers import DocumentWriter
 from haystack.core.component import component
@@ -246,32 +245,6 @@ class _MimeAwareSplitter:
 
 
 # ---------------------------------------------------------------------------
-# _IdempotencyClean — kept (legacy DB cleanup; v2 cleanup commit will drop)
-# ---------------------------------------------------------------------------
-
-
-@component
-class _IdempotencyClean:
-    """Deletes prior chunks before re-indexing to prevent duplicates on retry.
-
-    Stamps ``document_id`` on every atom regardless of whether a chunk_repo
-    is supplied (some tests construct without a repo).
-    """
-
-    def __init__(self, chunk_repo: Any | None = None) -> None:
-        self._repo = chunk_repo
-
-    @component.output_types(documents=list[Document])
-    def run(self, documents: list[Document], document_id: str) -> dict:
-        if self._repo is not None:
-            anyio.from_thread.run(self._repo.delete_by_document_id, document_id)
-        stamped = [
-            dataclasses.replace(d, meta={**d.meta, "document_id": document_id}) for d in documents
-        ]
-        return {"documents": stamped}
-
-
-# ---------------------------------------------------------------------------
 # _BudgetChunker (T2v.36/37 — replaces _CharBudgetChunker)
 # ---------------------------------------------------------------------------
 
@@ -393,12 +366,7 @@ class DocumentEmbedder:
 # ---------------------------------------------------------------------------
 
 
-def build_ingest_pipeline(
-    embedder: Any,
-    document_store: Any,
-    *,
-    chunk_repo: Any | None = None,
-) -> Pipeline:
+def build_ingest_pipeline(embedder: Any, document_store: Any) -> Pipeline:
     """V2 ingest pipeline.
 
     Run input shape::
@@ -411,9 +379,13 @@ def build_ingest_pipeline(
                 "source_url": str | None,
                 "source_title": str | None,
                 ...
-            },
-            "idempotency_clean": {"document_id": str},  # only when chunk_repo supplied
+            }
         }
+
+    Retry idempotency relies on Haystack ``DuplicatePolicy.OVERWRITE`` plus
+    deterministic chunk IDs (Haystack hashes content+meta). Chunks live
+    only in ES; the v1 ``chunks`` DB table and ``ChunkRepository`` were
+    dropped in C6.
     """
     pipeline = Pipeline()
     pipeline.add_component("loader", wrap_component_run(_TextLoader(), step="load"))
@@ -421,11 +393,6 @@ def build_ingest_pipeline(
         "splitter",
         wrap_component_run(_MimeAwareSplitter(), step="split", error_code="PIPELINE_UNROUTABLE"),
     )
-    if chunk_repo is not None:
-        pipeline.add_component(
-            "idempotency_clean",
-            wrap_component_run(_IdempotencyClean(chunk_repo), step="idempotency_clean"),
-        )
     pipeline.add_component("chunker", wrap_component_run(_BudgetChunker(), step="chunker"))
     pipeline.add_component(
         "embedder", wrap_component_run(embedder, step="embedder", error_code="EMBEDDER_ERROR")
@@ -440,11 +407,7 @@ def build_ingest_pipeline(
     )
 
     pipeline.connect("loader.documents", "splitter.documents")
-    if chunk_repo is not None:
-        pipeline.connect("splitter.documents", "idempotency_clean.documents")
-        pipeline.connect("idempotency_clean.documents", "chunker.documents")
-    else:
-        pipeline.connect("splitter.documents", "chunker.documents")
+    pipeline.connect("splitter.documents", "chunker.documents")
     pipeline.connect("chunker.documents", "embedder.documents")
     pipeline.connect("embedder.documents", "writer.documents")
 
