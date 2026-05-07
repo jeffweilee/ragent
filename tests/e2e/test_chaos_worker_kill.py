@@ -21,7 +21,7 @@ def _post_doc() -> str:
         "source_id": "S_CHAOS",
         "source_app": "confluence",
         "source_title": "chaos",
-        "content_type": "text/plain",
+        "mime_type": "text/plain",
         "content": "chaos test document",
     }
     resp = httpx.post(

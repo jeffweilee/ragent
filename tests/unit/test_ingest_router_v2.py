@@ -27,7 +27,7 @@ _INLINE = {
     "source_id": "DOC-1",
     "source_app": "confluence",
     "source_title": "T",
-    "content_type": "text/markdown",
+    "mime_type": "text/markdown",
     "content": "# H1\n",
 }
 
@@ -36,7 +36,7 @@ _FILE = {
     "source_id": "DOC-2",
     "source_app": "s3",
     "source_title": "T",
-    "content_type": "text/html",
+    "mime_type": "text/html",
     "minio_site": "tenant-eu-1",
     "object_key": "reports/2025.html",
 }
@@ -61,7 +61,7 @@ def test_post_ingest_file_returns_202_with_document_id():
 
 
 def test_post_ingest_unknown_mime_returns_415():
-    bad = {**_INLINE, "content_type": "image/png"}
+    bad = {**_INLINE, "mime_type": "image/png"}
     client, _ = _make_client()
     resp = client.post("/ingest", json=bad, headers={"X-User-Id": "alice"})
     assert resp.status_code == 415
@@ -69,7 +69,7 @@ def test_post_ingest_unknown_mime_returns_415():
 
 
 def test_post_ingest_csv_mime_returns_415_in_v2():
-    bad = {**_INLINE, "content_type": "text/csv"}
+    bad = {**_INLINE, "mime_type": "text/csv"}
     client, _ = _make_client()
     resp = client.post("/ingest", json=bad, headers={"X-User-Id": "alice"})
     assert resp.status_code == 415

@@ -22,7 +22,7 @@ def _post_doc(idx: int) -> str:
         "source_id": f"S{idx}",
         "source_app": "confluence",
         "source_title": f"doc {idx}",
-        "content_type": "text/plain",
+        "mime_type": "text/plain",
         "content": f"document {idx} content",
     }
     resp = httpx.post(

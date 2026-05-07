@@ -4,7 +4,7 @@ Discriminated union over `ingest_type`:
   - inline: `content` is in the JSON body.
   - file:   bytes live in caller-supplied `(minio_site, object_key)`.
 
-`content_type` is a closed enum (text/plain | text/markdown | text/html).
+`mime_type` is a closed enum (text/plain | text/markdown | text/html).
 `minio_site` is validated against the runtime registry at the service layer
 (not here) so the schema stays config-free.
 """
@@ -33,7 +33,7 @@ class _IngestBase(BaseModel):
     source_title: str = Field(min_length=1)
     source_workspace: str | None = None
     source_url: str | None = Field(default=None, max_length=SOURCE_URL_MAX)
-    content_type: IngestMime
+    mime_type: IngestMime
 
 
 class InlineIngestRequest(_IngestBase):

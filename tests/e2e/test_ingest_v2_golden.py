@@ -1,7 +1,7 @@
 """T2v.45 — Golden end-to-end: v2 ingest across all (ingest_type, mime) cases.
 
 For each combination of ``ingest_type ∈ {inline, file}`` and
-``content_type ∈ {text/plain, text/markdown, text/html}`` (6 cases):
+``mime_type ∈ {text/plain, text/markdown, text/html}`` (6 cases):
 - inline: POST JSON with the content directly.
 - file: pre-upload the bytes to MinIO ``__default__``, then POST JSON
   carrying ``{minio_site, object_key}``.
@@ -87,7 +87,7 @@ def _post_inline(case: dict[str, Any], idx: int) -> str:
         "source_app": "golden",
         "source_title": f"golden inline {idx}",
         "source_url": f"https://example.test/inline/{idx}",
-        "content_type": case["mime"],
+        "mime_type": case["mime"],
         "content": case["body"],
     }
     resp = httpx.post(
@@ -109,7 +109,7 @@ def _post_file(case: dict[str, Any], idx: int, minio_endpoint: str) -> str:
         "source_app": "golden",
         "source_title": f"golden file {idx}",
         "source_url": f"https://example.test/file/{idx}",
-        "content_type": case["mime"],
+        "mime_type": case["mime"],
         "minio_site": "__default__",
         "object_key": object_key,
     }

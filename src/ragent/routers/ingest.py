@@ -24,7 +24,7 @@ from ragent.services.ingest_service import (
 
 
 def _is_mime_error(errors: list[dict]) -> bool:
-    return any(any(part == "content_type" for part in e.get("loc", ())) for e in errors)
+    return any(any(part == "mime_type" for part in e.get("loc", ())) for e in errors)
 
 
 def _validation_problem(exc: ValidationError):
