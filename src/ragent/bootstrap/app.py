@@ -45,7 +45,7 @@ async def _check_infra_ready(container: Any, broker: Any) -> None:
     """
     from ragent.routers.health_probes import probe_es, probe_mariadb, run_probe
 
-    db_failure = await run_probe("mariadb",  probe_mariadb(container.engine))
+    db_failure = await run_probe("mariadb", probe_mariadb(container.engine))
     if db_failure is not None:
         raise RuntimeError(f"infra not ready: mariadb {db_failure.error_code}: {db_failure.detail}")
 
