@@ -18,8 +18,30 @@ ProbeFn = Callable[[], Awaitable[None]]
 def create_health_router(probes: dict[str, ProbeFn] | None = None) -> APIRouter:
     router = APIRouter()
 
+    # /startupz latch: once every probe has been green at least once, stays
+    # green forever. k8s startupProbe is "have we ever been ready", not "are
+    # we ready now" (that's /readyz). Closing over a list keeps the bool
+    # mutable from the inner closure without `nonlocal`.
+    started: list[bool] = [False]
+
     @router.get("/livez")
     async def livez() -> JSONResponse:
+        return JSONResponse({"status": "ok"})
+
+    @router.get("/startupz")
+    async def startupz() -> JSONResponse:
+        if started[0]:
+            return JSONResponse({"status": "ok"})
+        if not probes:
+            return JSONResponse(
+                {"status": "starting", "reason": "probes not configured"},
+                status_code=503,
+            )
+        names = list(probes.keys())
+        outcomes = await asyncio.gather(*(run_probe(n, probes[n]) for n in names))
+        if any(o is not None for o in outcomes):
+            return JSONResponse({"status": "starting"}, status_code=503)
+        started[0] = True
         return JSONResponse({"status": "ok"})
 
     @router.get("/readyz")
