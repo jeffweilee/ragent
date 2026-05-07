@@ -56,6 +56,41 @@ def test_split_id_resets_per_document_id() -> None:
         assert split_ids == sorted(split_ids)
 
 
+def test_raw_overlap_is_atom_aligned_not_char_sliced() -> None:
+    """Naive `raw[-overlap:]` would cut through HTML tags / Markdown
+    markers. raw_content must be atom-aligned: chunks after a flush start
+    raw fresh at the next atom boundary so markup stays well-formed."""
+    # Three atoms, each ~600 chars text, raw is wrapped HTML-like markup.
+    atoms = [
+        _atom("aaaa" * 150, raw="<p>" + "aaaa" * 150 + "</p>"),
+        _atom("bbbb" * 150, raw="<p>" + "bbbb" * 150 + "</p>"),
+        _atom("cccc" * 150, raw="<p>" + "cccc" * 150 + "</p>"),
+    ]
+    out = _BudgetChunker().run(atoms)["documents"]
+    # At least the second chunk's raw must NOT start with a sliced tag
+    # fragment — every raw_content begins at an atom boundary (`<p>` or
+    # empty join), never in the middle of a tag like `aaa</p>`.
+    for d in out[1:]:
+        raw = d.meta["raw_content"]
+        # raw must not start with a closing-tag fragment from the prior
+        # atom — the atom-alignment guarantee.
+        assert not raw.lstrip().startswith("</")
+
+
+def test_hard_split_does_not_duplicate_full_raw() -> None:
+    """When raw is much larger than text (HTML/markdown atoms), hard-
+    splitting a > MAX atom must not duplicate the full raw across every
+    output piece."""
+    big_text = "x" * (CHUNK_MAX_CHARS + 800)
+    big_raw = "<table>" + ("<tr><td>cell</td></tr>" * 200) + "</table>"
+    atom = _atom(big_text, raw=big_raw)
+    out = _BudgetChunker().run([atom])["documents"]
+    assert len(out) >= 2
+    # No piece may carry the entire 5KB+ raw blob.
+    for d in out:
+        assert len(d.meta["raw_content"]) <= CHUNK_TARGET_CHARS + 1
+
+
 def test_raw_content_preserved_through_packing() -> None:
     atoms = [
         _atom("text-a", raw="```a```"),

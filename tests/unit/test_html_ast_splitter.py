@@ -43,6 +43,15 @@ def test_pre_block_atomic() -> None:
     assert "line2" in pre[0].meta["raw_content"]
 
 
+def test_pre_content_preserves_newlines() -> None:
+    """`<pre>` content must keep significant whitespace (no `separator=' '`
+    flattening) so code blocks stay readable in retrieval results."""
+    html = "<pre>def f():\n    return 1</pre>"
+    pre = [a for a in _run(html) if a.meta["raw_content"].startswith("<pre>")][0]
+    assert "\n" in pre.content
+    assert "    return 1" in pre.content
+
+
 def test_deterministic_across_runs() -> None:
     html = "<h1>x</h1><p>y</p><pre>z</pre>"
     a = [d.meta["raw_content"] for d in _run(html)]

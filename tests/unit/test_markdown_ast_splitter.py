@@ -32,6 +32,28 @@ def test_heading_paragraph_list_each_become_atoms() -> None:
         assert a.meta.get("mime_type") == "text/markdown"
 
 
+def test_content_strips_markdown_markers_but_raw_keeps_them() -> None:
+    """`content` is normalized (used for embedding + BM25); `raw_content`
+    keeps fences/heading hashes/emphasis for citation rendering."""
+    src = "# Heading One\n\nA **bold** word and `inline` code.\n\n```py\nx = 1\n```\n"
+    atoms = _run(src)
+    by_kind = {("```" in a.meta["raw_content"]): a for a in atoms}
+    fence = by_kind[True]
+    assert "```" in fence.meta["raw_content"]
+    assert "```" not in fence.content
+    assert "x = 1" in fence.content
+
+    heading = next(a for a in atoms if a.meta["raw_content"].startswith("# "))
+    assert heading.content.startswith("Heading One")
+    assert not heading.content.startswith("#")
+
+    para = next(a for a in atoms if "**bold**" in a.meta["raw_content"])
+    assert "**" not in para.content
+    assert "bold" in para.content
+    assert "`" not in para.content
+    assert "inline" in para.content
+
+
 def test_deterministic_across_runs() -> None:
     src = "# H\n\np\n\n```\ncode\n```\n"
     a = [d.meta["raw_content"] for d in _run(src)]

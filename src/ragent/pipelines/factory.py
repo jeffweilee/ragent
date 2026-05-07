@@ -17,6 +17,7 @@ exceeding ``CHUNK_MAX_CHARS`` with ``CHUNK_OVERLAP_CHARS`` overlap.
 from __future__ import annotations
 
 import dataclasses
+import re
 from typing import Any
 
 from haystack.components.preprocessors import DocumentSplitter
@@ -90,6 +91,34 @@ _MD_BLOCK_TYPES = (
     "HtmlBlock",
 )
 
+# Strip common markdown markers from a rendered block so the `content`
+# field embeds + BM25-indexes prose text rather than syntax noise. Fenced
+# code (``` markers) and inline code spans (`x`) are unwrapped to their
+# inner text. Heading hashes, bullet/quote prefixes, and emphasis markers
+# are dropped. The original markup is always preserved in `raw_content`.
+_MD_FENCE_RE = re.compile(r"^```[^\n]*\n(.*?)(?:\n```\s*)?$", re.DOTALL)
+_MD_INLINE_CODE_RE = re.compile(r"`+([^`]+)`+")
+_MD_HEADING_RE = re.compile(r"^#{1,6}\s+", re.MULTILINE)
+_MD_LIST_PREFIX_RE = re.compile(r"^\s*(?:[-*+]|\d+\.)\s+", re.MULTILINE)
+_MD_QUOTE_PREFIX_RE = re.compile(r"^>\s?", re.MULTILINE)
+_MD_EMPHASIS_RE = re.compile(r"(\*{1,3}|_{1,3})(\S(?:.*?\S)?)\1")
+
+
+def _md_plain(raw: str, type_name: str) -> str:
+    """Reduce a rendered markdown block to its prose content."""
+    if type_name == "CodeFence":
+        m = _MD_FENCE_RE.match(raw.rstrip())
+        return (m.group(1) if m else raw).rstrip()
+    text = raw
+    if type_name == "Heading":
+        text = _MD_HEADING_RE.sub("", text)
+    if type_name in ("List", "Quote"):
+        text = _MD_LIST_PREFIX_RE.sub("", text)
+        text = _MD_QUOTE_PREFIX_RE.sub("", text)
+    text = _MD_INLINE_CODE_RE.sub(r"\1", text)
+    text = _MD_EMPHASIS_RE.sub(r"\2", text)
+    return text.strip()
+
 
 @component
 class _MarkdownASTSplitter:
@@ -115,7 +144,10 @@ class _MarkdownASTSplitter:
                     raw = renderer.render(tok)
                     if not raw.strip():
                         continue
-                    atoms.append(Document(content=raw, meta={**doc.meta, "raw_content": raw}))
+                    text = _md_plain(raw, type_name)
+                    if not text:
+                        text = raw
+                    atoms.append(Document(content=text, meta={**doc.meta, "raw_content": raw}))
         return {"documents": atoms}
 
 
@@ -161,7 +193,13 @@ class _HtmlASTSplitter:
                 for node in tree.css(sel):
                     if self._has_atom_ancestor(node):
                         continue
-                    text = node.text(deep=True, separator=" ", strip=True)
+                    if node.tag == "pre":
+                        # Preserve significant whitespace / newlines for code
+                        # and pre-formatted blocks. `separator=" "` would
+                        # collapse line breaks between text nodes.
+                        text = node.text(deep=True)
+                    else:
+                        text = node.text(deep=True, separator=" ", strip=True)
                     raw = node.html or text
                     if not text.strip():
                         continue
@@ -288,6 +326,17 @@ class _BudgetChunker:
 
 
 def _pack_atoms(atoms: list[Document]) -> list[tuple[str, str]]:
+    """Pack atoms into chunks ≤ ``CHUNK_TARGET_CHARS``.
+
+    Text overlap (``CHUNK_OVERLAP_CHARS`` chars carried tail→head between
+    adjacent chunks) is for retrieval continuity. ``raw_content`` overlap
+    is intentionally NOT carried at character granularity — naive
+    ``raw[-overlap:]`` slicing cuts through HTML tags / Markdown
+    markers and produces malformed fragments. Instead, ``raw_content`` is
+    always atom-aligned: each chunk's raw is the concatenation of the
+    raws of the atoms whose normalized text appears in that chunk
+    (excluding the carried-overlap prefix).
+    """
     target = CHUNK_TARGET_CHARS
     max_chars = CHUNK_MAX_CHARS
     overlap = CHUNK_OVERLAP_CHARS
@@ -301,8 +350,12 @@ def _pack_atoms(atoms: list[Document]) -> list[tuple[str, str]]:
             return
         chunks.append((buf_text, buf_raw))
         if carry and overlap > 0 and len(buf_text) > overlap:
+            # Carry text overlap for retrieval continuity. Reset raw to ""
+            # so the next chunk's raw starts fresh at the next atom
+            # boundary — keeps raw_content well-formed for downstream
+            # citation rendering.
             buf_text = buf_text[-overlap:]
-            buf_raw = buf_raw[-overlap:] if len(buf_raw) >= overlap else buf_raw
+            buf_raw = ""
         else:
             buf_text = ""
             buf_raw = ""
@@ -319,8 +372,13 @@ def _pack_atoms(atoms: list[Document]) -> list[tuple[str, str]]:
             while start < len(text):
                 end = min(start + target, len(text))
                 piece = text[start:end]
-                # Approximate raw slice by same window when raw and text align.
-                raw_piece = raw[start:end] if len(raw) == len(text) else raw
+                # When raw and text are length-aligned (e.g. plain-text
+                # atoms where raw == text), slice raw to match. Otherwise
+                # (HTML/markdown atoms whose raw is much larger than the
+                # normalized text) fall back to the text piece itself —
+                # duplicating the full raw across every hard-split piece
+                # would multiply ES storage and LLM tokens by N.
+                raw_piece = raw[start:end] if len(raw) == len(text) else piece
                 chunks.append((piece, raw_piece))
                 if end == len(text):
                     break
@@ -331,7 +389,11 @@ def _pack_atoms(atoms: list[Document]) -> list[tuple[str, str]]:
             flush(carry=True)
             sep = "\n" if buf_text else ""
         buf_text = buf_text + sep + text
-        buf_raw = buf_raw + sep + raw
+        # Raw is joined only when buf_raw is non-empty (i.e. previous
+        # atom contributed); after a flush(carry=True) buf_raw is reset
+        # to "" so this chunk's raw begins at the current atom boundary.
+        raw_sep = "\n" if buf_raw else ""
+        buf_raw = buf_raw + raw_sep + raw
     if buf_text:
         chunks.append((buf_text, buf_raw))
     return chunks
