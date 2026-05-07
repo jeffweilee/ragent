@@ -18,7 +18,7 @@ from functools import lru_cache
 
 import structlog
 from fastapi import FastAPI
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Gauge, Histogram
 from prometheus_client.core import GaugeMetricFamily
 from prometheus_fastapi_instrumentator import Instrumentator, metrics
 
@@ -106,6 +106,26 @@ def record_pipeline_outcome(*, source_app: str | None, mime_type: str | None, ou
         mime_type=mime_type or _DEFAULT_MIME_LABEL,
         outcome=outcome,
     ).inc()
+
+
+readyz_probe_duration_seconds = Histogram(
+    "ragent_readyz_probe_duration_seconds",
+    "Per-dependency /readyz probe wall-clock duration.",
+    labelnames=("probe",),
+    buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0),
+)
+
+readyz_probe_failures_total = Counter(
+    "ragent_readyz_probe_failures_total",
+    "Per-dependency /readyz probe failures, labelled by spec'd error_code.",
+    labelnames=("probe", "error_code"),
+)
+
+readyz_probe_status = Gauge(
+    "ragent_readyz_probe_status",
+    "Last observed /readyz probe outcome: 1=ok, 0=fail.",
+    labelnames=("probe",),
+)
 
 
 DocumentStatsRow = tuple[str, str | None, str | None, int]

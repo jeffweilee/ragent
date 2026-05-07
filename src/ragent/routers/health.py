@@ -32,7 +32,7 @@ def create_health_router(probes: dict[str, ProbeFn] | None = None) -> APIRouter:
         # Run probes concurrently so total latency is bounded by the slowest single
         # probe rather than N × READYZ_PROBE_TIMEOUT_SECONDS.
         names = list(probes.keys())
-        outcomes = await asyncio.gather(*(run_probe(probes[n]) for n in names))
+        outcomes = await asyncio.gather(*(run_probe(n, probes[n]) for n in names))
         for name, failure in zip(names, outcomes, strict=True):
             if failure is not None:
                 return problem(
