@@ -6,6 +6,7 @@ import dataclasses
 from typing import Any
 
 import anyio.from_thread
+import structlog
 from haystack.components.joiners import DocumentJoiner
 from haystack.core.component import component
 from haystack.core.pipeline import Pipeline
@@ -20,6 +21,8 @@ from ragent.utility.env import int_env
 _EXCERPT_MAX_CHARS = int_env("EXCERPT_MAX_CHARS", 512)
 _DEFAULT_TOP_K = int_env("RETRIEVAL_TOP_K", 20)
 _VALID_MODES = frozenset({"rrf", "concatenate", "vector_only", "bm25_only"})
+
+_logger = structlog.get_logger(__name__)
 
 
 def build_es_filters(source_app: str | None, source_workspace: str | None) -> dict | None:
@@ -110,13 +113,24 @@ class _Reranker:
         texts = [d.content or "" for d in documents]
         results = self._client.rerank(query=query, texts=texts, top_k=self._top_k)
         ordered: list[Document] = []
+        invalid = 0
         for r in results[: self._top_k]:
             i = r.get("index")
-            if i is None or not 0 <= i < len(documents):
+            if not isinstance(i, int) or not 0 <= i < len(documents):
+                invalid += 1
                 continue
             score = r.get("score")
             doc = documents[i]
             ordered.append(dataclasses.replace(doc, score=score) if score is not None else doc)
+        if invalid:
+            # Reranker returned indices outside the candidate set — surfaces
+            # contract drift between retrieval top_k and rerank result_count.
+            _logger.warning(
+                "rerank.invalid_indices",
+                invalid_count=invalid,
+                result_count=len(results),
+                document_count=len(documents),
+            )
         return {"documents": ordered}
 
 

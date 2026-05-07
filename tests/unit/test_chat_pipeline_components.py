@@ -95,3 +95,21 @@ def test_reranker_works_in_single_retriever_modes(mode: str) -> None:
         rerank_client=rerank_client,
     )
     assert "reranker" in pipeline.graph.nodes
+
+
+def test_reranker_logs_invalid_indices(caplog: pytest.LogCaptureFixture) -> None:
+    """Out-of-bounds rerank indices are silently dropped — must surface as a warning."""
+    import logging
+
+    rerank_client = MagicMock()
+    rerank_client.rerank.return_value = [
+        {"index": 0, "score": 0.9},
+        {"index": 5, "score": 0.5},  # out of bounds
+        {"index": -1, "score": 0.4},  # invalid
+        {"index": None, "score": 0.3},  # invalid
+    ]
+    docs = [Document(id="A"), Document(id="B")]
+    with caplog.at_level(logging.WARNING, logger="ragent.pipelines.chat"):
+        out = _Reranker(rerank_client, top_k=4).run(query="q", documents=docs)["documents"]
+    assert [d.id for d in out] == ["A"]
+    assert any("rerank.invalid_indices" in rec.message for rec in caplog.records)
