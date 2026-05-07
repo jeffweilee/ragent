@@ -70,7 +70,7 @@ async def ingest_pipeline_task(document_id: str) -> None:
             # flagged as decode corruption).
             content = data.decode("utf-8", errors="replace")
             source_fffd = data.count(b"\xef\xbf\xbd")
-            decode_replacements = max(0, content.count("�") - source_fffd)
+            decode_replacements = max(0, content.count("\ufffd") - source_fffd)
             logger.warning(
                 "ingest.utf8_decode_replaced",
                 document_id=document_id,

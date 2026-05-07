@@ -124,9 +124,18 @@ def create_app() -> FastAPI:
             yield
         finally:
             await _close_infra(container)
-            await taskiq_broker.shutdown()
-            container.http.close()
-            container.auth_http.close()
+            try:
+                await taskiq_broker.shutdown()
+            except Exception:  # noqa: BLE001 — shutdown path; log and continue
+                logger.warning("api.shutdown.broker_failed", exc_info=True)
+            try:
+                container.http.close()
+            except Exception:  # noqa: BLE001 — shutdown path; log and continue
+                logger.warning("api.shutdown.http_close_failed", exc_info=True)
+            try:
+                container.auth_http.close()
+            except Exception:  # noqa: BLE001 — shutdown path; log and continue
+                logger.warning("api.shutdown.auth_http_close_failed", exc_info=True)
             import ragent.bootstrap.composition as _comp
 
             _comp._container = None  # noqa: SLF001 — prevent reuse of closed clients
