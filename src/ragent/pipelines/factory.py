@@ -17,6 +17,7 @@ from haystack.core.pipeline import Pipeline
 from haystack.dataclasses import Document
 from haystack.document_stores.types import DuplicatePolicy
 
+from ragent.pipelines.observability import wrap_component_run
 from ragent.utility.env import int_env
 
 AtomKind = Literal["line", "cjk_sent", "en_sent"]
@@ -245,15 +246,24 @@ def build_ingest_pipeline(
     idempotency-clean step is inserted (document_id is passed at run time).
     """
     pipeline = Pipeline()
-    pipeline.add_component("converter", TextFileToDocument())
-    pipeline.add_component("cleaner", DocumentCleaner())
+    pipeline.add_component("converter", wrap_component_run(TextFileToDocument(), step="convert"))
+    pipeline.add_component("cleaner", wrap_component_run(DocumentCleaner(), step="clean"))
     if chunk_repo is not None:
-        pipeline.add_component("idempotency_clean", _IdempotencyClean(chunk_repo))
-    pipeline.add_component("chunker", _CharBudgetChunker())
-    pipeline.add_component("embedder", embedder)
+        pipeline.add_component(
+            "idempotency_clean",
+            wrap_component_run(_IdempotencyClean(chunk_repo), step="idempotency_clean"),
+        )
+    pipeline.add_component("chunker", wrap_component_run(_CharBudgetChunker(), step="chunker"))
+    pipeline.add_component(
+        "embedder", wrap_component_run(embedder, step="embedder", error_code="EMBEDDER_ERROR")
+    )
     pipeline.add_component(
         "writer",
-        DocumentWriter(document_store=document_store, policy=DuplicatePolicy.OVERWRITE),
+        wrap_component_run(
+            DocumentWriter(document_store=document_store, policy=DuplicatePolicy.OVERWRITE),
+            step="writer",
+            error_code="ES_WRITE_ERROR",
+        ),
     )
 
     pipeline.connect("converter.documents", "cleaner.documents")
