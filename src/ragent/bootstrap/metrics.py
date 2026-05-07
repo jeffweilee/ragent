@@ -12,9 +12,36 @@ excluded from HTTP tracking so probe traffic doesn't drown real RPS.
 
 from __future__ import annotations
 
+import os
+from functools import lru_cache
+
 from fastapi import FastAPI
 from prometheus_client import Counter, Histogram
 from prometheus_fastapi_instrumentator import Instrumentator, metrics
+
+
+@lru_cache(maxsize=1)
+def _source_app_allowlist() -> frozenset[str]:
+    raw = os.environ.get("RAGENT_METRICS_SOURCE_APP_ALLOWLIST", "")
+    return frozenset(s.strip() for s in raw.split(",") if s.strip())
+
+
+@lru_cache(maxsize=1)
+def _source_app_fallback() -> str:
+    return os.environ.get("RAGENT_METRICS_SOURCE_APP_FALLBACK", "other")
+
+
+def normalize_source_app(raw: str | None) -> str:
+    """Map raw `source_app` to a bounded label value.
+
+    Values in `RAGENT_METRICS_SOURCE_APP_ALLOWLIST` pass through verbatim;
+    everything else collapses to `RAGENT_METRICS_SOURCE_APP_FALLBACK`
+    (default `"other"`) to keep label cardinality bounded.
+    """
+    if raw and raw in _source_app_allowlist():
+        return raw
+    return _source_app_fallback()
+
 
 reconciler_tick_total = Counter(
     "reconciler_tick_total",
