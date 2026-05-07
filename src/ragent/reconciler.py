@@ -52,6 +52,13 @@ class Reconciler:
                 await self._repo.update_status(
                     doc.document_id, from_status="PENDING", to_status="FAILED"
                 )
+                from ragent.bootstrap.metrics import record_pipeline_outcome
+
+                record_pipeline_outcome(
+                    source_app=doc.source_app,
+                    mime_type=doc.mime_type,
+                    outcome="failed",
+                )
                 if self._registry is not None:
                     await self._registry.fan_out_delete(doc.document_id)
                 logger.info(

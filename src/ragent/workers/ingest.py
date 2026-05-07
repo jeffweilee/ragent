@@ -17,6 +17,7 @@ import structlog
 from anyio import to_thread
 
 from ragent.bootstrap.broker import broker
+from ragent.bootstrap.metrics import record_pipeline_outcome
 from ragent.pipelines.observability import IngestStepError, bind_ingest_context, log_ingest_step
 from ragent.repositories.document_repository import LockNotAvailable
 
@@ -79,6 +80,9 @@ async def ingest_pipeline_task(document_id: str) -> None:
                 error_code=error_code,
             )
             await repo.update_status(document_id, from_status="PENDING", to_status="FAILED")
+            record_pipeline_outcome(
+                source_app=doc.source_app, mime_type=doc.mime_type, outcome="failed"
+            )
             return
 
         duration_ms_total = int((time.monotonic() - started) * 1000)
@@ -89,6 +93,7 @@ async def ingest_pipeline_task(document_id: str) -> None:
         )
 
     await repo.update_status(document_id, from_status="PENDING", to_status="READY")
+    record_pipeline_outcome(source_app=doc.source_app, mime_type=doc.mime_type, outcome="success")
 
     # File-type ingests are caller-owned: never delete.
     if (doc.ingest_type or "inline") == "inline":

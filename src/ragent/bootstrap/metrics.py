@@ -64,6 +64,32 @@ worker_pipeline_duration_seconds = Histogram(
     buckets=(5, 15, 30, 60, 120, 300, 600),
 )
 
+# Outcome counter — drives the fail-rate query in dashboards:
+#   sum by (source_app) (rate(ragent_pipeline_runs_total{outcome="failed"}[5m]))
+#   / sum by (source_app) (rate(ragent_pipeline_runs_total[5m]))
+_pipeline_runs_total = Counter(
+    "ragent_pipeline_runs_total",
+    "Ingest pipeline runs grouped by source_app, mime_type, and terminal outcome.",
+    labelnames=("source_app", "mime_type", "outcome"),
+)
+
+_DEFAULT_MIME_LABEL = "text/plain"
+
+
+def record_pipeline_outcome(*, source_app: str | None, mime_type: str | None, outcome: str) -> None:
+    """Increment ragent_pipeline_runs_total for one terminal pipeline transition.
+
+    `source_app` is normalized through the allow-list to bound cardinality.
+    `mime_type` falls back to text/plain (the v2 splitter's documented default
+    bucket) when the row predates the mime_type column or when the worker
+    couldn't recover it from MinIO HEAD.
+    """
+    _pipeline_runs_total.labels(
+        source_app=normalize_source_app(source_app),
+        mime_type=mime_type or _DEFAULT_MIME_LABEL,
+        outcome=outcome,
+    ).inc()
+
 
 # Paths excluded from HTTP request metrics. Anchored regexes — must match the
 # full path so a future `/metrics-foo` route would still be tracked.
