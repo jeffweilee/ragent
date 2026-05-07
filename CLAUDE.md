@@ -32,9 +32,16 @@ Whenever team start to work or user says "go" or "continue", follow these steps 
 4.  **Refactor Phase**: Clean up the code while ensuring tests remain green.
 5.  **Verification**: Run test, lint, format.
 6.  **Progress**: Mark the test as complete `[x]` in `plan.md`.
-7.  **Commit**: Git commit with `[BEHAVIORAL]` or `[STRUCTURAL]` prefix.
-8.  **Documentation**: Follow "RESOURCES" Section to update each document accordingly.
-9.  **Next**: Start new round and repeat the workflow until all plans matches successful criteria.
+7.  **Simplify**: Run `/simplify` — AI code quality pass; stage any resulting fixes and re-verify tests pass.
+8.  **Review**: Run `/review` — team code review; address all findings before proceeding.
+    After both 7 and 8 pass with no outstanding issues, stamp the approval marker:
+    ```bash
+    date > .claude/.pre_commit_approved
+    ```
+9.  **Commit**: Git commit with `[BEHAVIORAL]` or `[STRUCTURAL]` prefix.
+    _(The pre-commit gate will verify the marker exists and consume it.)_
+10. **Documentation**: Follow "RESOURCES" Section to update each document accordingly.
+11. **Next**: Start new round and repeat the workflow until all plans matches successful criteria.
 
 ---
 
