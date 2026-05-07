@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
 import anyio
+
+from ragent.bootstrap.metrics import (
+    readyz_probe_duration_seconds,
+    readyz_probe_failures_total,
+    readyz_probe_status,
+)
 
 
 @dataclass(frozen=True)
@@ -70,13 +77,23 @@ class IndexMissing(Exception):
     """Raised when a required ES index is absent."""
 
 
-async def run_probe(probe: Callable[[], Awaitable[None]]) -> ProbeFailure | None:
+async def run_probe(name: str, probe: Callable[[], Awaitable[None]]) -> ProbeFailure | None:
+    started = time.monotonic()
+    failure: ProbeFailure | None
     try:
         await asyncio.wait_for(probe(), timeout=_budget())
+        failure = None
     except TimeoutError:
-        return ProbeFailure(error_code="PROBE_TIMEOUT", detail="probe exceeded budget")
+        failure = ProbeFailure(error_code="PROBE_TIMEOUT", detail="probe exceeded budget")
     except IndexMissing as exc:
-        return ProbeFailure(error_code="ES_INDEX_MISSING", detail=str(exc))
+        failure = ProbeFailure(error_code="ES_INDEX_MISSING", detail=str(exc))
     except Exception as exc:  # noqa: BLE001
-        return ProbeFailure(error_code="DEPENDENCY_DOWN", detail=str(exc))
-    return None
+        failure = ProbeFailure(error_code="DEPENDENCY_DOWN", detail=str(exc))
+
+    readyz_probe_duration_seconds.labels(probe=name).observe(time.monotonic() - started)
+    if failure is None:
+        readyz_probe_status.labels(probe=name).set(1)
+    else:
+        readyz_probe_status.labels(probe=name).set(0)
+        readyz_probe_failures_total.labels(probe=name, error_code=failure.error_code).inc()
+    return failure

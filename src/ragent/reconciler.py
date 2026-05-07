@@ -33,7 +33,7 @@ class Reconciler:
         asyncio.run(self._run_async())
 
     async def _run_async(self) -> None:
-        from ragent.bootstrap.telemetry import reconciler_tick_total
+        from ragent.bootstrap.metrics import reconciler_tick_total
 
         await self._mark_failed()
         await self._redispatch_pending()
@@ -51,6 +51,13 @@ class Reconciler:
                 # Commit terminal status first (Rule 21), then best-effort cleanup
                 await self._repo.update_status(
                     doc.document_id, from_status="PENDING", to_status="FAILED"
+                )
+                from ragent.bootstrap.metrics import record_pipeline_outcome
+
+                record_pipeline_outcome(
+                    source_app=doc.source_app,
+                    mime_type=doc.mime_type,
+                    outcome="failed",
                 )
                 if self._registry is not None:
                     await self._registry.fan_out_delete(doc.document_id)

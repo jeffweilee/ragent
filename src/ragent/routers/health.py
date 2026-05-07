@@ -6,10 +6,9 @@ import asyncio
 from collections.abc import Awaitable, Callable
 
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse, PlainTextResponse
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from fastapi.responses import JSONResponse
 
-import ragent.bootstrap.telemetry  # noqa: F401
+import ragent.bootstrap.metrics  # noqa: F401  (registers metrics on default registry)
 from ragent.errors.problem import problem
 from ragent.routers.health_probes import run_probe
 
@@ -19,8 +18,30 @@ ProbeFn = Callable[[], Awaitable[None]]
 def create_health_router(probes: dict[str, ProbeFn] | None = None) -> APIRouter:
     router = APIRouter()
 
+    # /startupz latch: once every probe has been green at least once, stays
+    # green forever. k8s startupProbe is "have we ever been ready", not "are
+    # we ready now" (that's /readyz). Closing over a list keeps the bool
+    # mutable from the inner closure without `nonlocal`.
+    started: list[bool] = [False]
+
     @router.get("/livez")
     async def livez() -> JSONResponse:
+        return JSONResponse({"status": "ok"})
+
+    @router.get("/startupz")
+    async def startupz() -> JSONResponse:
+        if started[0]:
+            return JSONResponse({"status": "ok"})
+        if not probes:
+            return JSONResponse(
+                {"status": "starting", "reason": "probes not configured"},
+                status_code=503,
+            )
+        names = list(probes.keys())
+        outcomes = await asyncio.gather(*(run_probe(n, probes[n]) for n in names))
+        if any(o is not None for o in outcomes):
+            return JSONResponse({"status": "starting"}, status_code=503)
+        started[0] = True
         return JSONResponse({"status": "ok"})
 
     @router.get("/readyz")
@@ -33,7 +54,7 @@ def create_health_router(probes: dict[str, ProbeFn] | None = None) -> APIRouter:
         # Run probes concurrently so total latency is bounded by the slowest single
         # probe rather than N × READYZ_PROBE_TIMEOUT_SECONDS.
         names = list(probes.keys())
-        outcomes = await asyncio.gather(*(run_probe(probes[n]) for n in names))
+        outcomes = await asyncio.gather(*(run_probe(n, probes[n]) for n in names))
         for name, failure in zip(names, outcomes, strict=True):
             if failure is not None:
                 return problem(
@@ -43,10 +64,5 @@ def create_health_router(probes: dict[str, ProbeFn] | None = None) -> APIRouter:
                     detail=f"{name}: {failure.detail}",
                 )
         return JSONResponse({"status": "ok"})
-
-    @router.get("/metrics")
-    async def metrics() -> PlainTextResponse:
-        data = generate_latest()
-        return PlainTextResponse(data.decode(), media_type=CONTENT_TYPE_LATEST)
 
     return router

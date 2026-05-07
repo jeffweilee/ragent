@@ -12,6 +12,11 @@ from fastapi.responses import Response
 from ragent.bootstrap.guard import enforce
 from ragent.bootstrap.init_schema import init_schema
 from ragent.bootstrap.logging_config import configure_logging
+from ragent.bootstrap.metrics import (
+    DocumentStatsCollector,
+    make_document_stats_fetcher,
+    setup_metrics,
+)
 from ragent.bootstrap.telemetry import setup_tracing
 from ragent.errors.problem import problem
 from ragent.middleware.logging import RequestLoggingMiddleware
@@ -23,7 +28,9 @@ from ragent.routers.retrieve import create_retrieve_router
 
 logger = structlog.get_logger(__name__)
 
-_NO_USER_ID_PATHS = frozenset({"/livez", "/readyz", "/metrics", "/docs", "/redoc", "/openapi.json"})
+_NO_USER_ID_PATHS = frozenset(
+    {"/livez", "/readyz", "/startupz", "/metrics", "/docs", "/redoc", "/openapi.json"}
+)
 
 # Producer-side task labels that MUST be registered before traffic. Journal
 # 2026-05-06 (B27): missing registration silently 500s on first dispatch.
@@ -38,11 +45,11 @@ async def _check_infra_ready(container: Any, broker: Any) -> None:
     """
     from ragent.routers.health_probes import probe_es, probe_mariadb, run_probe
 
-    db_failure = await run_probe(probe_mariadb(container.engine))
+    db_failure = await run_probe("mariadb", probe_mariadb(container.engine))
     if db_failure is not None:
         raise RuntimeError(f"infra not ready: mariadb {db_failure.error_code}: {db_failure.detail}")
 
-    es_failure = await run_probe(probe_es(container.es_client, index_names=[]))
+    es_failure = await run_probe("es", probe_es(container.es_client, index_names=[]))
     if es_failure is not None:
         raise RuntimeError(f"infra not ready: es {es_failure.error_code}: {es_failure.detail}")
 
@@ -71,6 +78,35 @@ def _x_user_id_middleware(app: FastAPI) -> None:
         if not request.headers.get("X-User-Id"):
             return problem(422, "MISSING_USER_ID", "X-User-Id header is required")
         return await call_next(request)
+
+
+_document_stats_registered = False
+
+
+def _register_document_stats_collector() -> None:
+    """Wire DocumentStatsCollector to MARIADB_DSN once per process.
+
+    `prometheus_client.REGISTRY` is module-global; double-registration raises.
+    `create_app()` is called multiple times in the integration test factory
+    suite, so we guard with a module-level flag instead of unregistering.
+    """
+    global _document_stats_registered
+    if _document_stats_registered:
+        return
+    import os
+
+    from prometheus_client import REGISTRY
+
+    dsn = os.environ.get("MARIADB_DSN", "")
+    if not dsn:
+        return  # tests / dev without DB — collector contributes zero series.
+    # Driver-only swap so it works for any prefix (mysql+aiomysql,
+    # mariadb+aiomysql, etc.). The async-only driver (aiomysql) cannot be
+    # used from a sync sqlalchemy Engine — see make_document_stats_fetcher.
+    sync_dsn = dsn.replace("+aiomysql", "+pymysql")
+    fetcher = make_document_stats_fetcher(sync_dsn)
+    REGISTRY.register(DocumentStatsCollector(fetch_rows=fetcher))
+    _document_stats_registered = True
 
 
 def _build_probes(container: Any) -> dict:
@@ -170,6 +206,8 @@ def create_app() -> FastAPI:
     app.include_router(create_retrieve_router(retrieval_pipeline=container.retrieval_pipeline))
     app.include_router(create_mcp_router())
     app.include_router(create_health_router(probes=_build_probes(container)))
+    setup_metrics(app)
+    _register_document_stats_collector()
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception) -> Response:

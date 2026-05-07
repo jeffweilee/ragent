@@ -19,7 +19,7 @@ from starlette.responses import Response
 
 logger = structlog.get_logger(__name__)
 
-_SKIP_PATHS = frozenset({"/livez", "/readyz", "/metrics"})
+_SKIP_PATHS = frozenset({"/livez", "/readyz", "/startupz", "/metrics"})
 _REQUEST_ID_HEADER = "X-Request-Id"
 _USER_ID_HEADER = "X-User-Id"
 _MAX_REQUEST_ID_LEN = 128

@@ -41,6 +41,7 @@ class DocumentRow:
     ingest_type: str = "inline"
     minio_site: str | None = None
     source_url: str | None = None
+    mime_type: str | None = None
 
     @classmethod
     def from_mapping(cls, m: Any) -> DocumentRow:
@@ -59,6 +60,7 @@ class DocumentRow:
             ingest_type=m.get("ingest_type") or "inline",
             minio_site=m.get("minio_site"),
             source_url=m.get("source_url"),
+            mime_type=m.get("mime_type"),
         )
 
 
@@ -104,6 +106,7 @@ class DocumentRepository:
         source_url: str | None = None,
         ingest_type: str = "inline",
         minio_site: str | None = None,
+        mime_type: str | None = None,
     ) -> str:
         await self._execute(
             text(
@@ -111,11 +114,11 @@ class DocumentRepository:
                 INSERT INTO documents
                     (document_id, create_user, source_id, source_app, source_title,
                      source_workspace, source_url, object_key, ingest_type, minio_site,
-                     status, attempt, created_at, updated_at)
+                     mime_type, status, attempt, created_at, updated_at)
                 VALUES
                     (:document_id, :create_user, :source_id, :source_app, :source_title,
                      :source_workspace, :source_url, :object_key, :ingest_type, :minio_site,
-                     'UPLOADED', 0, NOW(6), NOW(6))
+                     :mime_type, 'UPLOADED', 0, NOW(6), NOW(6))
                 """
             ),
             {
@@ -129,6 +132,7 @@ class DocumentRepository:
                 "object_key": object_key,
                 "ingest_type": ingest_type,
                 "minio_site": minio_site,
+                "mime_type": mime_type,
             },
         )
         return document_id
