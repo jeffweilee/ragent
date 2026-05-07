@@ -1,12 +1,12 @@
 # ragent
 
-Streaming RAG backend for private enterprise documents — JSON ingest, hybrid kNN+BM25 retrieval, SSE chat.
+RAG backend — ingest, hybrid retrieval, chat.
 
 ---
 
 ## Quick Start
 
-Prerequisites: Python ≥ 3.12, `uv`, MariaDB 10.6, Redis Sentinel, Elasticsearch 9.2.3, MinIO.
+Prerequisites: Python ≥ 3.12, `uv`, MariaDB 10.6, Redis (Sentinel), Elasticsearch 9.2.3, MinIO.
 
 ```bash
 uv sync                                                  # install dependencies
