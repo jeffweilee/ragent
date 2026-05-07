@@ -178,7 +178,10 @@ class IngestService:
             )
             if loser is None:
                 break
-            await self._repo.delete(loser.document_id)
+            # Cascade through self.delete so plugin stores (ES chunks, etc.)
+            # drop the loser's data, not just the documents row.
+            # Spec §3.1 line 92 — "cascade-delete that row".
+            await self.delete(loser.document_id)
 
     async def list(self, after: str | None = None, limit: int = _LIST_MAX) -> IngestListResult:
         limit = min(limit, _LIST_MAX)
