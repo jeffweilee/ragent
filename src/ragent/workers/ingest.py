@@ -56,8 +56,19 @@ async def ingest_pipeline_task(document_id: str) -> None:
         # Strip charset suffix etc. ("text/markdown; charset=utf-8" → "text/markdown").
         mime = mime.split(";", 1)[0].strip()
 
-        data = registry.get_object(site, doc.object_key)
+        # Pass HEAD size into get_object so a partial network read raises
+        # rather than silently truncating the source document.
+        expected_size = head[0] if head else None
+        data = registry.get_object(site, doc.object_key, expected_size=expected_size)
         content = data.decode("utf-8", errors="replace")
+        replacement_count = content.count("�")
+        if replacement_count:
+            logger.warning(
+                "ingest.utf8_replacement_chars",
+                document_id=document_id,
+                replacement_count=replacement_count,
+                size=len(data),
+            )
 
         loader_kwargs = {
             "content": content,
