@@ -60,13 +60,21 @@ async def ingest_pipeline_task(document_id: str) -> None:
         # rather than silently truncating the source document.
         expected_size = head[0] if head else None
         data = registry.get_object(site, doc.object_key, expected_size=expected_size)
-        content = data.decode("utf-8", errors="replace")
-        replacement_count = content.count("�")
-        if replacement_count:
+        try:
+            content = data.decode("utf-8")
+            decode_replacements = 0
+        except UnicodeDecodeError:
+            # Fall back to lossy decode but report how many invalid sequences
+            # were substituted (subtract genuine U+FFFD already in the source
+            # so legitimate text containing the replacement char isn't false-
+            # flagged as decode corruption).
+            content = data.decode("utf-8", errors="replace")
+            source_fffd = data.count(b"\xef\xbf\xbd")
+            decode_replacements = max(0, content.count("�") - source_fffd)
             logger.warning(
-                "ingest.utf8_replacement_chars",
+                "ingest.utf8_decode_replaced",
                 document_id=document_id,
-                replacement_count=replacement_count,
+                replacement_count=decode_replacements,
                 size=len(data),
             )
 

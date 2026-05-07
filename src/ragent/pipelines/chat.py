@@ -116,7 +116,9 @@ class _Reranker:
         invalid = 0
         for r in results[: self._top_k]:
             i = r.get("index")
-            if not isinstance(i, int) or not 0 <= i < len(documents):
+            # bool is an int subclass, so isinstance(True, int) is True; reject
+            # explicitly so {"index": True} is not silently treated as docs[1].
+            if isinstance(i, bool) or not isinstance(i, int) or not 0 <= i < len(documents):
                 invalid += 1
                 continue
             score = r.get("score")

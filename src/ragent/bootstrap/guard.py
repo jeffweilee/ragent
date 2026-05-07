@@ -23,6 +23,13 @@ def enforce() -> None:
     if log_level not in _VALID_LOG_LEVELS:
         _exit(f"LOG_LEVEL '{log_level}' is invalid; must be one of {sorted(_VALID_LOG_LEVELS)}")
 
+    from ragent.pipelines.factory import validate_chunk_config
+
+    try:
+        validate_chunk_config()
+    except RuntimeError as exc:
+        _exit(str(exc))
+
 
 def _exit(message: str) -> None:
     print(f"[ragent startup guard] {message}", file=sys.stderr)

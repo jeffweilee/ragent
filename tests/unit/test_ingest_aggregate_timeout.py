@@ -73,3 +73,52 @@ async def test_aggregate_timeout_default_does_not_apply_when_fast(
     ]
     assert "READY" in to_statuses
     assert "FAILED" not in to_statuses
+
+
+@pytest.mark.asyncio
+async def test_legit_replacement_chars_in_source_do_not_warn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Bytes containing legit U+FFFD must not trigger ingest.utf8_decode_replaced."""
+    from structlog.testing import capture_logs
+
+    monkeypatch.setenv("INGEST_PIPELINE_TIMEOUT_SECONDS", "5")
+    container = make_ingest_container(_doc())
+    # 'A' + U+FFFD encoded in valid UTF-8 (0xEF 0xBF 0xBD).
+    legit = "A�".encode()
+    container.minio_registry.head_object.return_value = (len(legit), "text/plain")
+    container.minio_registry.get_object.return_value = legit
+
+    from ragent.workers.ingest import ingest_pipeline_task
+
+    with (
+        capture_logs() as logs,
+        patch("ragent.bootstrap.composition.get_container", return_value=container),
+    ):
+        await ingest_pipeline_task("DOC001")
+
+    assert not any(rec.get("event") == "ingest.utf8_decode_replaced" for rec in logs)
+
+
+@pytest.mark.asyncio
+async def test_invalid_utf8_bytes_emit_replacement_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from structlog.testing import capture_logs
+
+    monkeypatch.setenv("INGEST_PIPELINE_TIMEOUT_SECONDS", "5")
+    container = make_ingest_container(_doc())
+    bad = b"hello\xffworld"  # 0xff is never valid UTF-8
+    container.minio_registry.head_object.return_value = (len(bad), "text/plain")
+    container.minio_registry.get_object.return_value = bad
+
+    from ragent.workers.ingest import ingest_pipeline_task
+
+    with (
+        capture_logs() as logs,
+        patch("ragent.bootstrap.composition.get_container", return_value=container),
+    ):
+        await ingest_pipeline_task("DOC001")
+
+    matches = [r for r in logs if r.get("event") == "ingest.utf8_decode_replaced"]
+    assert matches and matches[0]["replacement_count"] == 1

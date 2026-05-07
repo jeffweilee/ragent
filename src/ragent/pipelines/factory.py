@@ -39,11 +39,20 @@ CHUNK_OVERLAP_CHARS = int_env("CHUNK_OVERLAP_CHARS", 100)
 # and can blow up to millions of chunks on a 1 MB atom).
 CHUNK_MAX_PIECES_PER_ATOM = int_env("CHUNK_MAX_PIECES_PER_ATOM", 10_000)
 
-if CHUNK_TARGET_CHARS <= CHUNK_OVERLAP_CHARS:
-    raise RuntimeError(
-        "CHUNK_TARGET_CHARS must be > CHUNK_OVERLAP_CHARS; "
-        f"got target={CHUNK_TARGET_CHARS}, overlap={CHUNK_OVERLAP_CHARS}"
-    )
+
+def validate_chunk_config() -> None:
+    """Bootstrap-time invariant check.
+
+    Called from ``bootstrap.guard.enforce`` so a misconfigured env aborts
+    process boot cleanly rather than crashing every importer (tests,
+    linters) with a module-level RuntimeError.
+    """
+    if CHUNK_TARGET_CHARS <= CHUNK_OVERLAP_CHARS:
+        raise RuntimeError(
+            "CHUNK_TARGET_CHARS must be > CHUNK_OVERLAP_CHARS; "
+            f"got target={CHUNK_TARGET_CHARS}, overlap={CHUNK_OVERLAP_CHARS}"
+        )
+
 
 ALLOWED_MIMES = ("text/plain", "text/markdown", "text/html")
 

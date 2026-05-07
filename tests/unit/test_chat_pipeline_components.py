@@ -113,3 +113,12 @@ def test_reranker_logs_invalid_indices(caplog: pytest.LogCaptureFixture) -> None
         out = _Reranker(rerank_client, top_k=4).run(query="q", documents=docs)["documents"]
     assert [d.id for d in out] == ["A"]
     assert any("rerank.invalid_indices" in rec.message for rec in caplog.records)
+
+
+def test_reranker_rejects_bool_index() -> None:
+    """bool is a subclass of int; documents[True] would silently mean documents[1]."""
+    rerank_client = MagicMock()
+    rerank_client.rerank.return_value = [{"index": True, "score": 0.9}]
+    docs = [Document(id="A"), Document(id="B")]
+    out = _Reranker(rerank_client, top_k=1).run(query="q", documents=docs)["documents"]
+    assert out == []
