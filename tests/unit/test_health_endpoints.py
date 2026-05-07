@@ -6,6 +6,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from ragent.bootstrap.metrics import setup_metrics
 from ragent.routers.health import create_health_router
 
 
@@ -13,6 +14,7 @@ from ragent.routers.health import create_health_router
 def client() -> TestClient:
     app = FastAPI()
     app.include_router(create_health_router())
+    setup_metrics(app)
     return TestClient(app, raise_server_exceptions=True)
 
 

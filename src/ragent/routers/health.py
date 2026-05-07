@@ -6,8 +6,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 
 from fastapi import APIRouter
-from fastapi.responses import JSONResponse, PlainTextResponse
-from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from fastapi.responses import JSONResponse
 
 import ragent.bootstrap.metrics  # noqa: F401  (registers metrics on default registry)
 from ragent.errors.problem import problem
@@ -43,10 +42,5 @@ def create_health_router(probes: dict[str, ProbeFn] | None = None) -> APIRouter:
                     detail=f"{name}: {failure.detail}",
                 )
         return JSONResponse({"status": "ok"})
-
-    @router.get("/metrics")
-    async def metrics() -> PlainTextResponse:
-        data = generate_latest()
-        return PlainTextResponse(data.decode(), media_type=CONTENT_TYPE_LATEST)
 
     return router
