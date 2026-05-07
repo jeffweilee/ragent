@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import io
 import signal
 import time
 
@@ -17,17 +16,22 @@ RECOVERY_DEADLINE_SECONDS = 600
 
 
 def _post_doc() -> str:
-    files = {"file": ("doc.txt", io.BytesIO(b"chaos test document"), "text/plain")}
-    data = {"source_id": "S_CHAOS", "source_app": "confluence", "source_title": "chaos"}
+    payload = {
+        "ingest_type": "inline",
+        "source_id": "S_CHAOS",
+        "source_app": "confluence",
+        "source_title": "chaos",
+        "content_type": "text/plain",
+        "content": "chaos test document",
+    }
     resp = httpx.post(
         f"{API_URL}/ingest",
         headers={"X-User-Id": "alice"},
-        data=data,
-        files=files,
+        json=payload,
         timeout=10,
     )
     resp.raise_for_status()
-    return resp.json()["document_id"]
+    return resp.json()["task_id"]
 
 
 def _status(doc_id: str) -> str:

@@ -26,11 +26,13 @@ def spawn_module() -> Iterator[callable]:
     procs: list[subprocess.Popen] = []
 
     def _spawn(module: str) -> subprocess.Popen:
+        log_path = f"/tmp/e2e_{module.replace('.', '_')}.log"
+        out = open(log_path, "w")  # noqa: SIM115 — fd lifetime tied to procs list
         proc = subprocess.Popen(
             [sys.executable, "-m", module],
             env={**os.environ},
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=out,
+            stderr=subprocess.STDOUT,
         )
         procs.append(proc)
         return proc
