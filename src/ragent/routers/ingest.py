@@ -81,7 +81,7 @@ def create_router(svc: Any) -> APIRouter:
                 422, "INGEST_OBJECT_NOT_FOUND", "Object not found at minio_site/object_key"
             )
 
-        return JSONResponse({"task_id": doc_id}, status_code=202)
+        return JSONResponse({"document_id": doc_id}, status_code=202)
 
     @router.get("/ingest/{document_id}")
     async def get_document(document_id: str):

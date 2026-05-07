@@ -32,7 +32,7 @@ def _post_doc(idx: int) -> str:
         timeout=10,
     )
     resp.raise_for_status()
-    return resp.json()["task_id"]
+    return resp.json()["document_id"]
 
 
 def _poll_status(doc_id: str) -> str:

@@ -31,7 +31,7 @@ def _post_doc() -> str:
         timeout=10,
     )
     resp.raise_for_status()
-    return resp.json()["task_id"]
+    return resp.json()["document_id"]
 
 
 def _status(doc_id: str) -> str:

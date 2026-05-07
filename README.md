@@ -156,8 +156,10 @@ curl -X POST http://localhost:8000/ingest \
 
 ```json
 // 202 Accepted (both forms)
-{ "task_id": "01J9ABCDEFGHJKMNPQRSTVWXYZ" }
+{ "document_id": "01J9ABCDEFGHJKMNPQRSTVWXYZ" }
 ```
+
+The returned `document_id` is the same identifier used by `GET /ingest/{document_id}` and `DELETE /ingest/{document_id}`.
 
 **Errors (RFC 9457 problem+json):**
 - `415 INGEST_MIME_UNSUPPORTED` — `content_type` not in allow-list.
@@ -178,11 +180,18 @@ curl http://localhost:8000/ingest/01J9ABCDEFGHJKMNPQRSTVWXYZ
   "document_id": "01J9ABCDEFGHJKMNPQRSTVWXYZ",
   "status": "READY",
   "attempt": 1,
-  "updated_at": "2026-05-05T10:00:00.000000"
+  "updated_at": "2026-05-05T10:00:00.000000",
+  "ingest_type": "inline",
+  "minio_site": null,
+  "source_id": "DOC-123",
+  "source_app": "confluence",
+  "source_title": "Q3 OKR Planning",
+  "source_url": "https://wiki.example/q3-okr"
 }
 ```
 
 Status values: `UPLOADED → PENDING → READY | FAILED`; `DELETING` during delete.
+For `ingest_type=file` rows, `minio_site` is the registered site name (e.g. `tenant-eu-1`); for `ingest_type=inline` it is `null` and bytes were staged to `__default__`.
 
 #### `GET /ingest` — List documents (cursor-paginated)
 
@@ -415,29 +424,31 @@ curl http://localhost:8000/metrics
 │  TaskIQ Worker  │             │  LLMClient.chat / .stream       │
 │                 │             └──────────────┬──────────────────┘
 │  Ingest Pipeline│                            │
-│  ┌────────────┐ │             ┌──────────────▼──────────────────┐
-│  │FileTypeRouter│ │            │        Elasticsearch 9.x        │
-│  │Converter   │ │             │  chunks_v1 (kNN + BM25 index)   │
-│  │RowMerger   │─┼────────────►│                                 │
-│  │DocCleaner  │ │             └─────────────────────────────────┘
-│  │LangRouter  │ │
-│  │Splitter    │ │             ┌─────────────────────────────────┐
-│  │Embedder    │─┼────────────►│           MariaDB 10.6          │
-│  │ChunkRepo   │ │             │  documents  chunks  (metadata)  │
-│  │PluginReg.  │ │             └─────────────────────────────────┘
-│  └────────────┘ │
-│                 │             ┌─────────────────────────────────┐
-│  fan_out()      │────────────►│        Plugin Registry          │
-└─────────────────┘             │  VectorExtractor (required)     │
-         │                     │  StubGraphExtractor (optional)  │
-         ▼                     └─────────────────────────────────┘
-┌─────────────────┐
-│   MinIO (staging│             ┌─────────────────────────────────┐
-│   upload only;  │             │       Third-Party APIs          │
-│   deleted after │             │  EmbeddingClient  (bge-m3)      │
-│   READY/FAILED) │             │  LLMClient        (gptoss-120b) │
-└─────────────────┘             │  RerankClient     (P2)          │
-                                └─────────────────────────────────┘
+│  (v2)           │             ┌──────────────▼──────────────────┐
+│  ┌────────────┐ │             │        Elasticsearch 9.x        │
+│  │_TextLoader │ │             │  chunks_v1 (kNN + BM25 + raw)   │
+│  │MimeRouter  │─┼────────────►│                                 │
+│  │ ├ Plain    │ │             └─────────────────────────────────┘
+│  │ ├ Markdown │ │
+│  │ └ HTML AST │ │             ┌─────────────────────────────────┐
+│  │BudgetChunker│─┼────────────►│           MariaDB 10.6          │
+│  │Embedder    │ │             │  documents (metadata only)       │
+│  │DocWriter   │ │             │  (v1 `chunks` table dropped)     │
+│  └────────────┘ │             └─────────────────────────────────┘
+│                 │
+│  fan_out()      │             ┌─────────────────────────────────┐
+└─────────────────┘────────────►│        Plugin Registry          │
+         │                     │  VectorExtractor (required)     │
+         ▼                     │  StubGraphExtractor (optional)  │
+┌─────────────────┐             └─────────────────────────────────┘
+│  MinIO (sites)  │
+│  __default__:   │             ┌─────────────────────────────────┐
+│   inline staging│             │       Third-Party APIs          │
+│   deleted READY │             │  EmbeddingClient  (bge-m3)      │
+│  caller sites:  │             │  LLMClient        (gptoss-120b) │
+│   read-only,    │             │  RerankClient     (P2)          │
+│   no delete     │             └─────────────────────────────────┘
+└─────────────────┘
 
 Observability: OpenTelemetry → Grafana / Prometheus
 Reconciler:    CronJob → re-dispatches stale PENDING / UPLOADED rows
@@ -445,11 +456,16 @@ Reconciler:    CronJob → re-dispatches stale PENDING / UPLOADED rows
 
 ### Key Design Decisions
 
-- **MinIO is transient staging only** — files are deleted after pipeline reaches `READY` or `FAILED`; only chunks (ES) and metadata (MariaDB) persist.
+- **JSON-only ingest with discriminator** — `POST /ingest` takes `{ingest_type: "inline"|"file", ...}`; multipart is gone. Inline content is staged to the `__default__` MinIO site and deleted after `READY`. File-type ingests read directly from the caller-owned `(minio_site, object_key)` and are never deleted.
+- **MIME-aware AST splitters** — `text/markdown` uses mistletoe (fenced code never split, atoms carry the original markdown); `text/html` uses selectolax (drops `<script>/<nav>/<aside>/<footer>/<header>` boilerplate, preserves `<pre>`/`<table>` atomically); `text/plain` uses Haystack's stock `DocumentSplitter`. CSV is no longer accepted.
+- **Mime-agnostic budget chunker** — single 1000/1500/100 (target/max/overlap) profile across all MIMEs; the v1 EN/CJK/CSV branches and the `langdetect`/`nltk` deps are gone.
+- **Embed clean, return raw** — each ES chunk carries both `content` (normalized text used for BM25 scoring + bge-m3 embedding) and `raw_content` (original byte slice with markdown fences / HTML tags intact). Chat citations and LLM context use `raw_content`; retrieval scoring stays on `content`.
+- **Chunks live only in ES** — the v1 MariaDB `chunks` table was dropped in v2. MariaDB stores document metadata only.
 - **Two-transaction locking** — TX-A acquires row lock and writes `PENDING`, then commits (releases lock) before the pipeline body runs. No DB transaction is held during external calls (embedder, ES, plugins).
 - **Worker heartbeat** — updates `documents.updated_at` every 30 s so the Reconciler distinguishes live workers from crashed ones.
 - **Supersede model** — re-POSTing with the same `(source_id, source_app)` creates a new document; on `READY`, a supersede task cascade-deletes older versions, giving zero-downtime replacement.
 - **Hybrid retrieval** — kNN vector search + BM25 full-text joined with Reciprocal Rank Fusion (configurable via `CHAT_JOIN_MODE`).
+- **Per-step structured logs** — every pipeline component emits `ingest.step.{started,ok,failed}` on `ragent.ingest` with `document_id`/`mime_type` bound; the worker emits a terminal `ingest.ready` / `ingest.failed`.
 
 ---
 

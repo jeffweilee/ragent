@@ -97,7 +97,7 @@ def _post_inline(case: dict[str, Any], idx: int) -> str:
         timeout=10,
     )
     resp.raise_for_status()
-    return resp.json()["task_id"]
+    return resp.json()["document_id"]
 
 
 def _post_file(case: dict[str, Any], idx: int, minio_endpoint: str) -> str:
@@ -120,7 +120,7 @@ def _post_file(case: dict[str, Any], idx: int, minio_endpoint: str) -> str:
         timeout=10,
     )
     resp.raise_for_status()
-    return resp.json()["task_id"]
+    return resp.json()["document_id"]
 
 
 def _poll_until_ready(doc_id: str) -> str:

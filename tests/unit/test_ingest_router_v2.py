@@ -42,22 +42,22 @@ _FILE = {
 }
 
 
-def test_post_ingest_inline_returns_202_with_task_id():
+def test_post_ingest_inline_returns_202_with_document_id():
     svc = AsyncMock()
     svc.create.return_value = "AAAAAAAAAAAAAAAAAAAAAAAAAAA"
     client, _ = _make_client(svc)
     resp = client.post("/ingest", json=_INLINE, headers={"X-User-Id": "alice"})
     assert resp.status_code == 202
-    assert resp.json()["task_id"] == "AAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    assert resp.json()["document_id"] == "AAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 
-def test_post_ingest_file_returns_202_with_task_id():
+def test_post_ingest_file_returns_202_with_document_id():
     svc = AsyncMock()
     svc.create.return_value = "BBBBBBBBBBBBBBBBBBBBBBBBBBB"
     client, _ = _make_client(svc)
     resp = client.post("/ingest", json=_FILE, headers={"X-User-Id": "alice"})
     assert resp.status_code == 202
-    assert resp.json()["task_id"] == "BBBBBBBBBBBBBBBBBBBBBBBBBBB"
+    assert resp.json()["document_id"] == "BBBBBBBBBBBBBBBBBBBBBBBBBBB"
 
 
 def test_post_ingest_unknown_mime_returns_415():
