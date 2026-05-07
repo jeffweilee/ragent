@@ -48,6 +48,7 @@ def doc_to_source_entry(doc: Any) -> dict:
         "type": "knowledge",
         "source_title": meta.get("source_title"),
         "source_url": meta.get("source_url"),
+        "mime_type": meta.get("mime_type") or meta.get("content_type"),
         "excerpt": excerpt_src[:_EXCERPT_MAX_CHARS],
     }
 

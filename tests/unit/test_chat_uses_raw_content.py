@@ -114,3 +114,21 @@ def test_doc_to_source_entry_source_url_none_when_absent() -> None:
     doc = SimpleNamespace(content="excerpt", meta={"document_id": "d1"})
     entry = doc_to_source_entry(doc)
     assert entry["source_url"] is None
+
+
+def test_doc_to_source_entry_includes_mime_type() -> None:
+    doc = SimpleNamespace(
+        content="excerpt",
+        meta={"document_id": "d1", "mime_type": "text/markdown"},
+    )
+    entry = doc_to_source_entry(doc)
+    assert entry["mime_type"] == "text/markdown"
+
+
+def test_doc_to_source_entry_mime_type_falls_back_to_content_type() -> None:
+    doc = SimpleNamespace(
+        content="excerpt",
+        meta={"document_id": "d1", "content_type": "text/html"},
+    )
+    entry = doc_to_source_entry(doc)
+    assert entry["mime_type"] == "text/html"
