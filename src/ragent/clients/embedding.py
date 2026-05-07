@@ -1,5 +1,6 @@
 """T4.4 — EmbeddingClient: bge-m3, batch=32, retry 3×@1s, asymmetric timeouts (P-B, C8)."""
 
+import math
 import os
 import time as _time
 from collections.abc import Callable
@@ -12,6 +13,25 @@ _EMBED_MODEL = "bge-m3"
 _SUCCESS_CODE = 96200
 logger = structlog.get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
+
+
+def _validate_vectors(vectors: list[list[float]]) -> None:
+    """Reject NaN/Inf/zero-magnitude vectors before they reach ES.
+
+    ES dense_vector cosine indices silently reject zero-magnitude writes
+    with a `magnitude_zero` error that is hard to trace back; NaN/Inf
+    poisons downstream similarity scoring. Raise to trigger a retry.
+    """
+    for i, v in enumerate(vectors):
+        if not isinstance(v, list) or not v:
+            raise ValueError(f"embedding {i} is not a non-empty list: {type(v).__name__}")
+        sq = 0.0
+        for x in v:
+            if not isinstance(x, (int, float)) or not math.isfinite(x):
+                raise ValueError(f"embedding {i} contains non-finite component")
+            sq += x * x
+        if sq == 0.0:
+            raise ValueError(f"embedding {i} has zero magnitude")
 
 
 class EmbeddingClient:
@@ -68,6 +88,7 @@ class EmbeddingClient:
                     if data.get("returnCode") != _SUCCESS_CODE:
                         raise ValueError(f"Unexpected returnCode: {data.get('returnCode')}")
                     out = [item["embedding"] for item in data["data"]]
+                    _validate_vectors(out)
                     if out and isinstance(out[0], list):
                         span.set_attribute("dim", len(out[0]))
                     logger.info(

@@ -120,7 +120,11 @@ class LLMClient:
                     span.set_attribute("http.status_code", getattr(resp, "status_code", 0))
                     resp.raise_for_status()
                     data = resp.json()
-                    content = data["choices"][0]["message"]["content"]
+                    content = data["choices"][0]["message"].get("content")
+                    if not isinstance(content, str) or not content.strip():
+                        # Treat null / whitespace-only completions as a retryable
+                        # failure rather than forwarding `None` as the answer.
+                        raise ValueError("LLM returned empty content")
                     usage_raw = data.get("usage", {})
                     span.set_attribute("prompt_tokens", int(usage_raw.get("prompt_tokens", 0)))
                     span.set_attribute(
@@ -133,6 +137,7 @@ class LLMClient:
                         retry_attempt=attempt,
                         prompt_tokens=usage_raw.get("prompt_tokens", 0),
                         completion_tokens=usage_raw.get("completion_tokens", 0),
+                        content_length=len(content),
                     )
                     return {
                         "content": content,
