@@ -101,3 +101,22 @@ def test_raw_content_preserved_through_packing() -> None:
     raw = out[0].meta["raw_content"]
     assert "```a```" in raw
     assert "```b```" in raw
+
+
+def test_hard_split_caps_pieces_per_atom(monkeypatch) -> None:
+    """Pathological config (overlap >= target) must not produce unbounded chunks."""
+    import pytest
+
+    from ragent.pipelines import factory as fac
+
+    monkeypatch.setattr(fac, "CHUNK_TARGET_CHARS", 50)
+    monkeypatch.setattr(fac, "CHUNK_MAX_CHARS", 75)
+    monkeypatch.setattr(fac, "CHUNK_OVERLAP_CHARS", 49)
+    monkeypatch.setattr(fac, "CHUNK_MAX_PIECES_PER_ATOM", 16)
+
+    from ragent.pipelines.observability import IngestStepError
+
+    big = _atom("z" * 10_000)
+    with pytest.raises(IngestStepError) as exc:
+        fac._BudgetChunker().run([big])
+    assert exc.value.error_code == "CHUNK_BUDGET_EXCEEDED"

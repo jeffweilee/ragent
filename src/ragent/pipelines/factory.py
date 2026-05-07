@@ -34,6 +34,16 @@ from ragent.utility.env import int_env
 CHUNK_TARGET_CHARS = int_env("CHUNK_TARGET_CHARS", 1000)
 CHUNK_MAX_CHARS = int_env("CHUNK_MAX_CHARS", 1500)
 CHUNK_OVERLAP_CHARS = int_env("CHUNK_OVERLAP_CHARS", 100)
+# Per-atom hard-split safety cap: an atom that exceeds this many pieces is
+# treated as misconfiguration (overlap ≥ target produces tiny advance steps
+# and can blow up to millions of chunks on a 1 MB atom).
+CHUNK_MAX_PIECES_PER_ATOM = int_env("CHUNK_MAX_PIECES_PER_ATOM", 10_000)
+
+if CHUNK_TARGET_CHARS <= CHUNK_OVERLAP_CHARS:
+    raise RuntimeError(
+        "CHUNK_TARGET_CHARS must be > CHUNK_OVERLAP_CHARS; "
+        f"got target={CHUNK_TARGET_CHARS}, overlap={CHUNK_OVERLAP_CHARS}"
+    )
 
 ALLOWED_MIMES = ("text/plain", "text/markdown", "text/html")
 
@@ -369,6 +379,7 @@ def _pack_atoms(atoms: list[Document]) -> list[tuple[str, str]]:
             flush(carry=False)
             step = max(1, target - overlap)
             start = 0
+            pieces = 0
             while start < len(text):
                 end = min(start + target, len(text))
                 piece = text[start:end]
@@ -380,6 +391,13 @@ def _pack_atoms(atoms: list[Document]) -> list[tuple[str, str]]:
                 # would multiply ES storage and LLM tokens by N.
                 raw_piece = raw[start:end] if len(raw) == len(text) else piece
                 chunks.append((piece, raw_piece))
+                pieces += 1
+                if pieces > CHUNK_MAX_PIECES_PER_ATOM:
+                    raise IngestStepError(
+                        f"atom exceeded {CHUNK_MAX_PIECES_PER_ATOM} hard-split pieces "
+                        f"(target={target}, overlap={overlap}, atom_len={len(text)})",
+                        error_code="CHUNK_BUDGET_EXCEEDED",
+                    )
                 if end == len(text):
                     break
                 start += step
