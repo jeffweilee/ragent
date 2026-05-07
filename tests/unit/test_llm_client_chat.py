@@ -106,3 +106,42 @@ def test_chat_raises_after_3_failures():
     with pytest.raises(Exception, match="fail"):  # noqa: B017
         client.chat(messages=[{"role": "user", "content": "q"}], model="m")
     assert http.post.call_count == 3
+
+
+def test_chat_raises_when_content_is_none() -> None:
+    """Null/empty LLM content must raise — silent None reaching answer is hallucination-prone."""
+    http = MagicMock()
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.json.return_value = {
+        "choices": [{"message": {"content": None}}],
+        "usage": {},
+    }
+    http.post.return_value = resp
+    client = LLMClient(
+        api_url="https://llm.example.com",
+        http=http,
+        get_token=lambda: "tok",
+        sleep=lambda s: None,
+    )
+    with pytest.raises(ValueError, match="empty"):
+        client.chat(messages=[{"role": "user", "content": "q"}], model="m")
+
+
+def test_chat_raises_when_content_is_empty_string() -> None:
+    http = MagicMock()
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.json.return_value = {
+        "choices": [{"message": {"content": "   "}}],
+        "usage": {},
+    }
+    http.post.return_value = resp
+    client = LLMClient(
+        api_url="https://llm.example.com",
+        http=http,
+        get_token=lambda: "tok",
+        sleep=lambda s: None,
+    )
+    with pytest.raises(ValueError, match="empty"):
+        client.chat(messages=[{"role": "user", "content": "q"}], model="m")
