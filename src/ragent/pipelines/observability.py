@@ -107,7 +107,8 @@ def wrap_component_run(component: Any, *, step: str, error_code: str = "PIPELINE
         if isinstance(result, dict):
             for key in ("documents", "documents_written"):
                 if key in result:
-                    chunks_out = _count_documents(result[key])
+                    val = result[key]
+                    chunks_out = val if isinstance(val, int) else _count_documents(val)
                     break
         payload: dict[str, Any] = {"step": step, "duration_ms": duration_ms, **ctx}
         if atoms_in is not None:

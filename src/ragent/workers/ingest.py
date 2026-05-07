@@ -39,7 +39,7 @@ async def ingest_pipeline_task(document_id: str) -> None:
 
     # Pipeline body: blocking IO runs in anyio-managed thread.
     # _IdempotencyClean and _SourceHydrator bridge back via anyio.from_thread.run().
-    def _run_pipeline() -> list:
+    def _run_pipeline() -> int:
         data = storage.get_object(doc.object_key)
         with tempfile.NamedTemporaryFile(delete=True) as tmp:
             tmp.write(data)
@@ -50,12 +50,14 @@ async def ingest_pipeline_task(document_id: str) -> None:
                     "idempotency_clean": {"document_id": document_id},
                 }
             )
-        return result.get("writer", {}).get("documents_written", [])
+        # Haystack 2.x DocumentWriter.run returns {"documents_written": int}.
+        written = result.get("writer", {}).get("documents_written", 0)
+        return written if isinstance(written, int) else len(written)
 
     started = time.monotonic()
     with bind_ingest_context(document_id=document_id):
         try:
-            written = await to_thread.run_sync(_run_pipeline)
+            chunks_total = await to_thread.run_sync(_run_pipeline)
         except Exception as exc:
             # Haystack wraps component errors in PipelineRuntimeError; the
             # original IngestStepError (if any) is preserved on __cause__.
@@ -70,7 +72,6 @@ async def ingest_pipeline_task(document_id: str) -> None:
             return
 
         duration_ms_total = int((time.monotonic() - started) * 1000)
-        chunks_total = len(written) if isinstance(written, list) else 0
         log_ingest_step.ready(
             document_id=document_id,
             chunks_total=chunks_total,

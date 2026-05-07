@@ -170,6 +170,26 @@ def test_build_ingest_pipeline_wraps_steps_in_order(monkeypatch) -> None:
 # ---------------------------------------------------------------------------
 
 
+def test_wrap_writer_chunks_out_uses_int_documents_written() -> None:
+    """Haystack DocumentWriter.run returns {"documents_written": int}."""
+
+    class _IntWriter:
+        def run(self, documents: list) -> dict:
+            return {"documents_written": len(documents)}
+
+    comp = _IntWriter()
+    wrap_component_run(comp, step="writer", error_code="ES_WRITE_ERROR")
+    with (
+        structlog.testing.capture_logs() as logs,
+        bind_ingest_context(document_id="DOC-W", mime_type="text/plain"),
+    ):
+        comp.run(documents=[1, 2, 3, 4])
+
+    ok = [e for e in logs if e.get("event") == "ingest.step.ok"][0]
+    assert ok["chunks_out"] == 4
+    assert ok["atoms_in"] == 4
+
+
 def test_log_ingest_step_ready_emits_terminal_event() -> None:
     with structlog.testing.capture_logs() as logs:
         log_ingest_step.ready(document_id="DOC-9", chunks_total=7, duration_ms_total=42)
