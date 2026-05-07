@@ -34,6 +34,10 @@ def make_ingest_container(doc: Any, *, pipeline_side_effect: Any = None) -> Magi
     container.doc_repo.claim_for_processing.return_value = doc
     container.minio_client = MagicMock()
     container.minio_client.get_object.return_value = b"data"
+    # v2 worker reads via minio_registry.head_object + get_object.
+    container.minio_registry = MagicMock()
+    container.minio_registry.head_object.return_value = (4, "text/plain")
+    container.minio_registry.get_object.return_value = b"data"
     if pipeline_side_effect is not None:
         container.ingest_pipeline.run.side_effect = pipeline_side_effect
     else:
@@ -113,7 +117,9 @@ def _configure_wiremock_stubs(base_url: str) -> None:
                 "headers": {"Content-Type": "application/json"},
                 "jsonBody": {
                     "returnCode": 96200,
-                    "data": [{"embedding": [0.0] * 1024}],
+                    # Non-zero vector — ES dense_vector cosine similarity
+                    # rejects magnitude-zero embeddings.
+                    "data": [{"embedding": [0.01] * 1024}],
                 },
             },
         },

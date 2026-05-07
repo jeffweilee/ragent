@@ -32,7 +32,7 @@ def _make_doc(doc_id: str, **kwargs) -> DocumentRow:
 def _make_service(rows):
     repo = AsyncMock()
     repo.list.return_value = rows
-    svc = IngestService(repo=repo, chunks=AsyncMock(), storage=MagicMock(), broker=MagicMock())
+    svc = IngestService(repo=repo, storage=MagicMock(), broker=MagicMock())
     return svc, repo
 
 

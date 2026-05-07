@@ -58,9 +58,8 @@ class IngestListResult:
 
 
 class IngestService:
-    def __init__(self, repo: Any, chunks: Any, storage: Any, broker: Any) -> None:
+    def __init__(self, repo: Any, storage: Any, broker: Any) -> None:
         self._repo = repo
-        self._chunks = chunks
         self._storage = storage  # MinioSiteRegistry (v2) or legacy stub
         self._broker = broker
         self._has_fan_out = hasattr(broker, "fan_out_delete")
@@ -147,8 +146,6 @@ class IngestService:
         if self._has_fan_out:
             self._broker.fan_out_delete(document_id)
 
-        await self._chunks.delete_by_document_id(document_id)
-
         if doc.status in ("UPLOADED", "PENDING"):
             with contextlib.suppress(Exception):
                 self._delete_object(doc)
@@ -180,7 +177,6 @@ class IngestService:
             )
             if loser is None:
                 break
-            await self._chunks.delete_by_document_id(loser.document_id)
             await self._repo.delete(loser.document_id)
 
     async def list(self, after: str | None = None, limit: int = _LIST_MAX) -> IngestListResult:

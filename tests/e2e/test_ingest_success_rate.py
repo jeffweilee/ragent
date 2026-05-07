@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import io
 import time
 
 import httpx
@@ -18,15 +17,18 @@ DEADLINE_SECONDS = 60
 
 
 def _post_doc(idx: int) -> str:
-    files = {
-        "file": (f"doc_{idx}.txt", io.BytesIO(f"document {idx} content".encode()), "text/plain")
+    payload = {
+        "ingest_type": "inline",
+        "source_id": f"S{idx}",
+        "source_app": "confluence",
+        "source_title": f"doc {idx}",
+        "content_type": "text/plain",
+        "content": f"document {idx} content",
     }
-    data = {"source_id": f"S{idx}", "source_app": "confluence", "source_title": f"doc {idx}"}
     resp = httpx.post(
         f"{API_URL}/ingest",
         headers={"X-User-Id": "alice"},
-        data=data,
-        files=files,
+        json=payload,
         timeout=10,
     )
     resp.raise_for_status()

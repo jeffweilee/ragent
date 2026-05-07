@@ -38,7 +38,9 @@ async def test_terminal_status_committed_before_minio_delete():
     container.doc_repo.update_status.side_effect = lambda *a, **kw: call_order.append(
         f"status_{kw.get('to_status', a[2] if len(a) > 2 else '?')}"
     )
-    container.minio_client.delete_object.side_effect = lambda *a: call_order.append("minio_delete")
+    container.minio_registry.delete_object.side_effect = lambda *a: call_order.append(
+        "minio_delete"
+    )
 
     with patch("ragent.bootstrap.composition.get_container", return_value=container):
         await ingest_pipeline_task("DOC001")
@@ -54,7 +56,7 @@ async def test_minio_delete_error_does_not_prevent_ready_status():
 
     doc = _make_doc()
     container = make_ingest_container(doc)
-    container.minio_client.delete_object.side_effect = Exception("minio error")
+    container.minio_registry.delete_object.side_effect = Exception("minio error")
 
     with patch("ragent.bootstrap.composition.get_container", return_value=container):
         await ingest_pipeline_task("DOC001")
@@ -76,4 +78,4 @@ async def test_pending_retry_does_not_delete_minio():
     with patch("ragent.bootstrap.composition.get_container", return_value=container):
         await ingest_pipeline_task("DOC001")
 
-    container.minio_client.delete_object.assert_not_called()
+    container.minio_registry.delete_object.assert_not_called()

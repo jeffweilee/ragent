@@ -16,7 +16,8 @@ def test_first_boot_creates_mariadb_tables(mariadb_dsn: str) -> None:
     init_mariadb(create_engine(sync_dsn))
     insp = sa_inspect(sqlalchemy.create_engine(sync_dsn))
     assert "documents" in insp.get_table_names()
-    assert "chunks" in insp.get_table_names()
+    # `chunks` table dropped in C6 (003_drop_chunks.sql); chunks live only in ES.
+    assert "chunks" not in insp.get_table_names()
 
 
 def test_first_boot_creates_es_index(mariadb_dsn: str, es_url: str) -> None:
@@ -54,6 +55,8 @@ def test_mariadb_tables_have_expected_columns(mariadb_dsn: str) -> None:
         "attempt",
         "created_at",
         "updated_at",
+        # v2 columns (002_ingest_v2.sql)
+        "ingest_type",
+        "minio_site",
+        "source_url",
     } <= doc_cols
-    chunk_cols = {c["name"] for c in insp.get_columns("chunks")}
-    assert {"chunk_id", "document_id", "ord", "text", "lang"} <= chunk_cols

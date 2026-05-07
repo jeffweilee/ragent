@@ -12,8 +12,8 @@ def test_get_container_builds_fully_wired_graph(dev_env) -> None:
 
     container = get_container()
     assert container.doc_repo is not None
-    assert container.chunk_repo is not None
     assert container.minio_client is not None
+    assert container.minio_registry is not None
     assert container.es_client is not None
     assert container.engine is not None
     assert container.registry is not None
@@ -27,7 +27,6 @@ def test_vector_extractor_receives_same_dependency_instances(dev_env) -> None:
     vector = container.registry._plugins.get("vector")  # noqa: SLF001
     assert vector is not None
     assert vector._repo is container.doc_repo  # noqa: SLF001
-    assert vector._chunks is container.chunk_repo  # noqa: SLF001
     assert vector._embedder is container.embedding_client  # noqa: SLF001
     assert vector._es is container.es_client  # noqa: SLF001
 

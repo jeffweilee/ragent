@@ -1,7 +1,8 @@
 """TA.1 — Async repository contract: all public methods must be coroutine functions.
 
-Verifies the aiomysql adoption decision: DocumentRepository and ChunkRepository
-expose only async methods so FastAPI/TaskIQ callers can await them directly.
+Verifies the aiomysql adoption decision: DocumentRepository exposes only
+async methods so FastAPI/TaskIQ callers can await them directly. (The v1
+``ChunkRepository`` was removed in C6 — chunks live exclusively in ES.)
 """
 
 import asyncio
@@ -10,7 +11,6 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from ragent.repositories.chunk_repository import ChunkRepository
 from ragent.repositories.document_repository import (
     DocumentRepository,
     DocumentRow,
@@ -97,19 +97,6 @@ def test_document_repository_method_is_coroutine(method_name: str) -> None:
     method = getattr(repo, method_name)
     assert asyncio.iscoroutinefunction(method), (
         f"DocumentRepository.{method_name} must be an async def"
-    )
-
-
-CHUNK_REPO_ASYNC_METHODS = ["bulk_insert", "delete_by_document_id"]
-
-
-@pytest.mark.parametrize("method_name", CHUNK_REPO_ASYNC_METHODS)
-def test_chunk_repository_method_is_coroutine(method_name: str) -> None:
-    engine, _ = _make_async_engine()
-    repo = ChunkRepository(engine)
-    method = getattr(repo, method_name)
-    assert asyncio.iscoroutinefunction(method), (
-        f"ChunkRepository.{method_name} must be an async def"
     )
 
 
@@ -200,30 +187,3 @@ async def test_async_get_sources_by_document_ids_empty_returns_empty() -> None:
     engine, _ = _make_async_engine()
     repo = DocumentRepository(engine)
     assert await repo.get_sources_by_document_ids([]) == {}
-
-
-# ---------------------------------------------------------------------------
-# ChunkRepository — async behaviour
-# ---------------------------------------------------------------------------
-
-
-async def test_async_bulk_insert_executes() -> None:
-    engine, conn = _make_async_engine()
-    repo = ChunkRepository(engine)
-    chunks = [{"chunk_id": "C1", "document_id": "D1", "ord": 0, "text": "hi", "lang": "en"}]
-    await repo.bulk_insert(chunks)
-    conn.execute.assert_called_once()
-
-
-async def test_async_bulk_insert_empty_is_noop() -> None:
-    engine, conn = _make_async_engine()
-    repo = ChunkRepository(engine)
-    await repo.bulk_insert([])
-    conn.execute.assert_not_called()
-
-
-async def test_async_delete_by_document_id_executes() -> None:
-    engine, conn = _make_async_engine()
-    repo = ChunkRepository(engine)
-    await repo.delete_by_document_id("D1")
-    conn.execute.assert_called_once()

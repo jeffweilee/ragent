@@ -1,9 +1,16 @@
-"""T3.2b/T3.2h / TA.10 — Ingest worker: pipeline task with NOWAIT locking and backoff."""
+"""C4 / T2v.39 — V2 ingest worker.
+
+TX-A: claim PENDING (NOWAIT). Pipeline body runs outside any DB tx —
+worker fetches bytes from the right MinIO site, decodes UTF-8, feeds the
+v2 pipeline (``loader → splitter → [idempotency_clean] → chunker →
+embedder → writer``). TX-B: commit terminal status. For ``ingest_type ==
+'inline'`` the staging object is best-effort deleted; ``ingest_type ==
+'file'`` is caller-owned, never deleted.
+"""
 
 from __future__ import annotations
 
 import contextlib
-import tempfile
 import time
 
 import structlog
@@ -15,42 +22,47 @@ from ragent.repositories.document_repository import LockNotAvailable
 
 logger = structlog.get_logger(__name__)
 
+DEFAULT_MIME = "text/plain"
+
 
 @broker.task("ingest.pipeline")
 async def ingest_pipeline_task(document_id: str) -> None:
-    """TaskIQ entrypoint (T3.2b).
-
-    TX-A: acquire NOWAIT → PENDING → commit.
-    Pipeline body runs in an anyio thread OUTSIDE any DB tx.
-    TX-B: commit terminal status first; then attempt MinIO delete best-effort (S16, S21).
-    """
     from ragent.bootstrap.composition import get_container
 
     container = get_container()
     repo = container.doc_repo
-    storage = container.minio_client
+    registry = container.minio_registry
 
-    # TX-A: atomic SELECT FOR UPDATE NOWAIT + UPDATE PENDING in one transaction (Fix #1, R7, S28)
     try:
         doc = await repo.claim_for_processing(document_id)
     except LockNotAvailable:
         logger.info("ingest.lock_contention", document_id=document_id)
         return
 
-    # Pipeline body: blocking IO runs in anyio-managed thread.
-    # _IdempotencyClean and _SourceHydrator bridge back via anyio.from_thread.run().
+    site = doc.minio_site or "__default__"
+
     def _run_pipeline() -> int:
-        data = storage.get_object(doc.object_key)
-        with tempfile.NamedTemporaryFile(delete=True) as tmp:
-            tmp.write(data)
-            tmp.flush()
-            result = container.ingest_pipeline.run(
-                {
-                    "converter": {"sources": [tmp.name]},
-                    "idempotency_clean": {"document_id": document_id},
-                }
-            )
-        # Haystack 2.x DocumentWriter.run returns {"documents_written": int}.
+        # head_object recovers the content-type set at upload time. For file
+        # ingests the caller's MinIO put metadata is the source of truth; for
+        # inline ingests IngestService.create writes content_type explicitly.
+        head = registry.head_object(site, doc.object_key)
+        mime = (head[1] if head else None) or DEFAULT_MIME
+        # Strip charset suffix etc. ("text/markdown; charset=utf-8" → "text/markdown").
+        mime = mime.split(";", 1)[0].strip()
+
+        data = registry.get_object(site, doc.object_key)
+        content = data.decode("utf-8", errors="replace")
+
+        loader_kwargs = {
+            "content": content,
+            "mime_type": mime,
+            "document_id": document_id,
+            "source_url": doc.source_url,
+            "source_title": doc.source_title,
+            "source_app": doc.source_app,
+            "source_workspace": doc.source_workspace,
+        }
+        result = container.ingest_pipeline.run({"loader": loader_kwargs})
         written = result.get("writer", {}).get("documents_written", 0)
         return written if isinstance(written, int) else len(written)
 
@@ -59,8 +71,6 @@ async def ingest_pipeline_task(document_id: str) -> None:
         try:
             chunks_total = await to_thread.run_sync(_run_pipeline)
         except Exception as exc:
-            # Haystack wraps component errors in PipelineRuntimeError; the
-            # original IngestStepError (if any) is preserved on __cause__.
             cause = exc.__cause__ if isinstance(exc.__cause__, IngestStepError) else None
             error_code = cause.error_code if cause is not None else "PIPELINE_TIMEOUT"
             log_ingest_step.failed(
@@ -78,31 +88,25 @@ async def ingest_pipeline_task(document_id: str) -> None:
             duration_ms_total=duration_ms_total,
         )
 
-    # TX-B: commit READY *before* MinIO cleanup (S16)
     await repo.update_status(document_id, from_status="PENDING", to_status="READY")
 
-    # Best-effort MinIO delete — orphan is tolerated and logged (S21)
-    with contextlib.suppress(Exception):
-        storage.delete_object(doc.object_key)
+    # File-type ingests are caller-owned: never delete.
+    if (doc.ingest_type or "inline") == "inline":
+        with contextlib.suppress(Exception):
+            registry.delete_object(site, doc.object_key)
 
-    # Fan out to downstream plugins (vector / graph) once the row is READY
     await container.registry.fan_out(document_id)
 
 
 @broker.task("ingest.supersede")
 async def ingest_supersede_task(survivor_id: str, source_id: str, source_app: str) -> None:
-    """T3.2d — Supersede worker task (R3, S26).
-
-    Pops oldest losers for ``(source_id, source_app)`` and cascade-deletes
-    them, keeping ``survivor_id`` (= MAX(created_at)).
-    """
+    """T3.2d — Supersede worker task (R3, S26)."""
     from ragent.bootstrap.composition import get_container
     from ragent.services.ingest_service import IngestService
 
     container = get_container()
     svc = IngestService(
         repo=container.doc_repo,
-        chunks=container.chunk_repo,
         storage=container.minio_client,
         broker=container.registry,
     )

@@ -23,12 +23,10 @@ class Reconciler:
         self,
         repo: Any,
         broker: Any,
-        chunks: Any = None,
         registry: Any = None,
     ) -> None:
         self._repo = repo
         self._broker = broker
-        self._chunks = chunks
         self._registry = registry
 
     def run(self) -> None:
@@ -56,8 +54,6 @@ class Reconciler:
                 )
                 if self._registry is not None:
                     await self._registry.fan_out_delete(doc.document_id)
-                if self._chunks is not None:
-                    await self._chunks.delete_by_document_id(doc.document_id)
                 logger.info(
                     "ingest.failed",
                     document_id=doc.document_id,
@@ -108,8 +104,6 @@ class Reconciler:
             try:
                 if self._registry is not None:
                     await self._registry.fan_out_delete(doc.document_id)
-                if self._chunks is not None:
-                    await self._chunks.delete_by_document_id(doc.document_id)
                 await self._repo.delete(doc.document_id)
                 logger.info("reconciler.delete_resumed", document_id=doc.document_id)
             except Exception:
@@ -149,7 +143,6 @@ def _build_from_env() -> Reconciler:
     return Reconciler(
         repo=container.doc_repo,
         broker=TaskiqDispatcher(taskiq_broker),
-        chunks=container.chunk_repo,
         registry=container.registry,
     )
 

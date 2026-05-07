@@ -55,8 +55,8 @@ def test_init_mariadb_executes_schema_statements() -> None:
     mock_conn.__enter__ = MagicMock(return_value=mock_conn)
     mock_conn.__exit__ = MagicMock(return_value=False)
     init_mariadb(mock_engine)
-    # Should call execute at least twice (documents + chunks tables)
-    assert mock_conn.execute.call_count >= 2
+    # documents table is the only DDL statement after C6 (chunks dropped).
+    assert mock_conn.execute.call_count >= 1
 
 
 # ── _es_request ──────────────────────────────────────────────────────────────

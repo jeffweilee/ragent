@@ -1,12 +1,11 @@
-"""Tests for the unified ingest pipeline builder (collapsed from 3 → 1)."""
+"""V2 ingest pipeline graph + end-to-end runs (replaces v1 unified-builder tests)."""
 
 from __future__ import annotations
 
 import dataclasses
-from unittest.mock import MagicMock
 
 from haystack.core.component import component
-from haystack.dataclasses import ByteStream, Document
+from haystack.dataclasses import Document
 
 from ragent.pipelines.factory import build_ingest_pipeline
 from tests.conftest import FakeDocumentStore as _FakeStore
@@ -19,36 +18,43 @@ class _MockEmbedder:
         return {"documents": [dataclasses.replace(d, embedding=[0.0, 1.0]) for d in documents]}
 
 
-def test_unified_builder_basic_graph_has_writer() -> None:
+def test_v2_builder_basic_graph_has_v2_nodes() -> None:
     store = _FakeStore()
     pipeline = build_ingest_pipeline(embedder=_MockEmbedder(), document_store=store)
 
     nodes = set(pipeline.graph.nodes)
-    assert {"converter", "cleaner", "chunker", "embedder", "writer"} <= nodes
+    assert {"loader", "splitter", "chunker", "embedder", "writer"} <= nodes
+    # v1 graph names are gone
+    assert "converter" not in nodes
+    assert "cleaner" not in nodes
     assert "language_router" not in nodes
-    assert "en_splitter" not in nodes
-    assert "cjk_splitter" not in nodes
-    assert "mime_router" not in nodes
     assert "row_merger" not in nodes
 
 
-def test_unified_builder_with_chunk_repo_includes_idempotency() -> None:
+def test_v2_builder_no_idempotency_clean_node() -> None:
+    """C6 dropped _IdempotencyClean — retry idempotency is via OVERWRITE policy."""
     store = _FakeStore()
-    chunk_repo = MagicMock()
-    pipeline = build_ingest_pipeline(
-        embedder=_MockEmbedder(), document_store=store, chunk_repo=chunk_repo
-    )
-    assert "idempotency_clean" in pipeline.graph.nodes
+    pipeline = build_ingest_pipeline(embedder=_MockEmbedder(), document_store=store)
+    assert "idempotency_clean" not in pipeline.graph.nodes
 
 
-def test_unified_builder_runs_end_to_end_and_writes() -> None:
+def test_v2_builder_runs_end_to_end_and_writes() -> None:
     store = _FakeStore()
     pipeline = build_ingest_pipeline(embedder=_MockEmbedder(), document_store=store)
 
     text = "Hello world. " * 200
-    pipeline.run({"converter": {"sources": [ByteStream(data=text.encode())]}})
+    pipeline.run(
+        {
+            "loader": {
+                "content": text,
+                "mime_type": "text/plain",
+                "document_id": "DOC-1",
+            }
+        }
+    )
 
     assert len(store.written) >= 1
     for doc in store.written:
         assert doc.embedding == [0.0, 1.0]
         assert doc.meta.get("split_id") is not None
+        assert doc.meta.get("raw_content")

@@ -26,7 +26,6 @@ class Container:
     engine: Any
     rate_limiter: Any
     doc_repo: Any
-    chunk_repo: Any
     registry: Any
     retrieval_pipeline: Any
     ingest_pipeline: Any
@@ -38,17 +37,7 @@ class Container:
 
 def build_container() -> Container:
     import httpx
-    import nltk
     from elasticsearch import Elasticsearch
-
-    # Punkt is required by the chunker for EN sentence tokenization. Skip the
-    # download (and its network call) when the dataset is already provisioned,
-    # so airgapped environments can vendor it ahead of time.
-    try:
-        nltk.data.find("tokenizers/punkt_tab")
-    except LookupError:
-        nltk.download("punkt_tab", quiet=True)
-
     from haystack_integrations.document_stores.elasticsearch import ElasticsearchDocumentStore
     from minio import Minio
     from sqlalchemy.ext.asyncio import create_async_engine
@@ -63,7 +52,6 @@ def build_container() -> Container:
     from ragent.plugins.registry import PluginRegistry
     from ragent.plugins.stub_graph import StubGraphExtractor
     from ragent.plugins.vector import VectorExtractor
-    from ragent.repositories.chunk_repository import ChunkRepository
     from ragent.repositories.document_repository import DocumentRepository
     from ragent.storage.minio_client import MinIOClient
     from ragent.storage.minio_registry import MinioSiteRegistry
@@ -169,7 +157,6 @@ def build_container() -> Container:
     engine = create_async_engine(to_async_dsn(_require("MARIADB_DSN")))
 
     doc_repo = DocumentRepository(engine=engine)
-    chunk_repo = ChunkRepository(engine=engine)
 
     rate_limiter = RateLimiter.from_env()
 
@@ -177,7 +164,7 @@ def build_container() -> Container:
     registry.register(
         VectorExtractor(
             repo=doc_repo,
-            chunks=chunk_repo,
+            chunks={},  # v2: chunks live in ES; vector plugin is a no-op stub.
             embedder=embedding_client,
             es=es_client,
         )
@@ -195,7 +182,6 @@ def build_container() -> Container:
     ingest_pipeline = build_ingest_pipeline(
         embedder=DocumentEmbedder(embedding_client),
         document_store=document_store,
-        chunk_repo=chunk_repo,
     )
 
     return Container(
@@ -209,7 +195,6 @@ def build_container() -> Container:
         engine=engine,
         rate_limiter=rate_limiter,
         doc_repo=doc_repo,
-        chunk_repo=chunk_repo,
         registry=registry,
         retrieval_pipeline=retrieval_pipeline,
         ingest_pipeline=ingest_pipeline,
