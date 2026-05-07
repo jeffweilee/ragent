@@ -13,11 +13,16 @@ excluded from HTTP tracking so probe traffic doesn't drown real RPS.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable, Iterable
 from functools import lru_cache
 
+import structlog
 from fastapi import FastAPI
 from prometheus_client import Counter, Histogram
+from prometheus_client.core import GaugeMetricFamily
 from prometheus_fastapi_instrumentator import Instrumentator, metrics
+
+_logger = structlog.get_logger(__name__)
 
 
 @lru_cache(maxsize=1)
@@ -101,6 +106,77 @@ def record_pipeline_outcome(*, source_app: str | None, mime_type: str | None, ou
         mime_type=mime_type or _DEFAULT_MIME_LABEL,
         outcome=outcome,
     ).inc()
+
+
+DocumentStatsRow = tuple[str, str | None, str | None, int]
+"""(status, source_app, mime_type, count)."""
+
+
+def make_document_stats_fetcher(sync_dsn: str) -> Callable[[], list[DocumentStatsRow]]:
+    """Build a sync GROUP BY callable for the DocumentStatsCollector.
+
+    A sync engine is used because `collect()` runs on the asyncio event loop
+    (the prometheus client scrapes are synchronous), and reaching back into
+    aiomysql from there would deadlock. The pool is shared across scrapes —
+    Prometheus default scrape interval (15s) leaves plenty of idle time.
+    """
+    from sqlalchemy import create_engine, text
+
+    engine = create_engine(sync_dsn, pool_size=2, pool_pre_ping=True)
+    stmt = text(
+        "SELECT status, source_app, mime_type, COUNT(*) AS n "
+        "FROM documents GROUP BY status, source_app, mime_type"
+    )
+
+    def _fetch() -> list[DocumentStatsRow]:
+        with engine.connect() as conn:
+            return [(row[0], row[1], row[2], int(row[3])) for row in conn.execute(stmt).all()]
+
+    return _fetch
+
+
+class DocumentStatsCollector:
+    """Custom Prometheus collector for `ragent_documents_total`.
+
+    Emits one gauge sample per (status, source_app, mime_type) group, computed
+    on-demand at scrape time via the injected `fetch_rows` callable. The
+    callable is expected to do `SELECT status, source_app, mime_type, COUNT(*)
+    FROM documents GROUP BY 1,2,3` against MariaDB. Injection keeps this class
+    DB-free for unit tests; the bootstrap layer wires the real query.
+
+    Errors from `fetch_rows` are logged and swallowed so a transient DB
+    blip doesn't 500 the `/metrics` endpoint.
+    """
+
+    def __init__(self, fetch_rows: Callable[[], Iterable[DocumentStatsRow]]) -> None:
+        self._fetch_rows = fetch_rows
+
+    def collect(self) -> Iterable[GaugeMetricFamily]:
+        family = GaugeMetricFamily(
+            "ragent_documents_total",
+            "Documents by status, source_app, and mime_type.",
+            labels=("status", "source_app", "mime_type"),
+        )
+        try:
+            rows = list(self._fetch_rows())
+        except Exception as exc:
+            _logger.warning(
+                "metrics.document_stats_fetch_failed",
+                error_code="METRICS_DB_UNAVAILABLE",
+                error_type=type(exc).__name__,
+            )
+            yield family
+            return
+        for status, source_app, mime_type, count in rows:
+            family.add_metric(
+                [
+                    status,
+                    normalize_source_app(source_app),
+                    mime_type or _DEFAULT_MIME_LABEL,
+                ],
+                float(count),
+            )
+        yield family
 
 
 # Paths excluded from HTTP request metrics. Anchored regexes — must match the

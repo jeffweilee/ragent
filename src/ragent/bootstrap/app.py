@@ -12,7 +12,11 @@ from fastapi.responses import Response
 from ragent.bootstrap.guard import enforce
 from ragent.bootstrap.init_schema import init_schema
 from ragent.bootstrap.logging_config import configure_logging
-from ragent.bootstrap.metrics import setup_metrics
+from ragent.bootstrap.metrics import (
+    DocumentStatsCollector,
+    make_document_stats_fetcher,
+    setup_metrics,
+)
 from ragent.bootstrap.telemetry import setup_tracing
 from ragent.errors.problem import problem
 from ragent.middleware.logging import RequestLoggingMiddleware
@@ -37,6 +41,32 @@ def _x_user_id_middleware(app: FastAPI) -> None:
         if not request.headers.get("X-User-Id"):
             return problem(422, "MISSING_USER_ID", "X-User-Id header is required")
         return await call_next(request)
+
+
+_document_stats_registered = False
+
+
+def _register_document_stats_collector() -> None:
+    """Wire DocumentStatsCollector to MARIADB_DSN once per process.
+
+    `prometheus_client.REGISTRY` is module-global; double-registration raises.
+    `create_app()` is called multiple times in the integration test factory
+    suite, so we guard with a module-level flag instead of unregistering.
+    """
+    global _document_stats_registered
+    if _document_stats_registered:
+        return
+    import os
+
+    from prometheus_client import REGISTRY
+
+    dsn = os.environ.get("MARIADB_DSN", "")
+    if not dsn:
+        return  # tests / dev without DB — collector contributes zero series.
+    sync_dsn = dsn.replace("mysql+aiomysql://", "mysql+pymysql://")
+    fetcher = make_document_stats_fetcher(sync_dsn)
+    REGISTRY.register(DocumentStatsCollector(fetch_rows=fetcher))
+    _document_stats_registered = True
 
 
 def _build_probes(container: Any) -> dict:
@@ -125,6 +155,7 @@ def create_app() -> FastAPI:
     app.include_router(create_mcp_router())
     app.include_router(create_health_router(probes=_build_probes(container)))
     setup_metrics(app)
+    _register_document_stats_collector()
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception) -> Response:
