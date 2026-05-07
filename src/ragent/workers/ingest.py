@@ -10,7 +10,9 @@ embedder → writer``). TX-B: commit terminal status. For ``ingest_type ==
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
+import os
 import time
 
 import structlog
@@ -23,6 +25,10 @@ from ragent.repositories.document_repository import LockNotAvailable
 logger = structlog.get_logger(__name__)
 
 DEFAULT_MIME = "text/plain"
+
+
+def _aggregate_timeout_seconds() -> float:
+    return float(os.environ.get("INGEST_PIPELINE_TIMEOUT_SECONDS", "300"))
 
 
 @broker.task("ingest.pipeline")
@@ -69,7 +75,18 @@ async def ingest_pipeline_task(document_id: str) -> None:
     started = time.monotonic()
     with bind_ingest_context(document_id=document_id):
         try:
-            chunks_total = await to_thread.run_sync(_run_pipeline)
+            chunks_total = await asyncio.wait_for(
+                to_thread.run_sync(_run_pipeline, abandon_on_cancel=True),
+                timeout=_aggregate_timeout_seconds(),
+            )
+        except TimeoutError:
+            log_ingest_step.failed(
+                document_id=document_id,
+                reason=f"aggregate pipeline timeout after {_aggregate_timeout_seconds()}s",
+                error_code="PIPELINE_TIMEOUT_AGGREGATE",
+            )
+            await repo.update_status(document_id, from_status="PENDING", to_status="FAILED")
+            return
         except Exception as exc:
             cause = exc.__cause__ if isinstance(exc.__cause__, IngestStepError) else None
             error_code = cause.error_code if cause is not None else "PIPELINE_TIMEOUT"
