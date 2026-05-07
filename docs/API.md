@@ -9,7 +9,7 @@ Supported MIME types (`content_type`): `text/plain`, `text/markdown`, `text/html
 
 ### `POST /ingest` — `ingest_type=inline` (content in body)
 
-Cap: `INGEST_INLINE_MAX_BYTES` (default 10 MB) on the UTF-8 byte length of `content`.
+Cap: `INGEST_INLINE_MAX_BYTES` (default 50 MB) on the UTF-8 byte length of `content`.
 
 ```bash
 curl -X POST http://localhost:8000/ingest \

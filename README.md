@@ -27,25 +27,33 @@ Enterprise internal knowledge retrieval backend — streaming RAG answers ground
 uv sync
 ```
 
-### 2. Run database migrations
+### 2. Configure environment
+
+Copy `.env.example` to `.env` and fill in the required values (MariaDB DSN, Redis Sentinel, Elasticsearch, MinIO sites, third-party API URLs). The commands below load this file via `uv run --env-file .env`.
+
+```bash
+cp .env.example .env
+```
+
+### 3. Run database migrations
 
 ```bash
 uv run --env-file .env alembic upgrade head
 ```
 
-### 3. Start the API server
+### 4. Start the API server
 
 ```bash
 uv run --env-file .env python -m ragent.api
 ```
 
-### 4. Start the background worker
+### 5. Start the background worker
 
 ```bash
 uv run --env-file .env python -m ragent.worker
 ```
 
-### 5. Verify
+### 6. Verify
 
 ```bash
 curl http://localhost:8000/livez
