@@ -70,13 +70,18 @@ if [[ ! -f "$APPROVAL" ]]; then
     block "pre-commit review gate: .claude/.pre_commit_approved not found.
   Required steps before committing:
     1. Run /simplify  — AI code quality review; stage any resulting fixes
-    2. Run /review    — team code review; address all findings
+    2. Run /review    — verify ALL of:
+         a. every docs/00_plan.md objective for this cycle is fully implemented
+         b. behaviour matches docs/00_spec.md contracts
+         c. every new code path has a test
+         d. no duplication / dead code / hidden coupling
+       Address every finding before proceeding.
     3. Stamp approval: date > .claude/.pre_commit_approved"
 fi
 APPROVAL_AGE=$(( $(date +%s) - $(date -r "$APPROVAL" +%s) ))
 if [[ $APPROVAL_AGE -gt $FRESHNESS ]]; then
     block "pre-commit review gate: .claude/.pre_commit_approved is stale (${APPROVAL_AGE}s old, max ${FRESHNESS}s).
-  Re-run /simplify and /review, then stamp: date > .claude/.pre_commit_approved"
+  Re-run /simplify and /review (including plan-objective check), then stamp: date > .claude/.pre_commit_approved"
 fi
 # Consume the marker — every commit requires a fresh /simplify + /review cycle.
 rm -f "$APPROVAL"

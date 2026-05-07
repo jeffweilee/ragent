@@ -33,7 +33,12 @@ Whenever team start to work or user says "go" or "continue", follow these steps 
 5.  **Verification**: Run test, lint, format.
 6.  **Progress**: Mark the test as complete `[x]` in `plan.md`.
 7.  **Simplify**: Run `/simplify` — AI code quality pass; stage any resulting fixes and re-verify tests pass.
-8.  **Review**: Run `/review` — team code review; address all findings before proceeding.
+8.  **Review**: Run `/review` — team code review covering **all** of the following; address every finding before proceeding:
+    - **Plan compliance**: every objective in `docs/00_plan.md` for this cycle is fully implemented — no partial or skipped items.
+    - **Spec alignment**: behaviour matches `docs/00_spec.md` contracts (HTTP shapes, error codes, streaming framing, DB schema, etc.).
+    - **Test coverage**: every new behaviour path has a corresponding test; no dead or unreachable code.
+    - **Code quality**: no duplication, no hidden coupling, no premature abstraction, no commented-out code.
+
     After both 7 and 8 pass with no outstanding issues, stamp the approval marker:
     ```bash
     date > .claude/.pre_commit_approved
