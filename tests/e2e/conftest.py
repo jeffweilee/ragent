@@ -14,6 +14,22 @@ import pytest
 API_URL = "http://127.0.0.1:8000"
 
 
+def _e2e_log_path(module: str) -> str:
+    """Return a per-user, per-process log path under the system temp dir.
+
+    A fixed `/tmp/e2e_*.log` collides on shared CI runners (one user
+    cannot overwrite another's file) and across concurrent pytest jobs
+    on the same user. Embedding USER + PID isolates both axes.
+    """
+    import tempfile
+
+    user = os.environ.get("USER") or os.environ.get("USERNAME") or "user"
+    return os.path.join(
+        tempfile.gettempdir(),
+        f"e2e_{user}_{os.getpid()}_{module.replace('.', '_')}.log",
+    )
+
+
 def _ensure_default_bucket(minio_endpoint: str) -> None:
     """Create the default upload bucket if it doesn't exist.
 
@@ -35,16 +51,17 @@ def _ensure_default_bucket(minio_endpoint: str) -> None:
         client.make_bucket(bucket)
 
 
-def _purge_state(mariadb_dsn: str, es_url: str) -> None:
-    """Wipe MariaDB rows + ES docs that accumulate across e2e tests.
+def _purge_state(mariadb_dsn: str, es_url: str, redis_url: str) -> None:
+    """Wipe MariaDB rows, ES docs, and Redis keys across e2e tests.
 
     Prerequisite for letting multiple e2e tests share a session-scoped
-    api/worker subprocess (B). Without this, doc_id collisions and stale
-    chunk hits make later tests non-deterministic.
+    api/worker subprocess. Without this, doc_id collisions, stale chunk
+    hits, leftover rate-limit counters, and replayed broker tasks make
+    later tests non-deterministic.
     """
     import contextlib
-    import urllib.request
 
+    import redis
     from sqlalchemy import create_engine, text
 
     sync_dsn = mariadb_dsn.replace("mysql+aiomysql://", "mysql+pymysql://")
@@ -54,15 +71,19 @@ def _purge_state(mariadb_dsn: str, es_url: str) -> None:
             conn.execute(text(f"DELETE FROM {table}"))
     engine.dispose()
 
-    body = b'{"query": {"match_all": {}}}'
-    req = urllib.request.Request(
-        f"{es_url}/chunks_v1/_delete_by_query?refresh=true&conflicts=proceed",
-        data=body,
-        method="POST",
-        headers={"Content-Type": "application/json"},
-    )
     with contextlib.suppress(Exception):
-        urllib.request.urlopen(req, timeout=10).read()
+        # Best-effort: index may not exist on first run.
+        httpx.post(
+            f"{es_url}/chunks_v1/_delete_by_query?refresh=true&conflicts=proceed",
+            json={"query": {"match_all": {}}},
+            timeout=10,
+        ).raise_for_status()
+
+    # DB 0 = broker (TaskIQ messages), DB 1 = rate limiter. Mirrors
+    # REDIS_BROKER_URL / REDIS_RATELIMIT_URL in _build_dev_env.
+    for db in (0, 1):
+        with contextlib.suppress(Exception):
+            redis.from_url(f"{redis_url}/{db}").flushdb()
 
 
 @pytest.fixture
@@ -71,16 +92,18 @@ def e2e_env(
     minio_endpoint: str,
     mariadb_dsn: str,
     es_url: str,
+    redis_url: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[None]:
     """E2E env layered on the integration `dev_env` fixture.
 
-    Purges MariaDB + ES on entry so each test starts from a clean slate
-    even when a session-scoped api/worker keeps writing to the same DB.
+    Purges MariaDB + ES + Redis on entry so each test starts from a
+    clean slate even when a session-scoped api/worker keeps writing
+    to the same backends.
     """
     monkeypatch.setenv("RAGENT_PORT", "8000")
     _ensure_default_bucket(minio_endpoint)
-    _purge_state(mariadb_dsn, es_url)
+    _purge_state(mariadb_dsn, es_url, redis_url)
     yield
 
 
@@ -159,7 +182,7 @@ def running_stack(
 
     procs: list[subprocess.Popen] = []
     for module in ("ragent.api", "ragent.worker"):
-        log_path = f"/tmp/e2e_{module.replace('.', '_')}.log"
+        log_path = _e2e_log_path(module)
         out = open(log_path, "w")  # noqa: SIM115
         proc = subprocess.Popen(
             [sys.executable, "-m", module],
@@ -188,7 +211,7 @@ def spawn_module() -> Iterator[callable]:
     procs: list[subprocess.Popen] = []
 
     def _spawn(module: str) -> subprocess.Popen:
-        log_path = f"/tmp/e2e_{module.replace('.', '_')}.log"
+        log_path = _e2e_log_path(module)
         out = open(log_path, "w")  # noqa: SIM115 — fd lifetime tied to procs list
         proc = subprocess.Popen(
             [sys.executable, "-m", module],
