@@ -42,7 +42,9 @@ def _purge_state(mariadb_dsn: str, es_url: str) -> None:
     api/worker subprocess (B). Without this, doc_id collisions and stale
     chunk hits make later tests non-deterministic.
     """
+    import contextlib
     import urllib.request
+
     from sqlalchemy import create_engine, text
 
     sync_dsn = mariadb_dsn.replace("mysql+aiomysql://", "mysql+pymysql://")
@@ -59,10 +61,8 @@ def _purge_state(mariadb_dsn: str, es_url: str) -> None:
         method="POST",
         headers={"Content-Type": "application/json"},
     )
-    try:
+    with contextlib.suppress(Exception):
         urllib.request.urlopen(req, timeout=10).read()
-    except Exception:
-        pass
 
 
 @pytest.fixture
