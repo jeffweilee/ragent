@@ -13,7 +13,7 @@ import time
 import httpx
 import pytest
 
-from tests.e2e.conftest import API_URL, wait_api_ready
+from tests.e2e.conftest import API_URL
 
 pytestmark = pytest.mark.docker
 
@@ -49,11 +49,7 @@ def _poll_status(doc_id: str) -> str:
     )
 
 
-def test_quickstart_99pct_ready_in_60s(e2e_env, spawn_module) -> None:
-    spawn_module("ragent.api")
-    spawn_module("ragent.worker")
-    wait_api_ready()
-
+def test_quickstart_99pct_ready_in_60s(running_stack, e2e_env) -> None:
     doc_ids = [_post_doc(i) for i in range(TARGET_COUNT)]
     deadline = time.monotonic() + DEADLINE_SECONDS
     while time.monotonic() < deadline:

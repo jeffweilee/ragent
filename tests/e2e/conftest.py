@@ -35,11 +35,141 @@ def _ensure_default_bucket(minio_endpoint: str) -> None:
         client.make_bucket(bucket)
 
 
+def _purge_state(mariadb_dsn: str, es_url: str) -> None:
+    """Wipe MariaDB rows + ES docs that accumulate across e2e tests.
+
+    Prerequisite for letting multiple e2e tests share a session-scoped
+    api/worker subprocess (B). Without this, doc_id collisions and stale
+    chunk hits make later tests non-deterministic.
+    """
+    import urllib.request
+    from sqlalchemy import create_engine, text
+
+    sync_dsn = mariadb_dsn.replace("mysql+aiomysql://", "mysql+pymysql://")
+    engine = create_engine(sync_dsn)
+    with engine.begin() as conn:
+        for table in ("documents",):
+            conn.execute(text(f"DELETE FROM {table}"))
+    engine.dispose()
+
+    body = b'{"query": {"match_all": {}}}'
+    req = urllib.request.Request(
+        f"{es_url}/chunks_v1/_delete_by_query?refresh=true&conflicts=proceed",
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        urllib.request.urlopen(req, timeout=10).read()
+    except Exception:
+        pass
+
+
 @pytest.fixture
-def e2e_env(dev_env, minio_endpoint: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """E2E env layered on the integration `dev_env` fixture."""
+def e2e_env(
+    dev_env,
+    minio_endpoint: str,
+    mariadb_dsn: str,
+    es_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[None]:
+    """E2E env layered on the integration `dev_env` fixture.
+
+    Purges MariaDB + ES on entry so each test starts from a clean slate
+    even when a session-scoped api/worker keeps writing to the same DB.
+    """
     monkeypatch.setenv("RAGENT_PORT", "8000")
     _ensure_default_bucket(minio_endpoint)
+    _purge_state(mariadb_dsn, es_url)
+    yield
+
+
+def _build_dev_env(
+    *,
+    mariadb_dsn: str,
+    es_url: str,
+    minio_endpoint: str,
+    redis_url: str,
+    wiremock_url: str,
+) -> dict[str, str]:
+    """Same env table as the function-scope `dev_env` fixture, but as a
+    plain dict so a session-scope subprocess can inherit it via
+    ``os.environ.update`` (monkeypatch is function-scope and would
+    unset values between tests, breaking long-lived child processes).
+    """
+    return {
+        "RAGENT_ENV": "dev",
+        "RAGENT_AUTH_DISABLED": "true",
+        "RAGENT_HOST": "127.0.0.1",
+        "RAGENT_PORT": "8000",
+        "AI_API_AUTH_URL": wiremock_url,
+        "AI_LLM_API_J1_TOKEN": "test-llm-j1",
+        "AI_EMBEDDING_API_J1_TOKEN": "test-embedding-j1",
+        "AI_RERANK_API_J1_TOKEN": "test-rerank-j1",
+        "EMBEDDING_API_URL": wiremock_url,
+        "LLM_API_URL": wiremock_url,
+        "RERANK_API_URL": f"{wiremock_url}/rerank",
+        "EMBEDDER_BATCH_SIZE": "1",
+        "MINIO_ENDPOINT": minio_endpoint,
+        "MINIO_ACCESS_KEY": "minioadmin",
+        "MINIO_SECRET_KEY": "minioadmin",
+        "ES_HOSTS": es_url,
+        "ES_VERIFY_CERTS": "false",
+        "MARIADB_DSN": mariadb_dsn,
+        "REDIS_BROKER_URL": f"{redis_url}/0",
+        "REDIS_RATELIMIT_URL": f"{redis_url}/1",
+    }
+
+
+@pytest.fixture(scope="session")
+def running_stack(
+    mariadb_dsn: str,
+    es_url: str,
+    minio_endpoint: str,
+    redis_url: str,
+    wiremock_url: str,
+) -> Iterator[None]:
+    """Spawn one api + one worker and reuse them across the whole e2e session.
+
+    Tests share a single subprocess pair; per-test isolation comes from
+    `e2e_env` purging MariaDB rows + ES docs on entry. Chaos tests that
+    deliberately kill the worker keep using their own function-scope
+    `spawn_module` and skip this fixture.
+    """
+    os.environ.update(
+        _build_dev_env(
+            mariadb_dsn=mariadb_dsn,
+            es_url=es_url,
+            minio_endpoint=minio_endpoint,
+            redis_url=redis_url,
+            wiremock_url=wiremock_url,
+        )
+    )
+    _ensure_default_bucket(minio_endpoint)
+
+    procs: list[subprocess.Popen] = []
+    for module in ("ragent.api", "ragent.worker"):
+        log_path = f"/tmp/e2e_{module.replace('.', '_')}.log"
+        out = open(log_path, "w")  # noqa: SIM115
+        proc = subprocess.Popen(
+            [sys.executable, "-m", module],
+            env={**os.environ},
+            stdout=out,
+            stderr=subprocess.STDOUT,
+        )
+        procs.append(proc)
+
+    wait_api_ready(timeout=45)
+    yield
+
+    for p in procs:
+        if p.poll() is None:
+            p.terminate()
+            try:
+                p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.wait()
 
 
 @pytest.fixture

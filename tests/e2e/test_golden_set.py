@@ -27,19 +27,14 @@ def test_golden_set_file_has_50_rows() -> None:
         assert {"q", "expected_doc_id"}.issubset(row.keys())
 
 
-def test_golden_set_top3_accuracy_at_least_70pct() -> None:
-    """Top-3 retrieval recall against the launched API process from T7.2.
-    Counts a hit when expected_doc_id appears in /chat response sources[0..2].
+def test_golden_set_top3_accuracy_at_least_70pct(running_stack, e2e_env) -> None:
+    """Top-3 retrieval recall against the session-shared api+worker.
 
-    Requires an externally launched API + worker (T7.2). Skip when no
-    listener answers /livez so the gate doesn't fail on an unrelated harness
-    gap. Run via `RAGENT_E2E_GOLDEN_SET=1` once the API is up to enforce.
+    Counts a hit when expected_doc_id appears in /chat response sources[0..2].
+    Honours the journal rule that an e2e test must not silent-skip on a
+    missing precondition: the session-scope `running_stack` brings up the
+    API itself.
     """
-    try:
-        if httpx.get(f"{API_URL}/livez", timeout=1).status_code != 200:
-            raise RuntimeError("livez != 200")
-    except Exception:
-        pytest.skip("API not reachable; launch ragent_api per T7.2 to run this test.")
     rows = _load_golden()
     hits = 0
     for row in rows:
