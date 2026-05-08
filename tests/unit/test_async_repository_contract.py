@@ -32,7 +32,7 @@ def _row(**kwargs) -> dict:
         source_id="DOC-1",
         source_app="confluence",
         source_title="My Title",
-        source_workspace=None,
+        source_meta=None,
         object_key="confluence_DOC-1_AAAA",
         status="UPLOADED",
         attempt=0,

@@ -79,7 +79,7 @@ class _TextLoader:
         source_url: str | None = None,
         source_title: str | None = None,
         source_app: str | None = None,
-        source_workspace: str | None = None,
+        source_meta: str | None = None,
     ) -> dict:
         meta: dict[str, Any] = {"mime_type": mime_type}
         for k, v in (
@@ -87,7 +87,7 @@ class _TextLoader:
             ("source_url", source_url),
             ("source_title", source_title),
             ("source_app", source_app),
-            ("source_workspace", source_workspace),
+            ("source_meta", source_meta),
         ):
             if v is not None:
                 meta[k] = v

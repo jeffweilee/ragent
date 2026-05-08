@@ -117,9 +117,9 @@ def test_source_url_accepts_under_cap():
     assert req.source_url == "https://wiki/page"
 
 
-def test_source_workspace_optional():
+def test_source_meta_optional():
     req = _adapter().validate_python(_INLINE_BASE)
-    assert req.source_workspace is None
+    assert req.source_meta is None
 
 
 def test_ingest_mime_enum_values():

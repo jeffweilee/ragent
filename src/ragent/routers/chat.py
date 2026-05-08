@@ -33,7 +33,7 @@ def _run_retrieval(retrieval_pipeline: Any, req: ChatRequest) -> list[Any]:
     return run_retrieval(
         retrieval_pipeline,
         query=last_user,
-        filters=build_es_filters(req.source_app, req.source_workspace),
+        filters=build_es_filters(req.source_app, req.source_meta),
     )
 
 

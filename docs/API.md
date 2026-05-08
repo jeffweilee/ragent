@@ -21,7 +21,7 @@ curl -X POST http://localhost:8000/ingest \
     "source_id":        "DOC-123",
     "source_app":       "confluence",
     "source_title":     "Q3 OKR Planning",
-    "source_workspace": "engineering",
+    "source_meta": "engineering",
     "source_url":       "https://wiki.example/q3-okr"
   }'
 ```
@@ -132,11 +132,11 @@ Request schema is shared by both endpoints. Only `messages` is required.
   "temperature": 0.7,
   "max_tokens": 4096,
   "source_app": "confluence",
-  "source_workspace": "engineering"
+  "source_meta": "engineering"
 }
 ```
 
-`source_app` and `source_workspace` are optional retrieval filters (AND when both supplied; omit to retrieve across all documents).
+`source_app` and `source_meta` are optional retrieval filters (AND when both supplied; omit to retrieve across all documents).
 
 ### `POST /chat` — Non-streaming chat
 
@@ -206,7 +206,7 @@ curl -X POST http://localhost:8000/retrieve \
   -d '{
     "query": "What are our Q3 OKRs?",
     "source_app": "confluence",
-    "source_workspace": "engineering",
+    "source_meta": "engineering",
     "dedupe": true
   }'
 ```
@@ -257,7 +257,7 @@ curl -X POST http://localhost:8000/retrieve \
 |---|---|---|---|---|
 | `query` | `string` | Yes | — | Retrieval query text |
 | `source_app` | `string` | No | — | ES filter; omit for unrestricted retrieval |
-| `source_workspace` | `string` | No | — | ES filter; ANDed with `source_app` when both supplied |
+| `source_meta` | `string` | No | — | ES filter; ANDed with `source_app` when both supplied |
 | `dedupe` | `bool` | No | `false` | When `true`, keeps only the highest-scored chunk per `document_id` |
 
 **How `excerpt` works:**

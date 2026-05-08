@@ -31,7 +31,7 @@ class DocumentRow:
     source_id: str
     source_app: str
     source_title: str
-    source_workspace: str | None
+    source_meta: str | None
     object_key: str
     status: str
     attempt: int
@@ -51,7 +51,7 @@ class DocumentRow:
             source_id=m["source_id"],
             source_app=m["source_app"],
             source_title=m["source_title"],
-            source_workspace=m.get("source_workspace"),
+            source_meta=m.get("source_meta"),
             object_key=m["object_key"],
             status=m["status"],
             attempt=m["attempt"],
@@ -102,7 +102,7 @@ class DocumentRepository:
         source_app: str,
         source_title: str,
         object_key: str,
-        source_workspace: str | None = None,
+        source_meta: str | None = None,
         source_url: str | None = None,
         ingest_type: str = "inline",
         minio_site: str | None = None,
@@ -113,11 +113,11 @@ class DocumentRepository:
                 """
                 INSERT INTO documents
                     (document_id, create_user, source_id, source_app, source_title,
-                     source_workspace, source_url, object_key, ingest_type, minio_site,
+                     source_meta, source_url, object_key, ingest_type, minio_site,
                      mime_type, status, attempt, created_at, updated_at)
                 VALUES
                     (:document_id, :create_user, :source_id, :source_app, :source_title,
-                     :source_workspace, :source_url, :object_key, :ingest_type, :minio_site,
+                     :source_meta, :source_url, :object_key, :ingest_type, :minio_site,
                      :mime_type, 'UPLOADED', 0, NOW(6), NOW(6))
                 """
             ),
@@ -127,7 +127,7 @@ class DocumentRepository:
                 "source_id": source_id,
                 "source_app": source_app,
                 "source_title": source_title,
-                "source_workspace": source_workspace,
+                "source_meta": source_meta,
                 "source_url": source_url,
                 "object_key": object_key,
                 "ingest_type": ingest_type,
@@ -347,15 +347,27 @@ class DocumentRepository:
     async def pop_oldest_loser_for_supersede(
         self, source_id: str, source_app: str, survivor_id: str
     ) -> DocumentRow | None:
+        # Out-of-order finish safety: DB self-elects the survivor as the row
+        # with MAX(created_at). The caller's survivor_id is honoured only when
+        # it matches that elected row; otherwise this returns None, so a worker
+        # that races finish order can never delete a strictly-newer survivor.
         row = await self._fetch_first(
             text(
                 """
-                SELECT * FROM documents
-                WHERE source_id = :source_id
-                  AND source_app = :source_app
-                  AND status = 'READY'
-                  AND document_id != :survivor_id
-                ORDER BY created_at ASC
+                SELECT d.* FROM documents d
+                JOIN (
+                    SELECT document_id FROM documents
+                    WHERE source_id = :source_id
+                      AND source_app = :source_app
+                      AND status = 'READY'
+                    ORDER BY created_at DESC, document_id DESC
+                    LIMIT 1
+                ) newest ON newest.document_id = :survivor_id
+                WHERE d.source_id = :source_id
+                  AND d.source_app = :source_app
+                  AND d.status = 'READY'
+                  AND d.document_id != :survivor_id
+                ORDER BY d.created_at ASC
                 LIMIT 1
                 """
             ),
@@ -383,10 +395,12 @@ class DocumentRepository:
     async def get_sources_by_document_ids(self, ids: list[str]) -> dict[str, tuple[str, str, str]]:
         if not ids:
             return {}
+        # Hydration must surface only READY rows; mid-flight or DELETING docs
+        # are not citable and would mismatch the ES chunks that retrieval saw.
         rows = await self._fetch_all(
             text(
                 "SELECT document_id, source_app, source_id, source_title"
-                " FROM documents WHERE document_id IN :ids"
+                " FROM documents WHERE document_id IN :ids AND status = 'READY'"
             ),
             {"ids": tuple(ids)},
         )

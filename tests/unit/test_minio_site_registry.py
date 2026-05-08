@@ -126,3 +126,42 @@ def test_put_object_routes_through_default_site():
     )
     assert key == "app_sid_DOC"
     stub.put_object.assert_called_once()
+
+
+def test_delete_object_skips_read_only_site():
+    raw = json.dumps([_site(), _site(name="caller", read_only=True)])
+    stub = MagicMock()
+    reg = MinioSiteRegistry.from_json(raw, minio_factory=_factory(stub))
+    reg.delete_object("caller", "any-key")
+    stub.remove_object.assert_not_called()
+
+
+def test_delete_object_swallows_no_such_key():
+    raw = json.dumps([_site()])
+    stub = MagicMock()
+    stub.remove_object.side_effect = S3Error(
+        code="NoSuchKey",
+        message="missing",
+        resource="/x",
+        request_id="r",
+        host_id="h",
+        response=MagicMock(status=404, headers={}, text=""),
+    )
+    reg = MinioSiteRegistry.from_json(raw, minio_factory=_factory(stub))
+    reg.delete_object("__default__", "vanished")  # must not raise
+
+
+def test_delete_object_propagates_other_s3_errors():
+    raw = json.dumps([_site()])
+    stub = MagicMock()
+    stub.remove_object.side_effect = S3Error(
+        code="AccessDenied",
+        message="nope",
+        resource="/x",
+        request_id="r",
+        host_id="h",
+        response=MagicMock(status=403, headers={}, text=""),
+    )
+    reg = MinioSiteRegistry.from_json(raw, minio_factory=_factory(stub))
+    with pytest.raises(S3Error):
+        reg.delete_object("__default__", "key")

@@ -28,7 +28,7 @@ def _make_doc(
         source_id=source_id,
         source_app=source_app,
         source_title="T",
-        source_workspace=None,
+        source_meta=None,
         object_key=f"{source_app}_{source_id}_{doc_id}",
         status="READY",
         attempt=1,
@@ -58,6 +58,8 @@ async def test_supersede_pops_and_deletes_oldest_loser():
     svc, repo, storage, broker = _make_service([loser])
     await svc.supersede(survivor_id="DOC002", source_id="S1", source_app="confluence")
     repo.delete.assert_called_once_with("DOC001")
+    # Plugin stores (ES chunks, etc.) must drop the loser's data too.
+    broker.fan_out_delete.assert_called_once_with("DOC001")
 
 
 async def test_supersede_deletes_multiple_losers_one_at_a_time():
@@ -68,6 +70,10 @@ async def test_supersede_deletes_multiple_losers_one_at_a_time():
     await svc.supersede(survivor_id="DOC003", source_id="S1", source_app="confluence")
     assert repo.pop_oldest_loser_for_supersede.call_count == 3  # 2 losers + 1 None
     assert repo.delete.call_count == 2
+    # One fan-out per loser.
+    assert broker.fan_out_delete.call_count == 2
+    broker.fan_out_delete.assert_any_call("DOC001")
+    broker.fan_out_delete.assert_any_call("DOC002")
 
 
 async def test_supersede_idempotent_when_only_survivor_remains():

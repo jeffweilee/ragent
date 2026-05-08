@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS documents (
   source_id        VARCHAR(128) NOT NULL,
   source_app       VARCHAR(64)  NOT NULL,
   source_title     VARCHAR(256) NOT NULL,
-  source_workspace VARCHAR(64)  NULL,
+  source_meta      VARCHAR(1024) NULL,
   object_key       VARCHAR(256) NOT NULL,
   status           ENUM('UPLOADED','PENDING','READY','FAILED','DELETING') NOT NULL,
   attempt          INT          NOT NULL DEFAULT 0,

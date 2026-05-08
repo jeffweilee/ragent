@@ -123,11 +123,11 @@ async def test_inline_persists_source_url_and_workspace():
     svc, repo, _, _ = _service()
     await svc.create(
         create_user="alice",
-        request=_inline(source_url="https://x/y", source_workspace="eng"),
+        request=_inline(source_url="https://x/y", source_meta="eng"),
     )
     kwargs = repo.create.call_args.kwargs
     assert kwargs["source_url"] == "https://x/y"
-    assert kwargs["source_workspace"] == "eng"
+    assert kwargs["source_meta"] == "eng"
 
 
 async def test_inline_dispatches_pipeline_task():

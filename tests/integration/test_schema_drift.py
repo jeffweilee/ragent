@@ -9,13 +9,22 @@ import pytest
 
 from ragent.bootstrap.init_schema import _strip_comments
 
-pytestmark = [
-    pytest.mark.docker,
-    pytest.mark.skipif(
-        shutil.which("mysqldump") is None,
-        reason="mysqldump binary not available on PATH",
-    ),
-]
+pytestmark = [pytest.mark.docker]
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _require_mysqldump() -> None:
+    # Hard fail (not skip) when tooling is missing so the gate can't silently
+    # let schema-drift slip through. Runs before the heavy DB container
+    # fixtures so we don't pull mariadb:10.6 only to fail at the assertion.
+    if shutil.which("mysqldump") is None:
+        pytest.fail(
+            "mysqldump binary not on PATH — schema-drift gate cannot run. "
+            "Install mariadb-client (`make bootstrap` or "
+            "`sudo apt-get install -y mariadb-client`). "
+            "This test must not silently skip: it is the only check that "
+            "schema.sql and `alembic upgrade head` stay in lockstep."
+        )
 
 
 def _mysqldump(dsn: str) -> str:

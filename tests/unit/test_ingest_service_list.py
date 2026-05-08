@@ -18,7 +18,7 @@ def _make_doc(doc_id: str, **kwargs) -> DocumentRow:
         source_id="S",
         source_app="app",
         source_title="T",
-        source_workspace=None,
+        source_meta=None,
         object_key="key",
         status="READY",
         attempt=1,

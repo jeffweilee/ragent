@@ -7,6 +7,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
+from ragent.schemas.ingest import SOURCE_META_MAX
+
 _DEFAULT_PROVIDER = os.environ.get("RAGENT_DEFAULT_LLM_PROVIDER", "openai")
 _DEFAULT_MODEL = os.environ.get("RAGENT_DEFAULT_LLM_MODEL", "gptoss-120b")
 _DEFAULT_TEMPERATURE = float(os.environ.get("RAGENT_DEFAULT_TEMPERATURE", "0.7"))
@@ -90,6 +92,7 @@ drafted artefact. Default to QUESTION style when intent is unclear.
 )
 _PROVIDER_ALLOWLIST = frozenset({"openai"})
 _FILTER_MAX_LEN = 64
+_FILTER_META_MAX_LEN = SOURCE_META_MAX
 
 
 class ChatRequest(BaseModel):
@@ -99,7 +102,7 @@ class ChatRequest(BaseModel):
     temperature: float = _DEFAULT_TEMPERATURE
     max_tokens: int = _DEFAULT_MAX_TOKENS
     source_app: str | None = None
-    source_workspace: str | None = None
+    source_meta: str | None = None
 
     @field_validator("provider")
     @classmethod
@@ -108,13 +111,22 @@ class ChatRequest(BaseModel):
             raise ValueError(f"provider must be one of {sorted(_PROVIDER_ALLOWLIST)}")
         return v
 
-    @field_validator("source_app", "source_workspace", mode="before")
+    @field_validator("source_app", mode="before")
     @classmethod
-    def _validate_filter(cls, v: str | None) -> str | None:
+    def _validate_source_app(cls, v: str | None) -> str | None:
         if v is None:
             return v
         if v == "" or len(v) > _FILTER_MAX_LEN:
-            raise ValueError(f"filter field must be 1–{_FILTER_MAX_LEN} chars")
+            raise ValueError(f"source_app must be 1–{_FILTER_MAX_LEN} chars")
+        return v
+
+    @field_validator("source_meta", mode="before")
+    @classmethod
+    def _validate_source_meta(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if v == "" or len(v) > _FILTER_META_MAX_LEN:
+            raise ValueError(f"source_meta must be 1–{_FILTER_META_MAX_LEN} chars")
         return v
 
 

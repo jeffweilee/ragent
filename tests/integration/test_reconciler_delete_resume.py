@@ -28,7 +28,7 @@ def _make_doc(doc_id: str, status: str = "DELETING", seconds_ago: int = 600) -> 
         source_id="S1",
         source_app="confluence",
         source_title="T",
-        source_workspace=None,
+        source_meta=None,
         object_key=f"confluence_S1_{doc_id}",
         status=status,
         attempt=1,

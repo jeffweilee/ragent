@@ -12,8 +12,10 @@ from opentelemetry import trace
 from pydantic import BaseModel, Field, field_validator
 
 from ragent.pipelines.chat import build_es_filters, doc_to_source_entry, run_retrieval
+from ragent.schemas.ingest import SOURCE_META_MAX
 
 _FILTER_MAX_LEN = 64
+_FILTER_META_MAX_LEN = SOURCE_META_MAX
 logger = structlog.get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
 
@@ -21,16 +23,25 @@ _tracer = trace.get_tracer(__name__)
 class RetrieveRequest(BaseModel):
     query: str = Field(..., min_length=1)
     source_app: str | None = None
-    source_workspace: str | None = None
+    source_meta: str | None = None
     dedupe: bool = False
 
-    @field_validator("source_app", "source_workspace", mode="before")
+    @field_validator("source_app", mode="before")
     @classmethod
-    def _validate_filter(cls, v: str | None) -> str | None:
+    def _validate_source_app(cls, v: str | None) -> str | None:
         if v is None:
             return v
         if v == "" or len(v) > _FILTER_MAX_LEN:
-            raise ValueError(f"filter field must be 1–{_FILTER_MAX_LEN} chars")
+            raise ValueError(f"source_app must be 1–{_FILTER_MAX_LEN} chars")
+        return v
+
+    @field_validator("source_meta", mode="before")
+    @classmethod
+    def _validate_source_meta(cls, v: str | None) -> str | None:
+        if v is None:
+            return v
+        if v == "" or len(v) > _FILTER_META_MAX_LEN:
+            raise ValueError(f"source_meta must be 1–{_FILTER_META_MAX_LEN} chars")
         return v
 
 
@@ -64,7 +75,7 @@ def create_retrieve_router(retrieval_pipeline: Any) -> APIRouter:
                     run_retrieval,
                     retrieval_pipeline,
                     query=body.query,
-                    filters=build_es_filters(body.source_app, body.source_workspace),
+                    filters=build_es_filters(body.source_app, body.source_meta),
                 )
                 p_span.set_attribute("result_count", len(docs))
                 logger.info(

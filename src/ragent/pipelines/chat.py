@@ -25,12 +25,12 @@ _VALID_MODES = frozenset({"rrf", "concatenate", "vector_only", "bm25_only"})
 _logger = structlog.get_logger(__name__)
 
 
-def build_es_filters(source_app: str | None, source_workspace: str | None) -> dict | None:
+def build_es_filters(source_app: str | None, source_meta: str | None) -> dict | None:
     clauses = []
     if source_app:
         clauses.append({"field": "source_app", "operator": "==", "value": source_app})
-    if source_workspace:
-        clauses.append({"field": "source_workspace", "operator": "==", "value": source_workspace})
+    if source_meta:
+        clauses.append({"field": "source_meta", "operator": "==", "value": source_meta})
     if not clauses:
         return None
     if len(clauses) == 1:

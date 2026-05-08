@@ -172,7 +172,7 @@ def test_get_ingest_unchanged():
         source_id="S",
         source_app="a",
         source_title="T",
-        source_workspace=None,
+        source_meta=None,
         object_key="key",
         status="READY",
         attempt=1,

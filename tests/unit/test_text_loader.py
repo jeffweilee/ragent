@@ -13,7 +13,7 @@ def test_loader_builds_single_document_with_meta() -> None:
         source_url="https://x/y",
         source_title="t",
         source_app="app",
-        source_workspace="ws",
+        source_meta="ws",
     )
     docs = out["documents"]
     assert len(docs) == 1
@@ -25,7 +25,7 @@ def test_loader_builds_single_document_with_meta() -> None:
         "source_url": "https://x/y",
         "source_title": "t",
         "source_app": "app",
-        "source_workspace": "ws",
+        "source_meta": "ws",
     }
 
 

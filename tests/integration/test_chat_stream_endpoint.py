@@ -113,7 +113,7 @@ def test_chat_stream_injects_retrieved_context_into_llm_messages():
             "source_app": "confluence",
             "source_id": "S2",
             "source_title": "Stream Wiki",
-            "source_workspace": None,
+            "source_meta": None,
         },
     )
     retrieval_pipeline = MagicMock()
