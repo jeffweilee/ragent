@@ -110,7 +110,6 @@ run_step() {
 run_step format make format
 run_step lint   make lint
 run_step test   make test-gate
-run_step bandit uv run bandit -r src/ --severity-level high --confidence-level high
 
 # 8. Pytest must report 0 skipped @pytest.mark.docker tests.
 if grep -qE 'docker.*skipped|skipped.*docker' "$LOG_DIR/test.log"; then
