@@ -69,29 +69,40 @@ class _QueryEmbedder:
 
 @component
 class _SourceHydrator:
-    """Enrich chunk metadata with source_app/source_id/source_title from MariaDB."""
+    """Enrich READY chunks with source metadata; drop the rest (B36).
+
+    Acts as the retrieval correctness gate: chunks whose ``document_id`` is
+    not in the READY rows returned by ``get_sources_by_document_ids`` are
+    dropped, so orphan / mid-flight / demoted chunks never reach LLM
+    context or ``sources[]`` regardless of cleanup-path completeness.
+    """
 
     def __init__(self, doc_repo: Any) -> None:
         self._repo = doc_repo
 
     @component.output_types(documents=list[Document])
     def run(self, documents: list[Document]) -> dict:
+        # B36 — hydrator is the correctness gate. A chunk whose document_id is
+        # absent from the READY set (orphaned post-DELETE, mid-flight, demoted
+        # via supersede, or missing the meta key entirely) is dropped, not
+        # passed through. Decouples retrieval correctness from cleanup
+        # completeness so reconciler / fan_out failures stay disk-reclaim
+        # concerns, not user-visible bugs.
         ids = [d.meta.get("document_id") for d in documents if d.meta.get("document_id")]
         sources = anyio.from_thread.run(self._repo.get_sources_by_document_ids, ids) if ids else {}
         result = []
         for doc in documents:
             doc_id = doc.meta.get("document_id")
-            if doc_id and doc_id in sources:
-                source_app, source_id, source_title = sources[doc_id]
-                meta = {
-                    **doc.meta,
-                    "source_app": source_app,
-                    "source_id": source_id,
-                    "source_title": source_title,
-                }
-                result.append(dataclasses.replace(doc, meta=meta))
-            else:
-                result.append(doc)
+            if not (doc_id and doc_id in sources):
+                continue
+            source_app, source_id, source_title = sources[doc_id]
+            meta = {
+                **doc.meta,
+                "source_app": source_app,
+                "source_id": source_id,
+                "source_title": source_title,
+            }
+            result.append(dataclasses.replace(doc, meta=meta))
         return {"documents": result}
 
 
