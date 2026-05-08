@@ -213,6 +213,42 @@ def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
             item.add_marker(skip)
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _prewarm_containers_in_parallel(request):
+    """Start all session-scoped testcontainers concurrently.
+
+    pytest resolves fixtures lazily and serially, so when a docker-marked
+    test first injects all five containers the cost is the *sum* of their
+    startup times. Triggering ``getfixturevalue`` for each on its own
+    thread changes that to ``max(...)``, dominated by ES (~10s after the
+    heap cap) instead of ~20s sum. No-op when Docker is absent.
+    """
+    if not DOCKER_AVAILABLE:
+        return
+    from concurrent.futures import ThreadPoolExecutor
+
+    from testcontainers.core.container import Reaper
+
+    # Reaper.get_instance() is a singleton with no lock; if five threads
+    # each call .start() concurrently they race on first-init and one
+    # (or more) hit a 409 Conflict on the ryuk container name. Pre-warm
+    # serially so the threads see a populated _instance.
+    Reaper.get_instance()
+
+    names = [
+        "mariadb_container",
+        "es_container",
+        "redis_container",
+        "minio_container",
+        "wiremock_container",
+    ]
+    with ThreadPoolExecutor(max_workers=len(names)) as ex:
+        # request.getfixturevalue is the public hook for session-scoped
+        # fixture lookup; concurrent calls each cache their result on the
+        # session, so subsequent inject-by-name during tests is free.
+        list(ex.map(request.getfixturevalue, names))
+
+
 @pytest.fixture(scope="session")
 def mariadb_container():
     if not DOCKER_AVAILABLE:
