@@ -204,7 +204,14 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
 
-def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    # Record whether this collection actually contains any docker-marked
+    # tests. The session-scope prewarm fixture below reads this flag and
+    # no-ops when no docker test will run, so a `pytest tests/unit/` run
+    # does not pay the testcontainers startup tax.
+    config._has_docker_tests = any("docker" in item.keywords for item in items)  # noqa: SLF001
     if DOCKER_AVAILABLE:
         return
     skip = pytest.mark.skip(reason="Docker daemon not available")
@@ -221,9 +228,13 @@ def _prewarm_containers_in_parallel(request):
     test first injects all five containers the cost is the *sum* of their
     startup times. Triggering ``getfixturevalue`` for each on its own
     thread changes that to ``max(...)``, dominated by ES (~10s after the
-    heap cap) instead of ~20s sum. No-op when Docker is absent.
+    heap cap) instead of ~20s sum. No-op when Docker is absent or when
+    the current collection has no docker-marked tests (so unit-only runs
+    pay nothing).
     """
     if not DOCKER_AVAILABLE:
+        return
+    if not getattr(request.config, "_has_docker_tests", False):
         return
     from concurrent.futures import ThreadPoolExecutor
 
