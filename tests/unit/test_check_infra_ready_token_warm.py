@@ -27,7 +27,6 @@ def _ok_probe_patch(monkeypatch: pytest.MonkeyPatch) -> None:
 
         return _p
 
-    monkeypatch.setattr(app_mod, "_check_infra_ready", app_mod._check_infra_ready)
     import ragent.routers.health_probes as hp
 
     monkeypatch.setattr(hp, "probe_mariadb", _factory)

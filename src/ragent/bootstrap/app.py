@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import Any
 
+import anyio
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
@@ -57,10 +58,8 @@ async def _check_infra_ready(container: Any, broker: Any) -> None:
         if broker.find_task(label) is None:
             raise RuntimeError(f"infra not ready: TaskIQ task not registered: {label!r}")
 
-    # B38: pre-warm AI token exchange so a wrong AI_API_AUTH_URL or stale J1
+    # Pre-warm AI token exchange so a wrong AI_API_AUTH_URL or stale J1
     # surfaces as a boot abort instead of a first-request 500.
-    import anyio
-
     for tm in container.token_managers:
         if tm is None:
             continue

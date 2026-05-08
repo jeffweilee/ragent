@@ -16,7 +16,6 @@ from unittest.mock import AsyncMock, MagicMock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from ragent.plugins.protocol import ExtractorPlugin
 from ragent.plugins.registry import PluginRegistry
 from ragent.routers.ingest import create_router
 from ragent.services.ingest_service import IngestService
@@ -127,9 +126,3 @@ def test_delete_skips_fan_out_when_lock_unavailable() -> None:
     assert resp.status_code == 204
     registry.fan_out_delete.assert_not_called()
     repo.delete.assert_not_called()
-
-
-# Defensive type-only assertion: IngestService still accepts ExtractorPlugin-shaped
-# registries via duck typing — Mypy isn't enforced in CI but the test guards against
-# stripping the runtime check accidentally.
-_: ExtractorPlugin | None = None

@@ -227,15 +227,11 @@ class DocumentRepository:
     async def promote_to_ready_and_demote_siblings(
         self, document_id: str, source_id: str, source_app: str
     ) -> None:
-        """B39: atomic READY transition for the new revision.
-
-        In one tx: flip the worker's PENDING → READY, then demote any other
-        (source_id, source_app) row currently READY to DELETING. Combined
-        with B36 hydrator drop, retrieval transitions to the new revision
-        the moment this tx commits — no race window where both old and new
-        are READY. The reconciler still runs supersede as a belt-and-
-        suspenders safety net for crash recovery between the two UPDATEs.
+        """Atomic READY transition: promote the new revision and demote any
+        prior READY sibling under (source_id, source_app) in one tx, so
+        retrieval flips revisions on commit without a both-READY window.
         """
+        assert_transition("PENDING", "READY")
         async with self._engine.begin() as conn:
             promoted = await conn.execute(
                 text(

@@ -82,12 +82,6 @@ class _SourceHydrator:
 
     @component.output_types(documents=list[Document])
     def run(self, documents: list[Document]) -> dict:
-        # B36 — hydrator is the correctness gate. A chunk whose document_id is
-        # absent from the READY set (orphaned post-DELETE, mid-flight, demoted
-        # via supersede, or missing the meta key entirely) is dropped, not
-        # passed through. Decouples retrieval correctness from cleanup
-        # completeness so reconciler / fan_out failures stay disk-reclaim
-        # concerns, not user-visible bugs.
         ids = [d.meta.get("document_id") for d in documents if d.meta.get("document_id")]
         sources = anyio.from_thread.run(self._repo.get_sources_by_document_ids, ids) if ids else {}
         result = []

@@ -67,12 +67,8 @@ class IngestService:
     ) -> None:
         self._repo = repo
         self._storage = storage  # MinioSiteRegistry
-        self._broker = broker  # TaskiqDispatcher (create) — None in supersede path
-        # B40: registry is the PluginRegistry; HTTP DELETE fans out plugin
-        # cleanup synchronously before the row is hard-deleted. Falls back to
-        # broker introspection so the supersede worker (which currently passes
-        # the registry as broker) keeps working until both call sites migrate.
-        self._registry = registry if registry is not None else broker
+        self._broker = broker  # TaskiqDispatcher (create); unused in supersede path
+        self._registry = registry
 
     async def create(
         self,
@@ -154,9 +150,9 @@ class IngestService:
         except LockNotAvailable:
             return
 
-        # B40: cascade plugin cleanup (ES chunks, etc.) before the DB row
-        # is hard-deleted. Hydrator drop (B36) keeps any straggler chunks
-        # invisible to /chat between this call and reconciler reclaim.
+        # Cascade plugin cleanup (ES chunks, etc.) before the DB row is
+        # hard-deleted. Hydrator drop keeps any straggler chunks invisible
+        # to /chat between this call and reconciler reclaim.
         await self._registry.fan_out_delete(document_id)
 
         if doc.status in ("UPLOADED", "PENDING"):
