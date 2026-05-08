@@ -85,7 +85,7 @@ class IngestService:
             source_id=request.source_id,
             source_app=request.source_app,
             source_title=request.source_title,
-            source_workspace=request.source_workspace,
+            source_meta=request.source_meta,
             source_url=request.source_url,
             object_key=object_key,
             ingest_type=ingest_type,

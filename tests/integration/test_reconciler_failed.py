@@ -23,7 +23,7 @@ def _make_doc(doc_id: str, attempt: int = 6, seconds_ago: int = 600) -> Document
         source_id="S1",
         source_app="confluence",
         source_title="T",
-        source_workspace=None,
+        source_meta=None,
         object_key=f"confluence_S1_{doc_id}",
         status="PENDING",
         attempt=attempt,

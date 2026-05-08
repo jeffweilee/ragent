@@ -7,12 +7,27 @@
 
 ## 1. Motivation
 
-Two distinct problems share the same shape:
+### 1.1 Primary driver — eliminate the user-visible inconsistency window
 
-1. **Re-ingest of the same `(source_id, source_app)`** must replace the previous content end-to-end. Today the `documents` table carries everything; eventual uniqueness via supersede leaves orphan chunks in Elasticsearch (see review on this branch, fixed in this PR for the immediate cascade) and the model still entangles "logical document" with "one physical ingest".
-2. **Embedding-model migration** (e.g. `bge-m3` → next-gen embedder). During the rollout, both the old and new embedding indexes must coexist and queries must be served by whichever revision matches the **query embedding's** model. Today `chunks_v1` carries chunks with no notion of which embedding model produced them at the document level, so a multi-model rollout is unsafe.
+The current model couples **logical visibility** to **physical row count**: a row is visible to retrieval iff `status = 'READY'`. During re-ingest of the same `(source_id, source_app)`, two rows are READY at the same time between "new doc finishes" and "reconciler runs supersede". For that window (seconds, but unbounded if the reconciler stalls) **users see old + new content interleaved in chat results** — same logical document, two physical sets of chunks both ranked. This is not a theoretical bug; it surfaces every time content updates.
 
-A single concept — **revision** — addresses both: each ingest produces a new revision; the document points to the **active revision**; old revisions linger until either superseded or eligible for sweep; embedding-model swaps are just "ingest a revision under a new model".
+Splitting the document into `documents` + `document_revisions` with an `active_revision_id` pointer separates two concerns the current schema conflates:
+
+| Concern | Current model | Revision model |
+|---|---|---|
+| New content visible to users | Immediate (status flips READY) | Immediate (atomic pointer flip in same tx) |
+| Old content stops being retrieved | **Wait for reconciler + supersede** (race window) | Immediate (retrieval filters on `revision_id = active_revision_id`) |
+| Old content removed from disk | Coupled to "stops being retrieved" | Decoupled; sweep happens later per audit window |
+| What users see during the window | **Old + new mixed** | Only new |
+
+The win is moving "switchover" from `eventual consistency via reconciler tick` to `atomic conditional UPDATE inside the worker transaction`. Reconciler stays — but only for physical reclaim, not for correctness.
+
+### 1.2 Secondary drivers
+
+1. **ES-orphan safety net.** Even with the cascade fix on this branch (`supersede` now routes through `self.delete`), the design still relies on the supersede path running. Active-pointer routing means even a stalled supersede leaves the system **logically correct** — old chunks exist on disk but are never ranked because the filter excludes them.
+2. **Embedding-model migration.** `bge-m3` → next-gen embedder needs both indexes to coexist with per-document routing of the query embedding. A revision row carries `embedding_model` + `embedding_dim`; the active pointer encodes "which model serves this doc right now". Migration becomes "stand up parallel index, reembed cohort, flip pointers". See §3.4.
+3. **Rollback capability.** Within the audit window, rollback is a pointer flip back to a prior revision — no re-embed, no re-ingest. After the window, rollback is a re-ingest under the old model. The same machinery covers both.
+4. **Audit / reproducibility.** `(document_id, revision_id, embedding_model, created_at)` lets us answer "what content + what model produced this answer last week" exactly.
 
 ## 2. Concept
 
@@ -79,7 +94,7 @@ This is the structural reason for revisions: without them, "switch the embedding
 - ADD `id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY` (drop existing PK on `document_id`, recreate as `UNIQUE KEY`).
 - ADD `active_revision_id CHAR(26) NULL`.
 - ADD `UNIQUE KEY uq_source_pair (source_id, source_app)` — **only safe after** the supersede backlog is drained and revisions own transient duplicates.
-- DROP `source_workspace` (out of scope for this branch per session decision; tracked separately).
+- `source_workspace` is renamed to `source_meta VARCHAR(1024)` on this branch (free-format); revision model inherits the new name.
 - KEEP `idx_source_app_id_status_created` until reconciler stops querying it.
 - The status / object_key / attempt / heartbeat / per-ingest columns on `documents` MOVE to `document_revisions`.
 
@@ -104,20 +119,40 @@ This is the structural reason for revisions: without them, "switch the embedding
 
 ## 6. Risks / open questions
 
-1. **Audit-window for non-active revisions** — duration, sweep cadence, whether we keep MinIO objects too. Default proposal: 24h, swept by reconciler.
-2. **Embedding dim drift** — different revisions can have different `embedding_dim`; ES index `chunks_v1` is single-dim. Migration probably needs a second index `chunks_v2` for the new model and a routing rule by model. Decide before code.
-3. **Active-pointer write contention** — atomic `UPDATE … WHERE active_revision_id IN (…)` is single-row, fine. Reconciler must not race the worker; standard `SELECT … FOR UPDATE SKIP LOCKED` pattern.
-4. **API breakage** — `documents.status` no longer exists; `GET /ingest/{id}` shape changes (status moves under `revisions[]` or `active_revision`). Need a migration story for clients.
-5. **Backfill cost** — adding `revision_id` to all existing chunks is an ES update-by-query; size-dependent.
+### 6.1 Layered audit window (chosen)
 
-## 7. Decision needed
+A single global `AUDIT_WINDOW` is wrong — different revision sources have different retention value. Add a column `retention_class ENUM('migration','reingest','none')` on `document_revisions`; sweep job applies a per-class window:
 
-The team should decide:
-- **D1**: Adopt revision model in P1 vs. defer to P2. (Recommendation: P2 — current branch fixes the immediate cascade bug; revision model is a multi-day track.)
-- **D2**: Single-model bulk-flip vs. per-document mixed-model retrieval during embedding migration. (Recommendation: bulk-flip — simpler, sufficient for first migration.)
-- **D3**: Whether `source_workspace` removal (this branch) lands before or after revision migration. (Recommendation: before — independent, mechanical.)
+| `retention_class` | Default window | Rationale |
+|---|---|---|
+| `migration` | **∞** (or 90 d if storage-bound) | Embedding-model rollouts are rare, operator-driven, and rollback is a pointer flip — only possible while old chunks still exist. |
+| `reingest` | **24 h** | Repeated content updates are frequent and rarely need historical reconstruction. |
+| `none` | **0** (immediate sweep on demotion) | Reserved for explicit "do not retain" flows (e.g. PII redaction reingest). |
 
-If approved, follow-up work:
-- Add Decision Log row in `docs/00_spec.md` §7.
-- Spec rewrite for §3.1 / §3.4 / §6.
+**Operational guards** required when any window is set to ∞ (without these the rule is irresponsible):
+
+1. **Explicit `DELETE /ingest/{id}` always cascades all revisions**, regardless of retention class. Compliance ("right to be forgotten") cannot be blocked by retention policy.
+2. **Capacity alarms** on ES disk + MinIO bucket size; sweep falls back to "drop oldest non-active revisions first" past a threshold.
+3. **Per-source override**: operator can shorten the window on a hot/large source without touching global config.
+4. **Backup exclusion**: snapshots back up only `active_revision` chunks by default; non-active revisions are not part of the disaster-recovery surface.
+
+### 6.2 Other open questions
+
+1. **Embedding dim drift** — different revisions can have different `embedding_dim`; ES `dense_vector` is dim-locked per field. Plan: parallel indexes `chunks_v1` (old dim) + `chunks_v2` (new dim) keyed by `embedding_model`; retrieval routes by active revision's model. Decided before code (B33 — per-document active-model routing).
+2. **Active-pointer write contention** — atomic `UPDATE … WHERE active_revision.created_at < new_revision.created_at` is single-row, fine. Reconciler must not race the worker; standard `SELECT … FOR UPDATE SKIP LOCKED` pattern.
+3. **API breakage** — `documents.status` no longer exists; `GET /ingest/{id}` shape changes (status moves under `active_revision` or a `revisions[]` array). Need a client-migration story.
+4. **Backfill cost** — adding `revision_id` to all existing chunks is an ES update-by-query; size-dependent. Acceptable as a one-time migration cost.
+
+## 7. Decisions (locked 2026-05-07)
+
+These are recorded in `docs/00_spec.md` §7 as B32 / B33 / B34.
+
+- **D1 (B32)**: **Revision model deferred to Phase 2.** This branch only fixes the supersede cascade and adds the survivor guard; no schema split. Phase 1 stays focused on closing the existing bugs. Revision model is its own multi-day track on a new branch with its own plan.md entries.
+- **D2 (B33)**: **Per-document active-model routing** during embedding migration. Query path looks up each candidate document's active revision, groups by `embedding_model`, and embeds the question once per distinct model in the candidate set (typically 1, at most 2 during rollout). Enables canary / cohort migration. Bulk-flip (single global model) rejected — no canary path.
+- **D3 (B34)**: **Layered audit window for revision sweep** — `retention_class ∈ {migration, reingest, none}`, defaults `migration=∞`, `reingest=24h`, `none=0`. Subject to the four operational guards in §6.1. Single global window rejected — too aggressive for migration rollback, too lax for routine reingests.
+
+### Follow-up work (when revision model implementation begins on a new branch)
+
+- Spec rewrite for §3.1 / §3.4 / §6 to introduce revision concept.
 - New entries in `docs/00_plan.md` for the implementation track.
+- New `00_journal.md` entries on the Architecture / Spec domains capturing why the split matters (anchor: 1.1 above).

@@ -27,7 +27,7 @@ def _row(**kwargs) -> dict:
         source_id="DOC-1",
         source_app="confluence",
         source_title="My Title",
-        source_workspace=None,
+        source_meta=None,
         object_key="confluence_DOC-1_AAAA",
         status="UPLOADED",
         attempt=0,
@@ -93,7 +93,7 @@ async def test_create_inserts_all_mandatory_fields():
     conn.execute.assert_called_once()
 
 
-async def test_create_with_optional_source_workspace():
+async def test_create_with_optional_source_meta():
     engine, _ = _mock_engine()
     repo = DocumentRepository(engine)
     doc_id = await repo.create(
@@ -103,7 +103,7 @@ async def test_create_with_optional_source_workspace():
         source_app="jira",
         source_title="T",
         object_key="jira_S2_ID2",
-        source_workspace="eng",
+        source_meta="eng",
     )
     assert doc_id == "ID2"
 
@@ -124,7 +124,7 @@ async def test_get_returns_document_row():
     assert doc.status == "READY"
     assert doc.source_title == "My Title"
     assert doc.source_app == "confluence"
-    assert doc.source_workspace is None
+    assert doc.source_meta is None
 
 
 async def test_get_returns_none_for_missing():
@@ -140,7 +140,7 @@ async def test_get_returns_all_fields():
         source_id="DOC-3",
         source_app="notion",
         source_title="My Doc",
-        source_workspace="hr",
+        source_meta="hr",
         object_key="notion_DOC-3_ID3",
         status="PENDING",
         attempt=2,
@@ -151,7 +151,7 @@ async def test_get_returns_all_fields():
     repo = DocumentRepository(engine)
     doc = await repo.get("ID3")
     assert doc.create_user == "dave"
-    assert doc.source_workspace == "hr"
+    assert doc.source_meta == "hr"
     assert doc.attempt == 2
 
 

@@ -49,7 +49,7 @@ def test_mariadb_tables_have_expected_columns(mariadb_dsn: str) -> None:
         "source_id",
         "source_app",
         "source_title",
-        "source_workspace",
+        "source_meta",
         "object_key",
         "status",
         "attempt",

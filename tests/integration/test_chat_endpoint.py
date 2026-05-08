@@ -66,7 +66,7 @@ def test_chat_sources_populated_with_doc_metadata():
             "source_app": "confluence",
             "source_id": "S1",
             "source_title": "Title",
-            "source_workspace": None,
+            "source_meta": None,
         },
     )
     app, _ = _make_app(retrieval_docs=[doc])
@@ -113,7 +113,7 @@ def test_chat_injects_retrieved_context_into_llm_messages():
             "source_app": "confluence",
             "source_id": "S1",
             "source_title": "Deep Thought",
-            "source_workspace": None,
+            "source_meta": None,
         },
     )
     app, llm_client = _make_app(retrieval_docs=[doc], llm_content="42 [Deep Thought]")

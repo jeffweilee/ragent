@@ -63,8 +63,8 @@ class VectorExtractor:
                 "embedding": v,
                 "source_app": doc.source_app,
             }
-            if doc.source_workspace is not None:
-                source["source_workspace"] = doc.source_workspace
+            if doc.source_meta is not None:
+                source["source_meta"] = doc.source_meta
             actions.append(
                 {"_op_type": "index", "_index": self._index, "_id": c.chunk_id, "_source": source}
             )

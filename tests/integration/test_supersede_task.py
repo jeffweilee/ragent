@@ -28,7 +28,7 @@ def _make_doc(
         source_id=source_id,
         source_app=source_app,
         source_title="T",
-        source_workspace=None,
+        source_meta=None,
         object_key=f"{source_app}_{source_id}_{doc_id}",
         status="READY",
         attempt=1,

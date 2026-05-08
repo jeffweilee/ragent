@@ -17,6 +17,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 SOURCE_URL_MAX = 2048
+SOURCE_META_MAX = 1024
 
 
 class IngestMime(StrEnum):
@@ -31,7 +32,7 @@ class _IngestBase(BaseModel):
     source_id: str = Field(min_length=1)
     source_app: str = Field(min_length=1)
     source_title: str = Field(min_length=1)
-    source_workspace: str | None = None
+    source_meta: str | None = Field(default=None, max_length=SOURCE_META_MAX)
     source_url: str | None = Field(default=None, max_length=SOURCE_URL_MAX)
     mime_type: IngestMime
 

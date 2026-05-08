@@ -18,7 +18,7 @@ def _make_doc() -> DocumentRow:
         source_id="S1",
         source_app="confluence",
         source_title="T",
-        source_workspace=None,
+        source_meta=None,
         object_key="confluence_S1_DOC001",
         status="UPLOADED",
         attempt=0,

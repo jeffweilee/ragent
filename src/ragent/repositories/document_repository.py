@@ -31,7 +31,7 @@ class DocumentRow:
     source_id: str
     source_app: str
     source_title: str
-    source_workspace: str | None
+    source_meta: str | None
     object_key: str
     status: str
     attempt: int
@@ -51,7 +51,7 @@ class DocumentRow:
             source_id=m["source_id"],
             source_app=m["source_app"],
             source_title=m["source_title"],
-            source_workspace=m.get("source_workspace"),
+            source_meta=m.get("source_meta"),
             object_key=m["object_key"],
             status=m["status"],
             attempt=m["attempt"],
@@ -102,7 +102,7 @@ class DocumentRepository:
         source_app: str,
         source_title: str,
         object_key: str,
-        source_workspace: str | None = None,
+        source_meta: str | None = None,
         source_url: str | None = None,
         ingest_type: str = "inline",
         minio_site: str | None = None,
@@ -113,11 +113,11 @@ class DocumentRepository:
                 """
                 INSERT INTO documents
                     (document_id, create_user, source_id, source_app, source_title,
-                     source_workspace, source_url, object_key, ingest_type, minio_site,
+                     source_meta, source_url, object_key, ingest_type, minio_site,
                      mime_type, status, attempt, created_at, updated_at)
                 VALUES
                     (:document_id, :create_user, :source_id, :source_app, :source_title,
-                     :source_workspace, :source_url, :object_key, :ingest_type, :minio_site,
+                     :source_meta, :source_url, :object_key, :ingest_type, :minio_site,
                      :mime_type, 'UPLOADED', 0, NOW(6), NOW(6))
                 """
             ),
@@ -127,7 +127,7 @@ class DocumentRepository:
                 "source_id": source_id,
                 "source_app": source_app,
                 "source_title": source_title,
-                "source_workspace": source_workspace,
+                "source_meta": source_meta,
                 "source_url": source_url,
                 "object_key": object_key,
                 "ingest_type": ingest_type,

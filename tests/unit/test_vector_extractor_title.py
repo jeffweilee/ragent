@@ -12,7 +12,7 @@ from ragent.plugins.vector import Chunk, VectorExtractor
 class _Doc:
     source_title: str
     source_app: str
-    source_workspace: str | None = None
+    source_meta: str | None = None
 
 
 @dataclass
@@ -72,23 +72,23 @@ def test_es_bulk_doc_carries_required_fields() -> None:
 
 
 def test_es_bulk_doc_no_extra_fields_without_workspace() -> None:
-    doc = _Doc(source_title="Doc", source_app="slack", source_workspace=None)
+    doc = _Doc(source_title="Doc", source_app="slack", source_meta=None)
     chunks = [Chunk(chunk_id="c1", document_id="d1", ord=0, text="hi", lang="en")]
     repo, store, embedder, es = _build(doc, chunks)
     plugin = VectorExtractor(repo=repo, chunks=store, embedder=embedder, es=es)
     plugin.extract("d1")
     source = es.calls[0][0]["_source"]
-    assert "source_workspace" not in source
+    assert "source_meta" not in source
 
 
 def test_es_bulk_doc_includes_workspace_when_set() -> None:
-    doc = _Doc(source_title="Doc", source_app="slack", source_workspace="team-alpha")
+    doc = _Doc(source_title="Doc", source_app="slack", source_meta="team-alpha")
     chunks = [Chunk(chunk_id="c1", document_id="d1", ord=0, text="hi", lang="en")]
     repo, store, embedder, es = _build(doc, chunks)
     plugin = VectorExtractor(repo=repo, chunks=store, embedder=embedder, es=es)
     plugin.extract("d1")
     source = es.calls[0][0]["_source"]
-    assert source["source_workspace"] == "team-alpha"
+    assert source["source_meta"] == "team-alpha"
 
 
 def test_constructor_requires_repo_not_embedder_first() -> None:

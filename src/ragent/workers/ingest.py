@@ -86,7 +86,7 @@ async def ingest_pipeline_task(document_id: str) -> None:
             "source_url": doc.source_url,
             "source_title": doc.source_title,
             "source_app": doc.source_app,
-            "source_workspace": doc.source_workspace,
+            "source_meta": doc.source_meta,
         }
         result = container.ingest_pipeline.run({"loader": loader_kwargs})
         written = result.get("writer", {}).get("documents_written", 0)

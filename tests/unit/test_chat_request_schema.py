@@ -79,7 +79,7 @@ def test_source_app_and_workspace_optional():
     ChatRequest, _ = _import()
     req = ChatRequest(messages=[{"role": "user", "content": "hi"}])
     assert req.source_app is None
-    assert req.source_workspace is None
+    assert req.source_meta is None
 
 
 def test_source_app_empty_string_rejected():
@@ -98,12 +98,12 @@ def test_source_app_too_long_rejected():
     assert any("source_app" in str(e["loc"]) for e in errors)
 
 
-def test_source_workspace_empty_string_rejected():
+def test_source_meta_empty_string_rejected():
     ChatRequest, _ = _import()
     with pytest.raises(ValidationError) as exc_info:
-        ChatRequest(messages=[{"role": "user", "content": "hi"}], source_workspace="")
+        ChatRequest(messages=[{"role": "user", "content": "hi"}], source_meta="")
     errors = exc_info.value.errors()
-    assert any("source_workspace" in str(e["loc"]) for e in errors)
+    assert any("source_meta" in str(e["loc"]) for e in errors)
 
 
 def test_default_system_prompt_enforces_markdown():
@@ -148,9 +148,15 @@ def test_rag_grounding_rules_enforces_markdown():
     assert "markdown" in msgs[0]["content"].lower()
 
 
-def test_source_workspace_too_long_rejected():
+def test_source_meta_too_long_rejected():
     ChatRequest, _ = _import()
     with pytest.raises(ValidationError) as exc_info:
-        ChatRequest(messages=[{"role": "user", "content": "hi"}], source_workspace="y" * 65)
+        ChatRequest(messages=[{"role": "user", "content": "hi"}], source_meta="y" * 1025)
     errors = exc_info.value.errors()
-    assert any("source_workspace" in str(e["loc"]) for e in errors)
+    assert any("source_meta" in str(e["loc"]) for e in errors)
+
+
+def test_source_meta_long_value_accepted():
+    ChatRequest, _ = _import()
+    req = ChatRequest(messages=[{"role": "user", "content": "hi"}], source_meta="y" * 1024)
+    assert req.source_meta == "y" * 1024

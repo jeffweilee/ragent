@@ -88,6 +88,28 @@ def init_es(es_url: str) -> None:
         logger.info("es.index_created", index=index)
 
 
+def init_minio_buckets() -> None:
+    """Create the configured bucket on every site if missing. Idempotent."""
+    from ragent.storage.minio_registry import MinioSiteRegistry
+
+    try:
+        registry = MinioSiteRegistry.from_env()
+    except ValueError as exc:
+        # MinIO not configured (e.g. lightweight test boot): skip silently.
+        logger.info("minio.init_skipped", reason=str(exc))
+        return
+    for name, rec in registry._sites.items():  # noqa: SLF001 — boot path
+        try:
+            if not rec.client.bucket_exists(rec.bucket):
+                rec.client.make_bucket(rec.bucket)
+                logger.info("minio.bucket_created", site=name, bucket=rec.bucket)
+            else:
+                logger.info("minio.bucket_exists", site=name, bucket=rec.bucket)
+        except Exception:
+            logger.exception("minio.bucket_init_error", site=name, bucket=rec.bucket)
+            raise
+
+
 def _to_sync_dsn(dsn: str) -> str:
     return dsn.replace("mysql+aiomysql://", "mysql+pymysql://")
 
@@ -102,6 +124,7 @@ def auto_init(db_url: str, es_url: str) -> None:
     engine = create_engine(_to_sync_dsn(db_url))
     init_mariadb(engine)
     init_es(es_url)
+    init_minio_buckets()
 
 
 def init_schema() -> None:

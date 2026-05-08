@@ -11,7 +11,7 @@ from ragent.plugins.vector import Chunk, VectorExtractor
 class _Doc:
     source_title: str = "Title"
     source_app: str = "app"
-    source_workspace: str | None = None
+    source_meta: str | None = None
 
 
 @dataclass
