@@ -1,4 +1,4 @@
--- 004_rename_source_workspace_to_source_meta.sql
+-- 005_rename_source_workspace_to_source_meta.sql
 -- B35 (2026-05-07): rename column source_workspace -> source_meta and widen
 -- VARCHAR(64) -> VARCHAR(1024). Field becomes free-format metadata.
 --
@@ -6,9 +6,9 @@
 -- MariaDB cannot use ALGORITHM=INSTANT and falls back to COPY: the table
 -- is rebuilt and a SHARED metadata lock is held for the duration. With
 -- LOCK=SHARED reads continue but writes are blocked. Schedule during a
--- low-write window on prod; on small `documents` tables the rebuild
--- completes in seconds. ALGORITHM/LOCK are stated explicitly so the
--- planner can't silently pick a different combination.
+-- low-write window on prod (small `documents` tables rebuild in seconds).
+-- ALGORITHM/LOCK are stated explicitly so the planner can't silently
+-- pick a different combination.
 --
 -- ES note: existing `chunks_v1` indexes keep the old field name on
 -- upgrade — they need a reindex (or alias swap) before the renamed

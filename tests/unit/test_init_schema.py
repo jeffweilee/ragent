@@ -127,9 +127,7 @@ def test_init_minio_buckets_creates_bucket_when_missing() -> None:
     name, rec = _site("__default__", "ragent-uploads", exists=False)
     registry = MagicMock()
     registry._sites = {name: rec}
-    with patch(
-        "ragent.storage.minio_registry.MinioSiteRegistry.from_env", return_value=registry
-    ):
+    with patch("ragent.storage.minio_registry.MinioSiteRegistry.from_env", return_value=registry):
         init_minio_buckets()
     rec.client.make_bucket.assert_called_once_with("ragent-uploads")
 
@@ -138,9 +136,7 @@ def test_init_minio_buckets_is_idempotent_when_bucket_exists() -> None:
     name, rec = _site("__default__", "ragent-uploads", exists=True)
     registry = MagicMock()
     registry._sites = {name: rec}
-    with patch(
-        "ragent.storage.minio_registry.MinioSiteRegistry.from_env", return_value=registry
-    ):
+    with patch("ragent.storage.minio_registry.MinioSiteRegistry.from_env", return_value=registry):
         init_minio_buckets()
     rec.client.make_bucket.assert_not_called()
 
@@ -158,9 +154,10 @@ def test_init_minio_buckets_propagates_errors() -> None:
     rec.client.make_bucket.side_effect = RuntimeError("S3 down")
     registry = MagicMock()
     registry._sites = {name: rec}
-    with patch(
-        "ragent.storage.minio_registry.MinioSiteRegistry.from_env", return_value=registry
-    ), pytest.raises(RuntimeError):
+    with (
+        patch("ragent.storage.minio_registry.MinioSiteRegistry.from_env", return_value=registry),
+        pytest.raises(RuntimeError),
+    ):
         init_minio_buckets()
 
 
