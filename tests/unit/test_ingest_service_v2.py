@@ -50,7 +50,7 @@ def _inline(**over):
         source_id="DOC-1",
         source_app="app",
         source_title="T",
-        content_type="text/markdown",
+        mime_type="text/markdown",
         content="# H1\nbody\n",
     )
     base.update(over)
@@ -63,7 +63,7 @@ def _file(**over):
         source_id="DOC-2",
         source_app="s3",
         source_title="T",
-        content_type="text/html",
+        mime_type="text/html",
         minio_site="tenant-eu-1",
         object_key="reports/2025.html",
     )

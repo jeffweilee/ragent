@@ -81,7 +81,7 @@ class _TextLoader:
         source_app: str | None = None,
         source_workspace: str | None = None,
     ) -> dict:
-        meta: dict[str, Any] = {"mime_type": mime_type, "content_type": mime_type}
+        meta: dict[str, Any] = {"mime_type": mime_type}
         for k, v in (
             ("document_id", document_id),
             ("source_url", source_url),
@@ -282,7 +282,7 @@ class _MimeAwareSplitter:
     def run(self, documents: list[Document]) -> dict:
         atoms: list[Document] = []
         for doc in documents:
-            mime = doc.meta.get("mime_type") or doc.meta.get("content_type") or "text/plain"
+            mime = doc.meta.get("mime_type") or "text/plain"
             if mime == "text/plain":
                 out = self._plain.run([doc])["documents"]
                 # DocumentSplitter doesn't set raw_content; default to its content.

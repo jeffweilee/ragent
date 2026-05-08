@@ -37,8 +37,8 @@
 > **v2 OVERRIDE (2026-05-06)** — see `docs/team/2026_05_06_ingest_api_v2.md` for the full team decision; the operative contract below supersedes the v1 multipart description further down.
 >
 > **API:** `POST /ingest` is **JSON only** (no multipart). Body discriminator `ingest_type ∈ {inline, file}`:
-> - `inline` → `{ingest_type, content_type, content: str, source_id, source_app, source_title, source_workspace?, source_url?}`. `content` is UTF-8; size ceiling `INGEST_INLINE_MAX_BYTES` (default 10 MB) on the encoded byte length. API stages the content to MinIO `__default__` site.
-> - `file` → `{ingest_type, content_type, minio_site, object_key, source_id, source_app, source_title, source_workspace?, source_url?}`. API HEAD-probes `(minio_site, object_key)`; absent → 422 `INGEST_OBJECT_NOT_FOUND`; size > `INGEST_FILE_MAX_BYTES` (50 MB) → 413. **No copy** — worker reads from caller's bucket.
+> - `inline` → `{ingest_type, mime_type, content: str, source_id, source_app, source_title, source_workspace?, source_url?}`. `content` is UTF-8; size ceiling `INGEST_INLINE_MAX_BYTES` (default 10 MB) on the encoded byte length. API stages the content to MinIO `__default__` site.
+> - `file` → `{ingest_type, mime_type, minio_site, object_key, source_id, source_app, source_title, source_workspace?, source_url?}`. API HEAD-probes `(minio_site, object_key)`; absent → 422 `INGEST_OBJECT_NOT_FOUND`; size > `INGEST_FILE_MAX_BYTES` (50 MB) → 413. **No copy** — worker reads from caller's bucket.
 >
 > **MIME allow-list:** `text/plain`, `text/markdown`, `text/html`. Anything else → 415 `INGEST_MIME_UNSUPPORTED`. **CSV is dropped** (was v1).
 >
@@ -488,17 +488,17 @@ Retrieval may over-fetch (`K' = K × overfetch_factor`) so that after permission
 > **v2 OVERRIDE for `POST /ingest`** — JSON body only (no multipart).
 > ```jsonc
 > // ingest_type=inline
-> { "ingest_type":"inline", "content_type":"text/markdown", "content":"# Title\n…",
+> { "ingest_type":"inline", "mime_type":"text/markdown", "content":"# Title\n…",
 >   "source_id":"DOC-1", "source_app":"confluence", "source_title":"Q3 OKR",
 >   "source_workspace":"eng",         // optional
 >   "source_url":"https://wiki/…" }   // optional, opaque ≤ 2048
 > // ingest_type=file
-> { "ingest_type":"file", "content_type":"text/html",
+> { "ingest_type":"file", "mime_type":"text/html",
 >   "minio_site":"tenant-eu-1", "object_key":"reports/2025.html",
 >   "source_id":"DOC-2", "source_app":"s3-importer", "source_title":"Annual Report",
 >   "source_workspace":"finance", "source_url":"https://…" }
 > ```
-> Validation order: discriminator-shape (422) → `content_type ∈ {text/plain,text/markdown,text/html}` (415) → inline `len(content.encode("utf-8")) ≤ INGEST_INLINE_MAX_BYTES` / file HEAD-probe size ≤ `INGEST_FILE_MAX_BYTES` (413) → `minio_site` resolved against `MinioSiteRegistry` (422 `INGEST_MINIO_SITE_UNKNOWN`) → file HEAD-probe object exists (422 `INGEST_OBJECT_NOT_FOUND`).
+> Validation order: discriminator-shape (422) → `mime_type ∈ {text/plain,text/markdown,text/html}` (415) → inline `len(content.encode("utf-8")) ≤ INGEST_INLINE_MAX_BYTES` / file HEAD-probe size ≤ `INGEST_FILE_MAX_BYTES` (413) → `minio_site` resolved against `MinioSiteRegistry` (422 `INGEST_MINIO_SITE_UNKNOWN`) → file HEAD-probe object exists (422 `INGEST_OBJECT_NOT_FOUND`).
 
 | Method | Path | P1 Auth | Request | Response |
 |---|---|---|---|---|

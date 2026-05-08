@@ -90,14 +90,14 @@ class IngestService:
             object_key=object_key,
             ingest_type=ingest_type,
             minio_site=minio_site,
-            mime_type=request.content_type.value,
+            mime_type=request.mime_type.value,
         )
         await self._broker.enqueue("ingest.pipeline", document_id=document_id)
         logger.info(
             "ingest.received",
             document_id=document_id,
             ingest_type=ingest_type,
-            content_type=request.content_type.value,
+            mime_type=request.mime_type.value,
             source_id=request.source_id,
             source_app=request.source_app,
         )
@@ -121,7 +121,7 @@ class IngestService:
             document_id=document_id,
             data=io.BytesIO(data),
             length=len(data),
-            content_type=request.content_type.value,
+            content_type=request.mime_type.value,
         )
         return object_key, None
 

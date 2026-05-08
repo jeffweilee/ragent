@@ -17,7 +17,7 @@ _INLINE_BASE = {
     "source_id": "DOC-1",
     "source_app": "confluence",
     "source_title": "T",
-    "content_type": "text/markdown",
+    "mime_type": "text/markdown",
     "content": "# H1\n",
 }
 
@@ -26,7 +26,7 @@ _FILE_BASE = {
     "source_id": "DOC-2",
     "source_app": "s3",
     "source_title": "T",
-    "content_type": "text/html",
+    "mime_type": "text/html",
     "minio_site": "tenant-eu-1",
     "object_key": "reports/2025.html",
 }
@@ -41,7 +41,7 @@ def test_inline_happy_path_validates():
     assert isinstance(req, InlineIngestRequest)
     assert req.ingest_type == "inline"
     assert req.content == "# H1\n"
-    assert req.content_type == IngestMime.TEXT_MARKDOWN
+    assert req.mime_type == IngestMime.TEXT_MARKDOWN
 
 
 def test_file_happy_path_validates():
@@ -53,13 +53,13 @@ def test_file_happy_path_validates():
 
 
 def test_unknown_mime_rejected():
-    bad = {**_INLINE_BASE, "content_type": "image/png"}
+    bad = {**_INLINE_BASE, "mime_type": "image/png"}
     with pytest.raises(ValidationError):
         _adapter().validate_python(bad)
 
 
 def test_csv_mime_rejected_in_v2():
-    bad = {**_INLINE_BASE, "content_type": "text/csv"}
+    bad = {**_INLINE_BASE, "mime_type": "text/csv"}
     with pytest.raises(ValidationError):
         _adapter().validate_python(bad)
 
