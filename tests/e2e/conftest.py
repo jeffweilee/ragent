@@ -91,24 +91,24 @@ def _build_dev_env(
     minio_endpoint: str,
     redis_url: str,
     wiremock_url: str,
-) -> dict[str, str]:
-    """Same env table as the function-scope `dev_env` fixture, but as a
-    plain dict so a session-scope subprocess can inherit it via
-    ``os.environ.update`` (monkeypatch is function-scope and would
-    unset values between tests, breaking long-lived child processes).
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Return ``(infra, external_defaults)`` env tables for running_stack.
+
+    ``infra`` always overrides — these point at testcontainers and any
+    external value would break the in-test stack (DSN, ES hosts, etc).
+
+    ``external_defaults`` defers to whatever the operator has already
+    exported. The default values point at WireMock so a normal e2e run
+    is fully self-contained, but ``RAGENT_E2E_GOLDEN_SET=1`` runs that
+    pre-export real ``EMBEDDING_API_URL`` / tokens / etc keep them
+    intact and exercise the live retrieval pipeline.
     """
-    return {
+    infra = {
         "RAGENT_ENV": "dev",
         "RAGENT_AUTH_DISABLED": "true",
         "RAGENT_HOST": "127.0.0.1",
         "RAGENT_PORT": "8000",
         "AI_API_AUTH_URL": wiremock_url,
-        "AI_LLM_API_J1_TOKEN": "test-llm-j1",
-        "AI_EMBEDDING_API_J1_TOKEN": "test-embedding-j1",
-        "AI_RERANK_API_J1_TOKEN": "test-rerank-j1",
-        "EMBEDDING_API_URL": wiremock_url,
-        "LLM_API_URL": wiremock_url,
-        "RERANK_API_URL": f"{wiremock_url}/rerank",
         "EMBEDDER_BATCH_SIZE": "1",
         "MINIO_ENDPOINT": minio_endpoint,
         "MINIO_ACCESS_KEY": "minioadmin",
@@ -119,6 +119,15 @@ def _build_dev_env(
         "REDIS_BROKER_URL": f"{redis_url}/0",
         "REDIS_RATELIMIT_URL": f"{redis_url}/1",
     }
+    external_defaults = {
+        "AI_LLM_API_J1_TOKEN": "test-llm-j1",
+        "AI_EMBEDDING_API_J1_TOKEN": "test-embedding-j1",
+        "AI_RERANK_API_J1_TOKEN": "test-rerank-j1",
+        "EMBEDDING_API_URL": wiremock_url,
+        "LLM_API_URL": wiremock_url,
+        "RERANK_API_URL": f"{wiremock_url}/rerank",
+    }
+    return infra, external_defaults
 
 
 @pytest.fixture(scope="session")
@@ -136,15 +145,16 @@ def running_stack(
     deliberately kill the worker keep using their own function-scope
     `spawn_module` and skip this fixture.
     """
-    os.environ.update(
-        _build_dev_env(
-            mariadb_dsn=mariadb_dsn,
-            es_url=es_url,
-            minio_endpoint=minio_endpoint,
-            redis_url=redis_url,
-            wiremock_url=wiremock_url,
-        )
+    infra, external_defaults = _build_dev_env(
+        mariadb_dsn=mariadb_dsn,
+        es_url=es_url,
+        minio_endpoint=minio_endpoint,
+        redis_url=redis_url,
+        wiremock_url=wiremock_url,
     )
+    os.environ.update(infra)
+    for key, val in external_defaults.items():
+        os.environ.setdefault(key, val)
     _ensure_default_bucket(minio_endpoint)
 
     procs: list[subprocess.Popen] = []
