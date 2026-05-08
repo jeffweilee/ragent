@@ -1,4 +1,9 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(date > .claude/.pre_commit_approved)"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {
