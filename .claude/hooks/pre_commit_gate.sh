@@ -66,8 +66,9 @@ fi
 #    that touches src/, tests/, or pyproject.toml.
 APPROVAL="$ROOT/.claude/.pre_commit_approved"
 FRESHNESS=2700  # 45 minutes
-if [[ ! -f "$APPROVAL" ]]; then
-    block "pre-commit review gate: .claude/.pre_commit_approved not found.
+MOD_TIME=$(date -r "$APPROVAL" +%s 2>/dev/null)
+if ! [[ "$MOD_TIME" =~ ^[0-9]+$ ]]; then
+    block "pre-commit review gate: .claude/.pre_commit_approved not found or is unreadable.
   Required steps before committing:
     1. Run /simplify  — AI code quality review; stage any resulting fixes
     2. Run /review    — verify ALL of:
@@ -78,7 +79,7 @@ if [[ ! -f "$APPROVAL" ]]; then
        Address every finding before proceeding.
     3. Stamp approval: date > .claude/.pre_commit_approved"
 fi
-APPROVAL_AGE=$(( $(date +%s) - $(date -r "$APPROVAL" +%s) ))
+APPROVAL_AGE=$(( $(date +%s) - MOD_TIME ))
 if [[ $APPROVAL_AGE -gt $FRESHNESS ]]; then
     block "pre-commit review gate: .claude/.pre_commit_approved is stale (${APPROVAL_AGE}s old, max ${FRESHNESS}s).
   Re-run /simplify and /review (including plan-objective check), then stamp: date > .claude/.pre_commit_approved"
