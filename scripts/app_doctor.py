@@ -186,7 +186,9 @@ def check_env() -> None:
         else:
             _ok("REDIS_RATELIMIT_URL")
 
-    # MinIO: prefer MINIO_SITES JSON; legacy single-site is a fallback.
+    # MinIO: composition.py STILL calls _require("MINIO_ENDPOINT"/ACCESS/SECRET)
+    # unconditionally even when MINIO_SITES is the documented v2 source-of-truth.
+    # Reproducing that exact requirement here so the doctor matches reality.
     sites = os.environ.get("MINIO_SITES", "").strip()
     if sites:
         try:
@@ -198,13 +200,24 @@ def check_env() -> None:
                 _ok("MINIO_SITES JSON", f"sites={names}")
         except json.JSONDecodeError as exc:
             _fail("MINIO_SITES JSON", f"invalid JSON: {exc}")
+    legacy = ("MINIO_ENDPOINT", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY")
+    miss = [v for v in legacy if not os.environ.get(v)]
+    if miss:
+        _fail(
+            "legacy MinIO vars (still required)",
+            f"composition._require() will sys.exit on missing {miss} "
+            "even with MINIO_SITES set (drift vs .env.example)",
+        )
     else:
-        legacy = ("MINIO_ENDPOINT", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY")
-        miss = [v for v in legacy if not os.environ.get(v)]
-        if miss:
-            _fail("MinIO config", f"MINIO_SITES empty and legacy {miss} unset")
-        else:
-            _warn("MinIO config", "using deprecated single-site env vars (set MINIO_SITES)")
+        _ok("legacy MinIO vars present", "(consumed by /readyz minio probe)")
+
+    # MINIO_BUCKET default drift: .env.example says 'ragent';
+    # composition.py & minio_registry.py both default to 'ragent-uploads'.
+    if not os.environ.get("MINIO_BUCKET"):
+        _warn(
+            "MINIO_BUCKET",
+            "unset → code defaults to 'ragent-uploads' (.env.example shows 'ragent')",
+        )
 
     # Chunk-config sanity (mirrors guard.enforce → validate_chunk_config).
     try:
@@ -450,6 +463,30 @@ def check_ai_endpoints() -> None:
                 return f"{p.hostname}:{port} TCP ok (HTTP probe skipped)"
 
         _try(var, _probe)
+
+    # Real J1→J2 exchange — boot path is silent on this; first /chat or first
+    # ingest worker task surfaces stale creds as opaque 500s otherwise.
+    auth_url = os.environ.get("AI_API_AUTH_URL")
+    j1 = os.environ.get("AI_LLM_API_J1_TOKEN") or os.environ.get("AI_EMBEDDING_API_J1_TOKEN")
+    if not (auth_url and j1):
+        _skip("J1→J2 token exchange", "auth URL or J1 token unset")
+        return
+
+    def _exchange() -> str:
+        url = auth_url.rstrip("/") + "/auth/api/accesstoken"
+        with httpx.Client(timeout=5.0, verify=False) as c:
+            resp = c.post(url, json={"key": j1})
+        if resp.status_code >= 400:
+            raise _Warn(f"HTTP {resp.status_code} from {url} — verify J1 token")
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise _Warn(f"non-JSON response from {url}") from exc
+        if "token" not in data or "expiresAt" not in data:
+            raise _Warn(f"unexpected payload keys: {list(data)[:5]}")
+        return f"got J2 (expires {data['expiresAt']})"
+
+    _try("J1→J2 token exchange", _exchange)
 
 
 # ------------------------------------------------------------------ live API
