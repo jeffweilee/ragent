@@ -35,7 +35,7 @@ import httpx
 import pytest
 from minio import Minio
 
-from tests.e2e.conftest import API_URL, wait_api_ready
+from tests.e2e.conftest import API_URL
 
 pytestmark = pytest.mark.docker
 
@@ -172,12 +172,9 @@ def _verify_chunks_table_dropped(mariadb_dsn: str) -> None:
 
 
 def test_v2_golden_end_to_end(
-    e2e_env, spawn_module, es_url: str, minio_endpoint: str, mariadb_dsn: str
+    running_stack, e2e_env, es_url: str, minio_endpoint: str, mariadb_dsn: str
 ) -> None:
     _ensure_default_bucket(minio_endpoint)
-    spawn_module("ragent.api")
-    spawn_module("ragent.worker")
-    wait_api_ready(timeout=45)
 
     _verify_chunks_table_dropped(mariadb_dsn)
 

@@ -10,7 +10,20 @@ import pytest
 
 from tests.e2e.conftest import API_URL, wait_api_ready
 
-pytestmark = pytest.mark.docker
+pytestmark = [
+    pytest.mark.docker,
+    # Deferred until the chaos suite track expands this single happy-path
+    # kill into the full C1–C7 partial-failure matrix (see SRE journal +
+    # docs/00_plan.md T7.4.x). Kept as scaffolding for that work; not run
+    # in any current gate. xfail(run=False) is preferred over pytest.skip()
+    # so the marker is structurally a "known deferred", not a silent TODO.
+    pytest.mark.xfail(
+        run=False,
+        reason="Deferred to chaos suite track T7.4.x; current single-case "
+        "test is scaffolding only. Reconciler engine-per-tick refactor + "
+        "fault-injection points must land first.",
+    ),
+]
 
 RECOVERY_DEADLINE_SECONDS = 600
 
@@ -54,15 +67,7 @@ def _wait_for_status(doc_id: str, target: str, timeout: int) -> bool:
 def test_worker_kill_mid_ingest_recovers(
     e2e_env, spawn_module, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Kill worker after PENDING transition → reconciler re-dispatches → READY before deadline.
-
-    Skipped in the gate because Reconciler.run() uses asyncio.run per call,
-    which closes the loop while the aiomysql engine still holds Futures
-    attached to that loop — re-entry from the same test process raises
-    "got Future attached to a different loop". Run manually after rebuilding
-    the engine per tick (separate refactor).
-    """
-    pytest.skip("reconciler engine/loop reuse — needs separate refactor; run manually")
+    """Kill worker after PENDING transition → reconciler re-dispatches → READY before deadline."""
     monkeypatch.setenv("RECONCILER_PENDING_STALE_SECONDS", "10")
     monkeypatch.setenv("WORKER_HEARTBEAT_INTERVAL_SECONDS", "2")
 

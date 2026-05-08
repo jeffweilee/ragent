@@ -1,19 +1,25 @@
-"""T7.2 — Quickstart E2E: 100 docs → ≥99% READY in 60s via real API+worker subprocesses (B30)."""
+"""T7.2 — Quickstart E2E: 100 docs → ≥99% READY in 60s via real API+worker subprocesses (B30).
+
+CI runs at smoke scale (20 docs / 15s) via RAGENT_E2E_INGEST_COUNT/_DEADLINE
+to keep the per-PR gate fast; nightly/manual runs use the spec'd 100/60s
+defaults to enforce the absolute throughput SLO.
+"""
 
 from __future__ import annotations
 
+import os
 import time
 
 import httpx
 import pytest
 
-from tests.e2e.conftest import API_URL, wait_api_ready
+from tests.e2e.conftest import API_URL
 
 pytestmark = pytest.mark.docker
 
-TARGET_COUNT = 100
+TARGET_COUNT = int(os.getenv("RAGENT_E2E_INGEST_COUNT", "100"))
 SUCCESS_THRESHOLD = 0.99
-DEADLINE_SECONDS = 60
+DEADLINE_SECONDS = int(os.getenv("RAGENT_E2E_INGEST_DEADLINE", "60"))
 
 
 def _post_doc(idx: int) -> str:
@@ -43,11 +49,7 @@ def _poll_status(doc_id: str) -> str:
     )
 
 
-def test_quickstart_99pct_ready_in_60s(e2e_env, spawn_module) -> None:
-    spawn_module("ragent.api")
-    spawn_module("ragent.worker")
-    wait_api_ready()
-
+def test_quickstart_99pct_ready_in_60s(running_stack, e2e_env) -> None:
     doc_ids = [_post_doc(i) for i in range(TARGET_COUNT)]
     deadline = time.monotonic() + DEADLINE_SECONDS
     while time.monotonic() < deadline:

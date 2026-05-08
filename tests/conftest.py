@@ -204,13 +204,60 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
 
-def pytest_collection_modifyitems(items: list[pytest.Item]) -> None:
+def pytest_collection_modifyitems(
+    config: pytest.Config, items: list[pytest.Item]
+) -> None:
+    # Record whether this collection actually contains any docker-marked
+    # tests. The session-scope prewarm fixture below reads this flag and
+    # no-ops when no docker test will run, so a `pytest tests/unit/` run
+    # does not pay the testcontainers startup tax.
+    config._has_docker_tests = any("docker" in item.keywords for item in items)  # noqa: SLF001
     if DOCKER_AVAILABLE:
         return
     skip = pytest.mark.skip(reason="Docker daemon not available")
     for item in items:
         if "docker" in item.keywords:
             item.add_marker(skip)
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _prewarm_containers_in_parallel(request):
+    """Start all session-scoped testcontainers concurrently.
+
+    pytest resolves fixtures lazily and serially, so when a docker-marked
+    test first injects all five containers the cost is the *sum* of their
+    startup times. Triggering ``getfixturevalue`` for each on its own
+    thread changes that to ``max(...)``, dominated by ES (~10s after the
+    heap cap) instead of ~20s sum. No-op when Docker is absent or when
+    the current collection has no docker-marked tests (so unit-only runs
+    pay nothing).
+    """
+    if not DOCKER_AVAILABLE:
+        return
+    if not getattr(request.config, "_has_docker_tests", False):
+        return
+    from concurrent.futures import ThreadPoolExecutor
+
+    from testcontainers.core.container import Reaper
+
+    # Reaper.get_instance() is a singleton with no lock; if five threads
+    # each call .start() concurrently they race on first-init and one
+    # (or more) hit a 409 Conflict on the ryuk container name. Pre-warm
+    # serially so the threads see a populated _instance.
+    Reaper.get_instance()
+
+    names = [
+        "mariadb_container",
+        "es_container",
+        "redis_container",
+        "minio_container",
+        "wiremock_container",
+    ]
+    with ThreadPoolExecutor(max_workers=len(names)) as ex:
+        # request.getfixturevalue is the public hook for session-scoped
+        # fixture lookup; concurrent calls each cache their result on the
+        # session, so subsequent inject-by-name during tests is free.
+        list(ex.map(request.getfixturevalue, names))
 
 
 @pytest.fixture(scope="session")
@@ -246,6 +293,10 @@ def es_container():
     container.with_env("discovery.type", "single-node")
     # Disable disk watermark so shards allocate even on > 90%-full CI/dev VMs.
     container.with_env("cluster.routing.allocation.disk.threshold_enabled", "false")
+    # Test-only heap cap: default JVM sizing on ES 9.x grabs 50% of host RAM and
+    # spends 15-20s warming up. 512m is plenty for fixture-scale indices and
+    # cuts container startup roughly in half on CI runners.
+    container.with_env("ES_JAVA_OPTS", "-Xms512m -Xmx512m")
     with container as c:
         yield c
 

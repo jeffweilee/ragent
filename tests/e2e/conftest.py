@@ -14,6 +14,22 @@ import pytest
 API_URL = "http://127.0.0.1:8000"
 
 
+def _e2e_log_path(module: str) -> str:
+    """Return a per-user, per-process log path under the system temp dir.
+
+    A fixed `/tmp/e2e_*.log` collides on shared CI runners (one user
+    cannot overwrite another's file) and across concurrent pytest jobs
+    on the same user. Embedding USER + PID isolates both axes.
+    """
+    import tempfile
+
+    user = os.environ.get("USER") or os.environ.get("USERNAME") or "user"
+    return os.path.join(
+        tempfile.gettempdir(),
+        f"e2e_{user}_{os.getpid()}_{module.replace('.', '_')}.log",
+    )
+
+
 def _ensure_default_bucket(minio_endpoint: str) -> None:
     """Create the default upload bucket if it doesn't exist.
 
@@ -35,11 +51,158 @@ def _ensure_default_bucket(minio_endpoint: str) -> None:
         client.make_bucket(bucket)
 
 
+def _purge_state(mariadb_dsn: str, es_url: str, redis_url: str) -> None:
+    """Wipe MariaDB rows, ES docs, and Redis keys across e2e tests.
+
+    Prerequisite for letting multiple e2e tests share a session-scoped
+    api/worker subprocess. Without this, doc_id collisions, stale chunk
+    hits, leftover rate-limit counters, and replayed broker tasks make
+    later tests non-deterministic.
+    """
+    import contextlib
+
+    import redis
+    from sqlalchemy import create_engine, text
+
+    sync_dsn = mariadb_dsn.replace("mysql+aiomysql://", "mysql+pymysql://")
+    engine = create_engine(sync_dsn)
+    with engine.begin() as conn:
+        for table in ("documents",):
+            conn.execute(text(f"DELETE FROM {table}"))
+    engine.dispose()
+
+    with contextlib.suppress(Exception):
+        # Best-effort: index may not exist on first run.
+        httpx.post(
+            f"{es_url}/chunks_v1/_delete_by_query?refresh=true&conflicts=proceed",
+            json={"query": {"match_all": {}}},
+            timeout=10,
+        ).raise_for_status()
+
+    # DB 0 = broker (TaskIQ messages), DB 1 = rate limiter. Mirrors
+    # REDIS_BROKER_URL / REDIS_RATELIMIT_URL in _build_dev_env.
+    for db in (0, 1):
+        with contextlib.suppress(Exception):
+            redis.from_url(f"{redis_url}/{db}").flushdb()
+
+
 @pytest.fixture
-def e2e_env(dev_env, minio_endpoint: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    """E2E env layered on the integration `dev_env` fixture."""
+def e2e_env(
+    dev_env,
+    minio_endpoint: str,
+    mariadb_dsn: str,
+    es_url: str,
+    redis_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[None]:
+    """E2E env layered on the integration `dev_env` fixture.
+
+    Purges MariaDB + ES + Redis on entry so each test starts from a
+    clean slate even when a session-scoped api/worker keeps writing
+    to the same backends.
+    """
     monkeypatch.setenv("RAGENT_PORT", "8000")
     _ensure_default_bucket(minio_endpoint)
+    _purge_state(mariadb_dsn, es_url, redis_url)
+    yield
+
+
+def _build_dev_env(
+    *,
+    mariadb_dsn: str,
+    es_url: str,
+    minio_endpoint: str,
+    redis_url: str,
+    wiremock_url: str,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Return ``(infra, external_defaults)`` env tables for running_stack.
+
+    ``infra`` always overrides — these point at testcontainers and any
+    external value would break the in-test stack (DSN, ES hosts, etc).
+
+    ``external_defaults`` defers to whatever the operator has already
+    exported. The default values point at WireMock so a normal e2e run
+    is fully self-contained, but ``RAGENT_E2E_GOLDEN_SET=1`` runs that
+    pre-export real ``EMBEDDING_API_URL`` / tokens / etc keep them
+    intact and exercise the live retrieval pipeline.
+    """
+    infra = {
+        "RAGENT_ENV": "dev",
+        "RAGENT_AUTH_DISABLED": "true",
+        "RAGENT_HOST": "127.0.0.1",
+        "RAGENT_PORT": "8000",
+        "AI_API_AUTH_URL": wiremock_url,
+        "EMBEDDER_BATCH_SIZE": "1",
+        "MINIO_ENDPOINT": minio_endpoint,
+        "MINIO_ACCESS_KEY": "minioadmin",
+        "MINIO_SECRET_KEY": "minioadmin",
+        "ES_HOSTS": es_url,
+        "ES_VERIFY_CERTS": "false",
+        "MARIADB_DSN": mariadb_dsn,
+        "REDIS_BROKER_URL": f"{redis_url}/0",
+        "REDIS_RATELIMIT_URL": f"{redis_url}/1",
+    }
+    external_defaults = {
+        "AI_LLM_API_J1_TOKEN": "test-llm-j1",
+        "AI_EMBEDDING_API_J1_TOKEN": "test-embedding-j1",
+        "AI_RERANK_API_J1_TOKEN": "test-rerank-j1",
+        "EMBEDDING_API_URL": wiremock_url,
+        "LLM_API_URL": wiremock_url,
+        "RERANK_API_URL": f"{wiremock_url}/rerank",
+    }
+    return infra, external_defaults
+
+
+@pytest.fixture(scope="session")
+def running_stack(
+    mariadb_dsn: str,
+    es_url: str,
+    minio_endpoint: str,
+    redis_url: str,
+    wiremock_url: str,
+) -> Iterator[None]:
+    """Spawn one api + one worker and reuse them across the whole e2e session.
+
+    Tests share a single subprocess pair; per-test isolation comes from
+    `e2e_env` purging MariaDB rows + ES docs on entry. Chaos tests that
+    deliberately kill the worker keep using their own function-scope
+    `spawn_module` and skip this fixture.
+    """
+    infra, external_defaults = _build_dev_env(
+        mariadb_dsn=mariadb_dsn,
+        es_url=es_url,
+        minio_endpoint=minio_endpoint,
+        redis_url=redis_url,
+        wiremock_url=wiremock_url,
+    )
+    os.environ.update(infra)
+    for key, val in external_defaults.items():
+        os.environ.setdefault(key, val)
+    _ensure_default_bucket(minio_endpoint)
+
+    procs: list[subprocess.Popen] = []
+    for module in ("ragent.api", "ragent.worker"):
+        log_path = _e2e_log_path(module)
+        out = open(log_path, "w")  # noqa: SIM115
+        proc = subprocess.Popen(
+            [sys.executable, "-m", module],
+            env={**os.environ},
+            stdout=out,
+            stderr=subprocess.STDOUT,
+        )
+        procs.append(proc)
+
+    wait_api_ready(timeout=45)
+    yield
+
+    for p in procs:
+        if p.poll() is None:
+            p.terminate()
+            try:
+                p.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.wait()
 
 
 @pytest.fixture
@@ -48,7 +211,7 @@ def spawn_module() -> Iterator[callable]:
     procs: list[subprocess.Popen] = []
 
     def _spawn(module: str) -> subprocess.Popen:
-        log_path = f"/tmp/e2e_{module.replace('.', '_')}.log"
+        log_path = _e2e_log_path(module)
         out = open(log_path, "w")  # noqa: SIM115 — fd lifetime tied to procs list
         proc = subprocess.Popen(
             [sys.executable, "-m", module],
