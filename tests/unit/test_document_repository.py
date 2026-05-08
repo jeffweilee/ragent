@@ -364,6 +364,24 @@ async def test_pop_oldest_loser_returns_none_when_no_loser():
     assert result is None
 
 
+async def test_pop_oldest_loser_query_elects_survivor_via_db_max_created_at():
+    """SQL must self-elect the survivor by MAX(created_at), not trust the
+    caller's survivor_id, so a worker that races finish-order can never
+    delete a strictly-newer row by mistake (out-of-order safety)."""
+    engine, conn = _mock_engine(rows=[])
+    repo = DocumentRepository(engine)
+    await repo.pop_oldest_loser_for_supersede(
+        source_id="DOC-1", source_app="confluence", survivor_id="MAYBE-NOT-NEWEST"
+    )
+    assert conn.execute.await_count == 1
+    sql = str(conn.execute.await_args.args[0])
+    # Inner subquery elects newest by created_at DESC LIMIT 1.
+    assert "ORDER BY created_at DESC" in sql
+    # JOIN couples loser-pop to that elected newest = caller's survivor_id.
+    assert "JOIN" in sql.upper()
+    assert "newest.document_id = :survivor_id" in sql
+
+
 # ---------------------------------------------------------------------------
 # find_multi_ready_groups
 # ---------------------------------------------------------------------------
@@ -398,6 +416,17 @@ async def test_get_sources_by_document_ids_empty_input_returns_empty():
     repo = DocumentRepository(engine)
     result = await repo.get_sources_by_document_ids([])
     assert result == {}
+
+
+async def test_get_sources_by_document_ids_filters_to_status_ready():
+    """Hydration must only return READY rows; mid-flight or DELETING docs
+    are not citable and would mismatch the ES chunks retrieval saw."""
+    engine, conn = _mock_engine(rows=[])
+    repo = DocumentRepository(engine)
+    await repo.get_sources_by_document_ids(["ID1"])
+    assert conn.execute.await_count == 1
+    sql = str(conn.execute.await_args.args[0])
+    assert "status = 'READY'" in sql
 
 
 # ---------------------------------------------------------------------------
