@@ -55,6 +55,7 @@ async def test_delete_ready_doc_calls_cascade_in_order():
     repo.claim_for_deletion.side_effect = lambda doc_id: (
         call_order.append("claim_for_deletion") or doc
     )
+
     async def _fan_out(*_a):
         call_order.append("fan_out_delete")
         return []
@@ -75,9 +76,7 @@ async def test_delete_idempotent_on_missing_doc():
     repo.claim_for_deletion.side_effect = LockNotAvailable("NONEXISTENT")
     registry = MagicMock()
     registry.fan_out_delete = AsyncMock(return_value=[])
-    svc = IngestService(
-        repo=repo, storage=MagicMock(), broker=registry, registry=registry
-    )
+    svc = IngestService(repo=repo, storage=MagicMock(), broker=registry, registry=registry)
     await svc.delete("NONEXISTENT")  # must not raise
     repo.delete.assert_not_called()
 
