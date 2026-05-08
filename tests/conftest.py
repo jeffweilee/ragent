@@ -1,15 +1,21 @@
 """Session-scoped testcontainer fixtures for integration tests (T0.9)."""
 
 import json
+import os
 import time
 import urllib.request
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import anyio
 import pytest
 from haystack.dataclasses import Document
+
+# B36: vanilla test ES has no analysis-icu plugin. Point init_es() at the
+# test mapping (standard analyzer) before any fixture or test imports it.
+os.environ.setdefault("RAGENT_ES_RESOURCES_DIR", str(Path(__file__).parent / "resources" / "es"))
 
 
 def run_in_threadpool(fn: Callable[[], Any]) -> Any:
@@ -204,9 +210,7 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
 
-def pytest_collection_modifyitems(
-    config: pytest.Config, items: list[pytest.Item]
-) -> None:
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     # Record whether this collection actually contains any docker-marked
     # tests. The session-scope prewarm fixture below reads this flag and
     # no-ops when no docker test will run, so a `pytest tests/unit/` run
