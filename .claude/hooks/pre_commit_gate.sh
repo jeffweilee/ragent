@@ -77,12 +77,12 @@ if ! [[ "$MOD_TIME" =~ ^[0-9]+$ ]]; then
          c. every new code path has a test
          d. no duplication / dead code / hidden coupling
        Address every finding before proceeding.
-    3. Stamp approval: date > .claude/.pre_commit_approved"
+    3. Stamp approval: bash .claude/hooks/stamp_approval.sh"
 fi
 APPROVAL_AGE=$(( $(date +%s) - MOD_TIME ))
 if [[ $APPROVAL_AGE -gt $FRESHNESS ]]; then
     block "pre-commit review gate: .claude/.pre_commit_approved is stale (${APPROVAL_AGE}s old, max ${FRESHNESS}s).
-  Re-run /simplify and /review (including plan-objective check), then stamp: date > .claude/.pre_commit_approved"
+  Re-run /simplify and /review (including plan-objective check), then stamp: bash .claude/hooks/stamp_approval.sh"
 fi
 # Consume the marker — every commit requires a fresh /simplify + /review cycle.
 rm -f "$APPROVAL"

@@ -1,7 +1,7 @@
 {
   "permissions": {
     "allow": [
-      "Bash(date > .claude/.pre_commit_approved)"
+      "Bash(bash .claude/hooks/stamp_approval.sh)"
     ]
   },
   "hooks": {
