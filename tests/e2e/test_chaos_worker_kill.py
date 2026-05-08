@@ -20,8 +20,9 @@ pytestmark = [
     pytest.mark.xfail(
         run=False,
         reason="Deferred to chaos suite track T7.4.x; current single-case "
-        "test is scaffolding only. Reconciler engine-per-tick refactor + "
-        "fault-injection points must land first.",
+        "test is scaffolding only. Engine-per-tick refactor has landed "
+        "(T7.4.x(a)); remaining blocker is the fault-injection matrix "
+        "(T7.4.x(b)).",
     ),
 ]
 

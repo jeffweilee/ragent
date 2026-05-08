@@ -14,6 +14,9 @@ import os
 from typing import Any
 
 import structlog
+from sqlalchemy.ext.asyncio import create_async_engine
+
+from ragent.repositories.document_repository import DocumentRepository
 
 logger = structlog.get_logger(__name__)
 
@@ -138,35 +141,51 @@ class Reconciler:
             )
 
 
-def _build_from_env() -> Reconciler:
+class _PerTickRunner:
+    """T7.4.x(a) — Build the AsyncEngine + repo per tick.
+
+    ``Reconciler.run()`` calls ``asyncio.run()``, which closes the loop on
+    exit. SQLAlchemy ``AsyncEngine`` instances bind to the loop on first
+    use, so a long-running poller (chaos drill in T7.4) that calls
+    ``run()`` repeatedly cannot share a single engine. Building inside the
+    tick's loop and disposing on exit keeps each tick self-contained.
+    """
+
+    def run(self) -> None:
+        asyncio.run(self._tick())
+
+    async def _tick(self) -> None:
+        from ragent.bootstrap.broker import broker as taskiq_broker
+        from ragent.bootstrap.composition import get_container
+        from ragent.bootstrap.dispatcher import TaskiqDispatcher
+        from ragent.bootstrap.init_schema import to_async_dsn
+
+        engine = create_async_engine(to_async_dsn(os.environ["MARIADB_DSN"]))
+        try:
+            await taskiq_broker.startup()
+            try:
+                rec = Reconciler(
+                    repo=DocumentRepository(engine=engine),
+                    broker=TaskiqDispatcher(taskiq_broker),
+                    registry=get_container().registry,
+                )
+                await rec._run_async()
+            finally:
+                await taskiq_broker.shutdown()
+        finally:
+            await engine.dispose()
+
+
+def _build_from_env() -> _PerTickRunner:
     # Importing the workers module triggers `@broker.task` registration
     # so dispatcher.enqueue() can resolve task labels (B25).
     import ragent.workers.ingest  # noqa: F401
-    from ragent.bootstrap.broker import broker as taskiq_broker
-    from ragent.bootstrap.composition import get_container
-    from ragent.bootstrap.dispatcher import TaskiqDispatcher
 
-    container = get_container()
-    return Reconciler(
-        repo=container.doc_repo,
-        broker=TaskiqDispatcher(taskiq_broker),
-        registry=container.registry,
-    )
-
-
-async def _main_async() -> None:
-    """Producer-side broker startup/shutdown around the tick (B27)."""
-    from ragent.bootstrap.broker import broker as taskiq_broker
-
-    await taskiq_broker.startup()
-    try:
-        await _build_from_env()._run_async()
-    finally:
-        await taskiq_broker.shutdown()
+    return _PerTickRunner()
 
 
 if __name__ == "__main__":
     from ragent.bootstrap.logging_config import configure_logging
 
     configure_logging("ragent-reconciler")
-    asyncio.run(_main_async())
+    _build_from_env().run()
