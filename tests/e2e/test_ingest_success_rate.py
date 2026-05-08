@@ -1,7 +1,13 @@
-"""T7.2 — Quickstart E2E: 100 docs → ≥99% READY in 60s via real API+worker subprocesses (B30)."""
+"""T7.2 — Quickstart E2E: 100 docs → ≥99% READY in 60s via real API+worker subprocesses (B30).
+
+CI runs at smoke scale (20 docs / 15s) via RAGENT_E2E_INGEST_COUNT/_DEADLINE
+to keep the per-PR gate fast; nightly/manual runs use the spec'd 100/60s
+defaults to enforce the absolute throughput SLO.
+"""
 
 from __future__ import annotations
 
+import os
 import time
 
 import httpx
@@ -11,9 +17,9 @@ from tests.e2e.conftest import API_URL, wait_api_ready
 
 pytestmark = pytest.mark.docker
 
-TARGET_COUNT = 100
+TARGET_COUNT = int(os.getenv("RAGENT_E2E_INGEST_COUNT", "100"))
 SUCCESS_THRESHOLD = 0.99
-DEADLINE_SECONDS = 60
+DEADLINE_SECONDS = int(os.getenv("RAGENT_E2E_INGEST_DEADLINE", "60"))
 
 
 def _post_doc(idx: int) -> str:
