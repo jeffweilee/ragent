@@ -203,6 +203,7 @@ def create_app() -> FastAPI:
         repo=container.doc_repo,
         storage=container.minio_registry,
         broker=dispatcher,
+        registry=container.registry,
     )
 
     app.include_router(create_ingest_router(svc=ingest_svc))

@@ -56,7 +56,7 @@ def fresh_engine(mariadb_dsn: str):
 
 @pytest.mark.asyncio
 async def test_promote_demotes_prior_ready_sibling(fresh_engine) -> None:
-    """B39: Two docs share (S1, confluence). A is READY, B finishes — A demotes to DELETING, B is READY."""
+    """B39: A & B share (S1, confluence); A=READY, B finishes → A=DELETING, B=READY."""
     repo = DocumentRepository(engine=fresh_engine)
 
     await _seed(repo, "DOC_A", "S1", "confluence")

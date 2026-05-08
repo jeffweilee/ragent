@@ -164,6 +164,7 @@ async def ingest_supersede_task(survivor_id: str, source_id: str, source_app: st
         repo=container.doc_repo,
         storage=container.minio_registry,
         broker=container.registry,
+        registry=container.registry,
     )
 
     await svc.supersede(survivor_id, source_id, source_app)
