@@ -1,4 +1,4 @@
-.PHONY: check format lint test test-gate test-e2e-golden bootstrap
+.PHONY: check format lint test test-gate test-e2e-golden bootstrap doctor
 
 # One-time dev provisioning: install host binaries the gate needs but `uv`
 # can't ship. mysqldump is the canonical schema-drift differ; without it,
@@ -49,3 +49,8 @@ test-e2e-golden:
 	RAGENT_E2E_GOLDEN_SET=1 uv run pytest \
 	  tests/e2e/test_golden_set.py::test_golden_set_top3_accuracy_at_least_70pct \
 	  -v --tb=short
+
+# Pre-flight readiness check — env, datastores, AI endpoints, alembic head.
+# Add PROBE_LIVE=1 to additionally hit /livez and /readyz on a running API.
+doctor:
+	@uv run --env-file .env python scripts/app_doctor.py $(if $(PROBE_LIVE),--probe-live,)
