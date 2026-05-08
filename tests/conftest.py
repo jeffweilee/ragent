@@ -246,6 +246,10 @@ def es_container():
     container.with_env("discovery.type", "single-node")
     # Disable disk watermark so shards allocate even on > 90%-full CI/dev VMs.
     container.with_env("cluster.routing.allocation.disk.threshold_enabled", "false")
+    # Test-only heap cap: default JVM sizing on ES 9.x grabs 50% of host RAM and
+    # spends 15-20s warming up. 512m is plenty for fixture-scale indices and
+    # cuts container startup roughly in half on CI runners.
+    container.with_env("ES_JAVA_OPTS", "-Xms512m -Xmx512m")
     with container as c:
         yield c
 
