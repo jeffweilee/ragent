@@ -120,7 +120,7 @@ def _build_probes(container: Any) -> dict:
     probes: dict = {
         "mariadb": probe_mariadb(container.engine),
         "es": probe_es(container.es_client, index_names=["chunks_v1"]),
-        "minio": probe_minio(container.minio_client),
+        "minio": probe_minio(container.minio_registry.default().client),
     }
     redis_client = getattr(container.rate_limiter, "_redis", None)
     if redis_client is not None:
