@@ -154,7 +154,7 @@ async def ingest_supersede_task(survivor_id: str, source_id: str, source_app: st
     container = get_container()
     svc = IngestService(
         repo=container.doc_repo,
-        storage=container.minio_client,
+        storage=container.minio_registry,
         broker=container.registry,
     )
 
