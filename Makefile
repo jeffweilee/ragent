@@ -1,4 +1,4 @@
-.PHONY: check format lint test
+.PHONY: check format lint test test-gate
 
 check: format lint test
 
@@ -10,3 +10,6 @@ lint:
 
 test:
 	uv run pytest --cov=src/ragent --cov-branch --cov-fail-under=92
+
+test-gate:
+	uv run pytest --ignore=tests/e2e --cov=src/ragent --cov-branch --cov-fail-under=92

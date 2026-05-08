@@ -61,12 +61,38 @@ if [[ $TRIGGERS_GATE -eq 0 ]]; then
     exit 0
 fi
 
-# 5. Docker daemon must be live (testcontainers requirement).
+# 5. Review & Simplify gate — both AI quality steps must have run and stamped
+#    .claude/.pre_commit_approved within the last 45 minutes before any commit
+#    that touches src/, tests/, or pyproject.toml.
+APPROVAL="$ROOT/.claude/.pre_commit_approved"
+FRESHNESS=2700  # 45 minutes
+MOD_TIME=$(date -r "$APPROVAL" +%s 2>/dev/null)
+if ! [[ "$MOD_TIME" =~ ^[0-9]+$ ]]; then
+    block "pre-commit review gate: .claude/.pre_commit_approved not found or is unreadable.
+  Required steps before committing:
+    1. Run /simplify  — AI code quality review; stage any resulting fixes
+    2. Run /review    — verify ALL of:
+         a. every docs/00_plan.md objective for this cycle is fully implemented
+         b. behaviour matches docs/00_spec.md contracts
+         c. every new code path has a test
+         d. no duplication / dead code / hidden coupling
+       Address every finding before proceeding.
+    3. Stamp approval: date > .claude/.pre_commit_approved"
+fi
+APPROVAL_AGE=$(( $(date +%s) - MOD_TIME ))
+if [[ $APPROVAL_AGE -gt $FRESHNESS ]]; then
+    block "pre-commit review gate: .claude/.pre_commit_approved is stale (${APPROVAL_AGE}s old, max ${FRESHNESS}s).
+  Re-run /simplify and /review (including plan-objective check), then stamp: date > .claude/.pre_commit_approved"
+fi
+# Consume the marker — every commit requires a fresh /simplify + /review cycle.
+rm -f "$APPROVAL"
+
+# 6. Docker daemon must be live (testcontainers requirement).
 if ! docker ps &>/dev/null; then
     block "Docker daemon not running — start it before commit (00_rule.md §Docker)."
 fi
 
-# 6. Quality gate. Logs go to a per-run private dir to avoid /tmp symlink/
+# 7. Quality gate. Logs go to a per-run private dir to avoid /tmp symlink/
 #    permission races with concurrent commits.
 LOG_DIR="$(mktemp -d -t ragent-precommit-XXXXXX)"
 trap 'rm -rf "$LOG_DIR"' EXIT
@@ -83,10 +109,10 @@ run_step() {
 
 run_step format make format
 run_step lint   make lint
-run_step test   make test
+run_step test   make test-gate
 run_step bandit uv run bandit -r src/ --severity-level high --confidence-level high
 
-# 7. Pytest must report 0 skipped @pytest.mark.docker tests.
+# 8. Pytest must report 0 skipped @pytest.mark.docker tests.
 if grep -qE 'docker.*skipped|skipped.*docker' "$LOG_DIR/test.log"; then
     block "@pytest.mark.docker tests were skipped — fix daemon and re-run."
 fi
