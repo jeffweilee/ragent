@@ -134,7 +134,15 @@ async def ingest_pipeline_task(document_id: str) -> None:
         )
 
     observe_pipeline_duration(source_app=doc.source_app, mime_type=doc.mime_type, seconds=elapsed)
-    await repo.update_status(document_id, from_status="PENDING", to_status="READY")
+    # B39: atomic READY transition demotes any prior READY sibling under the
+    # same (source_id, source_app) tuple in the same DB tx. Combined with
+    # B36 hydrator drop, /chat sees only the new revision the instant this
+    # commits.
+    await repo.promote_to_ready_and_demote_siblings(
+        document_id=document_id,
+        source_id=doc.source_id,
+        source_app=doc.source_app,
+    )
     record_pipeline_outcome(source_app=doc.source_app, mime_type=doc.mime_type, outcome="success")
 
     # File-type ingests are caller-owned: never delete.

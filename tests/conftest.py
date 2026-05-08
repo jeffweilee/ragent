@@ -202,9 +202,7 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
 
-def pytest_collection_modifyitems(
-    config: pytest.Config, items: list[pytest.Item]
-) -> None:
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     # Record whether this collection actually contains any docker-marked
     # tests. The session-scope prewarm fixture below reads this flag and
     # no-ops when no docker test will run, so a `pytest tests/unit/` run

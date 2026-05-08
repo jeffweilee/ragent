@@ -224,6 +224,47 @@ class DocumentRepository:
             {"id": document_id},
         )
 
+    async def promote_to_ready_and_demote_siblings(
+        self, document_id: str, source_id: str, source_app: str
+    ) -> None:
+        """B39: atomic READY transition for the new revision.
+
+        In one tx: flip the worker's PENDING → READY, then demote any other
+        (source_id, source_app) row currently READY to DELETING. Combined
+        with B36 hydrator drop, retrieval transitions to the new revision
+        the moment this tx commits — no race window where both old and new
+        are READY. The reconciler still runs supersede as a belt-and-
+        suspenders safety net for crash recovery between the two UPDATEs.
+        """
+        async with self._engine.begin() as conn:
+            promoted = await conn.execute(
+                text(
+                    """
+                    UPDATE documents
+                    SET status = 'READY', updated_at = NOW(6)
+                    WHERE document_id = :id AND status = 'PENDING'
+                    """
+                ),
+                {"id": document_id},
+            )
+            if promoted.rowcount == 0:
+                raise IllegalStateTransition(
+                    f"promote_to_ready: PENDING → READY failed for {document_id}"
+                )
+            await conn.execute(
+                text(
+                    """
+                    UPDATE documents
+                    SET status = 'DELETING', updated_at = NOW(6)
+                    WHERE source_id = :src
+                      AND source_app = :app
+                      AND document_id != :id
+                      AND status = 'READY'
+                    """
+                ),
+                {"src": source_id, "app": source_app, "id": document_id},
+            )
+
     # ------------------------------------------------------------------
     # Stale queries (Reconciler)
     # ------------------------------------------------------------------
