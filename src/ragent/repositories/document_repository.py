@@ -360,7 +360,7 @@ class DocumentRepository:
                     WHERE source_id = :source_id
                       AND source_app = :source_app
                       AND status = 'READY'
-                    ORDER BY created_at DESC
+                    ORDER BY created_at DESC, document_id DESC
                     LIMIT 1
                 ) newest ON newest.document_id = :survivor_id
                 WHERE d.source_id = :source_id

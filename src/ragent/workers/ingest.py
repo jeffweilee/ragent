@@ -89,7 +89,7 @@ async def ingest_pipeline_task(document_id: str) -> None:
             "source_meta": doc.source_meta,
         }
         result = container.ingest_pipeline.run({"loader": loader_kwargs})
-        written = result.get("writer", {}).get("documents_written", 0)
+        written = (result.get("writer") or {}).get("documents_written", 0)
         return written if isinstance(written, int) else len(written)
 
     started = time.monotonic()
