@@ -27,7 +27,7 @@ def fake_container() -> SimpleNamespace:
             return None
 
     engine.connect = MagicMock(return_value=_Conn())
-    return SimpleNamespace(es_client=es_client, engine=engine)
+    return SimpleNamespace(es_client=es_client, engine=engine, token_managers=())
 
 
 @pytest.fixture

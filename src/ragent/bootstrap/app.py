@@ -57,6 +57,18 @@ async def _check_infra_ready(container: Any, broker: Any) -> None:
         if broker.find_task(label) is None:
             raise RuntimeError(f"infra not ready: TaskIQ task not registered: {label!r}")
 
+    # B38: pre-warm AI token exchange so a wrong AI_API_AUTH_URL or stale J1
+    # surfaces as a boot abort instead of a first-request 500.
+    import anyio
+
+    for tm in container.token_managers:
+        if tm is None:
+            continue
+        try:
+            await anyio.to_thread.run_sync(tm.get_token)
+        except Exception as exc:  # noqa: BLE001 — propagate as RuntimeError per probe contract
+            raise RuntimeError(f"infra not ready: token exchange failed: {exc}") from exc
+
 
 async def _close_infra(container: Any) -> None:
     """Best-effort close of ES client and DB engine; never raises."""
