@@ -10,7 +10,10 @@ race window where both old and new are READY and both retrievable.
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
+from sqlalchemy import text
 
 from ragent.bootstrap.init_schema import _to_sync_dsn, init_mariadb
 from ragent.repositories.document_repository import DocumentRepository
@@ -42,8 +45,6 @@ def fresh_engine(mariadb_dsn: str):
     # Tests in this module own the documents table — wipe between cases so
     # ID collisions don't leak across runs.
     with sync_engine.begin() as conn:
-        from sqlalchemy import text
-
         conn.execute(text("DELETE FROM documents"))
     sync_engine.dispose()
 
@@ -117,8 +118,6 @@ async def test_older_worker_finishing_after_newer_pending_self_demotes(fresh_eng
     that flips retrieval. Reconciler is safety-net only — correctness holds
     from the worker's tx alone.
     """
-    import asyncio
-
     repo = DocumentRepository(engine=fresh_engine)
 
     await _seed(repo, "DOC_OLD", "S3", "confluence")
@@ -141,8 +140,6 @@ async def test_older_worker_finishing_after_newer_ready_self_demotes(fresh_engin
     """Out-of-order: newer worker already promoted (READY); older worker must
     self-demote and leave the newer READY untouched.
     """
-    import asyncio
-
     repo = DocumentRepository(engine=fresh_engine)
 
     await _seed(repo, "DOC_OLD", "S4", "confluence")
@@ -170,10 +167,6 @@ async def test_for_update_serializes_concurrent_promotes(fresh_engine) -> None:
     commits. Validates that retrieval correctness is enforced by the DB,
     not by application-level serialization.
     """
-    import asyncio
-
-    from sqlalchemy import text
-
     repo = DocumentRepository(engine=fresh_engine)
     await _seed(repo, "DOC_A", "S5", "confluence")
     await asyncio.sleep(0.01)
@@ -213,13 +206,17 @@ async def test_for_update_serializes_concurrent_promotes(fresh_engine) -> None:
             document_id="DOC_B", source_id="S5", source_app="confluence"
         )
     )
-    # Deterministic block-check: shield the task and bound a small wait; if
-    # the row lock holds, this raises TimeoutError. Avoids the flake-prone
-    # `sleep(N) + assert not done()` pattern.
-    with pytest.raises(asyncio.TimeoutError):
-        await asyncio.wait_for(asyncio.shield(promote_task), timeout=0.1)
+    try:
+        # Deterministic block-check: shield the task and bound a small wait;
+        # if the row lock holds, this raises TimeoutError. Avoids the flake-
+        # prone `sleep(N) + assert not done()` pattern.
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(asyncio.shield(promote_task), timeout=0.1)
+    finally:
+        # Always release T1 even on assertion failure so the holder task
+        # doesn't hang holding the row lock and stall test teardown.
+        t1_release.set()
 
-    t1_release.set()
     await holder
     promoted = await asyncio.wait_for(promote_task, timeout=5.0)
 
