@@ -108,3 +108,56 @@ async def test_promote_idempotent_with_no_prior_ready(fresh_engine) -> None:
 
     first = await repo.get("DOC_FIRST")
     assert first is not None and first.status == "READY"
+
+
+@pytest.mark.asyncio
+async def test_older_worker_finishing_after_newer_pending_self_demotes(fresh_engine) -> None:
+    """Out-of-order worker completion: older worker must NOT promote when a newer
+    revision is in flight; it self-demotes so the newer worker's tx is the one
+    that flips retrieval. Reconciler is safety-net only — correctness holds
+    from the worker's tx alone.
+    """
+    import asyncio
+
+    repo = DocumentRepository(engine=fresh_engine)
+
+    await _seed(repo, "DOC_OLD", "S3", "confluence")
+    await asyncio.sleep(0.01)
+    await _seed(repo, "DOC_NEW", "S3", "confluence")
+
+    # Older worker finishes first (out of order).
+    await repo.promote_to_ready_and_demote_siblings(
+        document_id="DOC_OLD", source_id="S3", source_app="confluence"
+    )
+
+    old = await repo.get("DOC_OLD")
+    new = await repo.get("DOC_NEW")
+    assert old is not None and old.status == "DELETING"
+    assert new is not None and new.status == "PENDING"
+
+
+@pytest.mark.asyncio
+async def test_older_worker_finishing_after_newer_ready_self_demotes(fresh_engine) -> None:
+    """Out-of-order: newer worker already promoted (READY); older worker must
+    self-demote and leave the newer READY untouched.
+    """
+    import asyncio
+
+    repo = DocumentRepository(engine=fresh_engine)
+
+    await _seed(repo, "DOC_OLD", "S4", "confluence")
+    await asyncio.sleep(0.01)
+    await _seed(repo, "DOC_NEW", "S4", "confluence")
+
+    await repo.promote_to_ready_and_demote_siblings(
+        document_id="DOC_NEW", source_id="S4", source_app="confluence"
+    )
+    # Older worker finishes after newer is already READY.
+    await repo.promote_to_ready_and_demote_siblings(
+        document_id="DOC_OLD", source_id="S4", source_app="confluence"
+    )
+
+    old = await repo.get("DOC_OLD")
+    new = await repo.get("DOC_NEW")
+    assert old is not None and old.status == "DELETING"
+    assert new is not None and new.status == "READY"

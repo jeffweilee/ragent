@@ -227,39 +227,75 @@ class DocumentRepository:
     async def promote_to_ready_and_demote_siblings(
         self, document_id: str, source_id: str, source_app: str
     ) -> None:
-        """Atomic READY transition: promote the new revision and demote any
-        prior READY sibling under (source_id, source_app) in one tx, so
-        retrieval flips revisions on commit without a both-READY window.
+        """Atomic, DB-arbitrated READY transition for (source_id, source_app).
+
+        The newest PENDING/READY sibling — elected by ``MAX(created_at)`` under
+        ``FOR UPDATE`` — is the survivor. If the caller's ``document_id`` is the
+        survivor, it promotes to READY and any prior READY siblings demote to
+        DELETING. If the caller is *not* the survivor (out-of-order worker
+        completion: an older worker finishing after a newer revision was
+        created), it self-demotes to DELETING so the newer worker's tx is the
+        one that flips retrieval. The reconciler is therefore a safety-net for
+        crash recovery only — never load-bearing for retrieval correctness.
         """
         assert_transition("PENDING", "READY")
         async with self._engine.begin() as conn:
-            promoted = await conn.execute(
-                text(
-                    """
-                    UPDATE documents
-                    SET status = 'READY', updated_at = NOW(6)
-                    WHERE document_id = :id AND status = 'PENDING'
-                    """
-                ),
-                {"id": document_id},
-            )
-            if promoted.rowcount == 0:
-                raise IllegalStateTransition(
-                    f"promote_to_ready: PENDING → READY failed for {document_id}"
+            survivor = (
+                await conn.execute(
+                    text(
+                        """
+                        SELECT document_id FROM documents
+                        WHERE source_id = :src
+                          AND source_app = :app
+                          AND status IN ('PENDING', 'READY')
+                        ORDER BY created_at DESC, document_id DESC
+                        LIMIT 1
+                        FOR UPDATE
+                        """
+                    ),
+                    {"src": source_id, "app": source_app},
                 )
-            await conn.execute(
-                text(
-                    """
-                    UPDATE documents
-                    SET status = 'DELETING', updated_at = NOW(6)
-                    WHERE source_id = :src
-                      AND source_app = :app
-                      AND document_id != :id
-                      AND status = 'READY'
-                    """
-                ),
-                {"src": source_id, "app": source_app, "id": document_id},
-            )
+            ).scalar()
+
+            if survivor == document_id:
+                promoted = await conn.execute(
+                    text(
+                        """
+                        UPDATE documents
+                        SET status = 'READY', updated_at = NOW(6)
+                        WHERE document_id = :id AND status = 'PENDING'
+                        """
+                    ),
+                    {"id": document_id},
+                )
+                if promoted.rowcount == 0:
+                    raise IllegalStateTransition(
+                        f"promote_to_ready: PENDING → READY failed for {document_id}"
+                    )
+                await conn.execute(
+                    text(
+                        """
+                        UPDATE documents
+                        SET status = 'DELETING', updated_at = NOW(6)
+                        WHERE source_id = :src
+                          AND source_app = :app
+                          AND document_id != :id
+                          AND status = 'READY'
+                        """
+                    ),
+                    {"src": source_id, "app": source_app, "id": document_id},
+                )
+            else:
+                await conn.execute(
+                    text(
+                        """
+                        UPDATE documents
+                        SET status = 'DELETING', updated_at = NOW(6)
+                        WHERE document_id = :id AND status = 'PENDING'
+                        """
+                    ),
+                    {"id": document_id},
+                )
 
     # ------------------------------------------------------------------
     # Stale queries (Reconciler)
