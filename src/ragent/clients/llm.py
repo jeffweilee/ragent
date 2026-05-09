@@ -6,20 +6,13 @@ import time as _time
 from collections.abc import Callable, Generator
 from typing import Any
 
-import httpx
 import structlog
 from opentelemetry import trace
 
-from ragent.errors.upstream import UpstreamServiceError, UpstreamTimeoutError
+from ragent.errors.upstream import classify_upstream_error
 
 logger = structlog.get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
-
-
-def _classify_upstream_error(exc: Exception | None) -> tuple[str, type[UpstreamServiceError]]:
-    if isinstance(exc, httpx.TimeoutException):
-        return "LLM_TIMEOUT", UpstreamTimeoutError
-    return "LLM_ERROR", UpstreamServiceError
 
 
 class LLMClient:
@@ -59,7 +52,9 @@ class LLMClient:
                 except Exception as exc:
                     last_exc = exc
             span.record_exception(last_exc)  # type: ignore[arg-type]
-            error_code, exc_cls = _classify_upstream_error(last_exc)
+            error_code, exc_cls = classify_upstream_error(
+                last_exc, error_code="LLM_ERROR", timeout_code="LLM_TIMEOUT"
+            )
             logger.error(
                 "llm.error",
                 peer_service="llm",
@@ -165,7 +160,9 @@ class LLMClient:
                 except Exception as exc:
                     last_exc = exc
             span.record_exception(last_exc)  # type: ignore[arg-type]
-            error_code, exc_cls = _classify_upstream_error(last_exc)
+            error_code, exc_cls = classify_upstream_error(
+                last_exc, error_code="LLM_ERROR", timeout_code="LLM_TIMEOUT"
+            )
             logger.error(
                 "llm.error",
                 peer_service="llm",

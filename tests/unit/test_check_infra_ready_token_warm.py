@@ -16,7 +16,6 @@ import pytest
 
 def _ok_probe_patch(monkeypatch: pytest.MonkeyPatch) -> None:
     """Stub MariaDB + ES + run_probe to succeed so token warmup is the only failure surface."""
-    import ragent.bootstrap.app as app_mod
 
     async def _probe_ok(*_a, **_kw):
         return None

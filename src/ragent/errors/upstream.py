@@ -12,6 +12,8 @@ RFC 9457 problem-details response and in the failure log line.
 
 from __future__ import annotations
 
+import httpx
+
 
 class UpstreamServiceError(Exception):
     """Generic upstream-service failure (5xx, malformed response, retry exhaustion)."""
@@ -37,3 +39,19 @@ class UpstreamTimeoutError(UpstreamServiceError):
 
     http_status: int = 504
     error_code: str = "UPSTREAM_TIMEOUT"
+
+
+def classify_upstream_error(
+    exc: Exception | None,
+    *,
+    error_code: str,
+    timeout_code: str,
+) -> tuple[str, type[UpstreamServiceError]]:
+    """Pick the right (error_code, exception class) pair for `exc`.
+
+    `httpx.TimeoutException` (and subclasses) → `(timeout_code, UpstreamTimeoutError)`;
+    every other failure → `(error_code, UpstreamServiceError)`.
+    """
+    if isinstance(exc, httpx.TimeoutException):
+        return timeout_code, UpstreamTimeoutError
+    return error_code, UpstreamServiceError
