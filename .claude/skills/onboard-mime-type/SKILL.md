@@ -14,6 +14,93 @@ writing code — every helper described here has a real example there.
 
 ---
 
+## Orientation — end-to-end MIME flow
+
+Where `mime_type` actually flows from the wire to ES. Open these files
+side-by-side while you work; every step is one real line.
+
+```
+[ HTTP / API edge ]
+  routers/ingest.py:67       TypeAdapter(IngestRequest).validate_python(body)
+                               ↳ Pydantic gates against IngestMime StrEnum
+                               ↳ unknown → 415 INGEST_MIME_UNSUPPORTED (routers/ingest.py:36-42)
+  services/ingest_service.py:124-131
+                             storage.put_object_default(content_type=request.mime_type.value)
+                               ↳ inline → __default__ MinIO site
+                               ↳ file   → caller's (minio_site, object_key) HEAD-probed
+  services/ingest_service.py:99
+                             repo.create(... mime_type=request.mime_type.value)
+                               ↳ documents row inserted (column is metric-label only — never re-read)
+  services/ingest_service.py:101
+                             broker.enqueue("ingest.pipeline", document_id=...)
+
+[ async TaskIQ boundary ]
+
+[ Worker ]
+  workers/ingest.py:35       @broker.task("ingest.pipeline") ingest_pipeline_task
+  workers/ingest.py:44       repo.claim_for_processing  (TX-A, NOWAIT, status=PENDING)
+  workers/ingest.py:55       head = registry.head_object(site, object_key)   ← runtime mime source
+  workers/ingest.py:56-58    mime = (head[1] or DEFAULT_MIME).split(";",1)[0].strip()
+                               ↳ "text/markdown; charset=utf-8" → "text/markdown"
+                               ↳ NOTE: this is what _MimeAwareSplitter sees.
+                                       documents.mime_type column is NOT consulted here.
+  workers/ingest.py:63-80    data = registry.get_object(...); content = data.decode("utf-8")
+                               ↳ binary MIMEs need an upstream branch — see Step 1a
+  workers/ingest.py:91       container.ingest_pipeline.run({"loader": {content, mime_type, ...}})
+
+[ Haystack pipeline body — pipelines/factory.py ]
+
+  factory.py:66  _TextLoader.run            wraps str → Document(meta={mime_type, document_id, source_*})
+  factory.py:264 _MimeAwareSplitter.run     dispatch on doc.meta["mime_type"]:
+                   ├ "text/plain"    → Haystack stock DocumentSplitter(split_by="passage")
+                   ├ "text/markdown" → _MarkdownASTSplitter   (mistletoe + MarkdownRenderer)
+                   ├ "text/html"     → _HtmlASTSplitter       (selectolax HTMLParser)
+                   └ else            → IngestStepError("PIPELINE_UNROUTABLE")
+  factory.py:310 _BudgetChunker.run         greedy-pack ≤ CHUNK_TARGET_CHARS, hard-split > CHUNK_MAX_CHARS
+  factory.py:435 DocumentEmbedder.run       external embedding client → vectors
+                 DocumentWriter             Haystack stock, DuplicatePolicy.OVERWRITE → ES chunks_v1
+
+[ Worker post-pipeline ]
+  workers/ingest.py:136-142  observe_pipeline_duration / promote_to_ready_and_demote_siblings /
+                             record_pipeline_outcome(outcome="success", mime_type=doc.mime_type)
+                               ↳ here the metric label uses the DB column (set at insert time)
+  workers/ingest.py:147      inline-only: registry.delete_object(...)  (best-effort)
+```
+
+**AST-package precedents** — pick by what the format demands, not what's
+familiar. Existing splitters use the first three; the rest are
+recommendations for likely next-onboard targets:
+
+| Mime | Library | Why this one |
+|---|---|---|
+| `text/plain` | Haystack `DocumentSplitter` (stock) | No AST; passage split is enough |
+| `text/markdown` | `mistletoe` + `MarkdownRenderer` | Pure-Python AST walker; renderer reproduces source for `raw_content` |
+| `text/html` | `selectolax` (C-based) | Fast, low-mem; tolerates real-world malformed HTML; CSS selectors |
+| `text/csv` (if reintroduced) | stdlib `csv` | Row atom = one record; spec §3.2 / B24 / `RowMerger` precedent |
+| `application/json` | stdlib `json` + custom path-walker | Atoms = top-level array elements or schema-bounded subtrees |
+| `application/xml` | `defusedxml` → ElementTree | XXE-safe; never `xml.etree` directly on untrusted input |
+| `application/pdf` | `pypdf` | Binary — Step 1a worker decode change required |
+| `…openxmlformats…wordprocessingml.document` | `python-docx` | Binary — Step 1a |
+
+**Two MIME sources of truth** — important to internalize before changing
+anything:
+
+| Edge | Variable | Used for |
+|---|---|---|
+| API insert | `request.mime_type.value` → `documents.mime_type` column | Metric label at terminal-status emission (`record_pipeline_outcome`, `observe_pipeline_duration`); read by `DocumentStatsCollector` |
+| Runtime route | `head[1]` from MinIO `head_object` | What `_MimeAwareSplitter` actually dispatches on |
+
+For inline ingests these always agree (`_stage_inline` sets MinIO
+`content-type` from the same enum value). For **file** ingests the caller
+controls the MinIO put — a missing/wrong `content-type` makes the worker
+silently fall back to `text/plain`. If your new MIME has a hard
+parse-shape (binary, JSON, anything where mis-routing produces garbage
+embeddings rather than an obvious error), add a defensive equality check
+between `doc.mime_type` (DB) and the recovered `mime` (HEAD) at
+`workers/ingest.py:58` and fail with `PIPELINE_UNROUTABLE` on mismatch.
+
+---
+
 ## Step 1 — Classify the source signal: text, structured-text, or binary
 
 Pick the integration shape based on what the bytes are, not what file
