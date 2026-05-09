@@ -41,7 +41,7 @@ Whenever team start to work or user says "go" or "continue", follow these steps 
 
     After both 7 and 8 pass with no outstanding issues, stamp the approval marker:
     ```bash
-    date > .claude/.pre_commit_approved
+    bash .claude/hooks/stamp_approval.sh
     ```
 9.  **Commit**: Git commit with `[BEHAVIORAL]` or `[STRUCTURAL]` prefix.
     _(The pre-commit gate will verify the marker exists and consume it.)_
