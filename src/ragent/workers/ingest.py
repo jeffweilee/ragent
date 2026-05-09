@@ -134,19 +134,23 @@ async def ingest_pipeline_task(document_id: str) -> None:
         )
 
     observe_pipeline_duration(source_app=doc.source_app, mime_type=doc.mime_type, seconds=elapsed)
-    await repo.promote_to_ready_and_demote_siblings(
+    promoted = await repo.promote_to_ready_and_demote_siblings(
         document_id=document_id,
         source_id=doc.source_id,
         source_app=doc.source_app,
     )
     record_pipeline_outcome(source_app=doc.source_app, mime_type=doc.mime_type, outcome="success")
 
-    # File-type ingests are caller-owned: never delete.
+    # File-type ingests are caller-owned: never delete. Inline staging blob is
+    # no longer needed regardless of survivor outcome (chunks are in ES).
     if (doc.ingest_type or "inline") == "inline":
         with contextlib.suppress(Exception):
             registry.delete_object(site, doc.object_key)
 
-    await container.registry.fan_out(document_id)
+    # Post-READY enrichment only runs for the survivor; a self-demoted doc is
+    # now DELETING and reconciler will fan_out_delete it.
+    if promoted:
+        await container.registry.fan_out(document_id)
 
 
 @broker.task("ingest.supersede")
