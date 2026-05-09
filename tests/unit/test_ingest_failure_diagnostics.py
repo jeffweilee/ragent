@@ -146,9 +146,10 @@ def test_update_status_persists_error_code_and_reason():
     assert len(captured["params"]["error_reason"]) == 255
 
 
-def test_update_status_omits_error_clause_when_not_provided():
-    """Backwards compat — existing callers that don't pass error_code/reason
-    still produce a working UPDATE without binding the new params."""
+def test_update_status_clears_error_fields_when_not_provided():
+    """Successful transitions (PENDING → READY) MUST overwrite any stale
+    error_code / error_reason with NULL — otherwise a doc that retried
+    successfully would still display its prior failure to GET callers."""
     import asyncio
 
     from ragent.repositories.document_repository import DocumentRepository
@@ -176,5 +177,6 @@ def test_update_status_omits_error_clause_when_not_provided():
 
     repo = DocumentRepository(engine=_Engine())
     asyncio.run(repo.update_status("DOC-X", from_status="PENDING", to_status="READY"))
-    assert "error_code" not in captured["params"]
-    assert "error_code = " not in captured["sql"]
+    assert captured["params"]["error_code"] is None
+    assert captured["params"]["error_reason"] is None
+    assert "error_code = :error_code" in captured["sql"]

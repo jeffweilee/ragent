@@ -80,7 +80,11 @@ def test_failed_cleanup_no_registry_still_marks_failed():
     broker = AsyncMock()
     rec = _make_reconciler(repo, broker, registry=None)
     rec.run()
-    repo.update_status.assert_called_once_with("DOC001", from_status="PENDING", to_status="FAILED")
+    repo.update_status.assert_called_once()
+    kwargs = repo.update_status.call_args.kwargs
+    assert kwargs["from_status"] == "PENDING"
+    assert kwargs["to_status"] == "FAILED"
+    assert kwargs["error_code"] == "PIPELINE_MAX_ATTEMPTS_EXCEEDED"
 
 
 def test_failed_cleanup_fan_out_receives_correct_doc_id():

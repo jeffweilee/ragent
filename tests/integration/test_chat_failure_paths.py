@@ -31,7 +31,11 @@ from ragent.clients.rate_limiter import RateLimitResult
 from ragent.errors.upstream import UpstreamServiceError, UpstreamTimeoutError
 from ragent.routers.chat import create_chat_router
 
-pytestmark = pytest.mark.docker
+# No pytest.mark.docker — every dependency (LLM, embedder, rate-limiter,
+# retrieval pipeline) is mocked. The test exercises FastAPI + the production
+# global handler in-process, so it must NOT be gated on Docker availability
+# (would silently skip on Docker-less CI per tests/conftest.py
+# `pytest_collection_modifyitems`).
 
 
 def _build_app(*, llm_client=None, retrieval_pipeline=None, rate_limiter=None):
@@ -76,35 +80,67 @@ def _post_chat(client: TestClient, **over):
 
 
 # ---------------------------------------------------------------------------
-# 1. LLM 5xx → 502 / LLM_ERROR
+# 1-3. Upstream-service 5xx variants → 502 + service-specific error_code
 # ---------------------------------------------------------------------------
 
 
-def test_chat_returns_502_when_llm_fails_with_upstream_service_error():
+@pytest.mark.parametrize(
+    ("failing_dep", "exc", "expected_code"),
+    [
+        pytest.param(
+            "llm",
+            UpstreamServiceError(
+                "llm chat failed after retries: HTTP 503",
+                service="llm",
+                error_code="LLM_ERROR",
+            ),
+            "LLM_ERROR",
+            id="llm-5xx",
+        ),
+        pytest.param(
+            "retrieval",
+            UpstreamServiceError(
+                "embedding failed after retries: HTTP 503",
+                service="embedding",
+                error_code="EMBEDDER_ERROR",
+            ),
+            "EMBEDDER_ERROR",
+            id="embedder-5xx",
+        ),
+        pytest.param(
+            "retrieval",
+            UpstreamServiceError(
+                "rerank failed after retries: connection reset",
+                service="rerank",
+                error_code="RERANK_ERROR",
+            ),
+            "RERANK_ERROR",
+            id="rerank-5xx",
+        ),
+    ],
+)
+def test_chat_returns_502_on_upstream_service_error(failing_dep, exc, expected_code):
+    """Any UpstreamServiceError — whether raised by the LLM, embedder, or
+    reranker — surfaces as 502 with the originating service's error_code."""
     llm = MagicMock()
-    llm.chat.side_effect = UpstreamServiceError(
-        "llm chat failed after retries: HTTP 503", service="llm", error_code="LLM_ERROR"
-    )
-    app = _build_app(llm_client=llm, retrieval_pipeline=_ok_retrieval())
+    rp = _ok_retrieval()
+    if failing_dep == "llm":
+        llm.chat.side_effect = exc
+    else:
+        rp.run.side_effect = exc
+
+    app = _build_app(llm_client=llm, retrieval_pipeline=rp)
     with structlog.testing.capture_logs() as logs:
-        resp = _client(app).post(
-            "/chat",
-            json={
-                "messages": [{"role": "user", "content": "hi"}],
-                "model": "m",
-                "provider": "openai",
-            },
-            headers={"X-User-Id": "u"},
-        )
+        resp = _post_chat(_client(app))
     assert resp.status_code == 502
-    assert resp.json()["error_code"] == "LLM_ERROR"
-    assert any(e.get("error_code") == "LLM_ERROR" for e in logs), (
-        f"no log carried LLM_ERROR; events={[e['event'] for e in logs]}"
+    assert resp.json()["error_code"] == expected_code
+    assert any(e.get("error_code") == expected_code for e in logs), (
+        f"no log carried {expected_code}; events={[e['event'] for e in logs]}"
     )
 
 
 # ---------------------------------------------------------------------------
-# 2. LLM timeout → 504 / LLM_TIMEOUT
+# 4. LLM timeout → 504 / LLM_TIMEOUT (separate: 504, not 502)
 # ---------------------------------------------------------------------------
 
 
@@ -117,42 +153,6 @@ def test_chat_returns_504_when_llm_times_out():
     resp = _post_chat(_client(app))
     assert resp.status_code == 504
     assert resp.json()["error_code"] == "LLM_TIMEOUT"
-
-
-# ---------------------------------------------------------------------------
-# 3. Embedder fails during retrieval → 502 / EMBEDDER_ERROR
-# ---------------------------------------------------------------------------
-
-
-def test_chat_returns_502_when_embedder_fails_during_retrieval():
-    rp = MagicMock()
-    rp.run.side_effect = UpstreamServiceError(
-        "embedding failed after retries: HTTP 503",
-        service="embedding",
-        error_code="EMBEDDER_ERROR",
-    )
-    app = _build_app(retrieval_pipeline=rp)
-    resp = _post_chat(_client(app))
-    assert resp.status_code == 502
-    assert resp.json()["error_code"] == "EMBEDDER_ERROR"
-
-
-# ---------------------------------------------------------------------------
-# 4. Rerank fails during retrieval → 502 / RERANK_ERROR
-# ---------------------------------------------------------------------------
-
-
-def test_chat_returns_502_when_rerank_fails_during_retrieval():
-    rp = MagicMock()
-    rp.run.side_effect = UpstreamServiceError(
-        "rerank failed after retries: connection reset",
-        service="rerank",
-        error_code="RERANK_ERROR",
-    )
-    app = _build_app(retrieval_pipeline=rp)
-    resp = _post_chat(_client(app))
-    assert resp.status_code == 502
-    assert resp.json()["error_code"] == "RERANK_ERROR"
 
 
 # ---------------------------------------------------------------------------

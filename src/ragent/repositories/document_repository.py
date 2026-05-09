@@ -214,23 +214,25 @@ class DocumentRepository:
         error_reason: str | None = None,
     ) -> None:
         assert_transition(from_status, to_status)
-        params: dict = {"id": document_id, "from_status": from_status, "to_status": to_status}
+        # MariaDB VARCHAR(255) — truncate proactively rather than surface a
+        # "Data too long" surprise on long stack messages at the failure path.
+        params: dict = {
+            "id": document_id,
+            "from_status": from_status,
+            "to_status": to_status,
+            "error_code": error_code,
+            "error_reason": error_reason[:255] if error_reason else None,
+        }
         attempt_clause = ""
         if attempt is not None:
             attempt_clause = ", attempt = :attempt"
             params["attempt"] = attempt
-        error_clause = ""
-        if error_code is not None or error_reason is not None:
-            error_clause = ", error_code = :error_code, error_reason = :error_reason"
-            params["error_code"] = error_code
-            # MariaDB VARCHAR(255) — truncate proactively rather than
-            # surface a "Data too long" surprise on long stack messages.
-            params["error_reason"] = error_reason[:255] if error_reason else None
         result = await self._execute(
             text(
                 f"""
                 UPDATE documents
-                SET status = :to_status, updated_at = NOW(6){attempt_clause}{error_clause}
+                SET status = :to_status, updated_at = NOW(6){attempt_clause},
+                    error_code = :error_code, error_reason = :error_reason
                 WHERE document_id = :id AND status = :from_status
                 """
             ),

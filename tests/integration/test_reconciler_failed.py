@@ -61,7 +61,13 @@ def test_exceeded_attempt_transitions_to_failed():
     rec = _make_reconciler(repo, broker)
     rec.run()
 
-    repo.update_status.assert_called_once_with("DOC001", from_status="PENDING", to_status="FAILED")
+    repo.update_status.assert_called_once()
+    call = repo.update_status.call_args
+    assert call.args == ("DOC001",)
+    assert call.kwargs["from_status"] == "PENDING"
+    assert call.kwargs["to_status"] == "FAILED"
+    assert call.kwargs["error_code"] == "PIPELINE_MAX_ATTEMPTS_EXCEEDED"
+    assert "attempt=" in call.kwargs["error_reason"]
 
 
 def test_exceeded_attempt_does_not_redispatch():
