@@ -11,6 +11,7 @@ from __future__ import annotations
 import datetime
 from unittest.mock import AsyncMock, MagicMock
 
+from ragent.errors.codes import TaskErrorCode
 from ragent.repositories.document_repository import DocumentRow
 
 _BASE = datetime.datetime(2026, 1, 1, 12, 0, 0, tzinfo=datetime.UTC)
@@ -84,7 +85,7 @@ def test_failed_cleanup_no_registry_still_marks_failed():
     kwargs = repo.update_status.call_args.kwargs
     assert kwargs["from_status"] == "PENDING"
     assert kwargs["to_status"] == "FAILED"
-    assert kwargs["error_code"] == "PIPELINE_MAX_ATTEMPTS_EXCEEDED"
+    assert kwargs["error_code"] == TaskErrorCode.PIPELINE_MAX_ATTEMPTS_EXCEEDED
 
 
 def test_failed_cleanup_fan_out_receives_correct_doc_id():

@@ -20,6 +20,7 @@ from anyio import to_thread
 
 from ragent.bootstrap.broker import broker
 from ragent.bootstrap.metrics import observe_pipeline_duration, record_pipeline_outcome
+from ragent.errors.codes import TaskErrorCode
 from ragent.pipelines.observability import IngestStepError, bind_ingest_context, log_ingest_step
 from ragent.repositories.document_repository import LockNotAvailable
 
@@ -112,19 +113,21 @@ async def ingest_pipeline_task(document_id: str) -> None:
             log_ingest_step.failed(
                 document_id=document_id,
                 reason=reason,
-                error_code="PIPELINE_TIMEOUT_AGGREGATE",
+                error_code=TaskErrorCode.PIPELINE_TIMEOUT_AGGREGATE,
             )
             await repo.update_status(
                 document_id,
                 from_status="PENDING",
                 to_status="FAILED",
-                error_code="PIPELINE_TIMEOUT_AGGREGATE",
+                error_code=TaskErrorCode.PIPELINE_TIMEOUT_AGGREGATE,
                 error_reason=reason,
             )
             return
         except Exception as exc:
             cause = exc.__cause__ if isinstance(exc.__cause__, IngestStepError) else None
-            error_code = cause.error_code if cause is not None else "PIPELINE_TIMEOUT"
+            error_code = (
+                cause.error_code if cause is not None else TaskErrorCode.PIPELINE_UNEXPECTED_ERROR
+            )
             reason = f"{type(exc).__name__}: {exc}"
             log_ingest_step.failed(
                 document_id=document_id,

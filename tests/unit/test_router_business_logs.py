@@ -14,6 +14,8 @@ import structlog
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from ragent.errors.codes import HttpErrorCode
+
 # ---------------------------------------------------------------------------
 # Item 11: missing X-User-Id (middleware → 422)
 # ---------------------------------------------------------------------------
@@ -33,8 +35,8 @@ def test_missing_user_id_emits_business_log():
     with structlog.testing.capture_logs() as logs:
         resp = client.get("/protected")
     assert resp.status_code == 422
-    assert resp.json()["error_code"] == "MISSING_USER_ID"
-    matched = [e for e in logs if e.get("error_code") == "MISSING_USER_ID"]
+    assert resp.json()["error_code"] == HttpErrorCode.MISSING_USER_ID
+    matched = [e for e in logs if e.get("error_code") == HttpErrorCode.MISSING_USER_ID]
     assert matched, f"no log carrying MISSING_USER_ID; got events={[e['event'] for e in logs]}"
 
 
@@ -79,8 +81,8 @@ def test_ingest_not_found_emits_business_log():
     with structlog.testing.capture_logs() as logs:
         resp = client.get("/ingest/DOES-NOT-EXIST")
     assert resp.status_code == 404
-    assert resp.json()["error_code"] == "INGEST_NOT_FOUND"
-    matched = [e for e in logs if e.get("error_code") == "INGEST_NOT_FOUND"]
+    assert resp.json()["error_code"] == HttpErrorCode.INGEST_NOT_FOUND
+    matched = [e for e in logs if e.get("error_code") == HttpErrorCode.INGEST_NOT_FOUND]
     assert matched, f"no log carrying INGEST_NOT_FOUND; got events={[e['event'] for e in logs]}"
     notfound = matched[0]
     assert notfound.get("document_id") == "DOES-NOT-EXIST"
@@ -123,8 +125,8 @@ def test_chat_rate_limited_emits_business_log():
             headers={"X-User-Id": "u1"},
         )
     assert resp.status_code == 429
-    assert resp.json()["error_code"] == "CHAT_RATE_LIMITED"
-    matched = [e for e in logs if e.get("error_code") == "CHAT_RATE_LIMITED"]
+    assert resp.json()["error_code"] == HttpErrorCode.CHAT_RATE_LIMITED
+    matched = [e for e in logs if e.get("error_code") == HttpErrorCode.CHAT_RATE_LIMITED]
     assert matched, f"no log carrying CHAT_RATE_LIMITED; got events={[e['event'] for e in logs]}"
     log = matched[0]
     assert log.get("user_id") == "u1"

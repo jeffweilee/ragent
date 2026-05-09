@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import httpx
 
+from ragent.errors.codes import HttpErrorCode
+
 
 class UpstreamServiceError(Exception):
     """Generic upstream-service failure (5xx, malformed response, retry exhaustion)."""
 
     http_status: int = 502
-    error_code: str = "UPSTREAM_ERROR"
+    error_code: str = HttpErrorCode.UPSTREAM_ERROR
 
     def __init__(
         self,
@@ -38,7 +40,7 @@ class UpstreamTimeoutError(UpstreamServiceError):
     """Upstream did not respond within the configured deadline."""
 
     http_status: int = 504
-    error_code: str = "UPSTREAM_TIMEOUT"
+    error_code: str = HttpErrorCode.UPSTREAM_TIMEOUT
 
 
 def classify_upstream_error(

@@ -9,6 +9,7 @@ from typing import Any
 import structlog
 from opentelemetry import trace
 
+from ragent.errors.codes import HttpErrorCode
 from ragent.errors.upstream import classify_upstream_error
 
 logger = structlog.get_logger(__name__)
@@ -53,7 +54,9 @@ class LLMClient:
                     last_exc = exc
             span.record_exception(last_exc)  # type: ignore[arg-type]
             error_code, exc_cls = classify_upstream_error(
-                last_exc, error_code="LLM_ERROR", timeout_code="LLM_TIMEOUT"
+                last_exc,
+                error_code=HttpErrorCode.LLM_ERROR,
+                timeout_code=HttpErrorCode.LLM_TIMEOUT,
             )
             logger.error(
                 "llm.error",
@@ -161,7 +164,9 @@ class LLMClient:
                     last_exc = exc
             span.record_exception(last_exc)  # type: ignore[arg-type]
             error_code, exc_cls = classify_upstream_error(
-                last_exc, error_code="LLM_ERROR", timeout_code="LLM_TIMEOUT"
+                last_exc,
+                error_code=HttpErrorCode.LLM_ERROR,
+                timeout_code=HttpErrorCode.LLM_TIMEOUT,
             )
             logger.error(
                 "llm.error",

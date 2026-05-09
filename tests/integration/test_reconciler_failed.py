@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from ragent.errors.codes import TaskErrorCode
 from ragent.repositories.document_repository import DocumentRow
 
 _BASE = datetime.datetime(2026, 1, 1, 12, 0, 0, tzinfo=datetime.UTC)
@@ -66,7 +67,7 @@ def test_exceeded_attempt_transitions_to_failed():
     assert call.args == ("DOC001",)
     assert call.kwargs["from_status"] == "PENDING"
     assert call.kwargs["to_status"] == "FAILED"
-    assert call.kwargs["error_code"] == "PIPELINE_MAX_ATTEMPTS_EXCEEDED"
+    assert call.kwargs["error_code"] == TaskErrorCode.PIPELINE_MAX_ATTEMPTS_EXCEEDED
     assert "attempt=" in call.kwargs["error_reason"]
 
 

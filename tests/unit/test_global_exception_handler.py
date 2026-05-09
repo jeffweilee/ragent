@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from ragent.bootstrap.app import _register_unhandled_exception_handler
+from ragent.errors.codes import HttpErrorCode, TaskErrorCode
 from ragent.errors.upstream import UpstreamServiceError, UpstreamTimeoutError
 from ragent.pipelines.observability import IngestStepError
 
@@ -33,24 +34,34 @@ def _client_raising(exc: Exception) -> TestClient:
     ("exc", "expected_status", "expected_code"),
     [
         pytest.param(
-            RuntimeError("kaboom"), 500, "INTERNAL_ERROR", id="plain-exception-collapses-to-500"
+            RuntimeError("kaboom"),
+            500,
+            HttpErrorCode.INTERNAL_ERROR,
+            id="plain-exception-collapses-to-500",
         ),
         pytest.param(
-            IngestStepError("embedder failed", error_code="EMBEDDER_ERROR"),
+            # IngestStepError surfaces a TaskErrorCode if it ever leaks to
+            # the HTTP layer (rare — usually caught by worker), but the
+            # global handler treats it the same: getattr(exc, error_code).
+            IngestStepError("embedder failed", error_code=TaskErrorCode.EMBEDDER_ERROR),
             500,
             "EMBEDDER_ERROR",
             id="ingest-step-error-preserves-domain-code",
         ),
         pytest.param(
-            UpstreamServiceError("embedding 503", service="embedding", error_code="EMBEDDER_ERROR"),
+            UpstreamServiceError(
+                "embedding 503", service="embedding", error_code=HttpErrorCode.EMBEDDER_ERROR
+            ),
             502,
-            "EMBEDDER_ERROR",
+            HttpErrorCode.EMBEDDER_ERROR,
             id="upstream-service-error-502",
         ),
         pytest.param(
-            UpstreamTimeoutError("llm timeout", service="llm", error_code="LLM_TIMEOUT"),
+            UpstreamTimeoutError(
+                "llm timeout", service="llm", error_code=HttpErrorCode.LLM_TIMEOUT
+            ),
             504,
-            "LLM_TIMEOUT",
+            HttpErrorCode.LLM_TIMEOUT,
             id="upstream-timeout-error-504",
         ),
     ],
@@ -68,9 +79,11 @@ def test_handler_routes_by_exception_attrs(
 def test_handler_logs_carry_same_error_code() -> None:
     """The log record's error_code MUST equal the response body's error_code
     so an operator can correlate a 502 response with the failure log line."""
-    exc = UpstreamServiceError("rerank down", service="rerank", error_code="RERANK_ERROR")
+    exc = UpstreamServiceError(
+        "rerank down", service="rerank", error_code=HttpErrorCode.RERANK_ERROR
+    )
     with structlog.testing.capture_logs() as logs:
         resp = _client_raising(exc).get("/boom")
-    assert resp.json()["error_code"] == "RERANK_ERROR"
-    matched = [e for e in logs if e.get("error_code") == "RERANK_ERROR"]
+    assert resp.json()["error_code"] == HttpErrorCode.RERANK_ERROR
+    matched = [e for e in logs if e.get("error_code") == HttpErrorCode.RERANK_ERROR]
     assert matched, f"expected log record carrying error_code=RERANK_ERROR, got {logs}"

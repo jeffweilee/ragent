@@ -16,6 +16,7 @@ from ragent.bootstrap.metrics import (
     readyz_probe_failures_total,
     readyz_probe_status,
 )
+from ragent.errors.codes import ProbeErrorCode
 
 
 @dataclass(frozen=True)
@@ -84,11 +85,13 @@ async def run_probe(name: str, probe: Callable[[], Awaitable[None]]) -> ProbeFai
         await asyncio.wait_for(probe(), timeout=_budget())
         failure = None
     except TimeoutError:
-        failure = ProbeFailure(error_code="PROBE_TIMEOUT", detail="probe exceeded budget")
+        failure = ProbeFailure(
+            error_code=ProbeErrorCode.PROBE_TIMEOUT, detail="probe exceeded budget"
+        )
     except IndexMissing as exc:
-        failure = ProbeFailure(error_code="ES_INDEX_MISSING", detail=str(exc))
+        failure = ProbeFailure(error_code=ProbeErrorCode.ES_INDEX_MISSING, detail=str(exc))
     except Exception as exc:  # noqa: BLE001
-        failure = ProbeFailure(error_code="DEPENDENCY_DOWN", detail=str(exc))
+        failure = ProbeFailure(error_code=ProbeErrorCode.DEPENDENCY_DOWN, detail=str(exc))
 
     readyz_probe_duration_seconds.labels(probe=name).observe(time.monotonic() - started)
     if failure is None:

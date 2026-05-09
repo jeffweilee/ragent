@@ -28,6 +28,7 @@ from fastapi.testclient import TestClient
 
 from ragent.bootstrap.app import _register_unhandled_exception_handler
 from ragent.clients.rate_limiter import RateLimitResult
+from ragent.errors.codes import HttpErrorCode
 from ragent.errors.upstream import UpstreamServiceError, UpstreamTimeoutError
 from ragent.routers.chat import create_chat_router
 
@@ -92,9 +93,9 @@ def _post_chat(client: TestClient, **over):
             UpstreamServiceError(
                 "llm chat failed after retries: HTTP 503",
                 service="llm",
-                error_code="LLM_ERROR",
+                error_code=HttpErrorCode.LLM_ERROR,
             ),
-            "LLM_ERROR",
+            HttpErrorCode.LLM_ERROR,
             id="llm-5xx",
         ),
         pytest.param(
@@ -102,9 +103,9 @@ def _post_chat(client: TestClient, **over):
             UpstreamServiceError(
                 "embedding failed after retries: HTTP 503",
                 service="embedding",
-                error_code="EMBEDDER_ERROR",
+                error_code=HttpErrorCode.EMBEDDER_ERROR,
             ),
-            "EMBEDDER_ERROR",
+            HttpErrorCode.EMBEDDER_ERROR,
             id="embedder-5xx",
         ),
         pytest.param(
@@ -112,9 +113,9 @@ def _post_chat(client: TestClient, **over):
             UpstreamServiceError(
                 "rerank failed after retries: connection reset",
                 service="rerank",
-                error_code="RERANK_ERROR",
+                error_code=HttpErrorCode.RERANK_ERROR,
             ),
-            "RERANK_ERROR",
+            HttpErrorCode.RERANK_ERROR,
             id="rerank-5xx",
         ),
     ],
@@ -147,12 +148,14 @@ def test_chat_returns_502_on_upstream_service_error(failing_dep, exc, expected_c
 def test_chat_returns_504_when_llm_times_out():
     llm = MagicMock()
     llm.chat.side_effect = UpstreamTimeoutError(
-        "llm chat failed after retries: read timeout", service="llm", error_code="LLM_TIMEOUT"
+        "llm chat failed after retries: read timeout",
+        service="llm",
+        error_code=HttpErrorCode.LLM_TIMEOUT,
     )
     app = _build_app(llm_client=llm, retrieval_pipeline=_ok_retrieval())
     resp = _post_chat(_client(app))
     assert resp.status_code == 504
-    assert resp.json()["error_code"] == "LLM_TIMEOUT"
+    assert resp.json()["error_code"] == HttpErrorCode.LLM_TIMEOUT
 
 
 # ---------------------------------------------------------------------------
@@ -165,7 +168,7 @@ def test_chat_stream_emits_error_event_on_llm_failure():
     llm.stream.side_effect = UpstreamServiceError(
         "llm stream failed after retries: HTTP 503",
         service="llm",
-        error_code="LLM_ERROR",
+        error_code=HttpErrorCode.LLM_ERROR,
     )
     app = _build_app(llm_client=llm, retrieval_pipeline=_ok_retrieval())
     with TestClient(app, raise_server_exceptions=False) as client:
@@ -205,17 +208,17 @@ def test_chat_rate_limit_precedes_upstream_failure():
     # Both upstreams configured to fail — they MUST NOT be reached.
     llm = MagicMock()
     llm.chat.side_effect = UpstreamServiceError(
-        "should not be called", service="llm", error_code="LLM_ERROR"
+        "should not be called", service="llm", error_code=HttpErrorCode.LLM_ERROR
     )
     rp = MagicMock()
     rp.run.side_effect = UpstreamServiceError(
-        "should not be called", service="embedding", error_code="EMBEDDER_ERROR"
+        "should not be called", service="embedding", error_code=HttpErrorCode.EMBEDDER_ERROR
     )
 
     app = _build_app(llm_client=llm, retrieval_pipeline=rp, rate_limiter=rate_limiter)
     resp = _post_chat(_client(app))
     assert resp.status_code == 429
-    assert resp.json()["error_code"] == "CHAT_RATE_LIMITED"
+    assert resp.json()["error_code"] == HttpErrorCode.CHAT_RATE_LIMITED
     rp.run.assert_not_called()
     llm.chat.assert_not_called()
 
@@ -231,7 +234,9 @@ def test_chat_stream_rate_limit_precedes_upstream():
         allowed=False, remaining=0, reset_at=9999999999.0
     )
     llm = MagicMock()
-    llm.stream.side_effect = UpstreamServiceError("boom", service="llm", error_code="LLM_ERROR")
+    llm.stream.side_effect = UpstreamServiceError(
+        "boom", service="llm", error_code=HttpErrorCode.LLM_ERROR
+    )
     app = _build_app(llm_client=llm, retrieval_pipeline=_ok_retrieval(), rate_limiter=rate_limiter)
     resp = _client(app).post(
         "/chat/stream",
@@ -239,7 +244,7 @@ def test_chat_stream_rate_limit_precedes_upstream():
         headers={"X-User-Id": "u1"},
     )
     assert resp.status_code == 429
-    assert resp.json()["error_code"] == "CHAT_RATE_LIMITED"
+    assert resp.json()["error_code"] == HttpErrorCode.CHAT_RATE_LIMITED
     llm.stream.assert_not_called()
 
 
@@ -256,10 +261,10 @@ def test_chat_embedder_fails_before_llm_called():
     llm.chat.side_effect = AssertionError("LLM should not be called when retrieval fails")
     rp = MagicMock()
     rp.run.side_effect = UpstreamTimeoutError(
-        "embedding timeout", service="embedding", error_code="EMBEDDER_TIMEOUT"
+        "embedding timeout", service="embedding", error_code=HttpErrorCode.EMBEDDER_TIMEOUT
     )
     app = _build_app(llm_client=llm, retrieval_pipeline=rp)
     resp = _post_chat(_client(app))
     assert resp.status_code == 504
-    assert resp.json()["error_code"] == "EMBEDDER_TIMEOUT"
+    assert resp.json()["error_code"] == HttpErrorCode.EMBEDDER_TIMEOUT
     llm.chat.assert_not_called()

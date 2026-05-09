@@ -19,6 +19,7 @@ from ragent.bootstrap.metrics import (
     setup_metrics,
 )
 from ragent.bootstrap.telemetry import setup_tracing
+from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
 from ragent.middleware.logging import RequestLoggingMiddleware
 from ragent.routers.chat import create_chat_router
@@ -93,9 +94,9 @@ def _register_unhandled_exception_handler(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def _unhandled(request: Request, exc: Exception) -> Response:
-        error_code = getattr(exc, "error_code", None) or "INTERNAL_ERROR"
+        error_code = getattr(exc, "error_code", None) or HttpErrorCode.INTERNAL_ERROR
         http_status = int(getattr(exc, "http_status", 500))
-        if error_code == "INTERNAL_ERROR":
+        if error_code == HttpErrorCode.INTERNAL_ERROR:
             title = "Internal server error"
         else:
             title = str(exc) or error_code
@@ -120,10 +121,10 @@ def _x_user_id_middleware(app: FastAPI) -> None:
                 "api.user_id_missing",
                 path=request.url.path,
                 method=request.method,
-                error_code="MISSING_USER_ID",
+                error_code=HttpErrorCode.MISSING_USER_ID,
                 http_status=422,
             )
-            return problem(422, "MISSING_USER_ID", "X-User-Id header is required")
+            return problem(422, HttpErrorCode.MISSING_USER_ID, "X-User-Id header is required")
         return await call_next(request)
 
 

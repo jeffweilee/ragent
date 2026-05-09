@@ -8,6 +8,7 @@ from typing import Any
 import structlog
 from opentelemetry import trace
 
+from ragent.errors.codes import HttpErrorCode
 from ragent.errors.upstream import classify_upstream_error
 
 logger = structlog.get_logger(__name__)
@@ -68,8 +69,8 @@ class RerankClient:
             span.record_exception(last_exc)  # type: ignore[arg-type]
             error_code, exc_cls = classify_upstream_error(
                 last_exc,
-                error_code="RERANK_ERROR",
-                timeout_code="RERANK_TIMEOUT",
+                error_code=HttpErrorCode.RERANK_ERROR,
+                timeout_code=HttpErrorCode.RERANK_TIMEOUT,
             )
             logger.error(
                 "rerank.error",

@@ -22,6 +22,8 @@ from prometheus_client import Counter, Gauge, Histogram
 from prometheus_client.core import GaugeMetricFamily
 from prometheus_fastapi_instrumentator import Instrumentator, metrics
 
+from ragent.errors.codes import ProbeErrorCode
+
 _logger = structlog.get_logger(__name__)
 
 
@@ -182,7 +184,7 @@ class DocumentStatsCollector:
         except Exception as exc:
             _logger.warning(
                 "metrics.document_stats_fetch_failed",
-                error_code="METRICS_DB_UNAVAILABLE",
+                error_code=ProbeErrorCode.METRICS_DB_UNAVAILABLE,
                 error_type=type(exc).__name__,
             )
             yield family

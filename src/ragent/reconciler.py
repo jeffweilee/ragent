@@ -16,6 +16,7 @@ from typing import Any
 import structlog
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from ragent.errors.codes import TaskErrorCode
 from ragent.repositories.document_repository import DocumentRepository
 
 logger = structlog.get_logger(__name__)
@@ -58,7 +59,7 @@ class Reconciler:
                     doc.document_id,
                     from_status="PENDING",
                     to_status="FAILED",
-                    error_code="PIPELINE_MAX_ATTEMPTS_EXCEEDED",
+                    error_code=TaskErrorCode.PIPELINE_MAX_ATTEMPTS_EXCEEDED,
                     error_reason=f"reconciler swept stuck PENDING after attempt={doc.attempt}",
                 )
                 from ragent.bootstrap.metrics import record_pipeline_outcome

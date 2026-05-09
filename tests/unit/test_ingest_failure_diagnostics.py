@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from ragent.errors.codes import TaskErrorCode
 from ragent.routers.ingest import create_router
 
 
@@ -39,7 +40,7 @@ def test_get_ingest_returns_error_code_and_reason_on_failed():
         return_value=_doc_row(
             document_id="DOC-FAIL",
             status="FAILED",
-            error_code="EMBEDDER_ERROR",
+            error_code=TaskErrorCode.EMBEDDER_ERROR,
             error_reason="UpstreamServiceError: embedding failed after retries: HTTP 503",
         )
     )
@@ -52,7 +53,7 @@ def test_get_ingest_returns_error_code_and_reason_on_failed():
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "FAILED"
-    assert body["error_code"] == "EMBEDDER_ERROR"
+    assert body["error_code"] == TaskErrorCode.EMBEDDER_ERROR
     assert "embedding failed" in body["error_reason"]
 
 
@@ -95,11 +96,11 @@ def test_document_row_carries_error_fields():
             "minio_site": None,
             "source_url": None,
             "mime_type": "text/plain",
-            "error_code": "PIPELINE_TIMEOUT_AGGREGATE",
+            "error_code": TaskErrorCode.PIPELINE_TIMEOUT_AGGREGATE,
             "error_reason": "aggregate pipeline timeout after 300.0s",
         }
     )
-    assert row.error_code == "PIPELINE_TIMEOUT_AGGREGATE"
+    assert row.error_code == TaskErrorCode.PIPELINE_TIMEOUT_AGGREGATE
     assert "300.0" in row.error_reason
 
 
@@ -137,11 +138,11 @@ def test_update_status_persists_error_code_and_reason():
             "DOC-X",
             from_status="PENDING",
             to_status="FAILED",
-            error_code="EMBEDDER_ERROR",
+            error_code=TaskErrorCode.EMBEDDER_ERROR,
             error_reason="boom" * 100,  # 400 chars; must be truncated to 255
         )
     )
-    assert captured["params"]["error_code"] == "EMBEDDER_ERROR"
+    assert captured["params"]["error_code"] == TaskErrorCode.EMBEDDER_ERROR
     # Truncation guard: never exceed VARCHAR(255).
     assert len(captured["params"]["error_reason"]) == 255
 
