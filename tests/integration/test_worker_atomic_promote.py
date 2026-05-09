@@ -184,6 +184,10 @@ async def test_for_update_serializes_concurrent_promotes(fresh_engine) -> None:
 
     async def hold_for_update() -> None:
         async with fresh_engine.begin() as conn:
+            # Mirrors the survivor SELECT in
+            # document_repository.py::promote_to_ready_and_demote_siblings —
+            # keep in sync so the lock acquired here is the same lock the
+            # production code waits on.
             await conn.execute(
                 text(
                     """
@@ -209,10 +213,11 @@ async def test_for_update_serializes_concurrent_promotes(fresh_engine) -> None:
             document_id="DOC_B", source_id="S5", source_app="confluence"
         )
     )
-    # Give the second tx a chance to run; it must NOT complete while T1 holds
-    # the row lock.
-    await asyncio.sleep(0.3)
-    assert not promote_task.done(), "FOR UPDATE failed to block second promote"
+    # Deterministic block-check: shield the task and bound a small wait; if
+    # the row lock holds, this raises TimeoutError. Avoids the flake-prone
+    # `sleep(N) + assert not done()` pattern.
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(asyncio.shield(promote_task), timeout=0.1)
 
     t1_release.set()
     await holder
