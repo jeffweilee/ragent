@@ -405,6 +405,8 @@ docker ps &>/dev/null && echo "Docker ready" || {
 > **Why:** testcontainers (MariaDB, ES, Redis, MinIO) require a live Docker socket.
 > Without it, all `@pytest.mark.docker` tests are skipped and remain `[ ]` in plan.md.
 
+> **Agent SOP — never declare Docker "unavailable" without first attempting the start sequence above.** Sequence: (1) run `docker ps`; if exit 0, proceed. (2) If non-zero, run the `sudo dockerd ... + 30s wait` block above. (3) Only after that 30s loop fails may the agent report Docker unavailable — and at that point any commit touching `src/`, `tests/`, or `pyproject.toml` MUST be aborted (the pre-commit gate will reject it; the agent must not work around it). Phrasing like "本機跑不了 / docker not available locally / skip integration tests for now" without having run step (2) is a process violation (see `docs/00_journal.md` 2026-05-09 Process row).
+
 ## Python
 
 **(Mandatory) Full pre-commit sequence — no commit is valid unless every step is green:**
@@ -425,3 +427,8 @@ uv run bandit -r src/ --severity-level high --confidence-level high
 - **Start the Docker daemon in advance.** `pytest` must run the **full suite including docker testcontainers integration tests** (`@pytest.mark.docker`). Skipping (via `-m "not docker"`, `--deselect`, env flags, or a missing daemon) is **forbidden**.
 - Verify `pytest` output reports **0 skipped** for `@pytest.mark.docker` tests. If any docker test is skipped, fix the daemon and re-run — do not commit.
 - Committing with only unit tests green (docker tests skipped) is a process violation; the CI failure that follows is the direct consequence.
+
+**Agent quality-gate honesty rules (added 2026-05-09 after a same-day double violation, see `docs/00_journal.md` Process):**
+- `/simplify` and `/review` are **not user-gated**. TDD workflow steps 7 and 8 (CLAUDE.md) require the agent to invoke both skills via the Skill tool on every cycle that touches `src/`, `tests/`, `pyproject.toml`, `docs/00_spec.md`, or `docs/00_plan.md`. Phrasing them as "待你決定 / optional / up to you" is a process violation.
+- `.claude/.pre_commit_approved` is **not a self-attestation token**. It MUST be a JSON object `{"diff_sha": "<sha256 of git diff --cached output>", "ts": <epoch>, "by": "<simplify|review>"}` written by `bash .claude/hooks/stamp_pre_commit_approved.sh <skill-name>` only at the tail of a `/simplify` or `/review` skill run. Manual `date > .claude/.pre_commit_approved` by the agent is forbidden — the pre-commit gate verifies `diff_sha` matches the current staged diff and rejects mismatch.
+- Adding new staged changes after stamping invalidates the marker (sha changes). Re-run `/simplify` and `/review` against the new diff before commit.
