@@ -67,11 +67,13 @@ async def test_aggregate_timeout_default_does_not_apply_when_fast(
     with patch("ragent.bootstrap.composition.get_container", return_value=container):
         await ingest_pipeline_task("DOC001")
 
+    # B39: worker's READY transition routes through
+    # promote_to_ready_and_demote_siblings (atomic with sibling demote).
+    container.doc_repo.promote_to_ready_and_demote_siblings.assert_awaited_once()
     to_statuses = [
         c.kwargs.get("to_status") or (c.args[2] if len(c.args) > 2 else None)
         for c in container.doc_repo.update_status.call_args_list
     ]
-    assert "READY" in to_statuses
     assert "FAILED" not in to_statuses
 
 

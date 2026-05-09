@@ -61,7 +61,7 @@ def probe_es(es_client: Any, index_names: list[str]) -> Callable[[], Awaitable[N
 
 def probe_minio(minio_client: Any) -> Callable[[], Awaitable[None]]:
     async def _p() -> None:
-        await _run(lambda: list(minio_client._client.list_buckets()))  # noqa: SLF001
+        await _run(lambda: list(minio_client.list_buckets()))
 
     return _p
 

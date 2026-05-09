@@ -37,8 +37,6 @@ def test_readyz_200_when_all_deps_up(
     from redis import Redis
     from sqlalchemy.ext.asyncio import create_async_engine
 
-    from ragent.storage.minio_client import MinIOClient
-
     engine = create_async_engine(mariadb_dsn)
     es_client = Elasticsearch(hosts=[es_url], verify_certs=False)
     redis_host = redis_container.get_container_host_ip()
@@ -53,11 +51,8 @@ def test_readyz_200_when_all_deps_up(
         secret_key="minioadmin",
         secure=False,
     )
-    minio_client = MinIOClient(
-        minio_client=raw_minio, bucket="ragent", put_timeout=10.0, get_timeout=10.0
-    )
 
-    app = _build_app_with_real_probes(engine, es_client, minio_client, redis_client)
+    app = _build_app_with_real_probes(engine, es_client, raw_minio, redis_client)
     with TestClient(app) as client:
         resp = client.get("/readyz")
         assert resp.status_code == 200

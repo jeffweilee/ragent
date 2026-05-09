@@ -69,7 +69,13 @@ class _QueryEmbedder:
 
 @component
 class _SourceHydrator:
-    """Enrich chunk metadata with source_app/source_id/source_title from MariaDB."""
+    """Enrich READY chunks with source metadata; drop the rest (B36).
+
+    Acts as the retrieval correctness gate: chunks whose ``document_id`` is
+    not in the READY rows returned by ``get_sources_by_document_ids`` are
+    dropped, so orphan / mid-flight / demoted chunks never reach LLM
+    context or ``sources[]`` regardless of cleanup-path completeness.
+    """
 
     def __init__(self, doc_repo: Any) -> None:
         self._repo = doc_repo
@@ -81,17 +87,16 @@ class _SourceHydrator:
         result = []
         for doc in documents:
             doc_id = doc.meta.get("document_id")
-            if doc_id and doc_id in sources:
-                source_app, source_id, source_title = sources[doc_id]
-                meta = {
-                    **doc.meta,
-                    "source_app": source_app,
-                    "source_id": source_id,
-                    "source_title": source_title,
-                }
-                result.append(dataclasses.replace(doc, meta=meta))
-            else:
-                result.append(doc)
+            if not (doc_id and doc_id in sources):
+                continue
+            source_app, source_id, source_title = sources[doc_id]
+            meta = {
+                **doc.meta,
+                "source_app": source_app,
+                "source_id": source_id,
+                "source_title": source_title,
+            }
+            result.append(dataclasses.replace(doc, meta=meta))
         return {"documents": result}
 
 

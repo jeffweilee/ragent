@@ -56,4 +56,4 @@ async def test_pipeline_timeout_does_not_delete_minio():
     with patch("ragent.bootstrap.composition.get_container", return_value=container):
         await ingest_pipeline_task("DOC001")
 
-    container.minio_client.delete_object.assert_not_called()
+    container.minio_registry.delete_object.assert_not_called()

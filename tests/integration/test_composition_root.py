@@ -12,7 +12,6 @@ def test_get_container_builds_fully_wired_graph(dev_env) -> None:
 
     container = get_container()
     assert container.doc_repo is not None
-    assert container.minio_client is not None
     assert container.minio_registry is not None
     assert container.es_client is not None
     assert container.engine is not None

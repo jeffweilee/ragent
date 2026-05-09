@@ -32,8 +32,6 @@ def make_ingest_container(doc: Any, *, pipeline_side_effect: Any = None) -> Magi
     container = MagicMock()
     container.doc_repo = AsyncMock()
     container.doc_repo.claim_for_processing.return_value = doc
-    container.minio_client = MagicMock()
-    container.minio_client.get_object.return_value = b"data"
     # v2 worker reads via minio_registry.head_object + get_object.
     container.minio_registry = MagicMock()
     container.minio_registry.head_object.return_value = (4, "text/plain")
@@ -204,9 +202,7 @@ def pytest_configure(config: pytest.Config) -> None:
     )
 
 
-def pytest_collection_modifyitems(
-    config: pytest.Config, items: list[pytest.Item]
-) -> None:
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
     # Record whether this collection actually contains any docker-marked
     # tests. The session-scope prewarm fixture below reads this flag and
     # no-ops when no docker test will run, so a `pytest tests/unit/` run

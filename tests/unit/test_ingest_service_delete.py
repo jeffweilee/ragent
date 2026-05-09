@@ -39,8 +39,11 @@ def _make_service(doc=None, lock_raises=False):
 
     storage = MagicMock()
     plugin_registry = MagicMock()
+    plugin_registry.fan_out_delete = AsyncMock(return_value=[])
 
-    svc = IngestService(repo=repo, storage=storage, broker=plugin_registry)
+    svc = IngestService(
+        repo=repo, storage=storage, broker=plugin_registry, registry=plugin_registry
+    )
     return svc, repo, storage, plugin_registry
 
 
@@ -52,7 +55,12 @@ async def test_delete_ready_doc_calls_cascade_in_order():
     repo.claim_for_deletion.side_effect = lambda doc_id: (
         call_order.append("claim_for_deletion") or doc
     )
-    registry.fan_out_delete = MagicMock(side_effect=lambda *a: call_order.append("fan_out_delete"))
+
+    async def _fan_out(*_a):
+        call_order.append("fan_out_delete")
+        return []
+
+    registry.fan_out_delete = AsyncMock(side_effect=_fan_out)
     repo.delete.side_effect = AsyncMock(side_effect=lambda *a: call_order.append("delete_row"))
     storage.delete_object.side_effect = lambda *a: call_order.append("delete_minio")
 
@@ -66,7 +74,9 @@ async def test_delete_idempotent_on_missing_doc():
     """Re-DELETE of already-deleted document returns without error (S14)."""
     repo = AsyncMock()
     repo.claim_for_deletion.side_effect = LockNotAvailable("NONEXISTENT")
-    svc = IngestService(repo=repo, storage=MagicMock(), broker=MagicMock())
+    registry = MagicMock()
+    registry.fan_out_delete = AsyncMock(return_value=[])
+    svc = IngestService(repo=repo, storage=MagicMock(), broker=registry, registry=registry)
     await svc.delete("NONEXISTENT")  # must not raise
     repo.delete.assert_not_called()
 
@@ -107,6 +117,6 @@ async def test_delete_minio_failure_does_not_stop_cascade():
 async def test_delete_calls_fan_out_delete_outside_tx():
     """fan_out_delete is called with no DB tx open — only structural verification here."""
     svc, repo, storage, registry = _make_service()
-    registry.fan_out_delete = MagicMock()
+    registry.fan_out_delete = AsyncMock(return_value=[])
     await svc.delete("DOCID001")
-    registry.fan_out_delete.assert_called_once_with("DOCID001")
+    registry.fan_out_delete.assert_awaited_once_with("DOCID001")

@@ -146,7 +146,11 @@ def test_vector_retrieves_document_by_embedding(es_store, mock_embedder) -> None
         ],
     )
     doc_repo = AsyncMock()
-    doc_repo.get_sources_by_document_ids.return_value = {}
+    # Hydrator drops chunks whose document_id is not in the READY set (B36).
+    # This test exercises retrieval, so the candidate doc must be hydratable.
+    doc_repo.get_sources_by_document_ids.return_value = {
+        "doc-vec": ("app_vec", "src-vec", "Vector Title"),
+    }
 
     pipeline = _pipeline(es_store, mock_embedder, doc_repo, join_mode="vector_only")
     docs = _run(pipeline, "vector similarity")
@@ -210,7 +214,10 @@ def test_pipeline_returns_full_content_untruncated(es_store, mock_embedder) -> N
         ],
     )
     doc_repo = AsyncMock()
-    doc_repo.get_sources_by_document_ids.return_value = {}
+    # Hydrator drops on miss (B36); this test asserts truncation, not drop.
+    doc_repo.get_sources_by_document_ids.return_value = {
+        "doc-trunc": ("app_t", "src-trunc", "Trunc Title"),
+    }
 
     pipeline = _pipeline(es_store, mock_embedder, doc_repo, join_mode="vector_only")
     docs = _run(pipeline, "x" * 10)
@@ -248,7 +255,11 @@ def test_filter_source_app_isolates_results(es_store, mock_embedder) -> None:
         ],
     )
     doc_repo = AsyncMock()
-    doc_repo.get_sources_by_document_ids.return_value = {}
+    # Hydrator drops on miss (B36); this test asserts ES `term` filter, not drop.
+    doc_repo.get_sources_by_document_ids.return_value = {
+        "doc-alpha": ("alpha_app", "src-alpha", "Alpha"),
+        "doc-beta": ("beta_app", "src-beta", "Beta"),
+    }
 
     pipeline = _pipeline(es_store, mock_embedder, doc_repo, join_mode="bm25_only")
     docs = _run(

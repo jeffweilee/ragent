@@ -224,6 +224,87 @@ class DocumentRepository:
             {"id": document_id},
         )
 
+    async def promote_to_ready_and_demote_siblings(
+        self, document_id: str, source_id: str, source_app: str
+    ) -> bool:
+        """Atomic, DB-arbitrated READY transition for (source_id, source_app).
+
+        The newest PENDING/READY sibling — elected by ``MAX(created_at)`` under
+        ``FOR UPDATE`` — is the survivor. If the caller's ``document_id`` is the
+        survivor, it promotes to READY and any prior READY siblings demote to
+        DELETING. If the caller is *not* the survivor (out-of-order worker
+        completion: an older worker finishing after a newer revision was
+        created), it self-demotes to DELETING so the newer worker's tx is the
+        one that flips retrieval. The reconciler is therefore a safety-net for
+        crash recovery only — never load-bearing for retrieval correctness.
+
+        Returns ``True`` if the caller is the survivor (was promoted to READY),
+        ``False`` if the caller self-demoted or there was nothing to promote
+        (caller's row already non-PENDING). Callers should gate post-READY
+        side effects (enrichment fan-out, READY-only event publication) on
+        this return value.
+        """
+        assert_transition("PENDING", "READY")
+        async with self._engine.begin() as conn:
+            survivor = (
+                await conn.execute(
+                    text(
+                        """
+                        SELECT document_id FROM documents
+                        WHERE source_id = :src
+                          AND source_app = :app
+                          AND status IN ('PENDING', 'READY')
+                        ORDER BY created_at DESC, document_id DESC
+                        LIMIT 1
+                        FOR UPDATE
+                        """
+                    ),
+                    {"src": source_id, "app": source_app},
+                )
+            ).scalar()
+
+            if survivor == document_id:
+                promoted = await conn.execute(
+                    text(
+                        """
+                        UPDATE documents
+                        SET status = 'READY', updated_at = NOW(6)
+                        WHERE document_id = :id AND status = 'PENDING'
+                        """
+                    ),
+                    {"id": document_id},
+                )
+                if promoted.rowcount == 0:
+                    raise IllegalStateTransition(
+                        f"promote_to_ready: PENDING → READY failed for {document_id}"
+                    )
+                await conn.execute(
+                    text(
+                        """
+                        UPDATE documents
+                        SET status = 'DELETING', updated_at = NOW(6)
+                        WHERE source_id = :src
+                          AND source_app = :app
+                          AND document_id != :id
+                          AND status = 'READY'
+                        """
+                    ),
+                    {"src": source_id, "app": source_app, "id": document_id},
+                )
+                return True
+
+            await conn.execute(
+                text(
+                    """
+                    UPDATE documents
+                    SET status = 'DELETING', updated_at = NOW(6)
+                    WHERE document_id = :id AND status = 'PENDING'
+                    """
+                ),
+                {"id": document_id},
+            )
+            return False
+
     # ------------------------------------------------------------------
     # Stale queries (Reconciler)
     # ------------------------------------------------------------------

@@ -58,11 +58,17 @@ class IngestListResult:
 
 
 class IngestService:
-    def __init__(self, repo: Any, storage: Any, broker: Any) -> None:
+    def __init__(
+        self,
+        repo: Any,
+        storage: Any,
+        broker: Any,
+        registry: Any,
+    ) -> None:
         self._repo = repo
-        self._storage = storage  # MinioSiteRegistry (v2) or legacy stub
-        self._broker = broker
-        self._has_fan_out = hasattr(broker, "fan_out_delete")
+        self._storage = storage  # MinioSiteRegistry
+        self._broker = broker  # TaskiqDispatcher (create); unused in supersede path
+        self._registry = registry
 
     async def create(
         self,
@@ -144,8 +150,10 @@ class IngestService:
         except LockNotAvailable:
             return
 
-        if self._has_fan_out:
-            self._broker.fan_out_delete(document_id)
+        # Cascade plugin cleanup (ES chunks, etc.) before the DB row is
+        # hard-deleted. Hydrator drop keeps any straggler chunks invisible
+        # to /chat between this call and reconciler reclaim.
+        await self._registry.fan_out_delete(document_id)
 
         if doc.status in ("UPLOADED", "PENDING"):
             with contextlib.suppress(Exception):
