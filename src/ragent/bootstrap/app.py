@@ -116,6 +116,13 @@ def _x_user_id_middleware(app: FastAPI) -> None:
         if request.url.path in _NO_USER_ID_PATHS:
             return await call_next(request)
         if not request.headers.get("X-User-Id"):
+            logger.warning(
+                "api.user_id_missing",
+                path=request.url.path,
+                method=request.method,
+                error_code="MISSING_USER_ID",
+                http_status=422,
+            )
             return problem(422, "MISSING_USER_ID", "X-User-Id header is required")
         return await call_next(request)
 

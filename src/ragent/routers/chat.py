@@ -60,6 +60,14 @@ def create_chat_router(
             f"chat:{user_id}", limit=rate_limit, window_seconds=rate_limit_window
         )
         if not result.allowed:
+            logger.warning(
+                "chat.rate_limited",
+                user_id=user_id,
+                limit=rate_limit,
+                window_seconds=rate_limit_window,
+                error_code="CHAT_RATE_LIMITED",
+                http_status=429,
+            )
             return _rate_limit_response(result.reset_at or 0)
         return None
 

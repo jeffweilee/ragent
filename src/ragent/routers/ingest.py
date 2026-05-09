@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
+import structlog
 from fastapi import APIRouter, Header, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
@@ -22,6 +23,8 @@ from ragent.services.ingest_service import (
     UnknownMinioSiteError,
 )
 
+logger = structlog.get_logger(__name__)
+
 
 def _is_mime_error(errors: list[dict]) -> bool:
     return any(any(part == "mime_type" for part in e.get("loc", ())) for e in errors)
@@ -34,12 +37,24 @@ def _validation_problem(exc: ValidationError):
         for e in raw
     ]
     if _is_mime_error(raw):
+        logger.warning(
+            "ingest.validation_failed",
+            error_code="INGEST_MIME_UNSUPPORTED",
+            http_status=415,
+            field_count=len(flat),
+        )
         return problem(
             415,
             "INGEST_MIME_UNSUPPORTED",
             "Unsupported media type",
             errors=flat,
         )
+    logger.warning(
+        "ingest.validation_failed",
+        error_code="INGEST_VALIDATION",
+        http_status=422,
+        field_count=len(flat),
+    )
     return problem(
         422,
         "INGEST_VALIDATION",
@@ -87,6 +102,12 @@ def create_router(svc: Any) -> APIRouter:
     async def get_document(document_id: str):
         doc = await svc.get(document_id)
         if doc is None:
+            logger.info(
+                "ingest.not_found",
+                document_id=document_id,
+                error_code="INGEST_NOT_FOUND",
+                http_status=404,
+            )
             return problem(404, "INGEST_NOT_FOUND", "Document not found")
         return {
             "document_id": doc.document_id,
