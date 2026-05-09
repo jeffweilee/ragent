@@ -186,9 +186,10 @@ def check_env() -> None:
         else:
             _ok("REDIS_RATELIMIT_URL")
 
-    # MinIO: composition.py STILL calls _require("MINIO_ENDPOINT"/ACCESS/SECRET)
-    # unconditionally even when MINIO_SITES is the documented v2 source-of-truth.
-    # Reproducing that exact requirement here so the doctor matches reality.
+    # MinIO: MINIO_SITES is the v2 source-of-truth. When unset, composition
+    # falls back to the legacy MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY trio to
+    # synthesise a __default__ site, so those vars are only required in the
+    # legacy path.
     sites = os.environ.get("MINIO_SITES", "").strip()
     if sites:
         try:
@@ -200,16 +201,16 @@ def check_env() -> None:
                 _ok("MINIO_SITES JSON", f"sites={names}")
         except json.JSONDecodeError as exc:
             _fail("MINIO_SITES JSON", f"invalid JSON: {exc}")
-    legacy = ("MINIO_ENDPOINT", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY")
-    miss = [v for v in legacy if not os.environ.get(v)]
-    if miss:
-        _fail(
-            "legacy MinIO vars (still required)",
-            f"composition._require() will sys.exit on missing {miss} "
-            "even with MINIO_SITES set (drift vs .env.example)",
-        )
     else:
-        _ok("legacy MinIO vars present", "(consumed by /readyz minio probe)")
+        legacy = ("MINIO_ENDPOINT", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY")
+        miss = [v for v in legacy if not os.environ.get(v)]
+        if miss:
+            _fail(
+                "legacy MinIO vars",
+                f"missing {miss}; set MINIO_SITES or provide all three legacy vars",
+            )
+        else:
+            _ok("legacy MinIO vars present", "(used to synthesise __default__ site)")
 
     # MINIO_BUCKET default drift: .env.example says 'ragent';
     # composition.py & minio_registry.py both default to 'ragent-uploads'.

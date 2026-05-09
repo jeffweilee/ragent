@@ -63,7 +63,7 @@ class IngestService:
         repo: Any,
         storage: Any,
         broker: Any,
-        registry: Any | None = None,
+        registry: Any,
     ) -> None:
         self._repo = repo
         self._storage = storage  # MinioSiteRegistry
