@@ -22,6 +22,9 @@ CREATE TABLE IF NOT EXISTS documents (
   source_url       VARCHAR(2048) NULL,
   -- 004_documents_mime_type.sql: appended NULL to keep ALGORITHM=INSTANT online.
   mime_type        VARCHAR(64)  NULL,
+  -- 006_documents_error_code.sql: failure diagnostics for async task failures.
+  error_code       VARCHAR(64)  NULL,
+  error_reason     VARCHAR(255) NULL,
   PRIMARY KEY (document_id),
   INDEX idx_status_updated (status, updated_at),
   INDEX idx_source_app_id_status_created (source_app, source_id, status, created_at),

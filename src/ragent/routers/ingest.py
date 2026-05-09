@@ -120,6 +120,8 @@ def create_router(svc: Any) -> APIRouter:
             "source_app": doc.source_app,
             "source_title": doc.source_title,
             "source_url": doc.source_url,
+            "error_code": getattr(doc, "error_code", None),
+            "error_reason": getattr(doc, "error_reason", None),
         }
 
     @router.delete("/ingest/{document_id}", status_code=204)
