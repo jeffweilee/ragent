@@ -4,8 +4,11 @@ import os
 from collections.abc import Callable
 from typing import Any
 
+import httpx
 import structlog
 from opentelemetry import trace
+
+from ragent.errors.upstream import UpstreamServiceError, UpstreamTimeoutError
 
 logger = structlog.get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
@@ -54,10 +57,19 @@ class RerankClient:
                 return results
             except Exception as exc:
                 span.record_exception(exc)
+                if isinstance(exc, httpx.TimeoutException):
+                    error_code, exc_cls = "RERANK_TIMEOUT", UpstreamTimeoutError
+                else:
+                    error_code, exc_cls = "RERANK_ERROR", UpstreamServiceError
                 logger.error(
                     "rerank.error",
                     peer_service="rerank",
                     candidate_count=len(texts),
                     error_type=type(exc).__name__,
+                    error_code=error_code,
                 )
-                raise
+                raise exc_cls(
+                    f"rerank failed: {exc}",
+                    service="rerank",
+                    error_code=error_code,
+                ) from exc

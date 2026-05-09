@@ -2,9 +2,11 @@
 
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 
 from ragent.clients.embedding import EmbeddingClient
+from ragent.errors.upstream import UpstreamServiceError, UpstreamTimeoutError
 
 
 def _mock_http(vectors: list[list[float]], return_code: int = 96200) -> MagicMock:
@@ -52,12 +54,19 @@ def test_embed_uses_bearer_token():
 
 
 def test_embed_raises_on_bad_return_code():
+    """After 3 retries the inner ValueError is wrapped in UpstreamServiceError
+    per `00_rule.md` §API Error Honesty (retry-exhausted upstream failure)."""
     http = _mock_http([[0.1]], return_code=99999)
     client = EmbeddingClient(
-        api_url="https://embed.example.com", http=http, get_token=lambda: "tok"
+        api_url="https://embed.example.com",
+        http=http,
+        get_token=lambda: "tok",
+        sleep=lambda s: None,
     )
-    with pytest.raises(ValueError, match="returnCode"):
+    with pytest.raises(UpstreamServiceError) as exc_info:
         client.embed(["text"])
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert "returnCode" in str(exc_info.value.__cause__)
 
 
 def test_embed_retries_3_times_on_http_error():
@@ -86,7 +95,7 @@ def test_embed_retries_3_times_on_http_error():
     assert all(s == 1.0 for s in sleep_calls)
 
 
-def test_embed_raises_after_3_failed_retries():
+def test_embed_raises_upstream_service_error_after_3_failed_retries():
     http = MagicMock()
     http.post.side_effect = Exception("boom")
     client = EmbeddingClient(
@@ -95,8 +104,28 @@ def test_embed_raises_after_3_failed_retries():
         get_token=lambda: "tok",
         sleep=lambda s: None,
     )
-    with pytest.raises(Exception, match="boom"):  # noqa: B017
+    with pytest.raises(UpstreamServiceError) as exc_info:
         client.embed(["text"])
+    assert exc_info.value.service == "embedding"
+    assert exc_info.value.error_code == "EMBEDDER_ERROR"
+    assert exc_info.value.http_status == 502
+    assert "boom" in str(exc_info.value)
+    assert http.post.call_count == 3
+
+
+def test_embed_wraps_timeout_as_upstream_timeout_error():
+    http = MagicMock()
+    http.post.side_effect = httpx.TimeoutException("read timeout")
+    client = EmbeddingClient(
+        api_url="https://embed.example.com",
+        http=http,
+        get_token=lambda: "tok",
+        sleep=lambda s: None,
+    )
+    with pytest.raises(UpstreamTimeoutError) as exc_info:
+        client.embed(["text"])
+    assert exc_info.value.error_code == "EMBEDDER_TIMEOUT"
+    assert exc_info.value.http_status == 504
     assert http.post.call_count == 3
 
 
@@ -178,8 +207,10 @@ def test_embed_raises_on_zero_magnitude_vector() -> None:
         get_token=lambda: "tok",
         sleep=lambda s: None,
     )
-    with pytest.raises(ValueError, match="zero magnitude"):
+    with pytest.raises(UpstreamServiceError) as exc_info:
         client.embed(["hello"])
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert "zero magnitude" in str(exc_info.value.__cause__)
 
 
 def test_embed_raises_on_nan_vector() -> None:
@@ -199,8 +230,10 @@ def test_embed_raises_on_nan_vector() -> None:
         get_token=lambda: "tok",
         sleep=lambda s: None,
     )
-    with pytest.raises(ValueError, match="non-finite"):
+    with pytest.raises(UpstreamServiceError) as exc_info:
         client.embed(["hello"])
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert "non-finite" in str(exc_info.value.__cause__)
 
 
 def test_embed_accepts_well_formed_vectors() -> None:

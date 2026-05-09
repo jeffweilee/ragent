@@ -2,9 +2,11 @@
 
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 
 from ragent.clients.rerank import RerankClient
+from ragent.errors.upstream import UpstreamServiceError, UpstreamTimeoutError
 
 
 def _mock_http(scores: list[float]) -> MagicMock:
@@ -47,9 +49,23 @@ def test_rerank_uses_bearer_token():
     assert headers["Authorization"] == "Bearer secret"
 
 
-def test_rerank_raises_on_http_error():
+def test_rerank_raises_upstream_service_error_on_http_error():
     http = MagicMock()
     http.post.side_effect = Exception("network error")
     client = RerankClient(api_url="https://rerank.example.com", http=http, get_token=lambda: "tok")
-    with pytest.raises(Exception, match="network error"):  # noqa: B017
+    with pytest.raises(UpstreamServiceError) as exc_info:
         client.rerank(query="q", texts=["x"], top_k=1)
+    assert exc_info.value.service == "rerank"
+    assert exc_info.value.error_code == "RERANK_ERROR"
+    assert exc_info.value.http_status == 502
+    assert "network error" in str(exc_info.value)
+
+
+def test_rerank_wraps_timeout_as_upstream_timeout_error():
+    http = MagicMock()
+    http.post.side_effect = httpx.TimeoutException("read timeout")
+    client = RerankClient(api_url="https://rerank.example.com", http=http, get_token=lambda: "tok")
+    with pytest.raises(UpstreamTimeoutError) as exc_info:
+        client.rerank(query="q", texts=["x"], top_k=1)
+    assert exc_info.value.error_code == "RERANK_TIMEOUT"
+    assert exc_info.value.http_status == 504

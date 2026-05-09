@@ -11,6 +11,7 @@ from ragent.bootstrap.logging_config import configure_logging
 from ragent.clients.embedding import EmbeddingClient
 from ragent.clients.llm import LLMClient
 from ragent.clients.rerank import RerankClient
+from ragent.errors.upstream import UpstreamServiceError
 
 
 @pytest.fixture()
@@ -72,7 +73,7 @@ def test_llm_chat_records_error_on_retry_exhaustion(exporter):
     client = LLMClient(
         api_url="http://llm", http=http, get_token=lambda: "t", timeout=1.0, sleep=lambda _s: None
     )
-    with structlog.testing.capture_logs() as logs, pytest.raises(RuntimeError):
+    with structlog.testing.capture_logs() as logs, pytest.raises(UpstreamServiceError):
         client.chat(messages=[{"role": "user", "content": "hi"}], model="m")
     assert "llm.chat" in _names(exporter)
     assert any(e.get("event") == "llm.error" for e in logs)

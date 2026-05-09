@@ -6,8 +6,11 @@ import time as _time
 from collections.abc import Callable
 from typing import Any
 
+import httpx
 import structlog
 from opentelemetry import trace
+
+from ragent.errors.upstream import UpstreamServiceError, UpstreamTimeoutError
 
 _EMBED_MODEL = "bge-m3"
 _SUCCESS_CODE = 96200
@@ -101,10 +104,19 @@ class EmbeddingClient:
                 except Exception as exc:
                     last_exc = exc
             span.record_exception(last_exc)  # type: ignore[arg-type]
+            if isinstance(last_exc, httpx.TimeoutException):
+                error_code, exc_cls = "EMBEDDER_TIMEOUT", UpstreamTimeoutError
+            else:
+                error_code, exc_cls = "EMBEDDER_ERROR", UpstreamServiceError
             logger.error(
                 "embedding.error",
                 peer_service="embedding",
                 batch_size=len(texts),
                 error_type=type(last_exc).__name__ if last_exc else None,
+                error_code=error_code,
             )
-            raise last_exc  # type: ignore[misc]
+            raise exc_cls(
+                f"embedding failed after retries: {last_exc}",
+                service="embedding",
+                error_code=error_code,
+            ) from last_exc
