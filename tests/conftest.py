@@ -1,15 +1,21 @@
 """Session-scoped testcontainer fixtures for integration tests (T0.9)."""
 
 import json
+import os
 import time
 import urllib.request
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import anyio
 import pytest
 from haystack.dataclasses import Document
+
+# B42: vanilla test ES has no analysis-icu plugin. Point init_es() at the
+# test mapping (standard analyzer) before any fixture or test imports it.
+os.environ.setdefault("RAGENT_ES_RESOURCES_DIR", str(Path(__file__).parent / "resources" / "es"))
 
 
 def run_in_threadpool(fn: Callable[[], Any]) -> Any:

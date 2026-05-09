@@ -75,8 +75,12 @@ def init_mariadb(engine) -> None:
 
 
 def init_es(es_url: str) -> None:
+    # Test override: integration tests run against vanilla ES (no analysis-icu
+    # plugin) and point this at tests/resources/es/ which omits the ICU analyzer
+    # (B36).
+    resources_dir = Path(os.environ.get("RAGENT_ES_RESOURCES_DIR") or _ES_RESOURCES)
     base = es_url.rstrip("/")
-    for path in sorted(_ES_RESOURCES.glob("*.json")):
+    for path in sorted(resources_dir.glob("*.json")):
         index = path.stem
         index_url = f"{base}/{index}"
         existing = _es_request(index_url, method="HEAD")

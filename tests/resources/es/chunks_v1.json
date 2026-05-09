@@ -2,16 +2,7 @@
   "settings": {
     "index": {
       "number_of_shards": 1,
-      "number_of_replicas": 0,
-      "analysis": {
-        "analyzer": {
-          "icu_text": {
-            "type": "custom",
-            "tokenizer": "icu_tokenizer",
-            "filter": ["icu_folding", "lowercase"]
-          }
-        }
-      }
+      "number_of_replicas": 0
     }
   },
   "mappings": {
@@ -22,8 +13,8 @@
       "source_meta":      { "type": "keyword", "ignore_above": 1024 },
       "source_url":       { "type": "keyword" },
       "lang":             { "type": "keyword" },
-      "title":            { "type": "text", "analyzer": "icu_text" },
-      "text":             { "type": "text", "analyzer": "icu_text" },
+      "title":            { "type": "text" },
+      "text":             { "type": "text" },
       "raw_content":      { "type": "text", "index": false },
       "embedding": {
         "type": "dense_vector",

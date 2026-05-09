@@ -3,12 +3,14 @@
 import base64
 import json
 import os
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 
 import pytest
 
 from ragent.bootstrap.init_schema import (
+    _ES_RESOURCES,
     _es_auth_headers,
     _es_request,
     auto_init,
@@ -16,6 +18,10 @@ from ragent.bootstrap.init_schema import (
     init_mariadb,
     init_minio_buckets,
 )
+
+_REPO_ROOT = Path(__file__).parents[2]
+_PROD_CHUNKS_V1 = _REPO_ROOT / "resources" / "es" / "chunks_v1.json"
+_TEST_CHUNKS_V1 = _REPO_ROOT / "tests" / "resources" / "es" / "chunks_v1.json"
 
 # ── init_es ─────────────────────────────────────────────────────────────────
 
@@ -44,6 +50,92 @@ def test_init_es_skips_existing_index() -> None:
 
     put_calls = [c for c in calls if c[0] == "PUT"]
     assert not put_calls, "PUT should not be called when index already exists"
+
+
+# ── ICU analyzer mapping (B26 / B42) ─────────────────────────────────────────
+
+
+def test_prod_mapping_defines_icu_text_analyzer_for_cjk_bm25() -> None:
+    mapping = json.loads(_PROD_CHUNKS_V1.read_text())
+    analyzers = mapping["settings"]["index"]["analysis"]["analyzer"]
+    assert analyzers["icu_text"] == {
+        "type": "custom",
+        "tokenizer": "icu_tokenizer",
+        "filter": ["icu_folding", "lowercase"],
+    }
+    props = mapping["mappings"]["properties"]
+    assert props["text"]["analyzer"] == "icu_text"
+    assert props["title"]["analyzer"] == "icu_text"
+
+
+def test_test_mapping_uses_standard_analyzer_no_icu_dependency() -> None:
+    mapping = json.loads(_TEST_CHUNKS_V1.read_text())
+    # Test ES has no analysis-icu plugin; absence of `analysis` block means
+    # `text`/`title` fall back to ES default `standard` analyzer.
+    assert "analysis" not in mapping["settings"]["index"]
+    props = mapping["mappings"]["properties"]
+    assert "analyzer" not in props["text"]
+    assert "analyzer" not in props["title"]
+
+
+def test_test_mapping_structurally_matches_prod_except_icu_deltas() -> None:
+    """B42: prod adds an ICU `analysis` block + `analyzer: icu_text` on
+    text/title; everything else (field set, types, dims, similarity) must stay
+    identical so integration tests exercise the same shape that prod runs."""
+    prod = json.loads(_PROD_CHUNKS_V1.read_text())
+    test = json.loads(_TEST_CHUNKS_V1.read_text())
+
+    prod["settings"]["index"].pop("analysis")
+    for field in ("text", "title"):
+        prod["mappings"]["properties"][field].pop("analyzer")
+
+    assert prod == test, (
+        "tests/resources/es/chunks_v1.json has drifted from "
+        "resources/es/chunks_v1.json beyond the documented ICU deltas. "
+        "Update the test mapping to match the prod mapping (sans ICU)."
+    )
+
+
+def test_init_es_reads_resources_dir_env_override(tmp_path: Path) -> None:
+    custom_dir = tmp_path / "es"
+    custom_dir.mkdir()
+    (custom_dir / "marker_index.json").write_text('{"settings": {}}')
+
+    seen_indexes: list[str] = []
+
+    def fake_request(url: str, method: str = "GET", body: dict | None = None):
+        if method == "HEAD":
+            seen_indexes.append(url.rsplit("/", 1)[-1])
+            return None
+        return {}
+
+    with (
+        patch.dict(os.environ, {"RAGENT_ES_RESOURCES_DIR": str(custom_dir)}),
+        patch("ragent.bootstrap.init_schema._es_request", side_effect=fake_request),
+    ):
+        init_es("http://es:9200")
+
+    assert seen_indexes == ["marker_index"]
+
+
+def test_init_es_falls_back_to_default_resources_when_env_unset() -> None:
+    seen_indexes: list[str] = []
+
+    def fake_request(url: str, method: str = "GET", body: dict | None = None):
+        if method == "HEAD":
+            seen_indexes.append(url.rsplit("/", 1)[-1])
+            return {}
+        return {}
+
+    env = {k: v for k, v in os.environ.items() if k != "RAGENT_ES_RESOURCES_DIR"}
+    with (
+        patch.dict(os.environ, env, clear=True),
+        patch("ragent.bootstrap.init_schema._es_request", side_effect=fake_request),
+    ):
+        init_es("http://es:9200")
+
+    expected = sorted(p.stem for p in _ES_RESOURCES.glob("*.json"))
+    assert sorted(seen_indexes) == expected
 
 
 # ── init_mariadb ─────────────────────────────────────────────────────────────
