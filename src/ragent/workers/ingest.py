@@ -46,6 +46,14 @@ async def ingest_pipeline_task(document_id: str) -> None:
         logger.info("ingest.lock_contention", document_id=document_id)
         return
 
+    logger.info(
+        "ingest.task.started",
+        document_id=document_id,
+        source_id=doc.source_id,
+        source_app=doc.source_app,
+        attempt=getattr(doc, "attempt", None),
+    )
+
     site = doc.minio_site or "__default__"
 
     def _run_pipeline() -> int:
@@ -168,3 +176,9 @@ async def ingest_supersede_task(survivor_id: str, source_id: str, source_app: st
     )
 
     await svc.supersede(survivor_id, source_id, source_app)
+    logger.info(
+        "supersede.completed",
+        survivor_id=survivor_id,
+        source_id=source_id,
+        source_app=source_app,
+    )

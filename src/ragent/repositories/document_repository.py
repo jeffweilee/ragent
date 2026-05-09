@@ -14,10 +14,13 @@ import datetime
 from dataclasses import dataclass
 from typing import Any
 
+import structlog
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
 from ragent.utility.state_machine import IllegalStateTransition, assert_transition
+
+logger = structlog.get_logger(__name__)
 
 
 class LockNotAvailable(Exception):
@@ -178,6 +181,12 @@ class DocumentRepository:
                 ),
                 {"id": document_id, "to_status": to_status},
             )
+            logger.info(
+                "documents.status.transition",
+                document_id=document_id,
+                from_status=doc.status,
+                to_status=to_status,
+            )
             return doc
 
     async def claim_for_processing(self, document_id: str) -> DocumentRow:
@@ -217,6 +226,12 @@ class DocumentRepository:
             raise IllegalStateTransition(
                 f"update_status: {from_status} → {to_status} failed for {document_id}"
             )
+        logger.info(
+            "documents.status.transition",
+            document_id=document_id,
+            from_status=from_status,
+            to_status=to_status,
+        )
 
     async def update_heartbeat(self, document_id: str) -> None:
         await self._execute(
