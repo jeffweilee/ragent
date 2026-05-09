@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from ragent.utility.env import bool_env as _bool_env
-from ragent.utility.env import float_env as _float_env
 from ragent.utility.env import int_env as _int_env
 from ragent.utility.env import require as _require
 
@@ -20,7 +19,6 @@ class Container:
     embedding_client: Any
     llm_client: Any
     rerank_client: Any
-    minio_client: Any
     minio_registry: Any
     es_client: Any
     engine: Any
@@ -39,7 +37,6 @@ def build_container() -> Container:
     import httpx
     from elasticsearch import Elasticsearch
     from haystack_integrations.document_stores.elasticsearch import ElasticsearchDocumentStore
-    from minio import Minio
     from sqlalchemy.ext.asyncio import create_async_engine
 
     from ragent.clients.auth import TokenManager
@@ -53,7 +50,6 @@ def build_container() -> Container:
     from ragent.plugins.stub_graph import StubGraphExtractor
     from ragent.plugins.vector import VectorExtractor
     from ragent.repositories.document_repository import DocumentRepository
-    from ragent.storage.minio_client import MinIOClient
     from ragent.storage.minio_registry import MinioSiteRegistry
 
     http = httpx.Client(timeout=60.0)
@@ -112,19 +108,6 @@ def build_container() -> Container:
         )
         if enable_rerank
         else None
-    )
-
-    _minio_raw = Minio(
-        endpoint=_require("MINIO_ENDPOINT"),
-        access_key=_require("MINIO_ACCESS_KEY"),
-        secret_key=_require("MINIO_SECRET_KEY"),
-        secure=os.environ.get("MINIO_SECURE", "false").lower() == "true",
-    )
-    minio_client = MinIOClient(
-        minio_client=_minio_raw,
-        bucket=os.environ.get("MINIO_BUCKET", "ragent-uploads"),
-        put_timeout=_float_env("MINIO_PUT_TIMEOUT_SECONDS", 30.0),
-        get_timeout=_float_env("MINIO_GET_TIMEOUT_SECONDS", 30.0),
     )
 
     # v2: MinioSiteRegistry — fail-fast on missing __default__; falls back to
@@ -189,7 +172,6 @@ def build_container() -> Container:
         embedding_client=embedding_client,
         llm_client=llm_client,
         rerank_client=rerank_client,
-        minio_client=minio_client,
         minio_registry=minio_registry,
         es_client=es_client,
         engine=engine,

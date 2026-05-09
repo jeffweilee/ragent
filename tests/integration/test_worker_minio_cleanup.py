@@ -28,16 +28,23 @@ def _make_doc(doc_status: str = "UPLOADED") -> DocumentRow:
 
 
 async def test_terminal_status_committed_before_minio_delete():
-    """READY status must be committed before MinIOClient.delete_object is called (S16)."""
+    """READY status must be committed before MinIO.delete_object is called (S16).
+
+    B39: the READY transition is now `promote_to_ready_and_demote_siblings`,
+    so the ordering check pivots on that call.
+    """
     from ragent.workers.ingest import ingest_pipeline_task
 
     doc = _make_doc()
     container = make_ingest_container(doc)
 
     call_order: list[str] = []
-    container.doc_repo.update_status.side_effect = lambda *a, **kw: call_order.append(
-        f"status_{kw.get('to_status', a[2] if len(a) > 2 else '?')}"
-    )
+
+    async def _record_promote(**kwargs):
+        call_order.append("status_READY")
+        return True
+
+    container.doc_repo.promote_to_ready_and_demote_siblings.side_effect = _record_promote
     container.minio_registry.delete_object.side_effect = lambda *a: call_order.append(
         "minio_delete"
     )
@@ -61,11 +68,7 @@ async def test_minio_delete_error_does_not_prevent_ready_status():
     with patch("ragent.bootstrap.composition.get_container", return_value=container):
         await ingest_pipeline_task("DOC001")
 
-    to_statuses = [
-        c.kwargs.get("to_status") or (c.args[2] if len(c.args) > 2 else None)
-        for c in container.doc_repo.update_status.call_args_list
-    ]
-    assert "READY" in to_statuses
+    container.doc_repo.promote_to_ready_and_demote_siblings.assert_awaited_once()
 
 
 async def test_pending_retry_does_not_delete_minio():
@@ -79,3 +82,20 @@ async def test_pending_retry_does_not_delete_minio():
         await ingest_pipeline_task("DOC001")
 
     container.minio_registry.delete_object.assert_not_called()
+
+
+async def test_self_demote_skips_post_ready_fan_out():
+    """B41: when promote loses arbitration (older worker, newer revision exists),
+    the worker self-demotes to DELETING — post-READY enrichment (`fan_out`) must
+    NOT run for a non-READY doc.
+    """
+    from ragent.workers.ingest import ingest_pipeline_task
+
+    doc = _make_doc()
+    container = make_ingest_container(doc)
+    container.doc_repo.promote_to_ready_and_demote_siblings.return_value = False
+
+    with patch("ragent.bootstrap.composition.get_container", return_value=container):
+        await ingest_pipeline_task("DOC001")
+
+    container.registry.fan_out.assert_not_called()

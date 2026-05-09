@@ -40,7 +40,7 @@ def _service(repo=None, broker=None, registry=None):
     repo = repo or AsyncMock()
     broker = broker or AsyncMock()
     registry = registry or _registry()
-    svc = IngestService(repo=repo, storage=registry, broker=broker)
+    svc = IngestService(repo=repo, storage=registry, broker=broker, registry=MagicMock())
     return svc, repo, registry, broker
 
 

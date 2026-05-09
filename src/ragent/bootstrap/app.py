@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import Any
 
+import anyio
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
@@ -56,6 +57,16 @@ async def _check_infra_ready(container: Any, broker: Any) -> None:
     for label in _REQUIRED_TASK_LABELS:
         if broker.find_task(label) is None:
             raise RuntimeError(f"infra not ready: TaskIQ task not registered: {label!r}")
+
+    # Pre-warm AI token exchange so a wrong AI_API_AUTH_URL or stale J1
+    # surfaces as a boot abort instead of a first-request 500.
+    for tm in container.token_managers:
+        if tm is None:
+            continue
+        try:
+            await anyio.to_thread.run_sync(tm.get_token)
+        except Exception as exc:  # noqa: BLE001 — propagate as RuntimeError per probe contract
+            raise RuntimeError(f"infra not ready: token exchange failed: {exc}") from exc
 
 
 async def _close_infra(container: Any) -> None:
@@ -120,7 +131,7 @@ def _build_probes(container: Any) -> dict:
     probes: dict = {
         "mariadb": probe_mariadb(container.engine),
         "es": probe_es(container.es_client, index_names=["chunks_v1"]),
-        "minio": probe_minio(container.minio_client),
+        "minio": probe_minio(container.minio_registry.default().client),
     }
     redis_client = getattr(container.rate_limiter, "_redis", None)
     if redis_client is not None:
@@ -191,6 +202,7 @@ def create_app() -> FastAPI:
         repo=container.doc_repo,
         storage=container.minio_registry,
         broker=dispatcher,
+        registry=container.registry,
     )
 
     app.include_router(create_ingest_router(svc=ingest_svc))

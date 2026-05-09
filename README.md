@@ -11,10 +11,12 @@ Prerequisites: Python ≥ 3.12, `uv`, MariaDB 10.6, Redis (Sentinel), Elasticsea
 ```bash
 uv sync                                                  # install dependencies
 cp .env.example .env                                     # then edit .env to fill in DSNs, MinIO sites, API URLs
+make doctor                                              # pre-flight check (env + datastores + AI endpoints)
 uv run --env-file .env alembic upgrade head              # run database migrations
 uv run --env-file .env python -m ragent.api              # start the API server (port 8000)
 uv run --env-file .env python -m ragent.worker           # start the background worker (separate shell)
 curl http://localhost:8000/livez                         # verify — expect {"status":"ok"}
+make doctor PROBE_LIVE=1                                 # post-launch — also probes /livez and /readyz
 ```
 
 ### Development

@@ -41,7 +41,7 @@ Whenever team start to work or user says "go" or "continue", follow these steps 
 
     After both 7 and 8 pass with no outstanding issues, stamp the approval marker:
     ```bash
-    date > .claude/.pre_commit_approved
+    bash .claude/hooks/stamp_approval.sh
     ```
 9.  **Commit**: Git commit with `[BEHAVIORAL]` or `[STRUCTURAL]` prefix.
     _(The pre-commit gate will verify the marker exists and consume it.)_
@@ -134,4 +134,47 @@ tests/
 * `docs/00_plan.md`: The master TDD implementation checklist.
 * `docs/00_agent_team.md`: RAGENT agent team and workflow.
 * `docs/00_journal.md`: Team reflection that prevents the same mistake from happening again. Create blameless, actionable, and documented guidelines by **DOMAIN**.
+
+---
+
+## Common Commands
+
+```bash
+make doctor                    # pre-flight: env / datastores / AI endpoints / alembic head
+make doctor PROBE_LIVE=1       # post-launch: also probes /livez and /readyz
+make test-gate                 # pre-commit gate (excludes tests/e2e — release-step only)
+make test                      # full suite incl. e2e (testcontainers MariaDB/ES/Redis/MinIO)
+make check                     # format + lint + test
+uv run pytest tests/unit/test_X.py::test_Y -x        # single test
+uv run --env-file .env alembic upgrade head          # migrations
+uv run --env-file .env python -m ragent.api          # API (port 8000)
+uv run --env-file .env python -m ragent.worker       # background worker
+```
+
+## Pre-commit Approval Marker
+
+The pre-commit hook checks for `.claude/.pre_commit_approved`. Stamp it with
+`date > .claude/.pre_commit_approved` only after `/simplify` and `/review`
+both pass per the workflow §8. The hook consumes the marker on commit;
+you must re-stamp for each subsequent commit.
+
+## Architecture (orientation only — read `docs/00_spec.md` for contracts)
+
+- **Composition root**: `src/ragent/bootstrap/composition.py::build_container()`
+  is the single DI seam. Every external dep (MariaDB, ES, Redis, MinIO,
+  AI clients) is constructed here and injected into routers/services/workers.
+  Don't read env vars elsewhere.
+- **Three processes**: `ragent.api` (FastAPI), `ragent.worker` (TaskIQ),
+  `ragent.reconciler` (K8s CronJob — safety net, not load-bearing for the
+  local two-command path).
+- **Ingest contract**: discriminated union (`inline | file`) → MinIO stage
+  → DB row UPLOADED → kiq → worker pipeline (load → split → chunk → embed
+  → ES write) → READY. Chunks live in ES `chunks_v1` only; the v1 `chunks`
+  DB table was dropped in `003_drop_chunks.sql`.
+- **Chat contract**: `_QueryEmbedder → ES{vector+BM25} → joiner → reranker
+  (optional) → _SourceHydrator → _ExcerptTruncator`. Hydrator filters by
+  `documents.status='READY'`.
+- **Idempotency**: ES writes use `DuplicatePolicy.OVERWRITE`; worker
+  pipeline is retry-safe. Supersede uses DB-elected `MAX(created_at)`
+  survivor — caller-supplied `survivor_id` must match the elected row.
 

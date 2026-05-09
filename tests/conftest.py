@@ -13,7 +13,7 @@ import anyio
 import pytest
 from haystack.dataclasses import Document
 
-# B36: vanilla test ES has no analysis-icu plugin. Point init_es() at the
+# B42: vanilla test ES has no analysis-icu plugin. Point init_es() at the
 # test mapping (standard analyzer) before any fixture or test imports it.
 os.environ.setdefault("RAGENT_ES_RESOURCES_DIR", str(Path(__file__).parent / "resources" / "es"))
 
@@ -38,8 +38,6 @@ def make_ingest_container(doc: Any, *, pipeline_side_effect: Any = None) -> Magi
     container = MagicMock()
     container.doc_repo = AsyncMock()
     container.doc_repo.claim_for_processing.return_value = doc
-    container.minio_client = MagicMock()
-    container.minio_client.get_object.return_value = b"data"
     # v2 worker reads via minio_registry.head_object + get_object.
     container.minio_registry = MagicMock()
     container.minio_registry.head_object.return_value = (4, "text/plain")

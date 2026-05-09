@@ -44,11 +44,12 @@ def _make_service(side_effects: list) -> tuple:
     repo = AsyncMock()
     storage = MagicMock()
     broker = MagicMock()
+    broker.fan_out_delete = AsyncMock(return_value=[])
 
     # pop_oldest_loser returns each doc in order, then None (convergence)
     repo.pop_oldest_loser_for_supersede.side_effect = side_effects + [None]
 
-    svc = IngestService(repo=repo, storage=storage, broker=broker)
+    svc = IngestService(repo=repo, storage=storage, broker=broker, registry=broker)
     return svc, repo, storage, broker
 
 

@@ -52,7 +52,7 @@ def test_init_es_skips_existing_index() -> None:
     assert not put_calls, "PUT should not be called when index already exists"
 
 
-# ── ICU analyzer mapping (B26 / B36) ─────────────────────────────────────────
+# ── ICU analyzer mapping (B26 / B42) ─────────────────────────────────────────
 
 
 def test_prod_mapping_defines_icu_text_analyzer_for_cjk_bm25() -> None:
@@ -79,7 +79,7 @@ def test_test_mapping_uses_standard_analyzer_no_icu_dependency() -> None:
 
 
 def test_test_mapping_structurally_matches_prod_except_icu_deltas() -> None:
-    """B36: prod adds an ICU `analysis` block + `analyzer: icu_text` on
+    """B42: prod adds an ICU `analysis` block + `analyzer: icu_text` on
     text/title; everything else (field set, types, dims, similarity) must stay
     identical so integration tests exercise the same shape that prod runs."""
     prod = json.loads(_PROD_CHUNKS_V1.read_text())
