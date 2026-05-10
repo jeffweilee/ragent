@@ -248,9 +248,7 @@ class DocumentRepository:
             raise IllegalStateTransition(
                 f"update_status: {from_status} → {to_status} failed for {document_id}"
             )
-        self._log_transition(
-            document_id, from_status, to_status, error_code=error_code
-        )
+        self._log_transition(document_id, from_status, to_status, error_code=error_code)
 
     async def update_heartbeat(self, document_id: str) -> None:
         await self._execute(
