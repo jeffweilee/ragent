@@ -19,6 +19,7 @@ from ragent.bootstrap.metrics import (
     setup_metrics,
 )
 from ragent.bootstrap.telemetry import setup_tracing
+from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
 from ragent.middleware.logging import RequestLoggingMiddleware
 from ragent.routers.chat import create_chat_router
@@ -81,13 +82,49 @@ async def _close_infra(container: Any) -> None:
         logger.warning("api.shutdown.engine_dispose_failed", exc_info=True)
 
 
+def _register_unhandled_exception_handler(app: FastAPI) -> None:
+    """Register the catch-all `Exception` handler (00_rule.md §API Error Honesty).
+
+    Domain exceptions that carry `error_code` / `http_status` attributes
+    (e.g. `IngestStepError`, `UpstreamServiceError`, `UpstreamTimeoutError`)
+    surface their values verbatim. Plain `Exception` instances fall back
+    to 500 / `INTERNAL_ERROR`. The same `error_code` placed in the
+    response body is the value logged on `api.unhandled`.
+    """
+
+    @app.exception_handler(Exception)
+    async def _unhandled(request: Request, exc: Exception) -> Response:
+        error_code = getattr(exc, "error_code", None) or HttpErrorCode.INTERNAL_ERROR
+        http_status = int(getattr(exc, "http_status", 500))
+        if error_code == HttpErrorCode.INTERNAL_ERROR:
+            title = "Internal server error"
+        else:
+            title = str(exc) or error_code
+        logger.exception(
+            "api.unhandled",
+            path=request.url.path,
+            method=request.method,
+            error_code=error_code,
+            http_status=http_status,
+            error_type=type(exc).__name__,
+        )
+        return problem(http_status, error_code, title)
+
+
 def _x_user_id_middleware(app: FastAPI) -> None:
     @app.middleware("http")
     async def require_user_id(request: Request, call_next: Any) -> Response:
         if request.url.path in _NO_USER_ID_PATHS:
             return await call_next(request)
         if not request.headers.get("X-User-Id"):
-            return problem(422, "MISSING_USER_ID", "X-User-Id header is required")
+            logger.warning(
+                "api.user_id_missing",
+                path=request.url.path,
+                method=request.method,
+                error_code=HttpErrorCode.MISSING_USER_ID,
+                http_status=422,
+            )
+            return problem(422, HttpErrorCode.MISSING_USER_ID, "X-User-Id header is required")
         return await call_next(request)
 
 
@@ -221,16 +258,7 @@ def create_app() -> FastAPI:
     setup_metrics(app)
     _register_document_stats_collector()
 
-    @app.exception_handler(Exception)
-    async def _unhandled(request: Request, exc: Exception) -> Response:
-        logger.exception(
-            "api.unhandled",
-            path=request.url.path,
-            method=request.method,
-            error_code="INTERNAL_ERROR",
-            error_type=type(exc).__name__,
-        )
-        return problem(500, "INTERNAL_ERROR", "Internal server error")
+    _register_unhandled_exception_handler(app)
 
     _x_user_id_middleware(app)
     # RequestLoggingMiddleware is registered after _x_user_id_middleware so that

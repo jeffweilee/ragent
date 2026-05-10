@@ -27,6 +27,7 @@ from haystack.core.pipeline import Pipeline
 from haystack.dataclasses import Document
 from haystack.document_stores.types import DuplicatePolicy
 
+from ragent.errors.codes import TaskErrorCode
 from ragent.pipelines.observability import IngestStepError, wrap_component_run
 from ragent.utility.env import int_env
 
@@ -295,7 +296,7 @@ class _MimeAwareSplitter:
                 out = self._html.run([doc])["documents"]
             else:
                 raise IngestStepError(
-                    f"unroutable mime: {mime!r}", error_code="PIPELINE_UNROUTABLE"
+                    f"unroutable mime: {mime!r}", error_code=TaskErrorCode.PIPELINE_UNROUTABLE
                 )
             atoms.extend(out)
         return {"documents": atoms}
@@ -405,7 +406,7 @@ def _pack_atoms(atoms: list[Document]) -> list[tuple[str, str]]:
                     raise IngestStepError(
                         f"atom exceeded {CHUNK_MAX_PIECES_PER_ATOM} hard-split pieces "
                         f"(target={target}, overlap={overlap}, atom_len={len(text)})",
-                        error_code="CHUNK_BUDGET_EXCEEDED",
+                        error_code=TaskErrorCode.CHUNK_BUDGET_EXCEEDED,
                     )
                 if end == len(text):
                     break
@@ -480,18 +481,21 @@ def build_ingest_pipeline(embedder: Any, document_store: Any) -> Pipeline:
     pipeline.add_component("loader", wrap_component_run(_TextLoader(), step="load"))
     pipeline.add_component(
         "splitter",
-        wrap_component_run(_MimeAwareSplitter(), step="split", error_code="PIPELINE_UNROUTABLE"),
+        wrap_component_run(
+            _MimeAwareSplitter(), step="split", error_code=TaskErrorCode.PIPELINE_UNROUTABLE
+        ),
     )
     pipeline.add_component("chunker", wrap_component_run(_BudgetChunker(), step="chunker"))
     pipeline.add_component(
-        "embedder", wrap_component_run(embedder, step="embedder", error_code="EMBEDDER_ERROR")
+        "embedder",
+        wrap_component_run(embedder, step="embedder", error_code=TaskErrorCode.EMBEDDER_ERROR),
     )
     pipeline.add_component(
         "writer",
         wrap_component_run(
             DocumentWriter(document_store=document_store, policy=DuplicatePolicy.OVERWRITE),
             step="writer",
-            error_code="ES_WRITE_ERROR",
+            error_code=TaskErrorCode.ES_WRITE_ERROR,
         ),
     )
 

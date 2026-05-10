@@ -14,10 +14,13 @@ import datetime
 from dataclasses import dataclass
 from typing import Any
 
+import structlog
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
 
 from ragent.utility.state_machine import IllegalStateTransition, assert_transition
+
+logger = structlog.get_logger(__name__)
 
 
 class LockNotAvailable(Exception):
@@ -42,6 +45,9 @@ class DocumentRow:
     minio_site: str | None = None
     source_url: str | None = None
     mime_type: str | None = None
+    # 006_documents_error_code.sql: persisted failure diagnostics.
+    error_code: str | None = None
+    error_reason: str | None = None
 
     @classmethod
     def from_mapping(cls, m: Any) -> DocumentRow:
@@ -61,6 +67,8 @@ class DocumentRow:
             minio_site=m.get("minio_site"),
             source_url=m.get("source_url"),
             mime_type=m.get("mime_type"),
+            error_code=m.get("error_code"),
+            error_reason=m.get("error_reason"),
         )
 
 
@@ -89,6 +97,17 @@ class DocumentRepository:
     async def _execute(self, stmt: Any, params: dict | None = None) -> Any:
         async with self._engine.begin() as conn:
             return await conn.execute(stmt, params or {})
+
+    def _log_transition(
+        self, document_id: str, from_status: str, to_status: str, **extra: Any
+    ) -> None:
+        logger.info(
+            "documents.status.transition",
+            document_id=document_id,
+            from_status=from_status,
+            to_status=to_status,
+            **extra,
+        )
 
     # ------------------------------------------------------------------
     # Create
@@ -178,6 +197,7 @@ class DocumentRepository:
                 ),
                 {"id": document_id, "to_status": to_status},
             )
+            self._log_transition(document_id, doc.status, to_status)
             return doc
 
     async def claim_for_processing(self, document_id: str) -> DocumentRow:
@@ -196,9 +216,19 @@ class DocumentRepository:
         from_status: str,
         to_status: str,
         attempt: int | None = None,
+        error_code: str | None = None,
+        error_reason: str | None = None,
     ) -> None:
         assert_transition(from_status, to_status)
-        params: dict = {"id": document_id, "from_status": from_status, "to_status": to_status}
+        # MariaDB VARCHAR(255) — truncate proactively rather than surface a
+        # "Data too long" surprise on long stack messages at the failure path.
+        params: dict = {
+            "id": document_id,
+            "from_status": from_status,
+            "to_status": to_status,
+            "error_code": error_code,
+            "error_reason": error_reason[:255] if error_reason else None,
+        }
         attempt_clause = ""
         if attempt is not None:
             attempt_clause = ", attempt = :attempt"
@@ -207,7 +237,8 @@ class DocumentRepository:
             text(
                 f"""
                 UPDATE documents
-                SET status = :to_status, updated_at = NOW(6){attempt_clause}
+                SET status = :to_status, updated_at = NOW(6){attempt_clause},
+                    error_code = :error_code, error_reason = :error_reason
                 WHERE document_id = :id AND status = :from_status
                 """
             ),
@@ -217,6 +248,7 @@ class DocumentRepository:
             raise IllegalStateTransition(
                 f"update_status: {from_status} → {to_status} failed for {document_id}"
             )
+        self._log_transition(document_id, from_status, to_status, error_code=error_code)
 
     async def update_heartbeat(self, document_id: str) -> None:
         await self._execute(

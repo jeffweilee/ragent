@@ -9,6 +9,9 @@ from typing import Any
 import structlog
 from opentelemetry import trace
 
+from ragent.errors.codes import HttpErrorCode
+from ragent.errors.upstream import classify_upstream_error
+
 _EMBED_MODEL = "bge-m3"
 _SUCCESS_CODE = 96200
 logger = structlog.get_logger(__name__)
@@ -101,10 +104,20 @@ class EmbeddingClient:
                 except Exception as exc:
                     last_exc = exc
             span.record_exception(last_exc)  # type: ignore[arg-type]
+            error_code, exc_cls = classify_upstream_error(
+                last_exc,
+                error_code=HttpErrorCode.EMBEDDER_ERROR,
+                timeout_code=HttpErrorCode.EMBEDDER_TIMEOUT,
+            )
             logger.error(
                 "embedding.error",
                 peer_service="embedding",
                 batch_size=len(texts),
                 error_type=type(last_exc).__name__ if last_exc else None,
+                error_code=error_code,
             )
-            raise last_exc  # type: ignore[misc]
+            raise exc_cls(
+                f"embedding failed after retries: {last_exc}",
+                service="embedding",
+                error_code=error_code,
+            ) from last_exc

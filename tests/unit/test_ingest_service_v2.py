@@ -139,8 +139,13 @@ async def test_inline_dispatches_pipeline_task():
     assert doc_id in str(call)
 
 
-async def test_create_emits_business_log_event(capsys):
+async def test_create_emits_business_log_event():
+    """Use structlog.testing.capture_logs (00_rule.md §Service Boundary Logs)
+    — capsys misses logger handler output."""
+    import structlog
+
     svc, _, _, _ = _service()
-    await svc.create(create_user="alice", request=_inline())
-    out = capsys.readouterr().out + capsys.readouterr().err
-    assert "ingest.received" in out
+    with structlog.testing.capture_logs() as logs:
+        await svc.create(create_user="alice", request=_inline())
+    events = [e["event"] for e in logs]
+    assert "ingest.received" in events, f"expected ingest.received, got {events}"

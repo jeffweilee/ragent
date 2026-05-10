@@ -20,6 +20,7 @@ from anyio import to_thread
 
 from ragent.bootstrap.broker import broker
 from ragent.bootstrap.metrics import observe_pipeline_duration, record_pipeline_outcome
+from ragent.errors.codes import TaskErrorCode
 from ragent.pipelines.observability import IngestStepError, bind_ingest_context, log_ingest_step
 from ragent.repositories.document_repository import LockNotAvailable
 
@@ -45,6 +46,14 @@ async def ingest_pipeline_task(document_id: str) -> None:
     except LockNotAvailable:
         logger.info("ingest.lock_contention", document_id=document_id)
         return
+
+    logger.info(
+        "ingest.task.started",
+        document_id=document_id,
+        source_id=doc.source_id,
+        source_app=doc.source_app,
+        attempt=getattr(doc, "attempt", None),
+    )
 
     site = doc.minio_site or "__default__"
 
@@ -100,19 +109,29 @@ async def ingest_pipeline_task(document_id: str) -> None:
                 timeout=_aggregate_timeout_seconds(),
             )
         except TimeoutError:
+            reason = f"aggregate pipeline timeout after {_aggregate_timeout_seconds()}s"
             log_ingest_step.failed(
                 document_id=document_id,
-                reason=f"aggregate pipeline timeout after {_aggregate_timeout_seconds()}s",
-                error_code="PIPELINE_TIMEOUT_AGGREGATE",
+                reason=reason,
+                error_code=TaskErrorCode.PIPELINE_TIMEOUT_AGGREGATE,
             )
-            await repo.update_status(document_id, from_status="PENDING", to_status="FAILED")
+            await repo.update_status(
+                document_id,
+                from_status="PENDING",
+                to_status="FAILED",
+                error_code=TaskErrorCode.PIPELINE_TIMEOUT_AGGREGATE,
+                error_reason=reason,
+            )
             return
         except Exception as exc:
             cause = exc.__cause__ if isinstance(exc.__cause__, IngestStepError) else None
-            error_code = cause.error_code if cause is not None else "PIPELINE_TIMEOUT"
+            error_code = (
+                cause.error_code if cause is not None else TaskErrorCode.PIPELINE_UNEXPECTED_ERROR
+            )
+            reason = f"{type(exc).__name__}: {exc}"
             log_ingest_step.failed(
                 document_id=document_id,
-                reason=f"{type(exc).__name__}: {exc}",
+                reason=reason,
                 error_code=error_code,
             )
             observe_pipeline_duration(
@@ -120,7 +139,13 @@ async def ingest_pipeline_task(document_id: str) -> None:
                 mime_type=doc.mime_type,
                 seconds=time.monotonic() - started,
             )
-            await repo.update_status(document_id, from_status="PENDING", to_status="FAILED")
+            await repo.update_status(
+                document_id,
+                from_status="PENDING",
+                to_status="FAILED",
+                error_code=error_code,
+                error_reason=reason,
+            )
             record_pipeline_outcome(
                 source_app=doc.source_app, mime_type=doc.mime_type, outcome="failed"
             )
@@ -168,3 +193,9 @@ async def ingest_supersede_task(survivor_id: str, source_id: str, source_app: st
     )
 
     await svc.supersede(survivor_id, source_id, source_app)
+    logger.info(
+        "supersede.completed",
+        survivor_id=survivor_id,
+        source_id=source_id,
+        source_app=source_app,
+    )

@@ -9,6 +9,9 @@ from typing import Any
 import structlog
 from opentelemetry import trace
 
+from ragent.errors.codes import HttpErrorCode
+from ragent.errors.upstream import classify_upstream_error
+
 logger = structlog.get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
 
@@ -50,13 +53,23 @@ class LLMClient:
                 except Exception as exc:
                     last_exc = exc
             span.record_exception(last_exc)  # type: ignore[arg-type]
+            error_code, exc_cls = classify_upstream_error(
+                last_exc,
+                error_code=HttpErrorCode.LLM_ERROR,
+                timeout_code=HttpErrorCode.LLM_TIMEOUT,
+            )
             logger.error(
                 "llm.error",
                 peer_service="llm",
                 model=model,
                 error_type=type(last_exc).__name__ if last_exc else None,
+                error_code=error_code,
             )
-            raise last_exc  # type: ignore[misc]
+            raise exc_cls(
+                f"llm stream failed after retries: {last_exc}",
+                service="llm",
+                error_code=error_code,
+            ) from last_exc
 
     def _do_stream(self, messages, model, temperature, max_tokens) -> Generator[str, None, None]:
         with self._http.post(
@@ -150,10 +163,20 @@ class LLMClient:
                 except Exception as exc:
                     last_exc = exc
             span.record_exception(last_exc)  # type: ignore[arg-type]
+            error_code, exc_cls = classify_upstream_error(
+                last_exc,
+                error_code=HttpErrorCode.LLM_ERROR,
+                timeout_code=HttpErrorCode.LLM_TIMEOUT,
+            )
             logger.error(
                 "llm.error",
                 peer_service="llm",
                 model=model,
                 error_type=type(last_exc).__name__ if last_exc else None,
+                error_code=error_code,
             )
-            raise last_exc  # type: ignore[misc]
+            raise exc_cls(
+                f"llm chat failed after retries: {last_exc}",
+                service="llm",
+                error_code=error_code,
+            ) from last_exc

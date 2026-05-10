@@ -9,10 +9,12 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
+import structlog
 from fastapi import APIRouter, Header, Query, Request, Response
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
+from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
 from ragent.schemas.ingest import IngestRequest
 from ragent.services.ingest_service import (
@@ -21,6 +23,8 @@ from ragent.services.ingest_service import (
     ObjectNotFoundError,
     UnknownMinioSiteError,
 )
+
+logger = structlog.get_logger(__name__)
 
 
 def _is_mime_error(errors: list[dict]) -> bool:
@@ -34,15 +38,27 @@ def _validation_problem(exc: ValidationError):
         for e in raw
     ]
     if _is_mime_error(raw):
+        logger.warning(
+            "ingest.validation_failed",
+            error_code=HttpErrorCode.INGEST_MIME_UNSUPPORTED,
+            http_status=415,
+            field_count=len(flat),
+        )
         return problem(
             415,
-            "INGEST_MIME_UNSUPPORTED",
+            HttpErrorCode.INGEST_MIME_UNSUPPORTED,
             "Unsupported media type",
             errors=flat,
         )
+    logger.warning(
+        "ingest.validation_failed",
+        error_code=HttpErrorCode.INGEST_VALIDATION,
+        http_status=422,
+        field_count=len(flat),
+    )
     return problem(
         422,
-        "INGEST_VALIDATION",
+        HttpErrorCode.INGEST_VALIDATION,
         "Validation error",
         detail="Request body failed validation",
         errors=flat,
@@ -60,7 +76,7 @@ def create_router(svc: Any) -> APIRouter:
         try:
             body = await request.json()
         except Exception:
-            return problem(415, "INGEST_MIME_UNSUPPORTED", "JSON body required")
+            return problem(415, HttpErrorCode.INGEST_MIME_UNSUPPORTED, "JSON body required")
         from pydantic import TypeAdapter
 
         try:
@@ -71,14 +87,16 @@ def create_router(svc: Any) -> APIRouter:
         try:
             doc_id = await svc.create(create_user=x_user_id, request=payload)
         except MimeNotAllowed:
-            return problem(415, "INGEST_MIME_UNSUPPORTED", "Unsupported media type")
+            return problem(415, HttpErrorCode.INGEST_MIME_UNSUPPORTED, "Unsupported media type")
         except FileTooLarge:
-            return problem(413, "INGEST_FILE_TOO_LARGE", "Inline content too large")
+            return problem(413, HttpErrorCode.INGEST_FILE_TOO_LARGE, "Inline content too large")
         except UnknownMinioSiteError:
-            return problem(422, "INGEST_MINIO_SITE_UNKNOWN", "Unknown minio_site")
+            return problem(422, HttpErrorCode.INGEST_MINIO_SITE_UNKNOWN, "Unknown minio_site")
         except ObjectNotFoundError:
             return problem(
-                422, "INGEST_OBJECT_NOT_FOUND", "Object not found at minio_site/object_key"
+                422,
+                HttpErrorCode.INGEST_OBJECT_NOT_FOUND,
+                "Object not found at minio_site/object_key",
             )
 
         return JSONResponse({"document_id": doc_id}, status_code=202)
@@ -87,7 +105,13 @@ def create_router(svc: Any) -> APIRouter:
     async def get_document(document_id: str):
         doc = await svc.get(document_id)
         if doc is None:
-            return problem(404, "INGEST_NOT_FOUND", "Document not found")
+            logger.info(
+                "ingest.not_found",
+                document_id=document_id,
+                error_code=HttpErrorCode.INGEST_NOT_FOUND,
+                http_status=404,
+            )
+            return problem(404, HttpErrorCode.INGEST_NOT_FOUND, "Document not found")
         return {
             "document_id": doc.document_id,
             "status": doc.status,
@@ -99,6 +123,8 @@ def create_router(svc: Any) -> APIRouter:
             "source_app": doc.source_app,
             "source_title": doc.source_title,
             "source_url": doc.source_url,
+            "error_code": getattr(doc, "error_code", None),
+            "error_reason": getattr(doc, "error_reason", None),
         }
 
     @router.delete("/ingest/{document_id}", status_code=204)

@@ -39,12 +39,14 @@ Whenever team start to work or user says "go" or "continue", follow these steps 
     - **Test coverage**: every new behaviour path has a corresponding test; no dead or unreachable code.
     - **Code quality**: no duplication, no hidden coupling, no premature abstraction, no commented-out code.
 
-    After both 7 and 8 pass with no outstanding issues, stamp the approval marker:
-    ```bash
-    bash .claude/hooks/stamp_approval.sh
-    ```
+    The stamp is emitted as the **last action of each skill body** (the
+    `/simplify` and `/review` skill prompts call the hardened script with
+    `RAGENT_SKILL_INVOCATION_TOKEN` set). The agent NEVER stamps manually
+    — there is no shell-callable bypass.
 9.  **Commit**: Git commit with `[BEHAVIORAL]` or `[STRUCTURAL]` prefix.
-    _(The pre-commit gate will verify the marker exists and consume it.)_
+    _(The pre-commit gate verifies the marker JSON, the `diff_sha` binding,
+    the freshness window, AND the audit log shows BOTH /simplify and /review
+    ran for the current diff. It then consumes the marker.)_
 10. **Documentation**: Follow "RESOURCES" Section to update each document accordingly.
 11. **Next**: Start new round and repeat the workflow until all plans matches successful criteria.
 
@@ -153,10 +155,27 @@ uv run --env-file .env python -m ragent.worker       # background worker
 
 ## Pre-commit Approval Marker
 
-The pre-commit hook checks for `.claude/.pre_commit_approved`. Stamp it with
-`date > .claude/.pre_commit_approved` only after `/simplify` and `/review`
-both pass per the workflow §8. The hook consumes the marker on commit;
-you must re-stamp for each subsequent commit.
+The pre-commit hook (`.claude/hooks/pre_commit_gate.sh`) verifies four things
+against `.claude/.pre_commit_approved` and `.claude/.stamp_audit.log`:
+
+1. The marker file is valid JSON `{"diff_sha": <sha256 git diff --cached>,
+   "ts": <epoch>, "by": "simplify"|"review"}` — manual `date >` stamping
+   produces plain text and is rejected.
+2. `ts` is within the 45-minute freshness window.
+3. `diff_sha` matches the staged diff's sha256 *now* (re-staging after
+   stamping invalidates the marker).
+4. The append-only audit log contains BOTH a `"by":"simplify"` entry AND a
+   `"by":"review"` entry for the current `diff_sha`, each with `ts` inside
+   the same 45-minute freshness window (a single skill running twice no
+   longer satisfies the gate, and stale entries from a long-ago review of
+   the same diff are also rejected).
+
+The marker is emitted ONLY by `.claude/hooks/stamp_pre_commit_approved.sh
+<simplify|review>`, which itself refuses to run unless
+`RAGENT_SKILL_INVOCATION_TOKEN` is set. That env var is set inside the
+`/simplify` and `/review` skill bodies — no shell-callable bypass exists.
+The hook consumes the marker on commit; the next commit needs a fresh
+`/simplify` + `/review` cycle.
 
 ## Architecture (orientation only — read `docs/00_spec.md` for contracts)
 

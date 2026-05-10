@@ -14,6 +14,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from opentelemetry import trace
 
 from ragent.clients.rate_limiter import RateLimiter
+from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
 from ragent.pipelines.chat import build_es_filters, doc_to_source_entry, run_retrieval
 from ragent.schemas.chat import ChatRequest, build_rag_messages
@@ -39,7 +40,7 @@ def _run_retrieval(retrieval_pipeline: Any, req: ChatRequest) -> list[Any]:
 
 def _rate_limit_response(reset_at: float) -> Response:
     retry_after = max(1, math.ceil(reset_at - time.time()))
-    resp = problem(429, "CHAT_RATE_LIMITED", "Too Many Requests")
+    resp = problem(429, HttpErrorCode.CHAT_RATE_LIMITED, "Too Many Requests")
     resp.headers["Retry-After"] = str(retry_after)
     return resp
 
@@ -60,6 +61,14 @@ def create_chat_router(
             f"chat:{user_id}", limit=rate_limit, window_seconds=rate_limit_window
         )
         if not result.allowed:
+            logger.warning(
+                "chat.rate_limited",
+                user_id=user_id,
+                limit=rate_limit,
+                window_seconds=rate_limit_window,
+                error_code=HttpErrorCode.CHAT_RATE_LIMITED,
+                http_status=429,
+            )
             return _rate_limit_response(result.reset_at or 0)
         return None
 

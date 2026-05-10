@@ -5,6 +5,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from ragent.clients.llm import LLMClient
+from ragent.errors.upstream import UpstreamServiceError
 
 
 def _mock_http(content: str, usage: dict | None = None) -> MagicMock:
@@ -94,7 +95,7 @@ def test_chat_retries_3_times_on_error():
     assert sleep_calls == [2.0, 2.0]
 
 
-def test_chat_raises_after_3_failures():
+def test_chat_raises_upstream_service_error_after_3_failures():
     http = MagicMock()
     http.post.side_effect = Exception("fail")
     client = LLMClient(
@@ -103,13 +104,20 @@ def test_chat_raises_after_3_failures():
         get_token=lambda: "tok",
         sleep=lambda s: None,
     )
-    with pytest.raises(Exception, match="fail"):  # noqa: B017
+    with pytest.raises(UpstreamServiceError) as exc_info:
         client.chat(messages=[{"role": "user", "content": "q"}], model="m")
+    assert exc_info.value.error_code == "LLM_ERROR"
+    assert exc_info.value.http_status == 502
+    assert "fail" in str(exc_info.value)
     assert http.post.call_count == 3
 
 
 def test_chat_raises_when_content_is_none() -> None:
-    """Null/empty LLM content must raise — silent None reaching answer is hallucination-prone."""
+    """Null/empty LLM content must raise — silent None reaching answer is hallucination-prone.
+
+    After retry exhaustion the underlying ``ValueError`` is wrapped in
+    ``UpstreamServiceError(LLM_ERROR)`` per `00_rule.md` §API Error Honesty.
+    """
     http = MagicMock()
     resp = MagicMock()
     resp.raise_for_status = MagicMock()
@@ -124,8 +132,10 @@ def test_chat_raises_when_content_is_none() -> None:
         get_token=lambda: "tok",
         sleep=lambda s: None,
     )
-    with pytest.raises(ValueError, match="empty"):
+    with pytest.raises(UpstreamServiceError) as exc_info:
         client.chat(messages=[{"role": "user", "content": "q"}], model="m")
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert "empty" in str(exc_info.value.__cause__)
 
 
 def test_chat_raises_when_content_is_empty_string() -> None:
@@ -143,5 +153,7 @@ def test_chat_raises_when_content_is_empty_string() -> None:
         get_token=lambda: "tok",
         sleep=lambda s: None,
     )
-    with pytest.raises(ValueError, match="empty"):
+    with pytest.raises(UpstreamServiceError) as exc_info:
         client.chat(messages=[{"role": "user", "content": "q"}], model="m")
+    assert isinstance(exc_info.value.__cause__, ValueError)
+    assert "empty" in str(exc_info.value.__cause__)

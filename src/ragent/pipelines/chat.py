@@ -97,6 +97,15 @@ class _SourceHydrator:
                 "source_title": source_title,
             }
             result.append(dataclasses.replace(doc, meta=meta))
+        before = len(documents)
+        after = len(result)
+        if after < before:
+            _logger.info(
+                "chat.hydrator.dropped",
+                before_count=before,
+                after_count=after,
+                dropped_count=before - after,
+            )
         return {"documents": result}
 
 

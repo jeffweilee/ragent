@@ -60,7 +60,9 @@ def _count_documents(value: Any) -> int | None:
     return None
 
 
-def wrap_component_run(component: Any, *, step: str, error_code: str = "PIPELINE_TIMEOUT") -> Any:
+def wrap_component_run(
+    component: Any, *, step: str, error_code: str = "PIPELINE_UNEXPECTED_ERROR"
+) -> Any:
     """Monkey-patch ``component.run`` to emit per-step events.
 
     ``error_code`` is the default code attached to ``ingest.step.failed``;

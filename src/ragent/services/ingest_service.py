@@ -100,6 +100,13 @@ class IngestService:
         )
         await self._broker.enqueue("ingest.pipeline", document_id=document_id)
         logger.info(
+            "ingest.dispatched",
+            document_id=document_id,
+            source_id=request.source_id,
+            source_app=request.source_app,
+            task_label="ingest.pipeline",
+        )
+        logger.info(
             "ingest.received",
             document_id=document_id,
             ingest_type=ingest_type,
@@ -160,6 +167,13 @@ class IngestService:
                 self._delete_object(doc)
 
         await self._repo.delete(document_id)
+        logger.info(
+            "ingest.deleted",
+            document_id=document_id,
+            source_id=getattr(doc, "source_id", None),
+            source_app=getattr(doc, "source_app", None),
+            prior_status=getattr(doc, "status", None),
+        )
 
     def _delete_object(self, doc: Any) -> None:
         ingest_type = getattr(doc, "ingest_type", "inline")

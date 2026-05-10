@@ -148,6 +148,33 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 
 ---
 
+### Service Boundary Logs: Every Domain Operation In/Out
+
+- **Rule**: Every domain-service operation **must** emit a structured business log on entry **and** on exit. Silent state transitions are a contract violation.
+  - **Entry**: one `<domain>.<verb>` event with the operation's business identifiers (`user_id`, `document_id`, `source_app`, `source_id`, etc.) — emitted before the work starts.
+  - **Exit (success)**: one event with outcome metadata (`status`, `duration_ms`, counts such as `chunks_total` / `result_count`).
+  - **Exit (failure)**: one `<domain>.failed` (or peer-specific `<peer>.error`) event with `error_code` plus the same business identifiers — never log only the exception type without `error_code`.
+- **Scope (mandatory)**: every public method on `*Service`, repository methods that mutate state (create / update_status / delete / promote / supersede), every TaskIQ task (`@broker.task(...)`), every reconciler arm, every cross-process seam (broker enqueue **and** task pickup — both sides log), every router-side validation/auth/rate-limit rejection (must emit before returning the non-2xx response).
+- **Distributed seams (mandatory pair)**: any work crossing a process boundary **must** log on **both** sides. Producer emits `<domain>.dispatched` after `kiq()`; consumer emits `<domain>.task.started` on entry and `<domain>.completed` / `<domain>.failed` on exit. A consumer-side log without a matching producer-side log (or vice versa) means an operator cannot answer "did the message survive the queue?" and is a blocking gap.
+- **Silent filters (mandatory count)**: pipeline stages that drop input (e.g. retrieval hydrator filtering by `status='READY'`, dedupe stages, ACL post-filters) **must** log `<domain>.<stage>.dropped` with `dropped_count`, `before_count`, `after_count` — invisible drops disguise correctness gates as silent data loss.
+- **Naming**: follow §Logging naming convention (`<domain>.<event>`, ≤ 4 segments). New events reuse existing prefixes (`ingest.*`, `chat.*`, `reconciler.*`) before inventing.
+- **Verification**: every new service / task / reconciler arm landing in a PR **must** include a unit test that asserts the entry and exit events fire with the documented field set; the test uses `caplog` (records bound `structlog` events), never `capsys` (which misses logger handlers).
+
+---
+
+### API Error Honesty: Domain Code Must Survive to the Wire
+
+- **Rule**: API responses for non-2xx status codes **must** expose the originating domain `error_code`. The global FastAPI exception handler **must not** collapse typed domain exceptions into `INTERNAL_ERROR`.
+- **Domain exception contract**: every exception class raised from service / pipeline / repository / client code that is intended to surface to a caller (HTTP or task status) **must** carry two attributes:
+  - `error_code: str` — stable, machine-readable, UPPER_SNAKE (e.g. `EMBEDDER_ERROR`, `INGEST_OBJECT_NOT_FOUND`).
+  - `http_status: int` — the intended HTTP status code (default 500 for internal, 502 for upstream service failure, 504 for upstream timeout, 4xx for caller error).
+- **Global handler contract**: the catch-all `@app.exception_handler(Exception)` **must** read `error_code = getattr(exc, "error_code", None)` and `status = getattr(exc, "http_status", 500)`; only when `error_code is None` may the handler fall back to `INTERNAL_ERROR`. The same `error_code` it places in the response body **must** be the value it logs in `api.unhandled` / `api.error`.
+- **Upstream failure mapping**: client-side retry exhaustion against an external service (`embedding`, `llm`, `rerank`, MinIO, ES, MariaDB) **must** raise a typed `UpstreamServiceError` (`http_status=502`) or `UpstreamTimeoutError` (`http_status=504`); collapsing to a generic 500 hides "they're broken" vs "we're broken" from the caller and from on-call.
+- **Async task failure visibility**: tasks that fail asynchronously **must** persist the terminal `error_code` and a short `error_reason` on the document row (or task-status surface), and the corresponding `GET /<resource>/{id}` endpoint **must** return both fields alongside `status="FAILED"`. A client polling for completion that receives only `"FAILED"` with no diagnostic cannot branch its retry policy.
+- **Verification**: every new domain exception lands with paired tests — (a) handler test asserts the response body's `status` + `error_code` match the exception's attributes; (b) log test asserts the failure log line carries the same `error_code`. A log/response mismatch is a contract bug.
+
+---
+
 ### OpenTelemetry: Initialize Once, Re-init After Fork
 
 - **Rule**: The global `TracerProvider` is set **exactly once per OS process**. Do not replace it at runtime; do not call `set_tracer_provider` from request paths, hot-reload paths, or library code.
@@ -432,3 +459,8 @@ uv run bandit -r src/ --severity-level high --confidence-level high
 - `/simplify` and `/review` are **not user-gated**. TDD workflow steps 7 and 8 (CLAUDE.md) require the agent to invoke both skills via the Skill tool on every cycle that touches `src/`, `tests/`, `pyproject.toml`, `docs/00_spec.md`, or `docs/00_plan.md`. Phrasing them as "待你決定 / optional / up to you" is a process violation.
 - `.claude/.pre_commit_approved` is **not a self-attestation token**. It MUST be a JSON object `{"diff_sha": "<sha256 of git diff --cached output>", "ts": <epoch>, "by": "<simplify|review>"}` written by `bash .claude/hooks/stamp_pre_commit_approved.sh <skill-name>` only at the tail of a `/simplify` or `/review` skill run. Manual `date > .claude/.pre_commit_approved` by the agent is forbidden — the pre-commit gate verifies `diff_sha` matches the current staged diff and rejects mismatch.
 - Adding new staged changes after stamping invalidates the marker (sha changes). Re-run `/simplify` and `/review` against the new diff before commit.
+
+**Stamp-script invocation contract (added 2026-05-09 after Process row "Mandatory-step honesty (recurrence)"):**
+- `bash .claude/hooks/stamp_pre_commit_approved.sh <simplify|review>` refuses to run unless the env var `RAGENT_SKILL_INVOCATION_TOKEN` is set (any non-empty string; value is informational). Concretely: invoke as `RAGENT_SKILL_INVOCATION_TOKEN=1 bash .claude/hooks/stamp_pre_commit_approved.sh review` from the **last action of the corresponding skill body**. Setting the env var is an explicit declaration of intent — the audit log records every invocation.
+- The script appends an immutable JSON-line entry to `.claude/.stamp_audit.log` for every invocation: `{"ts":<epoch>,"by":"<skill>","diff_sha":"<sha>"}`. The pre-commit gate cross-checks that BOTH a `"by":"simplify"` AND a `"by":"review"` entry exist for the current `diff_sha`, each with `ts` inside the same 45-minute freshness window applied to the marker. A single skill stamping twice, one skill being skipped, or stale entries from a long-ago review of the same diff all fail the cross-check — the marker file is last-write-wins, but the append-only audit log is the actual unforgeability layer.
+- The stale `.claude/hooks/stamp_approval.sh` (which wrote a plain `date` string) has been removed; the pre-commit-approved settings allowlist entry has been removed too. Setting `RAGENT_SKILL_INVOCATION_TOKEN` outside a skill body to call the stamp script is a process violation per the rule above — there is no sanctioned shell-callable bypass.
