@@ -1,8 +1,6 @@
 {
   "permissions": {
-    "allow": [
-      "Bash(bash .claude/hooks/stamp_approval.sh)"
-    ]
+    "allow": []
   },
   "hooks": {
     "SessionStart": [

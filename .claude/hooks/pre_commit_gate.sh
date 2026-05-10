@@ -82,6 +82,7 @@ fi
 #    plain text, not JSON, and the diff_sha extraction below fails).
 APPROVAL="$ROOT/.claude/.pre_commit_approved"
 FRESHNESS=2700  # 45 minutes
+NOW=$(date +%s)
 if [[ ! -s "$APPROVAL" ]]; then
     block "pre-commit review gate: .claude/.pre_commit_approved missing or empty.
   Required steps before committing (see 00_rule.md §Python > 'Agent quality-gate honesty rules'):
@@ -97,7 +98,7 @@ if [[ -z "$MARKER_SHA" || ! "$MARKER_TS" =~ ^[0-9]+$ ]]; then
   Manual 'date >' stamping is forbidden — the marker MUST be JSON written by /simplify or /review at end-of-skill.
   Re-run /simplify and /review."
 fi
-APPROVAL_AGE=$(( $(date +%s) - MARKER_TS ))
+APPROVAL_AGE=$(( NOW - MARKER_TS ))
 if [[ $APPROVAL_AGE -gt $FRESHNESS ]]; then
     block "pre-commit review gate: marker is stale (${APPROVAL_AGE}s old, max ${FRESHNESS}s). Re-run /simplify and /review."
 fi
@@ -106,6 +107,47 @@ if [[ "$MARKER_SHA" != "$CURRENT_SHA" ]]; then
     block "pre-commit review gate: staged diff changed since marker was stamped (marker_sha=${MARKER_SHA:0:12}…, current_sha=${CURRENT_SHA:0:12}…).
   /simplify and /review reviewed a different diff. Re-run both against the current staged set."
 fi
+
+# Audit-log cross-check — see docs/00_journal.md 2026-05-09 Process row
+# "Mandatory-step honesty (recurrence)". The marker file is last-write-wins;
+# the audit log is append-only. Both /simplify AND /review must have logged
+# an entry for the current diff_sha within the freshness window — otherwise
+# one skill was skipped, or stale entries from a long-ago review of the same
+# diff would falsely satisfy the gate.
+AUDIT="$ROOT/.claude/.stamp_audit.log"
+if [[ ! -f "$AUDIT" ]]; then
+    block "pre-commit review gate: audit log .claude/.stamp_audit.log missing.
+  Hardened stamp script appends every /simplify and /review run here.
+  Re-run /simplify and /review (audit log is created on first stamp)."
+fi
+AUDIT_CUTOFF=$(( NOW - FRESHNESS ))
+# Capture python output to a variable so an unhandled exception (non-zero
+# exit) is observable via the assignment's exit status — process substitution
+# would silently swallow it. Broad except in the loop also tolerates rows
+# with a non-int `ts` (the previous narrow `except ValueError` only covered
+# json.loads, leaving int() to crash the whole scan).
+AUDIT_HITS=$(python3 - "$AUDIT" "$CURRENT_SHA" "$AUDIT_CUTOFF" <<'PY' 2>/dev/null
+import json, sys
+log, sha, cutoff = sys.argv[1], sys.argv[2], int(sys.argv[3])
+hits = {"simplify": "no", "review": "no"}
+for line in open(log):
+    try:
+        row = json.loads(line)
+        if row.get("diff_sha")==sha and int(row.get("ts",0))>=cutoff and row.get("by") in hits:
+            hits[row["by"]] = "yes"
+    except Exception:
+        continue
+print(hits["simplify"], hits["review"])
+PY
+) || AUDIT_HITS="no no"
+read -r SIMPLIFY_HIT REVIEW_HIT <<<"$AUDIT_HITS"
+if [[ "$SIMPLIFY_HIT" != yes || "$REVIEW_HIT" != yes ]]; then
+    block "pre-commit review gate: audit log missing fresh /simplify or /review entry for current diff_sha=${CURRENT_SHA:0:12} (within ${FRESHNESS}s).
+  Got simplify=${SIMPLIFY_HIT:-no} review=${REVIEW_HIT:-no}.
+  BOTH skills must run against the staged diff. See docs/00_journal.md
+  Process row 2026-05-09 'Mandatory-step honesty (recurrence)'."
+fi
+
 # Consume the marker — every commit requires a fresh /simplify + /review cycle.
 rm -f "$APPROVAL"
 
