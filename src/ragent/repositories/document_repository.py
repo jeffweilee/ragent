@@ -98,6 +98,17 @@ class DocumentRepository:
         async with self._engine.begin() as conn:
             return await conn.execute(stmt, params or {})
 
+    def _log_transition(
+        self, document_id: str, from_status: str, to_status: str, **extra: Any
+    ) -> None:
+        logger.info(
+            "documents.status.transition",
+            document_id=document_id,
+            from_status=from_status,
+            to_status=to_status,
+            **extra,
+        )
+
     # ------------------------------------------------------------------
     # Create
     # ------------------------------------------------------------------
@@ -186,12 +197,7 @@ class DocumentRepository:
                 ),
                 {"id": document_id, "to_status": to_status},
             )
-            logger.info(
-                "documents.status.transition",
-                document_id=document_id,
-                from_status=doc.status,
-                to_status=to_status,
-            )
+            self._log_transition(document_id, doc.status, to_status)
             return doc
 
     async def claim_for_processing(self, document_id: str) -> DocumentRow:
@@ -242,12 +248,8 @@ class DocumentRepository:
             raise IllegalStateTransition(
                 f"update_status: {from_status} → {to_status} failed for {document_id}"
             )
-        logger.info(
-            "documents.status.transition",
-            document_id=document_id,
-            from_status=from_status,
-            to_status=to_status,
-            error_code=error_code,
+        self._log_transition(
+            document_id, from_status, to_status, error_code=error_code
         )
 
     async def update_heartbeat(self, document_id: str) -> None:

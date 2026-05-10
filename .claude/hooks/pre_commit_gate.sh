@@ -130,13 +130,18 @@ AUDIT_HITS=$(python3 - "$AUDIT" "$CURRENT_SHA" "$AUDIT_CUTOFF" <<'PY' 2>/dev/nul
 import json, sys
 log, sha, cutoff = sys.argv[1], sys.argv[2], int(sys.argv[3])
 hits = {"simplify": "no", "review": "no"}
-for line in open(log):
-    try:
-        row = json.loads(line)
-        if row.get("diff_sha")==sha and int(row.get("ts",0))>=cutoff and row.get("by") in hits:
-            hits[row["by"]] = "yes"
-    except Exception:
-        continue
+with open(log) as f:
+    for line in f:
+        try:
+            row = json.loads(line)
+            if (
+                row.get("diff_sha") == sha
+                and int(row.get("ts", 0)) >= cutoff
+                and row.get("by") in hits
+            ):
+                hits[row["by"]] = "yes"
+        except Exception:
+            continue
 print(hits["simplify"], hits["review"])
 PY
 ) || AUDIT_HITS="no no"
