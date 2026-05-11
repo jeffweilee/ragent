@@ -91,7 +91,7 @@ def _post_inline(case: dict[str, Any], idx: int) -> str:
         "content": case["body"],
     }
     resp = httpx.post(
-        f"{API_URL}/ingest",
+        f"{API_URL}/ingest/v1",
         headers={"X-User-Id": "alice"},
         json=payload,
         timeout=10,
@@ -114,7 +114,7 @@ def _post_file(case: dict[str, Any], idx: int, minio_endpoint: str) -> str:
         "object_key": object_key,
     }
     resp = httpx.post(
-        f"{API_URL}/ingest",
+        f"{API_URL}/ingest/v1",
         headers={"X-User-Id": "alice"},
         json=payload,
         timeout=10,
@@ -128,7 +128,7 @@ def _poll_until_ready(doc_id: str) -> str:
     last = "UNKNOWN"
     while time.monotonic() < deadline:
         last = (
-            httpx.get(f"{API_URL}/ingest/{doc_id}", headers={"X-User-Id": "alice"}, timeout=5)
+            httpx.get(f"{API_URL}/ingest/v1/{doc_id}", headers={"X-User-Id": "alice"}, timeout=5)
             .json()
             .get("status", "UNKNOWN")
         )
@@ -156,7 +156,7 @@ def _es_refresh(es_url: str) -> None:
 
 
 def _doc_row(doc_id: str) -> dict:
-    return httpx.get(f"{API_URL}/ingest/{doc_id}", headers={"X-User-Id": "alice"}, timeout=5).json()
+    return httpx.get(f"{API_URL}/ingest/v1/{doc_id}", headers={"X-User-Id": "alice"}, timeout=5).json()
 
 
 def _verify_chunks_table_dropped(mariadb_dsn: str) -> None:

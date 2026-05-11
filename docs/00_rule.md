@@ -180,7 +180,7 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 
 - **Rule: Any new business endpoint ships under at least `/v1`. An endpoint without a version segment is a spec drift bug — treat it the same as an undocumented public API.**
 
-- **Verification:** The test `tests/unit/test_api_versioning.py` asserts that every route registered on the FastAPI app (via `app.routes`) whose path does not match the infrastructure set (`/livez`, `/readyz`, `/startupz`, `/metrics`) satisfies `re.match(r"^/[a-z][a-z0-9-]*/v\d+", path)`. This test must pass before every commit that adds or modifies a router registration in `bootstrap/app.py`.
+- **Verification:** The test `tests/unit/test_api_versioning.py` asserts that every route registered on the FastAPI app (via `app.routes`) whose path does not match the infrastructure set (`/livez`, `/readyz`, `/startupz`, `/metrics`, `/docs`, `/redoc`, `/openapi.json`) satisfies `re.match(r"^/[a-z][a-z0-9-]*/v[1-9]\d*", path)`. This test must pass before every commit that adds or modifies a router registration in `bootstrap/app.py`.
 
 ---
 
