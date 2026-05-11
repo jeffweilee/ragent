@@ -14,10 +14,8 @@ Assertions:
 
 from __future__ import annotations
 
-import json
 import random
 import time
-import urllib.request
 from typing import Any
 
 import httpx
@@ -124,23 +122,17 @@ def _poll_all_until_terminal(doc_ids: list[str]) -> dict[str, str]:
 
 
 def _es_refresh(es_url: str) -> None:
-    req = urllib.request.Request(
-        f"{es_url}/chunks_v1/_refresh",
-        method="POST",
-    )
-    urllib.request.urlopen(req, timeout=10).close()
+    httpx.post(f"{es_url}/chunks_v1/_refresh", timeout=10).raise_for_status()
 
 
-def _es_chunks(es_url: str, document_id: str) -> list[dict]:
-    body = json.dumps({"query": {"term": {"document_id": document_id}}, "size": 50}).encode()
-    req = urllib.request.Request(
+def _es_chunks(es_url: str, document_id: str) -> list[dict[str, Any]]:
+    resp = httpx.post(
         f"{es_url}/chunks_v1/_search",
-        data=body,
-        headers={"Content-Type": "application/json"},
+        json={"query": {"term": {"document_id": document_id}}, "size": 50},
+        timeout=10,
     )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        result = json.loads(resp.read())
-    return [hit["_source"] for hit in result.get("hits", {}).get("hits", [])]
+    resp.raise_for_status()
+    return [hit["_source"] for hit in resp.json().get("hits", {}).get("hits", [])]
 
 
 # ── test ─────────────────────────────────────────────────────────────────────
