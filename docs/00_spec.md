@@ -382,7 +382,7 @@ Runs the full retrieval pipeline (embed → kNN + BM25 → RRF join → source h
 
 - **S36 CJK BM25 via icu_tokenizer (B26)** — Given a document body containing `"產品規格"` (no whitespace) indexed under the `icu_text` analyzer, When a chat query for `"產品規格"` runs against `chunks_v1`, Then the BM25 retriever returns the chunk; the same query against a `standard`-analyzed control index does not. Proves the analyzer choice (B26) is functionally required for CJK retrieval.
 - **S37 chat rate-limit per user (B31)** — Given `CHAT_RATE_LIMIT_PER_MINUTE=N` and a single `X-User-Id`, When the same caller issues N+1 `POST /chat` (or `/chat/stream`) requests within the window, Then the first N succeed and the (N+1)th returns 429 `application/problem+json` with `error_code=CHAT_RATE_LIMITED` and a `Retry-After` header equal to seconds until window reset. A different `X-User-Id` gets an independent budget; ingest, MCP, and health endpoints are unaffected. After the window expires the counter resets.
-- **S8**  — `POST /mcp/tools/rag` returns 501 in P1 (handler not yet wired).
+- **S8** — `POST /mcp/v1/tools/rag` returns 501 in P1 (handler not yet wired). Superseded by S58–S67 (§3.8) in P2.5.
 
 ---
 
@@ -475,6 +475,27 @@ Retrieval may over-fetch (`K' = K × overfetch_factor`) so that after permission
 
 **Infrastructure (B27):** Redis broker (TaskIQ) and Redis rate-limiter are **separate logical instances**, each independently configurable as **standalone or Sentinel** via `REDIS_MODE` env (default `standalone` for dev/CI, set `sentinel` in prod). Sentinel mode shares a single sentinel quorum (`REDIS_SENTINEL_HOSTS`, ≥ 3 nodes) and resolves each instance by its master name (`REDIS_BROKER_SENTINEL_MASTER`, `REDIS_RATELIMIT_SENTINEL_MASTER`). Standalone mode reads direct URLs (`REDIS_BROKER_URL`, `REDIS_RATELIMIT_URL`). Connection layer uses `redis-py-sentinel` when mode=sentinel, plain `redis-py` when mode=standalone. The same code path is used by both the API process and the worker.
 
+#### 3.6.1 Chaos drill suite (P2.6 軌三 / T7.4.x)
+
+The chaos suite asserts the resilience claims of §3.6 (reconciler recovery, idempotent retries, partial-failure tolerance) hold under realistic injected faults. Each case is its own e2e file under `tests/e2e/test_chaos/test_C<N>_<scenario>.py`, marked `@pytest.mark.docker`, gated by a nightly CI lane (not per-PR; injection drills are slow). Case matrix (B49):
+
+| # | Case | Injection point | Expected terminal state |
+|---|---|---|---|
+| **C1** | Worker `SIGKILL` after `PENDING` transition | `os.kill(worker_pid, SIGKILL)` once status flips to `PENDING` | Reconciler re-dispatch → `READY` ≤ `RECONCILER_PENDING_STALE_SECONDS + RECONCILER_TICK_INTERVAL_SECONDS + worker_pipeline_p99 + slack`; `reconciler_tick_total` increments; no orphan ES chunks |
+| **C2** | MariaDB commit ↔ ES bulk crash | Monkeypatch worker to raise `ConnectionError` between DB `commit` and ES `bulk` | Worker retries idempotently; final state `READY` with ES chunks present; `multi_ready_repaired_total` unchanged (no demote needed) |
+| **C3** | ES bulk 207 partial failure | WireMock returns ES `_bulk` response with `errors:true` and 5/50 items failed | Worker retries failed items only (idempotent OVERWRITE); `READY` with all 50 chunks; `event=es.bulk_partial_failure` log emitted |
+| **C4** | Rerank 5xx during chat | WireMock `/rerank` returns 500 for 3 consecutive calls | Chat returns `200` with RRF-ordered sources (fail-open behaviour, decision to be pinned by P2.3 reranker-wiring commit); `rerank_degraded_total{reason="5xx"}+=3` |
+| **C5** | LLM stream interrupt mid-response | WireMock streams 3 `delta` events then drops TCP connection | Server emits `data: {"type":"error","error_code":"LLM_STREAM_INTERRUPTED",...}` per B6; client connection closes cleanly; no 500 in API logs |
+| **C6** | MinIO 503 during worker download | WireMock proxy injects 503 on `GET /staging/{key}` for 2/3 attempts | Worker retries (3×@2s built-in); succeeds on attempt 3; `READY`; `minio.transient_error` log count = 2 |
+
+**Common acceptance asserts** (every case):
+1. `documents.status` reaches the expected terminal value within the case-specific deadline.
+2. ES chunks state matches DB (no orphans, no missing).
+3. Per-case OTEL spans present (`reconciler.tick`, `ingest.failed`, `rerank.degraded`, `llm.stream.interrupted`, `minio.transient_error`).
+4. `chaos_drill_outcome_total{case="C<N>", outcome="pass"}` increments (P2.6 軌三 metric).
+
+**Why this lives in spec, not just plan:** the SLO claims (§3.6 reconciler ≤ 10 min recovery, §3.4.3 B6 mid-stream framing, B43 reranker fail-open) need executable evidence. Without the chaos drill, those claims are aspirational. Per journal 2026-05-08 E2E gate integrity rule: every spec-declared SLO must be backed by a test that runs in *some* automated gate.
+
 ---
 
 ### 3.7 Observability
@@ -491,6 +512,107 @@ Retrieval may over-fetch (`K' = K × overfetch_factor`) so that after permission
   - **Format**: ISO 8601 UTC timestamps (`YYYY-MM-DDTHH:MM:SS.sssZ`); JSON renderer by default, `LOG_FORMAT=console` for dev. `LOG_LEVEL` (default `INFO`) honored.
   - **Privacy** (per `docs/00_rule.md` Logging Rule): identity & metric fields only — never raw queries, prompts, completions, chunks, embeddings, document payloads, headers, or tokens. A denylist processor (`query`, `prompt`, `messages`, `completion`, `chunks`, `embedding`, `documents`, `body`, `authorization`, `cookie`, `password`, `token`, `secret`) drops sensitive keys and stamps `content_redacted=true`.
   - **Haystack 2.x** content tracing pinned off (`HAYSTACK_CONTENT_TRACING_ENABLED` opt-in), preventing prompt/answer leakage into spans.
+
+---
+
+### 3.8 MCP Tool Server (P2.5)
+
+Exposes ragent's retrieval pipeline as a **Model Context Protocol** tool so external LLM agents (Claude Desktop, Cursor, in-house agents) can call ragent's corpus through the MCP standard rather than a bespoke HTTP shape. The MCP server **wraps `POST /retrieve/v1`** (§3.4.4) — it does NOT call the LLM. The calling agent's own LLM does the synthesis; ragent supplies the grounded chunks.
+
+**Decision (B47):** P2.5 implements a **real MCP server speaking JSON-RPC 2.0** (not the P1 stub's REST shape). The P1 `POST /mcp/v1/tools/rag` 501 endpoint is **removed** and replaced by `POST /mcp/v1` carrying JSON-RPC envelopes. This is the user-requested Option B (full MCP, retrieve-only). Option A (REST tool-call) and Option C (REST + thin MCP shim) were rejected because they either misrepresent the protocol (A) or carry two surfaces with the same behavior (C).
+
+#### 3.8.1 Protocol
+
+- **Transport:** Streamable HTTP, request/response subset (POST only; no server-initiated SSE in P2.5). Pinned MCP spec revision: `"2024-11-05"`.
+- **Endpoint:** `POST /mcp/v1` (single endpoint; method dispatched from JSON-RPC `method` field).
+- **Envelope:** JSON-RPC 2.0:
+  ```json
+  // Request
+  {"jsonrpc": "2.0", "id": <int|str|null>, "method": "<method>", "params": {...}}
+  // Success response
+  {"jsonrpc": "2.0", "id": <same-as-request>, "result": {...}}
+  // Error response
+  {"jsonrpc": "2.0", "id": <same-as-request>, "error": {"code": <int>, "message": "<text>", "data": {...}?}}
+  ```
+- **Notification** (no response): omit `id`. P2.5 supports `notifications/initialized` only.
+- **Auth:** `Authorization: Bearer <jwt>` (P2.2 onwards) or `X-User-Id` fallback (`RAGENT_TRUST_X_USER_ID_HEADER=true`, dev only). Auth applies before JSON-RPC dispatch; failure returns HTTP 401 with `application/problem+json` (NOT a JSON-RPC error — auth is a transport-layer concern).
+- **Stateless mode:** P2.5 supports stateless requests only (no `Mcp-Session-Id` header). Stateful sessions deferred to P3 — gate condition: an MCP client requires server-initiated SSE or long-running tool resumption.
+
+#### 3.8.2 Supported methods
+
+| Method | Direction | Purpose |
+|---|---|---|
+| `initialize` | client → server | Capability negotiation. Returns `{protocolVersion, capabilities, serverInfo}`. |
+| `notifications/initialized` | client → server (notification) | Client signals init complete. Server silently accepts. |
+| `tools/list` | client → server | Returns `{tools: [{name, description, inputSchema}]}`. |
+| `tools/call` | client → server | Invokes a tool. Returns `{content: [{type, text}], isError}`. |
+| `ping` | bidirectional | Returns `{}`. Optional keepalive. |
+
+Any other method → JSON-RPC error `-32601 Method not found`.
+
+#### 3.8.3 The `retrieve` tool
+
+The sole tool advertised by `tools/list`. Mirrors §3.4.4 `POST /retrieve/v1` semantics:
+
+```json
+{
+  "name": "retrieve",
+  "description": "Retrieve relevant document chunks from the ragent corpus using hybrid vector+BM25 search with optional reranking. Returns ranked chunks (no LLM synthesis).",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "query":       {"type": "string", "minLength": 1, "description": "Natural-language query."},
+      "top_k":       {"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
+      "source_app":  {"type": "string",  "minLength": 1, "maxLength": 64,   "description": "Optional ES term filter."},
+      "source_meta": {"type": "string",  "minLength": 1, "maxLength": 1024, "description": "Optional ES term filter."},
+      "min_score":   {"type": "number",  "minimum": 0,    "description": "Optional post-pipeline score floor."},
+      "dedupe":      {"type": "boolean", "default": false, "description": "Keep one chunk per document_id."}
+    },
+    "required": ["query"]
+  }
+}
+```
+
+**`tools/call` result shape** (MCP spec compliant):
+```json
+{
+  "content": [
+    {"type": "text", "text": "{\"chunks\":[{...},{...}]}"}
+  ],
+  "isError": false
+}
+```
+
+The single `content[0].text` value is the **JSON-stringified** `RetrieveResponse` (same shape as `POST /retrieve/v1`). MCP standardises tool-result content as a typed array; text type with stringified JSON is the canonical pattern for structured returns (the calling LLM parses it). `isError: true` is set when the tool itself fails (e.g. retrieval pipeline raises); transport-layer failures still come through `error` envelopes.
+
+#### 3.8.4 Error codes (JSON-RPC layer)
+
+| Code | Meaning | Origin |
+|---|---|---|
+| `-32700` | Parse error (malformed JSON) | Transport |
+| `-32600` | Invalid Request (missing `jsonrpc` / `method`, etc.) | Transport |
+| `-32601` | Method not found | Dispatch |
+| `-32602` | Invalid params (e.g. `tools/call` with unknown `name`, or `inputSchema` validation fail) | Dispatch |
+| `-32603` | Internal error | Server |
+| `-32001` | Tool execution failed (retrieval pipeline error; mirrors `RETRIEVE_FAILED`) | App |
+
+App-level errors (-32000..-32099) carry `data.error_code` matching the existing `HttpErrorCode` catalog (§4.1.2) so operators correlate JSON-RPC errors with HTTP errors. Example:
+```json
+{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"retrieval pipeline failed","data":{"error_code":"RETRIEVE_FAILED"}}}
+```
+
+#### 3.8.5 BDD
+
+- **S58 mcp initialize** — Given a client sends `{jsonrpc:"2.0", id:1, method:"initialize", params:{protocolVersion:"2024-11-05", capabilities:{}, clientInfo:{...}}}`, When the server processes it, Then it returns `{jsonrpc:"2.0", id:1, result:{protocolVersion:"2024-11-05", capabilities:{tools:{}}, serverInfo:{name:"ragent",version:"<semver>"}}}`.
+- **S59 mcp tools/list** — Given `tools/list`, When the server processes it, Then `result.tools` contains exactly one entry with `name:"retrieve"` and an `inputSchema` matching §3.8.3 verbatim.
+- **S60 mcp tools/call retrieve** — Given indexed corpus and `tools/call` with `{name:"retrieve", arguments:{query:"...",top_k:3}}`, When the server processes it, Then `result.content[0].text` is JSON parseable into `{chunks: list}` of length ≤ 3 and `result.isError` is `false`.
+- **S61 mcp method not found** — Given `{method:"resources/list"}` (unimplemented), Then `error.code` is `-32601`.
+- **S62 mcp tools/call invalid name** — Given `{method:"tools/call", params:{name:"unknown_tool",arguments:{}}}`, Then `error.code` is `-32602` and `error.data.error_code` is `MCP_TOOL_NOT_FOUND`.
+- **S63 mcp tools/call missing query** — Given `{method:"tools/call", params:{name:"retrieve",arguments:{}}}` (no `query`), Then `error.code` is `-32602` and `error.data.error_code` is `MCP_TOOL_INPUT_INVALID`.
+- **S64 mcp parse error** — Given a request body that is not valid JSON, Then HTTP `200` with JSON-RPC body `{jsonrpc:"2.0",id:null,error:{code:-32700,...}}` (per JSON-RPC 2.0 §5: `id` is `null` when parse failed).
+- **S65 mcp notifications/initialized** — Given `{jsonrpc:"2.0", method:"notifications/initialized"}` (no `id`), Then HTTP `204` with empty body; no JSON-RPC response object emitted.
+- **S66 mcp auth required** — Given `RAGENT_AUTH_DISABLED=false` and no `Authorization` header, Then HTTP `401` with `application/problem+json` (NOT a JSON-RPC error envelope) and `error_code=AUTH_CLAIM_MISSING`.
+- **S67 mcp tool retrieval failure** — Given the retrieval pipeline raises, When `tools/call retrieve` is invoked, Then JSON-RPC response is `{error:{code:-32001, message:..., data:{error_code:"RETRIEVE_FAILED"}}}` — NOT `isError:true` inside a successful result. (App-error vs tool-soft-error distinction: pipeline crashes are JSON-RPC errors; an empty-result-set retrieval is `isError:false` with empty `chunks`.)
 
 ---
 
@@ -521,7 +643,7 @@ Retrieval may over-fetch (`K' = K × overfetch_factor`) so that after permission
 | DELETE | `/ingest/v1/{id}`          | `X-User-Id` | — | `204` idempotent |
 | POST   | `/chat/v1`                 | `X-User-Id` | §3.4.1 schema (`messages` required; rest default) | `200 application/json` per §3.4.2 |
 | POST   | `/chat/v1/stream`          | `X-User-Id` | §3.4.1 schema | `text/event-stream` per §3.4.3 (`data: {type:delta\|done\|error}`) |
-| POST   | `/mcp/v1/tools/rag`        | `X-User-Id` | `{ query: str }` | **501** (P1) |
+| POST   | `/mcp/v1`               | `X-User-Id` (P1) / `Authorization: Bearer` (P2) | JSON-RPC 2.0 envelope per §3.8 | `200` with JSON-RPC response envelope; `204` for `notifications/*`. Auth failure (401) returns `application/problem+json` per §3.8.1 (transport-layer). P1 `POST /mcp/v1/tools/rag` 501-stub **removed** in P2.5. |
 | GET    | `/livez`                | none        | — | `200 {"status":"ok"}` — process up; no dependency probes |
 | GET    | `/readyz`               | none        | — | `200` if all dep probes pass; else `503 application/problem+json` listing failed deps. Probes: **MariaDB** (`SELECT 1`), **ES** (`GET /_cluster/health` + `analysis-icu` plugin loaded + every `resources/es/*.json` index exists; B26, I5), **Redis broker & rate-limiter** (`PING` against active topology per `REDIS_MODE`; B27), **MinIO** (`ListBuckets`). Each probe ≤ 2 s. |
 | GET    | `/metrics`              | none        | — | `200 text/plain; version=0.0.4` — Prometheus exposition (counters/histograms in §3.7) |
@@ -565,7 +687,13 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 | `CHAT_RATE_LIMITED`                  | 429 + `Retry-After` | Per-user fixed-window quota exceeded on `/chat/v1` or `/chat/v1/stream` (B31, S37) | Router-level Depends T3.16 |
 | `CHAT_LLM_ERROR`                     | 502 / SSE-error | Pre-stream LLM failure (problem+json) or mid-stream LLM failure (`data: {type:error}`, B6) | Router T3.10/T3.12 |
 | `CHAT_RETRIEVER_ERROR`               | 502 / SSE-error | ES vector / BM25 retriever failure | Router T3.10/T3.12 |
-| `MCP_NOT_IMPLEMENTED`                | 501         | `POST /mcp/v1/tools/rag` (S8) | Router T6.1 |
+| `MCP_NOT_IMPLEMENTED`                | 501         | `POST /mcp/v1/tools/rag` (P1 stub, removed in P2.5) | Router T6.1 |
+| `MCP_PARSE_ERROR`                    | JSON-RPC `-32700` | Request body is not valid JSON (S64) | Router P2.5 |
+| `MCP_INVALID_REQUEST`                | JSON-RPC `-32600` | Missing `jsonrpc:"2.0"` / `method`; malformed envelope | Router P2.5 |
+| `MCP_METHOD_NOT_FOUND`               | JSON-RPC `-32601` | Method outside §3.8.2 allow-list (S61) | Router P2.5 |
+| `MCP_TOOL_NOT_FOUND`                 | JSON-RPC `-32602` (data.error_code) | `tools/call` with unknown `name` (S62) | Router P2.5 |
+| `MCP_TOOL_INPUT_INVALID`             | JSON-RPC `-32602` (data.error_code) | `tools/call` arguments fail `inputSchema` validation (S63) | Router P2.5 |
+| `MCP_TOOL_EXECUTION_FAILED`          | JSON-RPC `-32001` (data.error_code) | Underlying retrieval pipeline raises (S67) | Router P2.5 |
 | `ES_PLUGIN_MISSING`                  | 503 (`/readyz`) | ES cluster missing `analysis-icu` plugin (B26, T0.8g) | Bootstrap / readyz |
 | `ES_INDEX_MISSING`                   | 503 (`/readyz`) | A `resources/es/*.json` index is absent at boot | Bootstrap / readyz |
 | `SCHEMA_DRIFT`                       | 503 (`/readyz`) + log `event=schema.drift` | Live schema differs from `schema.sql` / `resources/es/` | Bootstrap |
@@ -731,6 +859,8 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `RAGENT_RAG_GROUNDING_RULES`          | *(rules-only variant)*        | Rules-only system prompt prepended when the caller supplies their own `system` message alongside retrieved docs. Preserves the caller's persona while enforcing context-only grounding. |
 | `CHAT_RATE_LIMIT_PER_MINUTE`          | `30`             | Per-user request cap on `/chat/v1` + `/chat/v1/stream` within the rate-limit window (B31). Excess returns 429 `CHAT_RATE_LIMITED`. |
 | `CHAT_RATE_LIMIT_WINDOW_SECONDS`      | `60`             | Fixed-window length for `CHAT_RATE_LIMIT_PER_MINUTE` (B31). |
+
+> **No MCP env vars** — `protocolVersion` (`2024-11-05`) and `serverInfo.name` (`ragent`) are **pinned in spec §3.8.1 / B47** and live as module-level constants in `src/ragent/routers/mcp.py`. Operators flipping the protocol version would silently break the contract; the pin is intentional.
 
 #### 4.6.7 Per-call timeouts (matches §4.3 catalog)
 
@@ -930,7 +1060,7 @@ ragent/
 │   ├── routers/
 │   │   ├── ingest.py                             # T2.14 (B5) — /ingest CRUD + RFC 9457
 │   │   ├── chat.py                               # T3.10/T3.12 (B12, B6) — /chat + /chat/stream
-│   │   ├── mcp.py                                # T6.1  — /mcp/tools/rag (501 in P1)
+│   │   ├── mcp.py                                # T6.1 (P1) / T-MCP.* (P2.5) — /mcp/v1 JSON-RPC 2.0 server (§3.8)
 │   │   └── health.py                             # T7.8  (B4, C9) — /livez /readyz /metrics
 │   ├── services/
 │   │   └── ingest_service.py                     # T2.8 / T2.10 / T2.12 / T3.2d — create / delete / list / supersede
@@ -1029,3 +1159,5 @@ ragent/
 | **B42** | 2026-05-08 | Testing | Integration-test ES container has no `analysis-icu` plugin (vanilla `elasticsearch:9.2.3` from `testcontainers`); prod mapping (B26) uses `icu_text` analyzer that requires the plugin → naïvely loading the prod mapping into the test ES fails at index creation. | **Two mapping files, env-driven dir override.** Prod loads `resources/es/chunks_v1.json` (ICU). Tests load `tests/resources/es/chunks_v1.json` (default `standard` analyzer, structurally identical otherwise) by setting `RAGENT_ES_RESOURCES_DIR` in `tests/conftest.py`; `init_es()` reads this env and falls back to the prod path. Drift test (`test_es_resource_drift.py`) continues to pin `resources/es/chunks_v1.json` ↔ spec §5.2; a parallel test pins the test mapping file's structural equality (analyzer field + ICU `analysis` block being the only deltas). **Risk accepted:** CJK BM25 behaviour (S36) is **not** covered by integration tests under this setup; covered by manual / staging smoke against an ES with `analysis-icu` installed (`Dockerfile.es-test`). | (a) Build `Dockerfile.es-test` for every test run — ~30–60s docker build cost per CI cold cache, rejected as too heavy; (b) bake `standard` analyzer into the single prod mapping — defeats B26 (CJK retrieval breaks in prod); (c) parametrize analyzer name via env inside one mapping file (template substitution) — adds an env per substitution surface and obscures what prod actually ships with. | §5.2 / §7 / `resources/es/chunks_v1.json` / `tests/resources/es/chunks_v1.json` / `tests/conftest.py` / `src/ragent/bootstrap/init_schema.py` |
 | **B34** | 2026-05-07 | Storage | Retention window for non-active revisions (when does the sweep job delete chunks of a superseded revision)? | **Layered audit window keyed on `document_revisions.retention_class ENUM('migration','reingest','none')`**: defaults `migration=∞` (or 90 d if storage-bound), `reingest=24h`, `none=0`. Sweep job in reconciler reads the per-class window. Subject to four operational guards: (1) explicit `DELETE /ingest/{id}` cascades all revisions regardless of class (compliance > retention); (2) capacity alarms with "drop oldest non-active first" fallback past disk threshold; (3) per-source override; (4) backup excludes non-active revisions. | (a) Single global 24h window — too aggressive for migration rollback (which is a pointer flip but only works while old chunks exist); (b) "never sweep" — unbounded ES disk growth, no answer for `right-to-be-forgotten`; (c) couple sweep to active-flip event (sweep immediately on demotion) — same loss-of-rollback as (a). | §3.1 / `docs/team/2026_05_07_revision_model_proposal.md` §6.1 |
 | **B28** | 2026-05-04 | Config | Env-var inventory was incomplete — missing datastore connections (MariaDB/ES/MinIO host/creds), J1 client credentials, HTTP bind, OTEL exporter, retry/timeout policy knobs, upload limits, and log level; `RERANK_API_URL` was misspelled `REREANK_API_URL` | **Reorganise §4.6 into 8 subsections** (bootstrap, datastore, redis, third-party clients, worker/reconciler, pipeline/chat, per-call timeouts, observability). **Add 26 new vars** covering every previously implicit literal: `MARIADB_DSN`, `ES_HOSTS`/`ES_USERNAME`/`ES_PASSWORD`/`ES_API_KEY`/`ES_VERIFY_CERTS`, `MINIO_ENDPOINT`/`MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY`/`MINIO_SECURE`, `RAGENT_HOST`/`RAGENT_PORT`/`LOG_LEVEL`, `AI_API_CLIENT_ID`/`AI_API_CLIENT_SECRET`, `WORKER_MAX_ATTEMPTS`, `RECONCILER_PENDING_STALE_SECONDS`/`RECONCILER_UPLOADED_STALE_SECONDS`/`RECONCILER_DELETING_STALE_SECONDS`, `INGEST_MAX_FILE_SIZE_BYTES`, `INGEST_LIST_MAX_LIMIT`, the seven per-call timeouts (`EMBEDDER_INGEST/QUERY`, `ES_BULK/QUERY`, `MINIO_GET/PUT`, `LLM`, `PLUGIN_FAN_OUT`, `READYZ_PROBE`), plus four `OTEL_*` vars. **Fix typo** `REREANK_API_URL` → `RERANK_API_URL`. **Rename** ambiguous `RECONCILER_STALE_AFTER_SECONDS` to per-state `RECONCILER_PENDING_STALE_SECONDS` and add UPLOADED/DELETING siblings. **Change `MINIO_BUCKET` default** from `ragent-staging` → `ragent` (B10/B25 prose updated). Also adds an inventory rule: any literal value read by code that is not represented in §4.6 is a spec drift bug. | Leave datastore connections as "implicit per-environment overrides" (every operator reinvents the wheel; bootstrap module has no canonical names to read); expose only DSN-style strings for ES/MinIO too (forces credential concatenation in URLs, harder to rotate); keep timeouts as code constants only (violates J21 rule "every call site lists per-call timeout AND aggregate ceiling"); ship without J1 creds (TokenManager has a URL but no way to authenticate — boot succeeds but every embedder/LLM call fails on first request). | §1 / §3.1 / §3.6 / §3.7 / §4.5 / §4.6 / §6.1 / T0.8 |
+| **B47** | 2026-05-11 | API/MCP | P1 reserved `POST /mcp/v1/tools/rag` as a 501 stub with REST-shape `{query: str}`. P2.5 needs a real handler. Three options: (A) keep REST shape, (B) full MCP JSON-RPC 2.0 server, (C) REST core + thin MCP wrapper. | **Option B — real MCP JSON-RPC 2.0 server** at `POST /mcp/v1`, single endpoint dispatching by `method` field. Implements `initialize`, `notifications/initialized`, `tools/list`, `tools/call`, `ping` (§3.8.2). Sole tool `retrieve` wraps the existing `POST /retrieve/v1` pipeline (NOT chat — calling agent's LLM does the synthesis). Transport: streamable HTTP request/response subset (no SSE in P2.5). Protocol revision pinned to `2024-11-05`. Stateless; no `Mcp-Session-Id` session. JSON-RPC errors carry `data.error_code` matching the existing `HttpErrorCode` catalog so JSON-RPC and HTTP errors correlate. Auth (401) is transport-layer `application/problem+json`, NOT a JSON-RPC error envelope. The P1 `/mcp/v1/tools/rag` 501 endpoint is **removed**. | (A) Keep REST shape under `/mcp/` URL: misrepresents the protocol — stock MCP clients (Claude Desktop, Cursor) cannot register the server. (C) REST + MCP wrapper: two surfaces with identical behavior duplicate test matrix; YAGNI until both client types are confirmed. (D) Stateful MCP with `Mcp-Session-Id`: adds session storage requirement; not needed for a single read-only tool. (E) Wrap chat pipeline instead of retrieve: confuses MCP semantics — tools return data, the calling LLM reasons; chat already does both inside ragent. | §3.8 / §4.1 / §4.1.2 / §4.6.6 / S58–S67 / P2.5 |
+| **B49** | 2026-05-11 | SRE/QA | The §3.6 resilience claims (reconciler ≤ 10 min recovery, idempotent partial-failure handling, fail-open reranker, mid-stream error framing) ship as prose in spec but have no executable evidence beyond C1 (single worker-kill case, currently `xfail(run=False)`). Per journal 2026-05-08 E2E gate integrity rule, every spec-declared SLO needs a test in some automated gate. | **Chaos drill suite under `tests/e2e/test_chaos/test_C<N>_<scenario>.py`** — six cases C1–C6 covering worker SIGKILL, MariaDB↔ES split-brain, ES bulk 207 partial, rerank 5xx, LLM stream interrupt, MinIO transient 503 (matrix in §3.6.1). Gated by a **nightly CI lane** (not per-PR — slow + inject delays), each case asserts the same four invariants (terminal status, ES/DB consistency, OTEL spans present, `chaos_drill_outcome_total{case,outcome}` increment). C1 unblocks the existing `test_chaos_worker_kill.py` (lift `xfail(run=False)`); C2–C6 are new files. Acceptance: nightly green for ≥ 3 consecutive runs before P2.6 軌三 marked done. | (a) Per-PR gate: ~5–10 min overhead per PR + WireMock state pollution between cases. (b) Manual quarterly drills: same failure mode as the silent `pytest.skip()` problem (journal 2026-05-08) — no automated signal. (c) Single chaos test parameterised over all cases: a shared fixture failure cascades all 6 to red; per-case files isolate diagnosis. | §3.6.1 / §3.7 / P2.6 軌三 / journal 2026-05-08 E2E gate integrity |
