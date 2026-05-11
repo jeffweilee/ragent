@@ -279,7 +279,11 @@ def _table_to_markdown(table: Any) -> tuple[str, str]:
 
     Returns both representations in one pass to avoid iterating rows twice.
     """
-    rows = [[cell.text for cell in row.cells] for row in table.rows]
+
+    def _clean(t: str) -> str:
+        return t.replace("|", "\\|").replace("\n", " ")
+
+    rows = [[_clean(cell.text) for cell in row.cells] for row in table.rows]
     if not rows:
         return "", ""
     header = "| " + " | ".join(rows[0]) + " |"
@@ -309,6 +313,7 @@ class _DocxASTSplitter:
 
         atoms: list[Document] = []
         for doc in documents:
+            base_meta = {k: v for k, v in doc.meta.items() if k != "raw_bytes"}
             raw_bytes: bytes = doc.meta.get("raw_bytes") or b""
             docx = DocxDocument(io.BytesIO(raw_bytes))
             for block in docx.element.body:
@@ -318,13 +323,13 @@ class _DocxASTSplitter:
                     text = para.text.strip()
                     if not text:
                         continue
-                    atoms.append(Document(content=text, meta={**doc.meta, "raw_content": text}))
+                    atoms.append(Document(content=text, meta={**base_meta, "raw_content": text}))
                 elif tag == "tbl":
                     table = Table(block, docx)
                     plain, raw_md = _table_to_markdown(table)
                     if not raw_md.strip():
                         continue
-                    atoms.append(Document(content=plain, meta={**doc.meta, "raw_content": raw_md}))
+                    atoms.append(Document(content=plain, meta={**base_meta, "raw_content": raw_md}))
         return {"documents": atoms}
 
 
@@ -350,24 +355,30 @@ class _PptxASTSplitter:
 
         atoms: list[Document] = []
         for doc in documents:
+            base_meta = {k: v for k, v in doc.meta.items() if k != "raw_bytes"}
             raw_bytes: bytes = doc.meta.get("raw_bytes") or b""
             prs = Presentation(io.BytesIO(raw_bytes))
             for idx, slide in enumerate(prs.slides, start=1):
                 texts = []
                 for shape in slide.shapes:
-                    if not shape.has_text_frame:
-                        continue
-                    for para in shape.text_frame.paragraphs:
-                        line = "".join(run.text for run in para.runs).strip()
-                        if line:
-                            texts.append(line)
+                    if shape.has_text_frame:
+                        for para in shape.text_frame.paragraphs:
+                            line = para.text.strip()
+                            if line:
+                                texts.append(line)
+                    elif shape.has_table:
+                        for row in shape.table.rows:
+                            for cell in row.cells:
+                                cell_text = cell.text_frame.text.strip()
+                                if cell_text:
+                                    texts.append(cell_text)
                 if not texts:
                     continue
                 combined = "\n".join(texts)
                 atoms.append(
                     Document(
                         content=combined,
-                        meta={**doc.meta, "raw_content": combined, "slide_number": idx},
+                        meta={**base_meta, "raw_content": combined, "slide_number": idx},
                     )
                 )
         return {"documents": atoms}

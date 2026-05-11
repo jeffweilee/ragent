@@ -393,3 +393,9 @@ v2 replaces the underlying behavior in C2–C6):
 | T-BL.2 | Red | • **Achieve:** Pin `_PptxASTSplitter` atom contract.<br>• **Deliver:** `tests/unit/test_pptx_ast_splitter.py` — one atom per slide, blank slide skipped, slide_number in meta, meta passthrough, empty presentation → zero atoms. | §4.2 | [x] | QA |
 | T-BL.3 | Green | • **Achieve:** Implement `_DocxASTSplitter` and `_PptxASTSplitter`.<br>• **Deliver:** `src/ragent/pipelines/factory.py` — both components; `IngestMime.DOCX`/`IngestMime.PPTX` enum values; `BINARY_MIMES` frozenset derived from `IngestMime`; `_TextLoader` accepts `content_bytes`; `_MimeAwareSplitter` routes via `IngestMime` enum constants; worker `BINARY_MIMES` branch skips UTF-8 decode; `python-docx`/`python-pptx` added as deps. | §4.2 | [x] | Dev |
 | T-BL.4 | Acceptance | • **Achieve:** `_MimeAwareSplitter` dispatch covers all new routes.<br>• **Deliver:** `tests/unit/test_pipeline_routing_v2.py` — DOCX and PPTX routes exercise the full dispatch path end-to-end. | §4.2 | [x] | QA |
+
+### DOCX/PPTX splitter review fixes (PR #54) — 2026-05-11
+
+| # | Category | Task | Spec | Status | Owner |
+|---|---|:-:|:-:|:-:|---|
+| T-BL.5 | Structural | • **Achieve:** Address Gemini/Codex PR review findings.<br>• **Deliver:** `_DocxASTSplitter`/`_PptxASTSplitter` strip `raw_bytes` from atom meta (`base_meta`); `_PptxASTSplitter` extracts table cell text; `_table_to_markdown` escapes `|` and normalises newlines in cell text; `_PptxASTSplitter` uses `para.text` instead of manual run join. | §4.2 | [x] | Dev |
