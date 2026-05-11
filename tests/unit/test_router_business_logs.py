@@ -55,7 +55,7 @@ def test_ingest_validation_rejection_emits_business_log():
     client = TestClient(app, raise_server_exceptions=False)
     # Send a body that fails Pydantic validation (missing required fields).
     with structlog.testing.capture_logs() as logs:
-        resp = client.post("/ingest", json={"ingest_type": "inline"}, headers={"X-User-Id": "u"})
+        resp = client.post("/ingest/v1", json={"ingest_type": "inline"}, headers={"X-User-Id": "u"})
     assert resp.status_code in (415, 422)
     error_code = resp.json()["error_code"]
     matched = [e for e in logs if e.get("error_code") == error_code]
@@ -79,7 +79,7 @@ def test_ingest_not_found_emits_business_log():
 
     client = TestClient(app, raise_server_exceptions=False)
     with structlog.testing.capture_logs() as logs:
-        resp = client.get("/ingest/DOES-NOT-EXIST")
+        resp = client.get("/ingest/v1/DOES-NOT-EXIST")
     assert resp.status_code == 404
     assert resp.json()["error_code"] == HttpErrorCode.INGEST_NOT_FOUND
     matched = [e for e in logs if e.get("error_code") == HttpErrorCode.INGEST_NOT_FOUND]
@@ -116,7 +116,7 @@ def test_chat_rate_limited_emits_business_log():
     client = TestClient(app, raise_server_exceptions=False)
     with structlog.testing.capture_logs() as logs:
         resp = client.post(
-            "/chat",
+            "/chat/v1",
             json={
                 "messages": [{"role": "user", "content": "hi"}],
                 "model": "m",

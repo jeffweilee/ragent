@@ -52,7 +52,7 @@ def create_chat_router(
     rate_limit: int = 60,
     rate_limit_window: int = 60,
 ) -> APIRouter:
-    router = APIRouter()
+    router = APIRouter(prefix="/chat/v1")
 
     def _check_rate(user_id: str | None) -> Response | None:
         if rate_limiter is None or user_id is None:
@@ -72,7 +72,7 @@ def create_chat_router(
             return _rate_limit_response(result.reset_at or 0)
         return None
 
-    @router.post("/chat")
+    @router.post("")
     async def chat(
         body: ChatRequest,
         x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
@@ -134,7 +134,7 @@ def create_chat_router(
                 }
             )
 
-    @router.post("/chat/stream")
+    @router.post("/stream")
     async def chat_stream(
         body: ChatRequest,
         x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,

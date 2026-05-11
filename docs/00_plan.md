@@ -353,3 +353,34 @@ v2 replaces the underlying behavior in C2–C6):
 | T-RR.16 | Red | • **Achieve:** Pin that post-READY enrichment (`fan_out`) does NOT run when the worker self-demotes, so READY-only plugins (event publish, cache warm) never see a non-READY doc.<br>• **Deliver:** `tests/integration/test_worker_minio_cleanup.py::test_self_demote_skips_post_ready_fan_out`. | B41 | [x] | QA |
 | T-RR.17 | Green | • **Achieve:** Gate worker `fan_out` on promote outcome.<br>• **Deliver:** `promote_to_ready_and_demote_siblings` returns `bool` (True survivor / False self-demoted); `src/ragent/workers/ingest.py` reads return value and skips `container.registry.fan_out(document_id)` when False. Existing test mocks updated to return `True`. Spec row B41 added in `docs/00_spec.md`. | B41 | [x] | Dev |
 | T-RR.18 | Red | • **Achieve:** Pin the `FOR UPDATE` lock semantic — a second concurrent promote on the same `(source_id, source_app)` must block on the row lock until the first tx commits, so retrieval correctness is enforced by the DB, not by application-level serialization.<br>• **Deliver:** `tests/integration/test_worker_atomic_promote.py::test_for_update_serializes_concurrent_promotes` — holds the survivor `SELECT … FOR UPDATE` from outside the repo, asserts a parallel promote is blocked via `wait_for(shield(task), timeout=0.1)` raising `TimeoutError`, then releases and verifies the elected survivor wins. | B41 | [x] | QA |
+
+
+### Retrieve + Ingest API enhancements (branch `claude/add-ingest-filters-EIXOq`) — 2026-05-11
+
+> Source: user request 2026-05-11. Three paired behavioural additions to the retrieve and ingest surfaces.
+
+| # | Category | Task | Spec | Status | Owner |
+|---|---|---|:-:|:-:|---|
+| T-EF.1 | Behavioral | • **Achieve:** Add `top_k`/`min_score` request params to `POST /retrieve`; expose `source_meta` in chunk response; add Pydantic `response_model=` to all endpoints.<br>• **Deliver:** `src/ragent/routers/retrieve.py` (`ChunkEntry`, `RetrieveResponse`, `top_k`/`min_score` fields); `src/ragent/pipelines/chat.py` (`source_meta` in `doc_to_source_entry`, `top_k`/`min_score` in `run_retrieval`, `_retriever_params` helper); `src/ragent/routers/ingest.py` (four response models, `response_model=` on all routes); `tests/unit/test_retrieve_router.py`. | B7/B35 | [x] | Dev |
+| T-EF.2 | Behavioral | • **Achieve:** Add `source_id`/`source_app` filter params to `GET /ingest` list; change list ordering to newest-first (`document_id DESC`).<br>• **Deliver:** `src/ragent/repositories/document_repository.py` (`list()` adds filter params + DESC order + `< :after` cursor); `src/ragent/services/ingest_service.py` (pass-through); `src/ragent/routers/ingest.py` (query params); `tests/unit/test_document_repository.py` + `test_ingest_service_list.py` + `test_ingest_router_v2.py`. | B7 | [x] | Dev |
+| T-EF.3 | Behavioral | • **Achieve:** Fix `min_score` implementation — `score_threshold` is not a valid ES retriever `run()` param; apply as post-retrieval filter instead.<br>• **Deliver:** `src/ragent/pipelines/chat.py` (`_retriever_params` drops `score_threshold`; `run_retrieval` filters by score after `pipeline.run()`); four new tests in `tests/unit/test_retrieve_router.py`. | B7 | [x] | Dev |
+
+### top_k hard cap fix (branch `claude/fix-top-k-cap`) — 2026-05-11
+
+| # | Category | Task | Spec | Status | Owner |
+|---|---|---|:-:|:-:|---|
+| T-EF.4 | Behavioral | • **Achieve:** Enforce `top_k` as a hard post-pipeline cap in `run_retrieval()` — Haystack's `DocumentJoiner` and `_Reranker` use their init `top_k` and may return more results than the per-request value.<br>• **Deliver:** `src/ragent/pipelines/chat.py` (`docs = docs[:top_k]` after pipeline output); `tests/unit/test_retrieve_router.py` (three new tests: hard cap, cap after min_score, top_k=None returns all). | B7 | [x] | Dev |
+
+### score field in retrieve response (branch `claude/fix-top-k-cap`) — 2026-05-11
+
+| # | Category | Task | Spec | Status | Owner |
+|---|---|---|:-:|:-:|---|
+| T-EF.5 | Behavioral | • **Achieve:** Expose retrieval score in `POST /retrieve` chunk response.<br>• **Deliver:** `score: float | None` added to `ChunkEntry` in `routers/retrieve.py`; `doc_to_source_entry()` in `pipelines/chat.py` includes `"score": doc.score`; two new tests (score present, score=None). | §3.4.4 | [x] | Dev |
+
+### API path versioning (branch `claude/add-api-versioning-7jm6C`) — 2026-05-11
+
+> Source: user request 2026-05-11. All business API paths must carry a `/v1` version segment.
+
+| # | Category | Task | Spec | Status | Owner |
+|---|---|---|:-:|:-:|---|
+| T-AV.1 | Behavioral | • **Achieve:** Add `/v1` version segment to all business API paths: `POST/GET/DELETE /ingest/v1[/{id}]`, `POST /chat/v1[/stream]`, `POST /retrieve/v1`, `POST /mcp/v1/tools/rag`.<br>• **Deliver:** `src/ragent/routers/{ingest,chat,retrieve,mcp}.py` — routers gain `prefix="/ingest/v1"` / `/chat/v1` / `/retrieve/v1` / `/mcp/v1`; route decorators drop the resource segment. All tests updated to new paths. Spec §3.4 / §4.1.2 path table updated. | §3.4 | [x] | Dev |

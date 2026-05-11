@@ -279,9 +279,17 @@ class IngestService:
             # Spec §3.1 line 92 — "cascade-delete that row".
             await self.delete(loser.document_id)
 
-    async def list(self, after: str | None = None, limit: int = _LIST_MAX) -> IngestListResult:
+    async def list(
+        self,
+        after: str | None = None,
+        limit: int = _LIST_MAX,
+        source_id: str | None = None,
+        source_app: str | None = None,
+    ) -> IngestListResult:
         limit = min(limit, _LIST_MAX)
-        rows = await self._repo.list(after=after, limit=limit + 1)
+        rows = await self._repo.list(
+            after=after, limit=limit + 1, source_id=source_id, source_app=source_app
+        )
         has_more = len(rows) > limit
         items = rows[:limit]
         next_cursor = items[-1].document_id if has_more and items else None

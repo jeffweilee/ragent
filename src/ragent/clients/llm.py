@@ -24,12 +24,16 @@ class LLMClient:
         get_token: Callable[[], str],
         timeout: float | None = None,
         sleep: Callable[[float], None] = _time.sleep,
+        auth_header_name: str | None = None,
     ) -> None:
-        self._url = api_url.rstrip("/") + "/gpt_oss_120b/v1/chat/completions"
+        self._url = api_url
         self._http = http
         self._get_token = get_token
         self._timeout = timeout or float(os.environ.get("LLM_TIMEOUT_SECONDS", "120"))
         self._sleep = sleep
+        self._auth_header_name = auth_header_name or os.environ.get(
+            "LLM_AUTH_HEADER_NAME", "Authorization"
+        )
 
     def stream(
         self,
@@ -82,7 +86,7 @@ class LLMClient:
                 "max_tokens": max_tokens,
                 "stream_options": {"include_usage": True},
             },
-            headers={"Authorization": f"Bearer {self._get_token()}"},
+            headers={self._auth_header_name: self._get_token()},
             timeout=self._timeout,
         ) as resp:
             for line in resp.iter_lines():
@@ -127,7 +131,7 @@ class LLMClient:
                             "temperature": temperature,
                             "max_tokens": max_tokens,
                         },
-                        headers={"Authorization": f"Bearer {self._get_token()}"},
+                        headers={self._auth_header_name: self._get_token()},
                         timeout=self._timeout,
                     )
                     span.set_attribute("http.status_code", getattr(resp, "status_code", 0))

@@ -162,6 +162,29 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 
 ---
 
+### API Endpoint Naming & Versioning
+
+- **Rule: All business API paths carry a `/v<N>` version segment at position `/<resource>/v<N>[/<rest>]`.**
+  - **Format:** `/<resource>/v<N>` for collection operations; `/<resource>/v<N>/{id}` for item operations; `/<resource>/v<N>/<sub-resource>` for nested actions.
+  - **Current surface:** `POST /ingest/v1`, `GET /ingest/v1/{id}`, `DELETE /ingest/v1/{id}`, `GET /ingest/v1`, `POST /chat/v1`, `POST /chat/v1/stream`, `POST /retrieve/v1`, `POST /mcp/v1/tools/rag`.
+  - **Excluded (no version segment):** Infrastructure endpoints `/livez`, `/readyz`, `/startupz`, `/metrics` — these are process health surfaces, not business API.
+
+- **Rule: Resource names are lowercase, hyphen-separated nouns. The version token is `v` followed by a positive integer — no suffix variants (`v1`, never `v1.0`, `v1-beta`, `v1_stable`).**
+
+- **Rule: The version segment lives in the router prefix, never in individual route decorators.**
+  - **Action:** Declare `APIRouter(prefix="/<resource>/v<N>")` and write routes relative to that prefix (`""`, `"/{id}"`, `"/stream"`). Putting the full path in each decorator (e.g. `@router.post("/chat/v1")`) is prohibited — it scatters the version across N decorators and makes a version bump N error-prone edits.
+  - **Rationale:** A single prefix change bumps all routes in the router atomically.
+
+- **Rule: Introducing a new version (`v2`, `v3`) means a new router factory (`create_<resource>_v<N>_router()`) mounted at the new prefix alongside the old one in `bootstrap/app.py`. The old version stays live until explicitly decommissioned in a planned commit.**
+  - **Prohibition:** Do not increment the version in place on a live router — that silently breaks every client pinned to the old path.
+
+- **Rule: Any new business endpoint ships under at least `/v1`. An endpoint without a version segment is a spec drift bug — treat it the same as an undocumented public API.**
+
+- **Verification:** The test `tests/unit/test_api_versioning.py` asserts that every route registered on the FastAPI app (via `app.routes`) whose path does not match the infrastructure set (`/livez`, `/readyz`, `/startupz`, `/metrics`, `/docs`, `/redoc`, `/openapi.json`) satisfies `re.match(r"^/[a-z][a-z0-9-]*/v[1-9]\d*", path)`. This test must pass before every commit that adds or modifies a router registration in `bootstrap/app.py`.
+
+---
+
+
 ### API Error Honesty: Domain Code Must Survive to the Wire
 
 - **Rule**: API responses for non-2xx status codes **must** expose the originating domain `error_code`. The global FastAPI exception handler **must not** collapse typed domain exceptions into `INTERNAL_ERROR`.
@@ -174,6 +197,36 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 - **Verification**: every new domain exception lands with paired tests — (a) handler test asserts the response body's `status` + `error_code` match the exception's attributes; (b) log test asserts the failure log line carries the same `error_code`. A log/response mismatch is a contract bug.
 
 ---
+
+### TaskIQ / Async Broker: Producer Contract
+
+- **Rule: Broker lifecycle is mandatory.** Every process that enqueues tasks MUST `await broker.startup()` once at boot (FastAPI lifespan, reconciler `__main__`) and `await broker.shutdown()` at graceful exit. Omitting `startup()` causes the first `kiq()` call to fail with no Redis connection; omitting `shutdown()` leaks sockets. Failure at either step aborts boot — never silently degrade.
+
+- **Rule: Enqueue via the decorated task object, never via broker methods.** Producer code MUST use `await registered_task.kiq(**kwargs)`. `AsyncBroker` exposes no `.enqueue()` method. Acceptable alternative: a thin dispatcher that resolves the label via `broker.find_task(label)` and raises `RuntimeError` on miss — never swallow unknown labels silently.
+
+- **Rule: Task labels must be registered before first dispatch.** Every label string referenced by a producer (including the Reconciler) MUST have a matching `@broker.task("<label>")` decoration in a module imported by the producer process before first dispatch. Assert this in both `bootstrap/app.py` and any reconciler entrypoint; an unregistered label raises `RuntimeError` at dispatch time, not at test time — mock-based unit tests cannot catch this.
+
+- **Rule: Mandatory integration test against `InMemoryBroker`.** At least one integration test MUST exercise the full enqueue → receive → execute cycle using `taskiq.brokers.inmemory_broker.InMemoryBroker`. `MagicMock`-based unit tests accept any attribute and hide call-site drift and label-registration gaps; only a real broker wired with the real task object surfaces them.
+
+- **Sync-from-async bridge**: when a sync call site (FastAPI `run_in_threadpool` worker thread) must enqueue, wrap the async dispatcher in a sync facade using `anyio.from_thread.run` — valid because `run_in_threadpool` uses `anyio.to_thread.run_sync`. Document this constraint at the facade class. Never call `asyncio.run()` from a thread that is already inside a running event loop.
+
+---
+
+
+### Shell Hook Testing
+
+- **Rule: Every `.claude/hooks/` behaviour path must have an automated subprocess test.** Hooks are load-bearing quality gates; the "harness-level scaffolding exempt from TDD" assumption is rescinded. Minimum coverage for any hook (new or modified):
+  - Stamp script rejects when `RAGENT_SKILL_INVOCATION_TOKEN` is unset.
+  - Stamp script rejects invalid skill name argument.
+  - Stamp script appends a valid JSON-line to the audit log on success.
+  - Gate accepts when both fresh `/simplify` and `/review` audit entries exist for the current `diff_sha`.
+  - Gate rejects when audit log is missing.
+  - Gate rejects when only one skill's entry is present.
+  - Gate rejects when the audit entry's `ts` is older than the freshness window.
+- **Test location**: `tests/unit/test_quality_gate_hooks.py` using `subprocess.run` against a temporary git repo fixture. Every new hook branch is a behavioural change and requires a corresponding test before commit.
+
+---
+
 
 ### OpenTelemetry: Initialize Once, Re-init After Fork
 
@@ -445,7 +498,7 @@ docker ps &>/dev/null || { sudo dockerd --host=unix:///var/run/docker.sock &>/tm
 # 1-4. Quality gate (use `make` so pre-commit and CI run identical commands, incl. coverage)
 make format
 make lint
-make test   # MUST include @pytest.mark.docker integration tests — never skip; enforces --cov-fail-under=92
+make test-gate   # unit + integration (excludes tests/e2e); enforces --cov-fail-under=92. MUST include @pytest.mark.docker tests — never skip.
 uv run bandit -r src/ --severity-level high --confidence-level high
 ```
 
@@ -454,6 +507,7 @@ uv run bandit -r src/ --severity-level high --confidence-level high
 - **Start the Docker daemon in advance.** `pytest` must run the **full suite including docker testcontainers integration tests** (`@pytest.mark.docker`). Skipping (via `-m "not docker"`, `--deselect`, env flags, or a missing daemon) is **forbidden**.
 - Verify `pytest` output reports **0 skipped** for `@pytest.mark.docker` tests. If any docker test is skipped, fix the daemon and re-run — do not commit.
 - Committing with only unit tests green (docker tests skipped) is a process violation; the CI failure that follows is the direct consequence.
+- **Test tier separation**: `make test-gate` (unit + integration) gates every commit. `make test` (full suite, includes `tests/e2e`) runs as a release step or on a scheduled CI job — never as a per-commit gate. E2e tests require a separately scheduled CI job whose path is cited in the workflow file; `--ignore=tests/e2e` in main CI is only acceptable when that companion job exists.
 
 **Agent quality-gate honesty rules (added 2026-05-09 after a same-day double violation, see `docs/00_journal.md` Process):**
 - `/simplify` and `/review` are **not user-gated**. TDD workflow steps 7 and 8 (CLAUDE.md) require the agent to invoke both skills via the Skill tool on every cycle that touches `src/`, `tests/`, `pyproject.toml`, `docs/00_spec.md`, or `docs/00_plan.md`. Phrasing them as "待你決定 / optional / up to you" is a process violation.

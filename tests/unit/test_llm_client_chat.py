@@ -47,12 +47,12 @@ def test_chat_post_shape():
     assert body["max_tokens"] == 100
 
 
-def test_chat_uses_bearer_token():
+def test_chat_uses_raw_token_no_bearer():
     http = _mock_http("ok")
     client = LLMClient(api_url="https://llm.example.com", http=http, get_token=lambda: "secret")
     client.chat(messages=[{"role": "user", "content": "q"}], model="m")
     headers = http.post.call_args[1]["headers"]
-    assert headers["Authorization"] == "Bearer secret"
+    assert headers["Authorization"] == "secret"
 
 
 def test_chat_uses_timeout():

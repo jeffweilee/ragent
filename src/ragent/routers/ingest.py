@@ -7,12 +7,14 @@ because `content-type: multipart/...` cannot satisfy the JSON discriminator.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Annotated, Any
 
 import structlog
-from fastapi import APIRouter, Header, Query, Request, Response
-from fastapi.responses import JSONResponse
-from pydantic import ValidationError
+from fastapi import APIRouter, Header, Query, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.routing import APIRoute
+from pydantic import BaseModel
 
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
@@ -23,16 +25,60 @@ from ragent.services.ingest_service import (
     ObjectNotFoundError,
     UnknownMinioSiteError,
 )
+from ragent.utility.datetime import to_iso
 
 logger = structlog.get_logger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Response models
+# ---------------------------------------------------------------------------
+
+
+class IngestCreatedResponse(BaseModel):
+    document_id: str
+
+
+class IngestListItem(BaseModel):
+    document_id: str
+    status: str
+    source_id: str
+    source_app: str
+    source_title: str
+    updated_at: str | None
+
+
+class IngestListResponse(BaseModel):
+    items: list[IngestListItem]
+    next_cursor: str | None
+
+
+class IngestDetailResponse(BaseModel):
+    document_id: str
+    status: str
+    attempt: int
+    updated_at: str | None
+    ingest_type: str
+    minio_site: str | None
+    source_id: str
+    source_app: str
+    source_title: str
+    source_meta: str | None
+    source_url: str | None
+    error_code: str | None
+    error_reason: str | None
+
+
+# ---------------------------------------------------------------------------
+# Error handling
+# ---------------------------------------------------------------------------
 
 
 def _is_mime_error(errors: list[dict]) -> bool:
     return any(any(part == "mime_type" for part in e.get("loc", ())) for e in errors)
 
 
-def _validation_problem(exc: ValidationError):
-    raw = exc.errors()
+def _validation_problem(raw: list[dict]) -> Response:
     flat = [
         {"field": ".".join(str(p) for p in e.get("loc", ())), "message": e.get("msg", "")}
         for e in raw
@@ -65,27 +111,37 @@ def _validation_problem(exc: ValidationError):
     )
 
 
-def create_router(svc: Any) -> APIRouter:
-    router = APIRouter()
+class _IngestRoute(APIRoute):
+    """Route class that converts RequestValidationError to problem+json.
 
-    @router.post("/ingest", status_code=202)
+    FastAPI validates the typed body before calling the endpoint function.
+    By wrapping the route handler here we intercept RequestValidationError
+    before it reaches the app-level 422 handler, preserving the 415/422
+    distinction for ingest without needing openapi_extra.
+    """
+
+    def get_route_handler(self) -> Callable:
+        original = super().get_route_handler()
+
+        async def handler(request: Any) -> Any:
+            try:
+                return await original(request)
+            except RequestValidationError as exc:
+                return _validation_problem(exc.errors())
+
+        return handler
+
+
+def create_router(svc: Any) -> APIRouter:
+    router = APIRouter(prefix="/ingest/v1", route_class=_IngestRoute)
+
+    @router.post("", status_code=202, response_model=IngestCreatedResponse)
     async def create_document(
-        request: Request,
+        body: IngestRequest,
         x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
     ):
         try:
-            body = await request.json()
-        except Exception:
-            return problem(415, HttpErrorCode.INGEST_MIME_UNSUPPORTED, "JSON body required")
-        from pydantic import TypeAdapter
-
-        try:
-            payload = TypeAdapter(IngestRequest).validate_python(body)
-        except ValidationError as exc:
-            return _validation_problem(exc)
-
-        try:
-            doc_id = await svc.create(create_user=x_user_id, request=payload)
+            doc_id = await svc.create(create_user=x_user_id, request=body)
         except MimeNotAllowed:
             return problem(415, HttpErrorCode.INGEST_MIME_UNSUPPORTED, "Unsupported media type")
         except FileTooLarge:
@@ -99,10 +155,13 @@ def create_router(svc: Any) -> APIRouter:
                 "Object not found at minio_site/object_key",
             )
 
-        return JSONResponse({"document_id": doc_id}, status_code=202)
+        return IngestCreatedResponse(document_id=doc_id)
 
-    @router.get("/ingest/{document_id}")
-    async def get_document(document_id: str):
+    @router.get("/{document_id}", response_model=IngestDetailResponse)
+    async def get_document(
+        document_id: str,
+        x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+    ):
         doc = await svc.get(document_id)
         if doc is None:
             logger.info(
@@ -112,43 +171,52 @@ def create_router(svc: Any) -> APIRouter:
                 http_status=404,
             )
             return problem(404, HttpErrorCode.INGEST_NOT_FOUND, "Document not found")
-        return {
-            "document_id": doc.document_id,
-            "status": doc.status,
-            "attempt": doc.attempt,
-            "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
-            "ingest_type": doc.ingest_type,
-            "minio_site": doc.minio_site,
-            "source_id": doc.source_id,
-            "source_app": doc.source_app,
-            "source_title": doc.source_title,
-            "source_url": doc.source_url,
-            "error_code": getattr(doc, "error_code", None),
-            "error_reason": getattr(doc, "error_reason", None),
-        }
+        return IngestDetailResponse(
+            document_id=doc.document_id,
+            status=doc.status,
+            attempt=doc.attempt,
+            updated_at=to_iso(doc.updated_at) if doc.updated_at else None,
+            ingest_type=doc.ingest_type,
+            minio_site=doc.minio_site,
+            source_id=doc.source_id,
+            source_app=doc.source_app,
+            source_title=doc.source_title,
+            source_meta=doc.source_meta,
+            source_url=doc.source_url,
+            error_code=getattr(doc, "error_code", None),
+            error_reason=getattr(doc, "error_reason", None),
+        )
 
-    @router.delete("/ingest/{document_id}", status_code=204)
-    async def delete_document(document_id: str):
+    @router.delete("/{document_id}", status_code=204)
+    async def delete_document(
+        document_id: str,
+        x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+    ):
         await svc.delete(document_id)
         return Response(status_code=204)
 
-    @router.get("/ingest")
+    @router.get("", response_model=IngestListResponse)
     async def list_documents(
         after: str | None = Query(None),
         limit: int = Query(100),
-    ):
-        result = await svc.list(after=after, limit=limit)
+        source_id: str | None = Query(None),
+        source_app: str | None = Query(None),
+        x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+    ) -> IngestListResponse:
+        result = await svc.list(
+            after=after, limit=limit, source_id=source_id, source_app=source_app
+        )
         items = [
-            {
-                "document_id": doc.document_id,
-                "status": doc.status,
-                "source_id": doc.source_id,
-                "source_app": doc.source_app,
-                "source_title": doc.source_title,
-                "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
-            }
+            IngestListItem(
+                document_id=doc.document_id,
+                status=doc.status,
+                source_id=doc.source_id,
+                source_app=doc.source_app,
+                source_title=doc.source_title,
+                updated_at=to_iso(doc.updated_at) if doc.updated_at else None,
+            )
             for doc in result.items
         ]
-        return {"items": items, "next_cursor": result.next_cursor}
+        return IngestListResponse(items=items, next_cursor=result.next_cursor)
 
     return router

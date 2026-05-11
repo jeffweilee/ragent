@@ -15,7 +15,8 @@ def _mock_http(vectors: list[list[float]], return_code: int = 96200) -> MagicMoc
     resp.raise_for_status = MagicMock()
     resp.json.return_value = {
         "returnCode": return_code,
-        "data": [{"embedding": v} for v in vectors],
+        "returnMessage": "success",
+        "returnData": [{"index": i, "embedding": v} for i, v in enumerate(vectors)],
     }
     http.post.return_value = resp
     return http
@@ -38,19 +39,33 @@ def test_embed_post_shape():
     )
     client.embed(["text"])
     body = http.post.call_args[1]["json"]
-    assert "texts" in body
     assert body["texts"] == ["text"]
-    assert body.get("model") == "bge-m3"
+    assert body["model"] == "bge-m3"
+    assert body["encoding-format"] == "float"
 
 
-def test_embed_uses_bearer_token():
+def test_embed_uses_raw_token_no_bearer():
     http = _mock_http([[0.1]])
     client = EmbeddingClient(
         api_url="https://embed.example.com", http=http, get_token=lambda: "mytoken"
     )
     client.embed(["text"])
     headers = http.post.call_args[1]["headers"]
-    assert headers["Authorization"] == "Bearer mytoken"
+    assert headers["Authorization"] == "mytoken"
+
+
+def test_embed_custom_auth_header_name():
+    http = _mock_http([[0.1]])
+    client = EmbeddingClient(
+        api_url="https://embed.example.com",
+        http=http,
+        get_token=lambda: "mytoken",
+        auth_header_name="X-API-Key",
+    )
+    client.embed(["text"])
+    headers = http.post.call_args[1]["headers"]
+    assert "Authorization" not in headers
+    assert headers["X-API-Key"] == "mytoken"
 
 
 def test_embed_raises_on_bad_return_code():
@@ -77,7 +92,11 @@ def test_embed_retries_3_times_on_http_error():
         MagicMock(
             **{
                 "raise_for_status": MagicMock(),
-                "json.return_value": {"returnCode": 96200, "data": [{"embedding": [0.1]}]},
+                "json.return_value": {
+                    "returnCode": 96200,
+                    "returnMessage": "success",
+                    "returnData": [{"index": 0, "embedding": [0.1]}],
+                },
             }
         ),
     ]
@@ -139,7 +158,10 @@ def test_embed_batches_by_batch_size(monkeypatch):
         mock.raise_for_status = MagicMock()
         mock.json.return_value = {
             "returnCode": 96200,
-            "data": [{"embedding": [float(i + 1)]} for i in range(len(json["texts"]))],
+            "returnMessage": "success",
+            "returnData": [
+                {"index": i, "embedding": [float(i + 1)]} for i in range(len(json["texts"]))
+            ],
         }
         return mock
 
@@ -198,7 +220,8 @@ def test_embed_raises_on_zero_magnitude_vector() -> None:
     resp.raise_for_status = MagicMock()
     resp.json.return_value = {
         "returnCode": 96200,
-        "data": [{"embedding": [0.0, 0.0, 0.0, 0.0]}],
+        "returnMessage": "success",
+        "returnData": [{"index": 0, "embedding": [0.0, 0.0, 0.0, 0.0]}],
     }
     http.post.return_value = resp
     client = EmbeddingClient(
@@ -221,7 +244,8 @@ def test_embed_raises_on_nan_vector() -> None:
     resp.raise_for_status = MagicMock()
     resp.json.return_value = {
         "returnCode": 96200,
-        "data": [{"embedding": [0.1, float("nan"), 0.2]}],
+        "returnMessage": "success",
+        "returnData": [{"index": 0, "embedding": [0.1, float("nan"), 0.2]}],
     }
     http.post.return_value = resp
     client = EmbeddingClient(
@@ -244,7 +268,8 @@ def test_embed_accepts_well_formed_vectors() -> None:
     resp.raise_for_status = MagicMock()
     resp.json.return_value = {
         "returnCode": 96200,
-        "data": [{"embedding": [0.01, 0.02, 0.03]}],
+        "returnMessage": "success",
+        "returnData": [{"index": 0, "embedding": [0.01, 0.02, 0.03]}],
     }
     http.post.return_value = resp
     client = EmbeddingClient(

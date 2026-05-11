@@ -47,8 +47,9 @@ class EmbeddingClient:
         ingest_timeout: float | None = None,
         query_timeout: float | None = None,
         sleep: Callable[[float], None] = _time.sleep,
+        auth_header_name: str | None = None,
     ) -> None:
-        self._url = api_url.rstrip("/") + "/text_embedding"
+        self._url = api_url
         self._http = http
         self._get_token = get_token
         self._batch_size = batch_size or int(os.environ.get("EMBEDDER_BATCH_SIZE", "32"))
@@ -59,6 +60,9 @@ class EmbeddingClient:
             os.environ.get("EMBEDDER_QUERY_TIMEOUT_SECONDS", "10")
         )
         self._sleep = sleep
+        self._auth_header_name = auth_header_name or os.environ.get(
+            "EMBEDDING_AUTH_HEADER_NAME", "Authorization"
+        )
 
     def embed(self, texts: list[str], query: bool = False) -> list[list[float]]:
         if not texts:
@@ -81,16 +85,19 @@ class EmbeddingClient:
                     span.set_attribute("retry_attempt", attempt)
                     resp = self._http.post(
                         self._url,
-                        json={"model": _EMBED_MODEL, "texts": texts},
-                        headers={"Authorization": f"Bearer {self._get_token()}"},
+                        json={"model": _EMBED_MODEL, "texts": texts, "encoding-format": "float"},
+                        headers={self._auth_header_name: self._get_token()},
                         timeout=timeout,
                     )
                     span.set_attribute("http.status_code", getattr(resp, "status_code", 0))
                     resp.raise_for_status()
                     data = resp.json()
                     if data.get("returnCode") != _SUCCESS_CODE:
-                        raise ValueError(f"Unexpected returnCode: {data.get('returnCode')}")
-                    out = [item["embedding"] for item in data["data"]]
+                        raise ValueError(
+                            f"Unexpected returnCode: {data.get('returnCode')}. "
+                            f"Message: {data.get('returnMessage')}"
+                        )
+                    out = [item["embedding"] for item in data["returnData"]]
                     _validate_vectors(out)
                     if out and isinstance(out[0], list):
                         span.set_attribute("dim", len(out[0]))

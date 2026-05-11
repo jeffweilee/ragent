@@ -131,7 +131,7 @@ def _build_dev_env(
         "RAGENT_AUTH_DISABLED": "true",
         "RAGENT_HOST": "127.0.0.1",
         "RAGENT_PORT": "8000",
-        "AI_API_AUTH_URL": wiremock_url,
+        "AI_API_AUTH_URL": f"{wiremock_url}/auth/api/accesstoken",
         "EMBEDDER_BATCH_SIZE": "1",
         "MINIO_ENDPOINT": minio_endpoint,
         "MINIO_ACCESS_KEY": "minioadmin",
@@ -146,8 +146,8 @@ def _build_dev_env(
         "AI_LLM_API_J1_TOKEN": "test-llm-j1",
         "AI_EMBEDDING_API_J1_TOKEN": "test-embedding-j1",
         "AI_RERANK_API_J1_TOKEN": "test-rerank-j1",
-        "EMBEDDING_API_URL": wiremock_url,
-        "LLM_API_URL": wiremock_url,
+        "EMBEDDING_API_URL": f"{wiremock_url}/text_embedding",
+        "LLM_API_URL": f"{wiremock_url}/gpt_oss_120b/v1/chat/completions",
         "RERANK_API_URL": f"{wiremock_url}/rerank",
     }
     return infra, external_defaults

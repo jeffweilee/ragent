@@ -2,7 +2,7 @@
 name = "ragent"
 version = "0.1.0"
 description = "Distributed RAG Agent System (Phase 1 skeleton)"
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = [
     "alembic>=1.18.4",
     "elasticsearch-haystack>=4.0,<7",
@@ -46,7 +46,7 @@ packages = ["src/ragent"]
 
 [tool.ruff]
 line-length = 100
-target-version = "py312"
+target-version = "py311"
 src = ["src", "tests"]
 
 [tool.ruff.lint]

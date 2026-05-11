@@ -33,6 +33,10 @@ def _stub_repo() -> AsyncMock:
 def test_runner_builds_fresh_engine_each_tick(
     monkeypatch: pytest.MonkeyPatch, _stub_repo: AsyncMock
 ) -> None:
+    # Pre-import workers before broker is patched so @broker.task decorates
+    # ingest_pipeline_task with the real broker, not the MagicMock below.
+    import ragent.workers.ingest  # noqa: F401
+
     monkeypatch.setenv("MARIADB_DSN", "mysql+aiomysql://x:y@h/db")
 
     import ragent.reconciler as rec_mod

@@ -48,6 +48,17 @@ Append a row to `docs/00_journal.md` so the next session learns from this mistak
 - Guidelines phrased as wishes ("we should try to…") rather than rules ("**[Rule]** All X must Y.").
 - Filing the same lesson under two domains — pick one.
 - Committing journal rows together with production code changes (violates Tidy First).
+- **Reusing a Topic already present in the domain's table.** Before writing the topic tag, `grep` the existing rows in that domain for the proposed word(s). If the same tag exists, choose a more specific 1–3-word alternative (e.g., if "Resilience" already appears, use "Cleanup Ordering", "Lock Scope", or "Heartbeat Liveness" — whatever distinguishes the new entry). Duplicate topics break the table's primary purpose: letting a reader locate a specific entry by scanning topics alone.
+
+## Pre-write validation checklist
+
+Before appending, answer each question:
+
+1. **Domain**: does it map to one of the six fixed headings without ambiguity?
+2. **Topic uniqueness**: does `grep -i "<topic>" docs/00_journal.md` return any row in the same domain? If yes, pick a different tag.
+3. **Topic length**: is the tag 1–3 words? If longer, abbreviate.
+4. **Guideline form**: does the `Actionable Guideline` start with `**[Rule]**` and use imperative voice?
+5. **Row count delta**: does `grep -c '^| 20' docs/00_journal.md` increase by exactly the number of rows added?
 
 ## Example
 

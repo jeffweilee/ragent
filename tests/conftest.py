@@ -121,9 +121,10 @@ def _configure_wiremock_stubs(base_url: str) -> None:
                 "headers": {"Content-Type": "application/json"},
                 "jsonBody": {
                     "returnCode": 96200,
+                    "returnMessage": "success",
                     # Non-zero vector — ES dense_vector cosine similarity
                     # rejects magnitude-zero embeddings.
-                    "data": [{"embedding": [0.01] * 1024}],
+                    "returnData": [{"index": 0, "embedding": [0.01] * 1024}],
                 },
             },
         },
@@ -166,7 +167,11 @@ def _configure_wiremock_stubs(base_url: str) -> None:
             "response": {
                 "status": 200,
                 "headers": {"Content-Type": "application/json"},
-                "jsonBody": {"results": [{"index": 0, "score": 0.9}]},
+                "jsonBody": {
+                    "returnCode": 96200,
+                    "returnMessage": "success",
+                    "returnData": [{"index": 0, "score": 0.9}],
+                },
             },
         },
     ]
@@ -382,12 +387,12 @@ def dev_env(
         "RAGENT_ENV": "dev",
         "RAGENT_AUTH_DISABLED": "true",
         "RAGENT_HOST": "127.0.0.1",
-        "AI_API_AUTH_URL": wiremock_url,
+        "AI_API_AUTH_URL": f"{wiremock_url}/auth/api/accesstoken",
         "AI_LLM_API_J1_TOKEN": "test-llm-j1",
         "AI_EMBEDDING_API_J1_TOKEN": "test-embedding-j1",
         "AI_RERANK_API_J1_TOKEN": "test-rerank-j1",
-        "EMBEDDING_API_URL": wiremock_url,
-        "LLM_API_URL": wiremock_url,
+        "EMBEDDING_API_URL": f"{wiremock_url}/text_embedding",
+        "LLM_API_URL": f"{wiremock_url}/gpt_oss_120b/v1/chat/completions",
         "RERANK_API_URL": f"{wiremock_url}/rerank",
         # 1 text per batch → the single-embedding WireMock stub stays consistent.
         "EMBEDDER_BATCH_SIZE": "1",

@@ -334,12 +334,16 @@ Runs the full retrieval pipeline (embed → kNN + BM25 → RRF join → source h
   "query":            "What are our Q3 OKRs?",
   "source_app":       "confluence",
   "source_meta":      "engineering",
+  "top_k":            20,
+  "min_score":        0.3,
   "dedupe":           false
 }
 ```
 
 - Only `query` is required.
 - `source_app` / `source_meta`: same optional ES `term` filters as `/chat` (B29 → B35).
+- `top_k` (default `RETRIEVAL_TOP_K`, env-configurable, default 20): max chunks returned from the retrieval pipeline; range 1–200.
+- `min_score` (default `null`): post-retrieval score threshold — chunks whose retrieval score is below this value are dropped. Applied after `pipeline.run()` (not passed to ES retrievers, which do not accept a score threshold param).
 - `dedupe` (default `false`): when `true`, keeps only the highest-scored chunk per `document_id` (pipeline output is already score-sorted, so first-seen = best).
 
 **Response schema:**
@@ -351,9 +355,13 @@ Runs the full retrieval pipeline (embed → kNN + BM25 → RRF join → source h
       "document_id":  "01J9...",
       "source_app":   "confluence",
       "source_id":    "DOC-123",
+      "source_meta":  "engineering",
       "type":         "knowledge",
       "source_title": "Q3 OKR Planning",
-      "excerpt":      "...truncated to EXCERPT_MAX_CHARS..."
+      "source_url":   "https://wiki.example/q3-okr",
+      "mime_type":    "text/markdown",
+      "excerpt":      "...truncated to EXCERPT_MAX_CHARS...",
+      "score":        0.87
     }
   ]
 }
@@ -414,7 +422,7 @@ class PermissionClient(Protocol):
 
 | Variable | Default | Effect when `false` |
 |---|---|---|
-| `RAGENT_PERMISSION_INGEST_ENABLED` | `false` | `GET/DELETE /ingest/{id}` and `GET /ingest` skip `PermissionClient` — list/get/delete are unrestricted. |
+| `RAGENT_PERMISSION_INGEST_ENABLED` | `false` | `GET/DELETE /ingest/v1/{id}` and `GET /ingest/v1` skip `PermissionClient` — list/get/delete are unrestricted. |
 | `RAGENT_PERMISSION_CHAT_ENABLED`   | `false` | Chat retrieval skips the post-filter — all candidate chunks reach `SourceHydrator → LLM`. |
 
 This lets P2 ship the wiring (JWT + `PermissionClient`) without forcing OpenFGA tuple data to exist on day one — operators flip flags when the tuple store is populated.
@@ -505,13 +513,13 @@ Retrieval may over-fetch (`K' = K × overfetch_factor`) so that after permission
 
 | Method | Path | P1 Auth | Request | Response |
 |---|---|---|---|---|
-| POST   | `/ingest`               | `X-User-Id` | **JSON** (v2, see override above) | `202 { task_id }` — `task_id` **is** the `document_id`. |
-| GET    | `/ingest/{id}`          | `X-User-Id` | — | `200 { status, attempt, updated_at }` |
-| GET    | `/ingest?after=&limit=` | `X-User-Id` | — | `200 { items, next_cursor }` (limit ≤ 100) |
-| DELETE | `/ingest/{id}`          | `X-User-Id` | — | `204` idempotent |
-| POST   | `/chat`                 | `X-User-Id` | §3.4.1 schema (`messages` required; rest default) | `200 application/json` per §3.4.2 |
-| POST   | `/chat/stream`          | `X-User-Id` | §3.4.1 schema | `text/event-stream` per §3.4.3 (`data: {type:delta\|done\|error}`) |
-| POST   | `/mcp/tools/rag`        | `X-User-Id` | `{ query: str }` | **501** (P1) |
+| POST   | `/ingest/v1`               | `X-User-Id` | **JSON** (v2, see override above) | `202 { task_id }` — `task_id` **is** the `document_id`. |
+| GET    | `/ingest/v1/{id}`          | `X-User-Id` | — | `200 { status, attempt, updated_at }` |
+| GET    | `/ingest/v1?after=&limit=&source_id=&source_app=` | `X-User-Id` | — | `200 { items, next_cursor }` (limit ≤ 100; ordered `document_id DESC`; `source_id`/`source_app` are optional exact-match filters) |
+| DELETE | `/ingest/v1/{id}`          | `X-User-Id` | — | `204` idempotent |
+| POST   | `/chat/v1`                 | `X-User-Id` | §3.4.1 schema (`messages` required; rest default) | `200 application/json` per §3.4.2 |
+| POST   | `/chat/v1/stream`          | `X-User-Id` | §3.4.1 schema | `text/event-stream` per §3.4.3 (`data: {type:delta\|done\|error}`) |
+| POST   | `/mcp/v1/tools/rag`        | `X-User-Id` | `{ query: str }` | **501** (P1) |
 | GET    | `/livez`                | none        | — | `200 {"status":"ok"}` — process up; no dependency probes |
 | GET    | `/readyz`               | none        | — | `200` if all dep probes pass; else `503 application/problem+json` listing failed deps. Probes: **MariaDB** (`SELECT 1`), **ES** (`GET /_cluster/health` + `analysis-icu` plugin loaded + every `resources/es/*.json` index exists; B26, I5), **Redis broker & rate-limiter** (`PING` against active topology per `REDIS_MODE`; B27), **MinIO** (`ListBuckets`). Each probe ≤ 2 s. |
 | GET    | `/metrics`              | none        | — | `200 text/plain; version=0.0.4` — Prometheus exposition (counters/histograms in §3.7) |
@@ -548,14 +556,14 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 | `INGEST_MIME_UNSUPPORTED`            | 415         | MIME outside the §4.2 P1 allow-list | Router T2.13 |
 | `INGEST_FILE_TOO_LARGE`              | 413         | Multipart body > 50 MB | Router T2.13 |
 | `INGEST_VALIDATION`                  | 422         | Missing/empty `source_id` / `source_app` / `source_title` (S23) — `errors[]` lists offending fields | Router T2.13 |
-| `INGEST_NOT_FOUND`                   | 404         | `GET /ingest/{id}` / `DELETE /ingest/{id}` on unknown id | Service T2.10 |
+| `INGEST_NOT_FOUND`                   | 404         | `GET /ingest/v1/{id}` / `DELETE /ingest/v1/{id}` on unknown id | Service T2.10 |
 | `CHAT_MESSAGES_MISSING`              | 422         | `messages` absent or empty | Schema T3.3 |
 | `CHAT_PROVIDER_UNSUPPORTED`          | 422         | `provider` outside `{"openai"}` allow-list (B22) | Schema T3.3 |
 | `CHAT_FILTER_INVALID`                | 422         | `source_app` empty / > 64 chars, or `source_meta` empty / > 1024 chars (B29 → B35) | Schema T3.3 |
-| `CHAT_RATE_LIMITED`                  | 429 + `Retry-After` | Per-user fixed-window quota exceeded on `/chat` or `/chat/stream` (B31, S37) | Router-level Depends T3.16 |
+| `CHAT_RATE_LIMITED`                  | 429 + `Retry-After` | Per-user fixed-window quota exceeded on `/chat/v1` or `/chat/v1/stream` (B31, S37) | Router-level Depends T3.16 |
 | `CHAT_LLM_ERROR`                     | 502 / SSE-error | Pre-stream LLM failure (problem+json) or mid-stream LLM failure (`data: {type:error}`, B6) | Router T3.10/T3.12 |
 | `CHAT_RETRIEVER_ERROR`               | 502 / SSE-error | ES vector / BM25 retriever failure | Router T3.10/T3.12 |
-| `MCP_NOT_IMPLEMENTED`                | 501         | `POST /mcp/tools/rag` (S8) | Router T6.1 |
+| `MCP_NOT_IMPLEMENTED`                | 501         | `POST /mcp/v1/tools/rag` (S8) | Router T6.1 |
 | `ES_PLUGIN_MISSING`                  | 503 (`/readyz`) | ES cluster missing `analysis-icu` plugin (B26, T0.8g) | Bootstrap / readyz |
 | `ES_INDEX_MISSING`                   | 503 (`/readyz`) | A `resources/es/*.json` index is absent at boot | Bootstrap / readyz |
 | `SCHEMA_DRIFT`                       | 503 (`/readyz`) + log `event=schema.drift` | Live schema differs from `schema.sql` / `resources/es/` | Bootstrap |
@@ -635,7 +643,7 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `RAGENT_ENV`                          | (required)       | `dev` \| `staging` \| `prod`. P1 startup guard refuses non-`dev`. |
 | `RAGENT_AUTH_DISABLED`                | `false`          | Must be `true` in P1; removed in P2 to enable JWT (§3.5). |
 | `RAGENT_TRUST_X_USER_ID_HEADER`       | `false`          | **P2 only.** When `true` and `RAGENT_ENV != prod`, JWT dependency is bypassed and the `X-User-Id` header is trusted as `preferred_username` (§3.5). Strictly ignored in `prod`. |
-| `RAGENT_PERMISSION_INGEST_ENABLED`    | `false`          | **P2 only.** When `true`, `GET/DELETE /ingest/{id}` and `GET /ingest` enforce `PermissionClient` (§3.5). Default off — gate is wired but inert until OpenFGA tuples exist. |
+| `RAGENT_PERMISSION_INGEST_ENABLED`    | `false`          | **P2 only.** When `true`, `GET/DELETE /ingest/v1/{id}` and `GET /ingest/v1` enforce `PermissionClient` (§3.5). Default off — gate is wired but inert until OpenFGA tuples exist. |
 | `RAGENT_PERMISSION_CHAT_ENABLED`      | `false`          | **P2 only.** When `true`, chat retrieval applies the `PermissionClient` post-filter (§3.5). Default off. |
 | `RAGENT_HOST`                         | `127.0.0.1`      | API bind address. P1 OPEN guard (§1) refuses any value other than `127.0.0.1` while `RAGENT_ENV=dev` & `RAGENT_AUTH_DISABLED=true`. |
 | `RAGENT_PORT`                         | `8000`           | API bind port. |
@@ -681,6 +689,9 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `EMBEDDING_API_URL`                   | (required)       | bge-m3 endpoint. |
 | `LLM_API_URL`                         | (required)       | gptoss-120b endpoint. |
 | `RERANK_API_URL`                      | (required P2)    | Rerank endpoint (P1 unit-tests only; wired in P2). |
+| `EMBEDDING_AUTH_HEADER_NAME`          | `Authorization`  | HTTP header name used by `EmbeddingClient`. Set to e.g. `X-API-Key` when the service does not use the `Authorization` header. Value sent is the raw J2 token (no `Bearer` prefix). |
+| `LLM_AUTH_HEADER_NAME`                | `Authorization`  | HTTP header name used by `LLMClient`. Same semantics as `EMBEDDING_AUTH_HEADER_NAME`. |
+| `RERANK_AUTH_HEADER_NAME`             | `Authorization`  | HTTP header name used by `RerankClient`. Same semantics as `EMBEDDING_AUTH_HEADER_NAME`. |
 | `HR_API_URL`                          | (future)         | OpenFGA-related role lookup (P2+). |
 
 #### 4.6.5 Worker, Reconciler & retry policy
@@ -700,7 +711,7 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 |---|---|---|
 | `INGEST_INLINE_MAX_BYTES`             | `10485760`       | v2: 10 MB cap on inline `content` UTF-8 byte length; 413 on overrun. |
 | `INGEST_FILE_MAX_BYTES`                | `52428800`      | v2: 50 MB cap on file-type ingest size (HEAD-probe at API time); 413 on overrun. |
-| `INGEST_LIST_MAX_LIMIT`               | `100`            | `GET /ingest?limit=` upper bound (§4.1, B7). |
+| `INGEST_LIST_MAX_LIMIT`               | `100`            | `GET /ingest/v1?limit=` upper bound (§4.1, B7). |
 | `CHUNK_TARGET_CHARS`                  | `1000`           | v2 `_BudgetChunker` target chars (mime-agnostic). |
 | `CHUNK_MAX_CHARS`                     | `1500`           | v2 `_BudgetChunker` hard cap; atoms above this are hard-split. |
 | `CHUNK_OVERLAP_CHARS`                 | `100`            | v2 `_BudgetChunker` overlap between adjacent chunks. |
@@ -716,7 +727,7 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `RAGENT_DEFAULT_SYSTEM_PROMPT`        | `You are a helpful assistant` | Auto-prepended when `messages` lacks a `system` entry. |
 | `RAGENT_DEFAULT_RAG_SYSTEM_PROMPT`    | *(multi-intent template)*     | System prompt used when retrieval returns ≥1 doc and the caller has no `system` message. Contains grounding rules + QUESTION/SUMMARY/GENERATION intent styles with few-shot examples. No `{context}` placeholder — context is injected into the user message. |
 | `RAGENT_RAG_GROUNDING_RULES`          | *(rules-only variant)*        | Rules-only system prompt prepended when the caller supplies their own `system` message alongside retrieved docs. Preserves the caller's persona while enforcing context-only grounding. |
-| `CHAT_RATE_LIMIT_PER_MINUTE`          | `30`             | Per-user request cap on `/chat` + `/chat/stream` within the rate-limit window (B31). Excess returns 429 `CHAT_RATE_LIMITED`. |
+| `CHAT_RATE_LIMIT_PER_MINUTE`          | `30`             | Per-user request cap on `/chat/v1` + `/chat/v1/stream` within the rate-limit window (B31). Excess returns 429 `CHAT_RATE_LIMITED`. |
 | `CHAT_RATE_LIMIT_WINDOW_SECONDS`      | `60`             | Fixed-window length for `CHAT_RATE_LIMIT_PER_MINUTE` (B31). |
 
 #### 4.6.7 Per-call timeouts (matches §4.3 catalog)
@@ -980,7 +991,7 @@ ragent/
 | **B4** | 2026-05-04 | Ops | Health/metrics endpoints | **App layer:** `/livez`, `/readyz`, `/metrics`. K8s probes use `/livez` for liveness and `/readyz` for readiness; Prometheus scrapes `/metrics`. **Infra layer:** K8s pod-level liveness only (no in-app dep probes for liveness — would cause cascading restarts on transient ES blips). | Single `/health` endpoint (conflates liveness vs readiness); separate sidecar exporter (extra deploy unit). | §4.1 / T7.1 / T7.7 |
 | **B5** | 2026-05-04 | API | REST error response shape | **RFC 9457 Problem Details** (`application/problem+json`) with extension `error_code` (stable `SCREAMING_SNAKE_CASE` business identifier). 422 also carries `errors[]` for field validation. | Bare `{error, message}` (no standard, no machine-readable code); RFC 7807 (superseded by 9457). | §4.1.1 / T2.13 |
 | **B6** | 2026-05-04 | API/SSE | Mid-stream error contract on `/chat` | **`data:` line with payload `{type:"error", error_code, message}`**, then close. No `event: error` named-event — keeps client parser uniform (every line is JSON). Pre-stream errors use normal RFC 9457 response. | `event: error` named SSE event (forces dual parser path); silently truncate (loses error_code). | §3.4 / T3.3 |
-| **B7** | 2026-05-04 | API | `GET /ingest?after=&limit=` semantics | **Cursor pagination by `document_id` ASC** (UUIDv7 → time-ordered). `after` = last `document_id` of previous page; server returns `next_cursor` = last id of current page. Future "my uploads" view adds `WHERE create_user=?` predicate using `idx_create_user_document` (B14). | OFFSET-based (linear scan); page-number based (incompatible with cursor stability); keyset on `created_at` (collisions). | §4.1 / T2.11 |
+| **B7** | 2026-05-04 | API | `GET /ingest?after=&limit=` semantics | **Cursor pagination by `document_id` DESC** (UUIDv7 → time-ordered, newest-first). `after` = last `document_id` of previous page; because ordering is DESC, next-page cursor uses `WHERE document_id < :after`; server returns `next_cursor` = last (oldest) id of current page. Optional exact-match filters `source_id` and `source_app` narrow results to a specific logical document or application without changing pagination semantics. | OFFSET-based (linear scan); page-number based (incompatible with cursor stability); keyset on `created_at` (collisions); ASC ordering (returns oldest first — poor UX for "show me my recent uploads"). | §4.1 / T2.11 |
 | **B8** | 2026-05-04 | Test infra | Integration backends | **`testcontainers-python`** spins up MariaDB + ES + Redis + MinIO per integration session (module-scoped fixture; reused across tests). | docker-compose (manual, dev-only); in-process fakes (drift from prod behaviour). | T0.9 / all `tests/integration/` |
 | **B9** | 2026-05-04 | Resilience | Reconciler scheduler | **Kubernetes `CronJob`** `*/5 * * * *` running `python -m ragent.reconciler` with `concurrencyPolicy: Forbid`. | TaskIQ scheduled task (broker outage = sweeper outage; sweeper is the recovery surface for broker outage); APScheduler (in-process, dies with worker pod). | §3.6 / T5.2 |
 | **B10** | 2026-05-04 | Storage | MinIO object key format | **`{source_app}_{source_id}_{document_id}`** in a single bucket from `MINIO_BUCKET` env (default `ragent`). `source_app` and `source_id` sanitised to `[A-Za-z0-9._-]`. The `document_id` suffix preserves uniqueness during transient duplicates pre-supersede. | `{document_id}` only (loses source provenance for forensic / orphan-sweep tooling); `{owner}/{document_id}` (P1 OPEN has no owner); per-source bucket (bucket sprawl). | §3.1 / T2.5 / T2.6 |

@@ -29,7 +29,7 @@ def _make_response(token: str, expires_at_ts: float) -> dict:
 
 def _make_mgr(j1: str, http: MagicMock, clock) -> TokenManager:
     return TokenManager(
-        auth_url="https://auth.example.com",
+        auth_url="https://auth.example.com/auth/api/accesstoken",
         j1_token=j1,
         http=http,
         clock=clock,
@@ -216,7 +216,7 @@ def test_k8s_mode_reads_sa_token_from_file(tmp_path: Path):
     http.post.return_value.raise_for_status = MagicMock()
 
     mgr = TokenManager(
-        auth_url="https://auth.example.com",
+        auth_url="https://auth.example.com/auth/api/accesstoken",
         j1_token=None,
         k8s_sa_token_path=str(sa_file),
         http=http,
@@ -232,7 +232,7 @@ def test_k8s_mode_raises_when_sa_file_missing():
     """Missing SA token file raises RuntimeError at refresh time."""
     http = MagicMock()
     mgr = TokenManager(
-        auth_url="https://auth.example.com",
+        auth_url="https://auth.example.com/auth/api/accesstoken",
         j1_token=None,
         k8s_sa_token_path="/nonexistent/token",
         http=http,

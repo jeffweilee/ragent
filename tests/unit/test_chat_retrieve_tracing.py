@@ -92,7 +92,7 @@ def test_chat_emits_request_retrieval_llm_spans(exporter, monkeypatch):
         "temperature": 0.0,
         "max_tokens": 16,
     }
-    resp = client.post("/chat", json=body, headers={"X-User-Id": "u1"})
+    resp = client.post("/chat/v1", json=body, headers={"X-User-Id": "u1"})
     assert resp.status_code == 200, resp.text
     names = _span_names(exporter)
     assert "chat.request" in names
@@ -105,7 +105,7 @@ def test_retrieve_emits_request_pipeline_spans(exporter, monkeypatch):
     app = _build_retrieve_app(monkeypatch, docs)
     client = TestClient(app)
     resp = client.post(
-        "/retrieve",
+        "/retrieve/v1",
         json={"query": "hello", "dedupe": True},
         headers={"X-User-Id": "u1"},
     )
@@ -122,7 +122,7 @@ def test_chat_business_log_has_safe_attributes_only(exporter, monkeypatch):
     client = TestClient(app)
     with structlog.testing.capture_logs() as logs:
         resp = client.post(
-            "/chat",
+            "/chat/v1",
             json={
                 "messages": [{"role": "user", "content": "supersecret-query"}],
                 "model": "m",
@@ -148,7 +148,9 @@ def test_retrieve_dedupe_log_records_count(exporter, monkeypatch):
     app = _build_retrieve_app(monkeypatch, docs)
     client = TestClient(app)
     with structlog.testing.capture_logs() as logs:
-        client.post("/retrieve", json={"query": "q", "dedupe": True}, headers={"X-User-Id": "u1"})
+        client.post(
+            "/retrieve/v1", json={"query": "q", "dedupe": True}, headers={"X-User-Id": "u1"}
+        )
     dedupe = [e for e in logs if e.get("event") == "retrieve.dedupe"]
     assert dedupe
     rec = dedupe[0]
