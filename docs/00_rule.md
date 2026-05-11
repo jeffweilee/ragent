@@ -213,6 +213,21 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 ---
 
 
+### Haystack Pipeline Contracts
+
+- **Rule: Verify every component `run()` kwarg before passing it.** Before passing any kwarg to a Haystack component via `pipeline.run()` inputs, confirm it appears in that component's `run()` signature (check the library source or `inspect.signature`). Assumptions about "common" parameter names (e.g. `score_threshold`) that don't exist in the actual signature raise `TypeError` in production but pass silently in mock-based unit tests.
+  - **Action**: Add a `# verified against haystack-elasticsearch X.Y.Z` comment next to any non-obvious kwarg passed to a third-party Haystack component.
+
+- **Rule: Enforce `top_k` as a hard output slice at the pipeline boundary, not as a per-component hint.** Always cap the final document list returned by any retrieval pipeline call with `docs = docs[:top_k]`. Per-component `top_k` hints reduce upstream work but do not guarantee the count contract when Haystack internals fall back to init-time values over runtime overrides.
+
+- **Rule: Score filtering is a post-pipeline operation.** `min_score` / `score_threshold` cutoffs MUST be applied after `pipeline.run()` on the returned document list. The `ElasticsearchBM25Retriever` and `ElasticsearchEmbeddingRetriever` `run()` methods only accept `query` / `query_embedding`, `filters`, and `top_k`; there is no retriever-level score gate.
+
+- **Rule: Custom `@component` wrappers are preferable to adapting stock components beyond their documented input type.** Haystack's `FileTypeRouter` only routes `ByteStream` / `Path`, not `Document`; forcing it over `Document` inputs requires adapter shims that add more code than a bespoke `@component`. Default to a purpose-built component when the stock signature is incompatible with the pipeline's data shape.
+
+
+---
+
+
 ### Shell Hook Testing
 
 - **Rule: Every `.claude/hooks/` behaviour path must have an automated subprocess test.** Hooks are load-bearing quality gates; the "harness-level scaffolding exempt from TDD" assumption is rescinded. Minimum coverage for any hook (new or modified):

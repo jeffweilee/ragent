@@ -67,6 +67,14 @@ side-by-side while you work; every step is one real line.
   workers/ingest.py:147      inline-only: registry.delete_object(...)  (best-effort)
 ```
 
+**Haystack component kwarg discipline** — before passing any kwarg to a
+Haystack component via `pipeline.run()` inputs, verify it appears in that
+component's `run()` signature (see `docs/00_rule.md §Haystack Pipeline
+Contracts`). `DocumentEmbedder` and `DocumentWriter` accept a specific set;
+assumptions about "common" names raise `TypeError` in production but pass
+silently in mock-based unit tests. Enforce `top_k` only as a hard output
+slice (`docs = docs[:top_k]`) — never rely solely on per-component hints.
+
 **AST-package precedents** — pick by what the format demands, not what's
 familiar. Existing splitters use the first three; the rest are
 recommendations for likely next-onboard targets:
