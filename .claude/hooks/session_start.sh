@@ -29,3 +29,10 @@ if [[ -f "$PLAN" ]]; then
 fi
 
 emit "Reminder: Red → Green → Refactor. Commit prefix [BEHAVIORAL] or [STRUCTURAL]. Run full pre-commit gate (docker → format → lint → test → bandit)."
+emit ""
+emit "### Mandatory pre-commit checklist (00_rule.md)"
+emit "Before every [BEHAVIORAL] commit — all three MUST be staged:"
+emit "  [ ] docs/00_spec.md   — new/changed HTTP shapes, error codes, env vars, BDD scenarios"
+emit "  [ ] docs/00_plan.md   — task rows added ([x] when done)"
+emit "  [ ] docs/00_journal.md — lesson row if a non-trivial mistake was root-caused"
+emit "Structural commits: checklist is a reminder, not a hard block."

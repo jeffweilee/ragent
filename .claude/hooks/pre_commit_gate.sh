@@ -58,12 +58,23 @@ if printf '%s\n' "$STAGED" | grep -qE '^(src/|tests/|pyproject\.toml$)'; then
     CODE_GATE=1
 fi
 
-# 4. Docs reminder — non-blocking. Whenever code changes, surface a nudge to
-#    update plan.md / spec.md / README.md if the change warrants it.
+# 4. Docs gate — mandatory for [BEHAVIORAL] commits (00_rule.md: "Always check
+#    and update 00_spec.md, 00_plan.md, 00_journal.md before and after delivery").
+#    Hard-blocks when a [BEHAVIORAL] commit touches code but stages none of the
+#    three mandatory docs. [STRUCTURAL] commits get a non-blocking reminder only.
 if [[ $TRIGGERS_GATE -eq 1 ]]; then
-    DOC_HITS="$(printf '%s\n' "$STAGED" | grep -E '^(docs/00_(plan|spec|journal)\.md|README\.md)$' || true)"
+    DOC_HITS="$(printf '%s\n' "$STAGED" | grep -E '^docs/00_(plan|spec|journal)\.md$' || true)"
+    IS_BEHAVIORAL=0
+    if printf '%s' "$CMD" | grep -q '\[BEHAVIORAL\]'; then
+        IS_BEHAVIORAL=1
+    fi
     if [[ -z "$DOC_HITS" ]]; then
-        printf 'Pre-commit reminder: src/tests/pyproject changes staged but no docs/00_plan.md, docs/00_spec.md, docs/00_journal.md, or README.md update. Update them now if this change adds/alters behavior, contracts, env vars, or lessons learned.\n' >&2
+        if [[ $IS_BEHAVIORAL -eq 1 ]]; then
+            block "mandatory docs missing: [BEHAVIORAL] commits MUST stage at least one of docs/00_spec.md, docs/00_plan.md, docs/00_journal.md (00_rule.md §Document).
+  Stage the relevant doc updates alongside this commit before proceeding."
+        else
+            printf 'Pre-commit reminder: src/tests/pyproject changes staged but no docs/00_plan.md, docs/00_spec.md, docs/00_journal.md update. Update them now if this change adds/alters behavior, contracts, env vars, or lessons learned.\n' >&2
+        fi
     fi
 fi
 

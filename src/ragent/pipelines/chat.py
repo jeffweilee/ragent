@@ -19,7 +19,7 @@ from haystack_integrations.components.retrievers.elasticsearch import (
 from ragent.utility.env import int_env
 
 _EXCERPT_MAX_CHARS = int_env("EXCERPT_MAX_CHARS", 512)
-_DEFAULT_TOP_K = int_env("RETRIEVAL_TOP_K", 20)
+DEFAULT_TOP_K = int_env("RETRIEVAL_TOP_K", 20)
 _VALID_MODES = frozenset({"rrf", "concatenate", "vector_only", "bm25_only"})
 
 _logger = structlog.get_logger(__name__)
@@ -45,6 +45,7 @@ def doc_to_source_entry(doc: Any) -> dict:
         "document_id": meta.get("document_id"),
         "source_app": meta.get("source_app"),
         "source_id": meta.get("source_id"),
+        "source_meta": meta.get("source_meta"),
         "type": "knowledge",
         "source_title": meta.get("source_title"),
         "source_url": meta.get("source_url"),
@@ -117,7 +118,7 @@ class _Reranker:
     rerank scoring sees full chunk content, before excerpt truncation.
     """
 
-    def __init__(self, rerank_client: Any, top_k: int = _DEFAULT_TOP_K) -> None:
+    def __init__(self, rerank_client: Any, top_k: int = DEFAULT_TOP_K) -> None:
         self._client = rerank_client
         self._top_k = top_k
 
@@ -205,7 +206,7 @@ def build_retrieval_pipeline(
     document_store: Any,
     doc_repo: Any,
     join_mode: str = "rrf",
-    top_k: int = _DEFAULT_TOP_K,
+    top_k: int = DEFAULT_TOP_K,
     rerank_client: Any | None = None,
 ) -> Pipeline:
     if join_mode not in _VALID_MODES:
@@ -262,10 +263,25 @@ def build_retrieval_pipeline(
     return pipeline
 
 
+def _retriever_params(
+    filters: dict | None,
+    top_k: int | None,
+) -> dict[str, Any]:
+    """Build shared optional params for ES retriever components."""
+    p: dict[str, Any] = {}
+    if filters:
+        p["filters"] = filters
+    if top_k is not None:
+        p["top_k"] = top_k
+    return p
+
+
 def run_retrieval(
     pipeline: Pipeline,
     query: str,
     filters: dict | None = None,
+    top_k: int | None = None,
+    min_score: float | None = None,
 ) -> list[Document]:
     """Run the retrieval pipeline; returns hydrated documents.
 
@@ -273,18 +289,21 @@ def run_retrieval(
     """
     nodes = set(pipeline.graph.nodes)
     inputs: dict[str, dict] = {}
+    rp = _retriever_params(filters, top_k)
 
     if "query_embedder" in nodes:
         inputs["query_embedder"] = {"query": query}
     if "bm25_retriever" in nodes:
-        bm25_input: dict[str, Any] = {"query": query}
-        if filters:
-            bm25_input["filters"] = filters
-        inputs["bm25_retriever"] = bm25_input
-    if "vector_retriever" in nodes and filters:
-        inputs.setdefault("vector_retriever", {})["filters"] = filters
+        inputs["bm25_retriever"] = {"query": query, **rp}
+    if "vector_retriever" in nodes and rp:
+        inputs["vector_retriever"] = rp
+    if "joiner" in nodes and top_k is not None:
+        inputs["joiner"] = {"top_k": top_k}
     if "reranker" in nodes:
         inputs["reranker"] = {"query": query}
 
     result = pipeline.run(inputs)
-    return result.get("excerpt_truncator", {}).get("documents", [])
+    docs = result.get("excerpt_truncator", {}).get("documents", [])
+    if min_score is not None:
+        docs = [d for d in docs if d.score is not None and d.score >= min_score]
+    return docs

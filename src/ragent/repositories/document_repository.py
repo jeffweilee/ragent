@@ -400,16 +400,27 @@ class DocumentRepository:
     # List / pagination
     # ------------------------------------------------------------------
 
-    async def list(self, after: str | None, limit: int) -> list[DocumentRow]:
-        cursor_clause = " AND document_id > :after" if after else ""
+    async def list(
+        self,
+        after: str | None,
+        limit: int,
+        source_id: str | None = None,
+        source_app: str | None = None,
+    ) -> list[DocumentRow]:
+        conditions: list[str] = []
         params: dict = {"limit": limit}
         if after:
+            conditions.append("document_id < :after")
             params["after"] = after
+        if source_id is not None:
+            conditions.append("source_id = :source_id")
+            params["source_id"] = source_id
+        if source_app is not None:
+            conditions.append("source_app = :source_app")
+            params["source_app"] = source_app
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
         rows = await self._fetch_all(
-            text(
-                f"SELECT * FROM documents WHERE 1=1{cursor_clause}"
-                " ORDER BY document_id ASC LIMIT :limit"
-            ),
+            text(f"SELECT * FROM documents {where} ORDER BY document_id DESC LIMIT :limit"),
             params,
         )
         return _rows_to_docs(rows)

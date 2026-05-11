@@ -28,6 +28,7 @@ def _doc_row(**over):
     base.source_id = "S"
     base.source_app = "A"
     base.source_title = "T"
+    base.source_meta = None
     base.source_url = None
     base.error_code = over.get("error_code")
     base.error_reason = over.get("error_reason")
