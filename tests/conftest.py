@@ -121,9 +121,10 @@ def _configure_wiremock_stubs(base_url: str) -> None:
                 "headers": {"Content-Type": "application/json"},
                 "jsonBody": {
                     "returnCode": 96200,
+                    "returnMessage": "success",
                     # Non-zero vector — ES dense_vector cosine similarity
                     # rejects magnitude-zero embeddings.
-                    "data": [{"embedding": [0.01] * 1024}],
+                    "returnData": [{"index": 0, "embedding": [0.01] * 1024}],
                 },
             },
         },
@@ -166,7 +167,11 @@ def _configure_wiremock_stubs(base_url: str) -> None:
             "response": {
                 "status": 200,
                 "headers": {"Content-Type": "application/json"},
-                "jsonBody": {"results": [{"index": 0, "score": 0.9}]},
+                "jsonBody": {
+                    "returnCode": 96200,
+                    "returnMessage": "success",
+                    "returnData": [{"index": 0, "score": 0.9}],
+                },
             },
         },
     ]
