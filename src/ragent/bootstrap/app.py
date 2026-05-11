@@ -22,9 +22,9 @@ from ragent.bootstrap.telemetry import setup_tracing
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
 from ragent.middleware.logging import RequestLoggingMiddleware
+from ragent.routers.admin_ingest import create_router as create_upload_ingest_router
 from ragent.routers.chat import create_chat_router
 from ragent.routers.health import create_health_router
-from ragent.routers.admin_ingest import create_router as create_upload_ingest_router
 from ragent.routers.ingest import create_router as create_ingest_router
 from ragent.routers.mcp import create_mcp_router
 from ragent.routers.retrieve import create_retrieve_router

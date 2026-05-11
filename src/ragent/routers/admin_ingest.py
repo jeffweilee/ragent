@@ -24,14 +24,14 @@ def create_router(svc: Any) -> APIRouter:
 
     @router.post("/ingest/v1/upload", status_code=202)
     async def upload_document(
-        x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
-        file: UploadFile = File(...),
-        source_id: str = Form(..., min_length=1),
-        source_app: str = Form(..., min_length=1),
-        source_title: str = Form(..., min_length=1),
-        mime_type: IngestMime = Form(...),
+        file: Annotated[UploadFile, File()],
+        source_id: Annotated[str, Form(min_length=1)],
+        source_app: Annotated[str, Form(min_length=1)],
+        source_title: Annotated[str, Form(min_length=1)],
+        mime_type: Annotated[IngestMime, Form()],
         source_meta: Annotated[str | None, Form(max_length=SOURCE_META_MAX)] = None,
         source_url: Annotated[str | None, Form(max_length=SOURCE_URL_MAX)] = None,
+        x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
     ):
         data = await file.read()
         try:
