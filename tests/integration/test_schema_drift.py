@@ -2,7 +2,6 @@
 
 import os
 import re
-import shutil
 import subprocess
 
 import pytest
@@ -12,49 +11,25 @@ from ragent.bootstrap.init_schema import _strip_comments
 pytestmark = [pytest.mark.docker]
 
 
-@pytest.fixture(scope="module", autouse=True)
-def _require_mysqldump() -> None:
-    # Hard fail (not skip) when tooling is missing so the gate can't silently
-    # let schema-drift slip through. Runs before the heavy DB container
-    # fixtures so we don't pull mariadb:10.6 only to fail at the assertion.
-    if shutil.which("mysqldump") is None:
-        pytest.fail(
-            "mysqldump binary not on PATH — schema-drift gate cannot run. "
-            "Install mariadb-client (`make bootstrap` or "
-            "`sudo apt-get install -y mariadb-client`). "
-            "This test must not silently skip: it is the only check that "
-            "schema.sql and `alembic upgrade head` stay in lockstep."
+def _dump_schema(dsn: str) -> str:
+    # Plain tables only — extend with SHOW CREATE VIEW / SHOW TRIGGERS if the
+    # schema ever adds views, triggers, or routines.
+    import sqlalchemy
+    from sqlalchemy import text
+
+    engine = sqlalchemy.create_engine(dsn)
+    with engine.connect() as conn:
+        tables = sorted(
+            row[0]
+            for row in conn.execute(text("SHOW TABLES")).fetchall()
+            if row[0] != "alembic_version"  # tracking table, not part of app schema
         )
-
-
-def _mysqldump(dsn: str) -> str:
-    from urllib.parse import urlparse
-
-    parsed = urlparse(dsn.replace("mysql+pymysql://", "mysql://"))
-    host = parsed.hostname or "127.0.0.1"
-    db = parsed.path.lstrip("/")
-    result = subprocess.run(
-        [
-            "mysqldump",
-            "--no-data",
-            "--skip-comments",
-            "--protocol=TCP",  # force TCP, avoid Unix socket when host=localhost
-            f"--ignore-table={db}.alembic_version",  # alembic tracking table not part of app schema
-            "-h",
-            host,
-            "-P",
-            str(parsed.port or 3306),
-            f"-u{parsed.username}",
-            f"-p{parsed.password}",
-            db,
-        ],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
-    schema = result.stdout
+        ddls = []
+        for table in tables:
+            ddl = conn.execute(text(f"SHOW CREATE TABLE `{table}`")).fetchone()[1]
+            ddls.append(ddl)
+    schema = "\n\n".join(ddls)
     schema = re.sub(r" AUTO_INCREMENT=\d+", "", schema)
-    schema = re.sub(r"/\*![0-9]+ .*?\*/;?", "", schema, flags=re.DOTALL)
     return schema.strip()
 
 
@@ -108,8 +83,8 @@ def alembic_dsn(mariadb_container) -> str:
 
 
 def test_schema_sql_equals_alembic_head(schema_sql_dsn: str, alembic_dsn: str) -> None:
-    dump_a = _mysqldump(schema_sql_dsn)
-    dump_b = _mysqldump(alembic_dsn)
+    dump_a = _dump_schema(schema_sql_dsn)
+    dump_b = _dump_schema(alembic_dsn)
     assert dump_a == dump_b, (
         "schema.sql and alembic upgrade head produce different schemas — "
         "update them in lockstep (spec §6.1 invariant)."
