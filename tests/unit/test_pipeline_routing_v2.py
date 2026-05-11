@@ -37,6 +37,49 @@ def test_html_routes_to_html_ast_splitter() -> None:
     assert "x=1" not in raws
 
 
+def test_docx_routes_to_docx_ast_splitter(tmp_path) -> None:
+    import io
+
+    from docx import Document as DocxDocument
+
+    doc = DocxDocument()
+    for p in list(doc.paragraphs):
+        p._element.getparent().remove(p._element)
+    doc.add_paragraph("DOCX content here.")
+    buf = io.BytesIO()
+    doc.save(buf)
+    data = buf.getvalue()
+
+    mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    out = _MimeAwareSplitter().run(
+        [Document(content=None, meta={"mime_type": mime, "raw_bytes": data})]
+    )["documents"]
+    assert len(out) >= 1
+    assert any("DOCX content here." in (a.content or "") for a in out)
+
+
+def test_pptx_routes_to_pptx_ast_splitter() -> None:
+    import io
+
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    txBox = slide.shapes.add_textbox(Inches(1), Inches(1), Inches(6), Inches(1))
+    txBox.text_frame.text = "PPTX slide text"
+    buf = io.BytesIO()
+    prs.save(buf)
+    data = buf.getvalue()
+
+    mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    out = _MimeAwareSplitter().run(
+        [Document(content=None, meta={"mime_type": mime, "raw_bytes": data})]
+    )["documents"]
+    assert len(out) == 1
+    assert "PPTX slide text" in out[0].content
+
+
 def test_unknown_mime_raises_pipeline_unroutable() -> None:
     with pytest.raises(IngestStepError) as exc:
         _MimeAwareSplitter().run([Document(content="x", meta={"mime_type": "application/pdf"})])

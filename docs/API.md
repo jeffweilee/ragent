@@ -10,7 +10,17 @@ All endpoints return RFC 9457 problem+json on errors. `X-User-Id` header is reco
 
 `POST /ingest/v1` accepts a JSON body with discriminator `ingest_type ∈ {inline, file}`.
 `POST /ingest/v1/upload` accepts `multipart/form-data` (admin convenience — server handles MinIO staging).
-Supported MIME types (`mime_type`): `text/plain`, `text/markdown`, `text/html`. CSV is no longer accepted.
+Supported MIME types (`mime_type`):
+
+| MIME type | Format | Notes |
+|---|---|---|
+| `text/plain` | Plain text | UTF-8 |
+| `text/markdown` | Markdown | AST-split by top-level block |
+| `text/html` | HTML | Script/nav/aside stripped |
+| `application/vnd.openxmlformats-officedocument.wordprocessingml.document` | DOCX | One atom per paragraph/table |
+| `application/vnd.openxmlformats-officedocument.presentationml.presentation` | PPTX | One atom per slide |
+
+CSV is no longer accepted.
 
 
 ### `POST /ingest/v1` — `ingest_type=inline` (content in body)

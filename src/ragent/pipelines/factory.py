@@ -17,6 +17,7 @@ exceeding ``CHUNK_MAX_CHARS`` with ``CHUNK_OVERLAP_CHARS`` overlap.
 from __future__ import annotations
 
 import dataclasses
+import io
 import re
 from typing import Any
 
@@ -29,6 +30,7 @@ from haystack.document_stores.types import DuplicatePolicy
 
 from ragent.errors.codes import TaskErrorCode
 from ragent.pipelines.observability import IngestStepError, wrap_component_run
+from ragent.schemas.ingest import IngestMime
 from ragent.utility.env import int_env
 
 # Single mime-agnostic budget profile (replaces v1 EN/CJK/CSV constants).
@@ -55,7 +57,15 @@ def validate_chunk_config() -> None:
         )
 
 
-ALLOWED_MIMES = ("text/plain", "text/markdown", "text/html")
+ALLOWED_MIMES = (
+    "text/plain",
+    "text/markdown",
+    "text/html",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+)
+
+BINARY_MIMES = frozenset({IngestMime.DOCX, IngestMime.PPTX})
 
 
 # ---------------------------------------------------------------------------
@@ -81,6 +91,7 @@ class _TextLoader:
         source_title: str | None = None,
         source_app: str | None = None,
         source_meta: str | None = None,
+        content_bytes: bytes | None = None,
     ) -> dict:
         meta: dict[str, Any] = {"mime_type": mime_type}
         for k, v in (
@@ -92,6 +103,8 @@ class _TextLoader:
         ):
             if v is not None:
                 meta[k] = v
+        if content_bytes is not None:
+            meta["raw_bytes"] = content_bytes
         return {"documents": [Document(content=content, meta=meta)]}
 
 
@@ -257,6 +270,121 @@ class _HtmlASTSplitter:
 
 
 # ---------------------------------------------------------------------------
+# _DocxASTSplitter
+# ---------------------------------------------------------------------------
+
+
+def _table_to_markdown(table: Any) -> tuple[str, str]:
+    """Render a python-docx Table as (plain_text, markdown_pipe_table).
+
+    Returns both representations in one pass to avoid iterating rows twice.
+    """
+
+    def _clean(t: str) -> str:
+        return t.replace("|", "\\|").replace("\n", " ")
+
+    rows = [[_clean(cell.text) for cell in row.cells] for row in table.rows]
+    if not rows:
+        return "", ""
+    header = "| " + " | ".join(rows[0]) + " |"
+    sep = "| " + " | ".join("---" for _ in rows[0]) + " |"
+    body = "\n".join("| " + " | ".join(row) + " |" for row in rows[1:])
+    md = "\n".join(filter(None, [header, sep, body]))
+    plain = " ".join(cell for row in rows for cell in row if cell.strip())
+    return plain, md
+
+
+@component
+class _DocxASTSplitter:
+    """DOCX binary → one atom per paragraph / table.
+
+    Reads bytes from ``meta["raw_bytes"]``.  Each heading atom's
+    ``content`` is the heading text (no ``#`` markers); each paragraph
+    atom's ``content`` is the paragraph text; each table atom's ``content``
+    is all cell text joined by spaces and ``meta["raw_content"]`` is the
+    Markdown pipe-table representation.
+    """
+
+    @component.output_types(documents=list[Document])
+    def run(self, documents: list[Document]) -> dict:
+        from docx import Document as DocxDocument
+        from docx.table import Table
+        from docx.text.paragraph import Paragraph
+
+        atoms: list[Document] = []
+        for doc in documents:
+            base_meta = {k: v for k, v in doc.meta.items() if k != "raw_bytes"}
+            raw_bytes: bytes = doc.meta.get("raw_bytes") or b""
+            docx = DocxDocument(io.BytesIO(raw_bytes))
+            for block in docx.element.body:
+                tag = block.tag.split("}")[-1] if "}" in block.tag else block.tag
+                if tag == "p":
+                    para = Paragraph(block, docx)
+                    text = para.text.strip()
+                    if not text:
+                        continue
+                    atoms.append(Document(content=text, meta={**base_meta, "raw_content": text}))
+                elif tag == "tbl":
+                    table = Table(block, docx)
+                    plain, raw_md = _table_to_markdown(table)
+                    if not raw_md.strip():
+                        continue
+                    atoms.append(Document(content=plain, meta={**base_meta, "raw_content": raw_md}))
+        return {"documents": atoms}
+
+
+# ---------------------------------------------------------------------------
+# _PptxASTSplitter
+# ---------------------------------------------------------------------------
+
+
+@component
+class _PptxASTSplitter:
+    """PPTX binary → one atom per slide.
+
+    Reads bytes from ``meta["raw_bytes"]``.  Each slide that contains at
+    least one non-empty text shape produces one atom.  All text frames on
+    the slide are joined with newlines for ``content`` and
+    ``meta["raw_content"]``.  ``meta["slide_number"]`` carries the
+    1-based slide index.
+    """
+
+    @component.output_types(documents=list[Document])
+    def run(self, documents: list[Document]) -> dict:
+        from pptx import Presentation
+
+        atoms: list[Document] = []
+        for doc in documents:
+            base_meta = {k: v for k, v in doc.meta.items() if k != "raw_bytes"}
+            raw_bytes: bytes = doc.meta.get("raw_bytes") or b""
+            prs = Presentation(io.BytesIO(raw_bytes))
+            for idx, slide in enumerate(prs.slides, start=1):
+                texts = []
+                for shape in slide.shapes:
+                    if shape.has_text_frame:
+                        for para in shape.text_frame.paragraphs:
+                            line = para.text.strip()
+                            if line:
+                                texts.append(line)
+                    elif shape.has_table:
+                        for row in shape.table.rows:
+                            for cell in row.cells:
+                                cell_text = cell.text_frame.text.strip()
+                                if cell_text:
+                                    texts.append(cell_text)
+                if not texts:
+                    continue
+                combined = "\n".join(texts)
+                atoms.append(
+                    Document(
+                        content=combined,
+                        meta={**base_meta, "raw_content": combined, "slide_number": idx},
+                    )
+                )
+        return {"documents": atoms}
+
+
+# ---------------------------------------------------------------------------
 # _MimeAwareSplitter (T2v.38/39 — replaces FileTypeRouter+joiner+3-splitters)
 # ---------------------------------------------------------------------------
 
@@ -278,6 +406,8 @@ class _MimeAwareSplitter:
         self._plain.warm_up()
         self._md = _MarkdownASTSplitter()
         self._html = _HtmlASTSplitter()
+        self._docx = _DocxASTSplitter()
+        self._pptx = _PptxASTSplitter()
 
     @component.output_types(documents=list[Document])
     def run(self, documents: list[Document]) -> dict:
@@ -294,6 +424,10 @@ class _MimeAwareSplitter:
                 out = self._md.run([doc])["documents"]
             elif mime == "text/html":
                 out = self._html.run([doc])["documents"]
+            elif mime == IngestMime.DOCX:
+                out = self._docx.run([doc])["documents"]
+            elif mime == IngestMime.PPTX:
+                out = self._pptx.run([doc])["documents"]
             else:
                 raise IngestStepError(
                     f"unroutable mime: {mime!r}", error_code=TaskErrorCode.PIPELINE_UNROUTABLE
