@@ -13,9 +13,15 @@ import anyio
 import pytest
 from haystack.dataclasses import Document
 
+from tc_utils import _PREFIX, tc_image
+
 # B42: vanilla test ES has no analysis-icu plugin. Point init_es() at the
 # test mapping (standard analyzer) before any fixture or test imports it.
 os.environ.setdefault("RAGENT_ES_RESOURCES_DIR", str(Path(__file__).parent / "resources" / "es"))
+
+# Wire Ryuk sidecar through the intranet registry when a prefix is configured.
+if _PREFIX:
+    os.environ.setdefault("RYUK_CONTAINER_IMAGE", tc_image("testcontainers/ryuk:0.8.1"))
 
 
 def run_in_threadpool(fn: Callable[[], Any]) -> Any:
@@ -274,7 +280,7 @@ def mariadb_container():
     from testcontainers.mysql import MySqlContainer
 
     with MySqlContainer(
-        image="mariadb:10.6",
+        image=tc_image("mariadb:10.6"),
         username="ragent",
         password="ragent",
         dbname="ragent",
@@ -295,7 +301,7 @@ def es_container():
         pytest.skip("Docker not available")
     from testcontainers.elasticsearch import ElasticSearchContainer
 
-    container = ElasticSearchContainer(image="elasticsearch:9.2.3", port=9200)
+    container = ElasticSearchContainer(image=tc_image("elasticsearch:9.2.3"), port=9200)
     # single-node: skip cluster discovery / master election (faster startup).
     container.with_env("discovery.type", "single-node")
     # Disable disk watermark so shards allocate even on > 90%-full CI/dev VMs.
@@ -323,7 +329,7 @@ def redis_container():
         pytest.skip("Docker not available")
     from testcontainers.redis import RedisContainer
 
-    with RedisContainer(image="redis:7") as container:
+    with RedisContainer(image=tc_image("redis:7")) as container:
         yield container
 
 
@@ -333,7 +339,7 @@ def minio_container():
         pytest.skip("Docker not available")
     from testcontainers.minio import MinioContainer
 
-    with MinioContainer() as container:
+    with MinioContainer(image=tc_image("minio/minio:RELEASE.2022-12-02T19-19-22Z")) as container:
         yield container
 
 
@@ -357,7 +363,7 @@ def wiremock_container():
         pytest.skip("Docker not available")
     from testcontainers.core.container import DockerContainer
 
-    container = DockerContainer("wiremock/wiremock:latest")
+    container = DockerContainer(tc_image("wiremock/wiremock:latest"))
     container.with_exposed_ports(8080)
     with container as c:
         yield c

@@ -9,7 +9,7 @@ EXAMPLE = Path(__file__).parents[2] / ".env.example"
 
 def _spec_vars() -> dict[str, str]:
     """Return {VAR_NAME: default_text} from all §4.6 markdown tables."""
-    text = SPEC.read_text()
+    text = SPEC.read_text(encoding="utf-8")
     start = text.index("### 4.6 Environment Variables")
     rest = text[start:]
     # Section ends at the next horizontal rule
@@ -26,7 +26,7 @@ def _spec_vars() -> dict[str, str]:
 def _example_vars() -> dict[str, str]:
     """Return {VAR_NAME: raw_line} from .env.example (non-comment, non-empty lines)."""
     result: dict[str, str] = {}
-    for line in EXAMPLE.read_text().splitlines():
+    for line in EXAMPLE.read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
         if stripped.startswith("#") or not stripped:
             continue

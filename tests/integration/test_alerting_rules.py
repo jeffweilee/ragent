@@ -10,7 +10,7 @@ _ALERTS_PATH = Path(__file__).resolve().parents[2] / "deploy" / "prometheus" / "
 
 
 def _load_rules() -> dict:
-    with _ALERTS_PATH.open() as fh:
+    with _ALERTS_PATH.open(encoding="utf-8") as fh:
         return yaml.safe_load(fh)
 
 
