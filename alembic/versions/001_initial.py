@@ -14,7 +14,9 @@ down_revision = None
 branch_labels = None
 depends_on = None
 
-_SQL = (Path(__file__).parent.parent.parent / "migrations" / "001_initial.sql").read_text(encoding="utf-8")
+_SQL = (Path(__file__).parent.parent.parent / "migrations" / "001_initial.sql").read_text(
+    encoding="utf-8"
+)
 
 
 def _strip_comments(fragment: str) -> str:

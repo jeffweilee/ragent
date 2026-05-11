@@ -34,7 +34,9 @@ pytestmark = pytest.mark.docker
 
 
 def _load_golden() -> list[dict]:
-    return [json.loads(line) for line in GOLDEN.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return [
+        json.loads(line) for line in GOLDEN.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
 
 
 def test_golden_set_file_has_50_rows() -> None:

@@ -41,7 +41,9 @@ def _apply_schema_sql(dsn: str) -> None:
     import sqlalchemy
     from sqlalchemy import text
 
-    schema_sql = (Path(__file__).parents[2] / "migrations" / "schema.sql").read_text(encoding="utf-8")
+    schema_sql = (Path(__file__).parents[2] / "migrations" / "schema.sql").read_text(
+        encoding="utf-8"
+    )
     engine = sqlalchemy.create_engine(dsn)
     with engine.begin() as conn:
         for raw in schema_sql.split(";"):
@@ -74,7 +76,9 @@ def schema_sql_dsn(mariadb_container) -> str:
     """Fresh MariaDB DB with schema applied via schema.sql."""
     from testcontainers.mysql import MySqlContainer
 
-    with MySqlContainer(image=tc_image("mariadb:10.6"), username="u", password="p", dbname="schema_sql") as c:
+    with MySqlContainer(
+        image=tc_image("mariadb:10.6"), username="u", password="p", dbname="schema_sql"
+    ) as c:
         dsn = f"mysql+pymysql://u:p@{c.get_container_host_ip()}:{c.get_exposed_port(3306)}/schema_sql?charset=utf8mb4"
         _apply_schema_sql(dsn)
         yield dsn
@@ -85,7 +89,9 @@ def alembic_dsn(mariadb_container) -> str:
     """Fresh MariaDB DB with schema applied via alembic upgrade head."""
     from testcontainers.mysql import MySqlContainer
 
-    with MySqlContainer(image=tc_image("mariadb:10.6"), username="u", password="p", dbname="alembic_db") as c:
+    with MySqlContainer(
+        image=tc_image("mariadb:10.6"), username="u", password="p", dbname="alembic_db"
+    ) as c:
         dsn = f"mysql+pymysql://u:p@{c.get_container_host_ip()}:{c.get_exposed_port(3306)}/alembic_db?charset=utf8mb4"
         _apply_alembic(dsn)
         yield dsn

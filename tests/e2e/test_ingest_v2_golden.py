@@ -73,7 +73,6 @@ def _make_docx_bytes() -> bytes:
 
 def _make_pptx_bytes() -> bytes:
     from pptx import Presentation
-    from pptx.util import Inches
 
     prs = Presentation()
     layout = prs.slide_layouts[1]  # Title and Content
@@ -95,8 +94,18 @@ CASES: list[dict[str, Any]] = [
     {"ingest_type": "file", "mime": "text/plain", "body": _PLAIN_BODY},
     {"ingest_type": "file", "mime": "text/markdown", "body": _MD_BODY},
     {"ingest_type": "file", "mime": "text/html", "body": _HTML_BODY},
-    {"ingest_type": "file", "mime": _DOCX_MIME, "body": _make_docx_bytes(), "expected_text": _DOCX_MARKER},
-    {"ingest_type": "file", "mime": _PPTX_MIME, "body": _make_pptx_bytes(), "expected_text": _PPTX_MARKER},
+    {
+        "ingest_type": "file",
+        "mime": _DOCX_MIME,
+        "body": _make_docx_bytes(),
+        "expected_text": _DOCX_MARKER,
+    },
+    {
+        "ingest_type": "file",
+        "mime": _PPTX_MIME,
+        "body": _make_pptx_bytes(),
+        "expected_text": _PPTX_MARKER,
+    },
 ]
 
 

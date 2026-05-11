@@ -14,9 +14,9 @@ down_revision = "006"
 branch_labels = None
 depends_on = None
 
-_SQL = (
-    Path(__file__).parent.parent.parent / "migrations" / "007_widen_mime_type.sql"
-).read_text(encoding="utf-8")
+_SQL = (Path(__file__).parent.parent.parent / "migrations" / "007_widen_mime_type.sql").read_text(
+    encoding="utf-8"
+)
 
 
 def _strip_comments(fragment: str) -> str:
@@ -32,8 +32,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute(
-        "ALTER TABLE documents "
-        "MODIFY COLUMN mime_type VARCHAR(64) NULL, "
-        "ALGORITHM=INSTANT"
-    )
+    op.execute("ALTER TABLE documents MODIFY COLUMN mime_type VARCHAR(64) NULL, ALGORITHM=INSTANT")
