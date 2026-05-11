@@ -97,9 +97,9 @@ def test_reranker_works_in_single_retriever_modes(mode: str) -> None:
     assert "reranker" in pipeline.graph.nodes
 
 
-def test_reranker_logs_invalid_indices(caplog: pytest.LogCaptureFixture) -> None:
+def test_reranker_logs_invalid_indices() -> None:
     """Out-of-bounds rerank indices are silently dropped — must surface as a warning."""
-    import logging
+    import structlog.testing
 
     rerank_client = MagicMock()
     rerank_client.rerank.return_value = [
@@ -109,10 +109,10 @@ def test_reranker_logs_invalid_indices(caplog: pytest.LogCaptureFixture) -> None
         {"index": None, "score": 0.3},  # invalid
     ]
     docs = [Document(id="A"), Document(id="B")]
-    with caplog.at_level(logging.WARNING, logger="ragent.pipelines.chat"):
+    with structlog.testing.capture_logs() as logs:
         out = _Reranker(rerank_client, top_k=4).run(query="q", documents=docs)["documents"]
     assert [d.id for d in out] == ["A"]
-    assert any("rerank.invalid_indices" in rec.message for rec in caplog.records)
+    assert any(e.get("event") == "rerank.invalid_indices" for e in logs)
 
 
 def test_reranker_rejects_bool_index() -> None:

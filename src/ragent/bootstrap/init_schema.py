@@ -66,7 +66,7 @@ def _strip_comments(sql: str) -> str:
 
 
 def init_mariadb(engine) -> None:
-    sql = (_MIGRATIONS / "schema.sql").read_text()
+    sql = (_MIGRATIONS / "schema.sql").read_text(encoding="utf-8")
     with engine.begin() as conn:
         for raw in sql.split(";"):
             stmt = _strip_comments(raw)
@@ -87,7 +87,7 @@ def init_es(es_url: str) -> None:
         if existing is not None:
             logger.info("es.index_exists", index=index)
             continue
-        body = json.loads(path.read_text())
+        body = json.loads(path.read_text(encoding="utf-8"))
         _es_request(index_url, method="PUT", body=body)
         logger.info("es.index_created", index=index)
 

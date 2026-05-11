@@ -1,20 +1,20 @@
-"""Initial schema: documents + chunks tables.
+"""Widen mime_type column from VARCHAR(64) to VARCHAR(128) for DOCX/PPTX MIMEs.
 
-Revision ID: 001
-Revises:
-Create Date: 2026-05-04
+Revision ID: 007
+Revises: 006
+Create Date: 2026-05-12
 """
 
 from pathlib import Path
 
 from alembic import op
 
-revision = "001"
-down_revision = None
+revision = "007"
+down_revision = "006"
 branch_labels = None
 depends_on = None
 
-_SQL = (Path(__file__).parent.parent.parent / "migrations" / "001_initial.sql").read_text(
+_SQL = (Path(__file__).parent.parent.parent / "migrations" / "007_widen_mime_type.sql").read_text(
     encoding="utf-8"
 )
 
@@ -32,5 +32,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("DROP TABLE IF EXISTS chunks")
-    op.execute("DROP TABLE IF EXISTS documents")
+    op.execute("ALTER TABLE documents MODIFY COLUMN mime_type VARCHAR(64) NULL, ALGORITHM=INSTANT")

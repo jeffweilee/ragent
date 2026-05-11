@@ -1,0 +1,11 @@
+# Copy this file to .testcontainers.properties and set your registry.
+# .testcontainers.properties is gitignored — each developer configures their own.
+#
+# hub.image.name.prefix is prepended to every container image pulled by the
+# test suite, including the Ryuk sidecar (testcontainers/ryuk:0.8.1).
+# Leave the value empty or remove this file entirely to pull from Docker Hub.
+#
+# Example (trailing slash is added automatically if omitted):
+#   hub.image.name.prefix=my.registry.internal:5000
+#
+hub.image.name.prefix=

@@ -21,7 +21,8 @@ CREATE TABLE IF NOT EXISTS documents (
   minio_site       VARCHAR(64)  NULL,
   source_url       VARCHAR(2048) NULL,
   -- 004_documents_mime_type.sql: appended NULL to keep ALGORITHM=INSTANT online.
-  mime_type        VARCHAR(64)  NULL,
+  -- 007_widen_mime_type.sql: widened to VARCHAR(128) for DOCX/PPTX MIME strings (up to 80 chars).
+  mime_type        VARCHAR(128) NULL,
   -- 006_documents_error_code.sql: failure diagnostics for async task failures.
   error_code       VARCHAR(64)  NULL,
   error_reason     VARCHAR(255) NULL,

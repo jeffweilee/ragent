@@ -56,7 +56,7 @@ def test_init_es_skips_existing_index() -> None:
 
 
 def test_prod_mapping_defines_icu_text_analyzer_for_cjk_bm25() -> None:
-    mapping = json.loads(_PROD_CHUNKS_V1.read_text())
+    mapping = json.loads(_PROD_CHUNKS_V1.read_text(encoding="utf-8"))
     analyzers = mapping["settings"]["index"]["analysis"]["analyzer"]
     assert analyzers["icu_text"] == {
         "type": "custom",
@@ -69,7 +69,7 @@ def test_prod_mapping_defines_icu_text_analyzer_for_cjk_bm25() -> None:
 
 
 def test_test_mapping_uses_standard_analyzer_no_icu_dependency() -> None:
-    mapping = json.loads(_TEST_CHUNKS_V1.read_text())
+    mapping = json.loads(_TEST_CHUNKS_V1.read_text(encoding="utf-8"))
     # Test ES has no analysis-icu plugin; absence of `analysis` block means
     # `text`/`title` fall back to ES default `standard` analyzer.
     assert "analysis" not in mapping["settings"]["index"]
@@ -82,8 +82,8 @@ def test_test_mapping_structurally_matches_prod_except_icu_deltas() -> None:
     """B42: prod adds an ICU `analysis` block + `analyzer: icu_text` on
     text/title; everything else (field set, types, dims, similarity) must stay
     identical so integration tests exercise the same shape that prod runs."""
-    prod = json.loads(_PROD_CHUNKS_V1.read_text())
-    test = json.loads(_TEST_CHUNKS_V1.read_text())
+    prod = json.loads(_PROD_CHUNKS_V1.read_text(encoding="utf-8"))
+    test = json.loads(_TEST_CHUNKS_V1.read_text(encoding="utf-8"))
 
     prod["settings"]["index"].pop("analysis")
     for field in ("text", "title"):

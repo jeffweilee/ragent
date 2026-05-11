@@ -1,7 +1,8 @@
 """T2v.45 — Golden end-to-end: v2 ingest across all (ingest_type, mime) cases.
 
 For each combination of ``ingest_type ∈ {inline, file}`` and
-``mime_type ∈ {text/plain, text/markdown, text/html}`` (6 cases):
+``mime_type ∈ {text/plain, text/markdown, text/html}`` (6 cases) plus
+binary file-only cases for DOCX and PPTX (2 cases, 8 total):
 - inline: POST JSON with the content directly.
 - file: pre-upload the bytes to MinIO ``__default__``, then POST JSON
   carrying ``{minio_site, object_key}``.
@@ -17,6 +18,8 @@ Assertions per case:
 - Markdown case: fenced code markers survive in ``raw_content``.
 - HTML case: ``<script>`` and ``<nav>`` markup is excluded from both
   ``content`` and ``raw_content`` (top-level boilerplate is dropped).
+- DOCX case: paragraph text extracted and present in ``content``.
+- PPTX case: slide text extracted and present in ``content``.
 
 Per-step structured logs are emitted by the worker (T2v.42/43); we
 assert here that the document reaches READY, which is a positive
@@ -53,6 +56,37 @@ _HTML_BODY = (
 )
 _PLAIN_BODY = "First sentence. Second sentence. Third sentence."
 
+_DOCX_MARKER = "GOLDEN-DOCX-PARAGRAPH-CONTENT"
+_PPTX_MARKER = "GOLDEN-PPTX-SLIDE-CONTENT"
+
+
+def _make_docx_bytes() -> bytes:
+    from docx import Document as DocxDocument
+
+    doc = DocxDocument()
+    doc.add_heading("Golden DOCX heading", level=1)
+    doc.add_paragraph(_DOCX_MARKER)
+    buf = io.BytesIO()
+    doc.save(buf)
+    return buf.getvalue()
+
+
+def _make_pptx_bytes() -> bytes:
+    from pptx import Presentation
+
+    prs = Presentation()
+    layout = prs.slide_layouts[1]  # Title and Content
+    slide = prs.slides.add_slide(layout)
+    slide.shapes.title.text = "Golden PPTX slide"
+    slide.placeholders[1].text = _PPTX_MARKER
+    buf = io.BytesIO()
+    prs.save(buf)
+    return buf.getvalue()
+
+
+_DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+_PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+
 CASES: list[dict[str, Any]] = [
     {"ingest_type": "inline", "mime": "text/plain", "body": _PLAIN_BODY},
     {"ingest_type": "inline", "mime": "text/markdown", "body": _MD_BODY},
@@ -60,6 +94,18 @@ CASES: list[dict[str, Any]] = [
     {"ingest_type": "file", "mime": "text/plain", "body": _PLAIN_BODY},
     {"ingest_type": "file", "mime": "text/markdown", "body": _MD_BODY},
     {"ingest_type": "file", "mime": "text/html", "body": _HTML_BODY},
+    {
+        "ingest_type": "file",
+        "mime": _DOCX_MIME,
+        "body": _make_docx_bytes(),
+        "expected_text": _DOCX_MARKER,
+    },
+    {
+        "ingest_type": "file",
+        "mime": _PPTX_MIME,
+        "body": _make_pptx_bytes(),
+        "expected_text": _PPTX_MARKER,
+    },
 ]
 
 
@@ -102,7 +148,8 @@ def _post_inline(case: dict[str, Any], idx: int) -> str:
 
 def _post_file(case: dict[str, Any], idx: int, minio_endpoint: str) -> str:
     object_key = f"golden_file_{idx}_{int(time.time() * 1000)}"
-    _put_object(minio_endpoint, object_key, case["body"].encode(), case["mime"])
+    body_bytes = case["body"] if isinstance(case["body"], bytes) else case["body"].encode()
+    _put_object(minio_endpoint, object_key, body_bytes, case["mime"])
     payload = {
         "ingest_type": "file",
         "source_id": f"GOLDEN-FILE-{idx}",
@@ -224,3 +271,10 @@ def test_v2_golden_end_to_end(
         if case["mime"] == "text/markdown":
             joined_raw = "\n".join(h.get("raw_content") or "" for h in hits)
             assert "```" in joined_raw, f"markdown fence dropped for {doc_id}"
+
+        if "expected_text" in case:
+            all_content = " ".join(src.get("content") or src.get("text") or "" for src in hits)
+            assert case["expected_text"] in all_content, (
+                f"expected_text {case['expected_text']!r} not found in ES chunks for {doc_id} "
+                f"(mime={case['mime']}); got: {all_content[:300]!r}"
+            )

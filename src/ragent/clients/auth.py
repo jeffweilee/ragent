@@ -34,7 +34,7 @@ class TokenManager:
         if self._j1_token is not None:
             return self._j1_token
         try:
-            return Path(self._k8s_path).read_text().strip()  # type: ignore[arg-type]
+            return Path(self._k8s_path).read_text(encoding="utf-8").strip()  # type: ignore[arg-type]
         except OSError as exc:
             raise RuntimeError("Failed to read Kubernetes service account token") from exc
 
