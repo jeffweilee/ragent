@@ -14,6 +14,8 @@ from ragent.errors.upstream import classify_upstream_error
 logger = structlog.get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
 
+_SUCCESS_CODE = 96200
+
 
 class RerankClient:
     def __init__(
@@ -23,12 +25,16 @@ class RerankClient:
         get_token: Callable[[], str],
         timeout: float | None = None,
         sleep: Callable[[float], None] = _time.sleep,
+        auth_header_name: str | None = None,
     ) -> None:
         self._url = api_url
         self._http = http
         self._get_token = get_token
         self._timeout = timeout or float(os.environ.get("RERANK_TIMEOUT_SECONDS", "30"))
         self._sleep = sleep
+        self._auth_header_name = auth_header_name or os.environ.get(
+            "RERANK_AUTH_HEADER_NAME", "Authorization"
+        )
 
     def rerank(self, query: str, texts: list[str], top_k: int = 2) -> list[dict]:
         with _tracer.start_as_current_span("rerank.score") as span:
@@ -45,16 +51,22 @@ class RerankClient:
                         self._url,
                         json={
                             "model": "bge-reranker-base",
-                            "query": query,
-                            "texts": texts,
+                            "question": query,
+                            "documents": texts,
                             "top_k": top_k,
                         },
-                        headers={"Authorization": f"Bearer {self._get_token()}"},
+                        headers={self._auth_header_name: self._get_token()},
                         timeout=self._timeout,
                     )
                     span.set_attribute("http.status_code", getattr(resp, "status_code", 0))
                     resp.raise_for_status()
-                    results = resp.json()["results"]
+                    data = resp.json()
+                    if data.get("returnCode") != _SUCCESS_CODE:
+                        raise ValueError(
+                            f"Unexpected returnCode: {data.get('returnCode')}. "
+                            f"Message: {data.get('returnMessage')}"
+                        )
+                    results = data["returnData"]
                     logger.info(
                         "rerank.call",
                         peer_service="rerank",

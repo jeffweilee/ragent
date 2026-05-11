@@ -80,7 +80,11 @@ def test_llm_chat_records_error_on_retry_exhaustion(exporter):
 
 
 def test_embedding_emits_span_per_call(exporter):
-    payload = {"returnCode": 96200, "data": [{"embedding": [0.1, 0.2]}]}
+    payload = {
+        "returnCode": 96200,
+        "returnMessage": "success",
+        "returnData": [{"index": 0, "embedding": [0.1, 0.2]}],
+    }
     http = _FakeHttp(_FakeResp(200, payload))
     client = EmbeddingClient(
         api_url="http://emb",
@@ -99,7 +103,11 @@ def test_embedding_emits_span_per_call(exporter):
 
 
 def test_rerank_emits_span(exporter):
-    payload = {"results": [{"index": 0, "score": 0.9}]}
+    payload = {
+        "returnCode": 96200,
+        "returnMessage": "success",
+        "returnData": [{"index": 0, "score": 0.9}],
+    }
     http = _FakeHttp(_FakeResp(200, payload))
     client = RerankClient(api_url="http://rr", http=http, get_token=lambda: "t", timeout=1.0)
     with structlog.testing.capture_logs() as logs:
