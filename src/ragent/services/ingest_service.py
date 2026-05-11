@@ -20,6 +20,7 @@ from ragent.repositories.document_repository import LockNotAvailable
 from ragent.schemas.ingest import (
     SOURCE_URL_MAX,
     FileIngestRequest,
+    IngestMime,
     InlineIngestRequest,
 )
 from ragent.storage.minio_registry import UnknownMinioSite
@@ -192,6 +193,82 @@ class IngestService:
                         self._storage.delete_object("__default__", doc.object_key)
             except UnknownMinioSite:
                 return
+
+    def _stage_binary(
+        self,
+        *,
+        data: bytes,
+        source_app: str,
+        source_id: str,
+        document_id: str,
+        mime_type: str,
+        max_bytes: int | None,
+    ) -> tuple[str, str | None]:
+        limit = max_bytes if max_bytes is not None else _MAX_INLINE_BYTES
+        if len(data) > limit:
+            raise FileTooLarge(f"Upload {len(data)}B exceeds {limit}B")
+        object_key = self._storage.put_object_default(
+            source_app=source_app,
+            source_id=source_id,
+            document_id=document_id,
+            data=io.BytesIO(data),
+            length=len(data),
+            content_type=mime_type,
+        )
+        return object_key, None
+
+    async def create_from_upload(
+        self,
+        *,
+        create_user: str,
+        source_id: str,
+        source_app: str,
+        source_title: str,
+        mime_type: IngestMime,
+        data: bytes,
+        source_meta: str | None = None,
+        source_url: str | None = None,
+        max_upload_bytes: int | None = None,
+    ) -> str:
+        document_id = new_id()
+        object_key, _ = self._stage_binary(
+            data=data,
+            source_app=source_app,
+            source_id=source_id,
+            document_id=document_id,
+            mime_type=mime_type.value,
+            max_bytes=max_upload_bytes,
+        )
+        await self._repo.create(
+            document_id=document_id,
+            create_user=create_user,
+            source_id=source_id,
+            source_app=source_app,
+            source_title=source_title,
+            object_key=object_key,
+            source_meta=source_meta,
+            source_url=source_url,
+            ingest_type="inline",
+            minio_site=None,
+            mime_type=mime_type.value,
+        )
+        await self._broker.enqueue("ingest.pipeline", document_id=document_id)
+        logger.info(
+            "ingest.dispatched",
+            document_id=document_id,
+            source_id=source_id,
+            source_app=source_app,
+            task_label="ingest.pipeline",
+        )
+        logger.info(
+            "ingest.received",
+            document_id=document_id,
+            ingest_type="inline",
+            mime_type=mime_type.value,
+            source_id=source_id,
+            source_app=source_app,
+        )
+        return document_id
 
     async def supersede(self, survivor_id: str, source_id: str, source_app: str) -> None:
         while True:

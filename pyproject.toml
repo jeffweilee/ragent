@@ -25,6 +25,7 @@ dependencies = [
     "taskiq-redis>=1.2.2",
     "uuid-utils>=0.9",
     "uvicorn>=0.30.0",
+    "python-multipart>=0.0.28",
 ]
 
 [project.optional-dependencies]
