@@ -1,0 +1,37 @@
+{
+  "settings": {
+    "index": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0,
+      "analysis": {
+        "analyzer": {
+          "icu_text": {
+            "type": "custom",
+            "tokenizer": "icu_tokenizer",
+            "filter": ["icu_folding", "lowercase"]
+          }
+        }
+      }
+    }
+  },
+  "mappings": {
+    "properties": {
+      "chunk_id":         { "type": "keyword" },
+      "document_id":      { "type": "keyword" },
+      "source_app":       { "type": "keyword" },
+      "source_meta":      { "type": "keyword", "ignore_above": 1024 },
+      "source_url":       { "type": "keyword" },
+      "lang":             { "type": "keyword" },
+      "title":            { "type": "text", "analyzer": "icu_text" },
+      "text":             { "type": "text", "analyzer": "icu_text" },
+      "raw_content":      { "type": "text", "index": false },
+      "embedding": {
+        "type": "dense_vector",
+        "dims": 1024,
+        "index": true,
+        "similarity": "cosine",
+        "index_options": { "type": "bbq_hnsw" }
+      }
+    }
+  }
+}

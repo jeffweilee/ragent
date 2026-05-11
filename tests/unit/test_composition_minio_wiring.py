@@ -41,8 +41,11 @@ def _minimal_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_build_container_succeeds_with_only_minio_sites(
-    _minimal_env: None, monkeypatch: pytest.MonkeyPatch
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # Test MinioSiteRegistry directly — build_container() constructs the full
+    # DI graph (httpx, ES, async engine, Haystack warmup) which is ~0.6s of
+    # overhead unrelated to what this test verifies.
     sites = json.dumps(
         [
             {
@@ -55,13 +58,15 @@ def test_build_container_succeeds_with_only_minio_sites(
         ]
     )
     monkeypatch.setenv("MINIO_SITES", sites)
+    for legacy in ("MINIO_ENDPOINT", "MINIO_ACCESS_KEY", "MINIO_SECRET_KEY", "MINIO_BUCKET"):
+        monkeypatch.delenv(legacy, raising=False)
 
-    from ragent.bootstrap.composition import build_container
+    from ragent.storage.minio_registry import MinioSiteRegistry
 
-    container = build_container()
+    registry = MinioSiteRegistry.from_env()
 
-    assert container.minio_registry is not None
-    assert container.minio_registry.default().bucket == "ragent-uploads"
+    assert registry is not None
+    assert registry.default().bucket == "ragent-uploads"
 
 
 def test_readyz_minio_probe_uses_registry_default_client(_minimal_env: None) -> None:

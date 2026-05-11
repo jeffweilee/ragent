@@ -8,26 +8,34 @@ status they declare.
 
 from __future__ import annotations
 
+import asyncio
+import json
+from unittest.mock import MagicMock
+
 import pytest
 import structlog
 from fastapi import FastAPI
-from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 from ragent.bootstrap.app import _register_unhandled_exception_handler
 from ragent.errors.codes import HttpErrorCode, TaskErrorCode
 from ragent.errors.upstream import UpstreamServiceError, UpstreamTimeoutError
 from ragent.pipelines.observability import IngestStepError
 
+# Build once: extract the registered async handler for direct invocation.
+# Avoids TestClient + background-thread overhead (~0.6 s/call in full suite).
+_handler_app = FastAPI()
+_register_unhandled_exception_handler(_handler_app)
+_handler = _handler_app.exception_handlers[Exception]
 
-def _client_raising(exc: Exception) -> TestClient:
-    app = FastAPI()
-    _register_unhandled_exception_handler(app)
+_mock_request = MagicMock(spec=Request)
+_mock_request.url.path = "/test"
+_mock_request.method = "GET"
 
-    @app.get("/boom")
-    def _boom():
-        raise exc
 
-    return TestClient(app, raise_server_exceptions=False)
+def _call_handler(exc: Exception) -> tuple[int, dict]:
+    response = asyncio.run(_handler(_mock_request, exc))
+    return response.status_code, json.loads(response.body)
 
 
 @pytest.mark.parametrize(
@@ -69,9 +77,8 @@ def _client_raising(exc: Exception) -> TestClient:
 def test_handler_routes_by_exception_attrs(
     exc: Exception, expected_status: int, expected_code: str
 ) -> None:
-    resp = _client_raising(exc).get("/boom")
-    assert resp.status_code == expected_status
-    body = resp.json()
+    status, body = _call_handler(exc)
+    assert status == expected_status
     assert body["status"] == expected_status
     assert body["error_code"] == expected_code
 
@@ -83,7 +90,7 @@ def test_handler_logs_carry_same_error_code() -> None:
         "rerank down", service="rerank", error_code=HttpErrorCode.RERANK_ERROR
     )
     with structlog.testing.capture_logs() as logs:
-        resp = _client_raising(exc).get("/boom")
-    assert resp.json()["error_code"] == HttpErrorCode.RERANK_ERROR
+        _, body = _call_handler(exc)
+    assert body["error_code"] == HttpErrorCode.RERANK_ERROR
     matched = [e for e in logs if e.get("error_code") == HttpErrorCode.RERANK_ERROR]
     assert matched, f"expected log record carrying error_code=RERANK_ERROR, got {logs}"
