@@ -1,6 +1,8 @@
 {
   "permissions": {
-    "allow": []
+    "allow": [
+      "Bash(: > /home/user/ragent/.claude/pending_journal.md)"
+    ]
   },
   "hooks": {
     "SessionStart": [
