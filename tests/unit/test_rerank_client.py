@@ -14,7 +14,9 @@ def _mock_http(scores: list[float]) -> MagicMock:
     resp = MagicMock()
     resp.raise_for_status = MagicMock()
     resp.json.return_value = {
-        "results": [{"index": i, "relevance_score": s} for i, s in enumerate(scores)]
+        "returnCode": 96200,
+        "returnMessage": "success",
+        "returnData": [{"index": i, "score": s} for i, s in enumerate(scores)],
     }
     http.post.return_value = resp
     return http
@@ -25,7 +27,7 @@ def test_rerank_returns_scores():
     client = RerankClient(api_url="https://rerank.example.com", http=http, get_token=lambda: "tok")
     result = client.rerank(query="q", texts=["doc1", "doc2"], top_k=2)
     assert len(result) == 2
-    assert result[0]["relevance_score"] == 0.9
+    assert result[0]["score"] == 0.9
 
 
 def test_rerank_post_shape():
@@ -34,8 +36,8 @@ def test_rerank_post_shape():
     client.rerank(query="find me", texts=["a", "b"], top_k=2)
     body = http.post.call_args[1]["json"]
     assert body["model"] == "bge-reranker-base"
-    assert body["query"] == "find me"
-    assert body["texts"] == ["a", "b"]
+    assert body["question"] == "find me"
+    assert body["documents"] == ["a", "b"]
     assert body["top_k"] == 2
 
 
@@ -106,7 +108,11 @@ def test_rerank_retries_3_times_on_error():
     http = MagicMock()
     ok_resp = MagicMock()
     ok_resp.raise_for_status = MagicMock()
-    ok_resp.json.return_value = {"results": [{"index": 0, "relevance_score": 0.9}]}
+    ok_resp.json.return_value = {
+        "returnCode": 96200,
+        "returnMessage": "success",
+        "returnData": [{"index": 0, "score": 0.9}],
+    }
     http.post.side_effect = [Exception("transient"), Exception("transient"), ok_resp]
     sleep_calls: list[float] = []
     client = RerankClient(
@@ -116,6 +122,6 @@ def test_rerank_retries_3_times_on_error():
         sleep=lambda s: sleep_calls.append(s),
     )
     result = client.rerank(query="q", texts=["x"], top_k=1)
-    assert result == [{"index": 0, "relevance_score": 0.9}]
+    assert result == [{"index": 0, "score": 0.9}]
     assert http.post.call_count == 3
     assert sleep_calls == [2.0, 2.0]

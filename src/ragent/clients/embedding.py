@@ -85,7 +85,7 @@ class EmbeddingClient:
                     span.set_attribute("retry_attempt", attempt)
                     resp = self._http.post(
                         self._url,
-                        json={"model": _EMBED_MODEL, "texts": texts},
+                        json={"model": _EMBED_MODEL, "texts": texts, "encoding-format": "float"},
                         headers={self._auth_header_name: self._get_token()},
                         timeout=timeout,
                     )
@@ -94,7 +94,7 @@ class EmbeddingClient:
                     data = resp.json()
                     if data.get("returnCode") != _SUCCESS_CODE:
                         raise ValueError(f"Unexpected returnCode: {data.get('returnCode')}")
-                    out = [item["embedding"] for item in data["data"]]
+                    out = [item["embedding"] for item in data["returnData"]]
                     _validate_vectors(out)
                     if out and isinstance(out[0], list):
                         span.set_attribute("dim", len(out[0]))

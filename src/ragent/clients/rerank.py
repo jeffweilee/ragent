@@ -49,8 +49,8 @@ class RerankClient:
                         self._url,
                         json={
                             "model": "bge-reranker-base",
-                            "query": query,
-                            "texts": texts,
+                            "question": query,
+                            "documents": texts,
                             "top_k": top_k,
                         },
                         headers={self._auth_header_name: self._get_token()},
@@ -58,7 +58,7 @@ class RerankClient:
                     )
                     span.set_attribute("http.status_code", getattr(resp, "status_code", 0))
                     resp.raise_for_status()
-                    results = resp.json()["results"]
+                    results = resp.json()["returnData"]
                     logger.info(
                         "rerank.call",
                         peer_service="rerank",
