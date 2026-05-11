@@ -92,7 +92,11 @@ def test_embed_retries_3_times_on_http_error():
         MagicMock(
             **{
                 "raise_for_status": MagicMock(),
-                "json.return_value": {"returnCode": 96200, "returnMessage": "success", "returnData": [{"index": 0, "embedding": [0.1]}]},
+                "json.return_value": {
+                    "returnCode": 96200,
+                    "returnMessage": "success",
+                    "returnData": [{"index": 0, "embedding": [0.1]}],
+                },
             }
         ),
     ]
@@ -155,7 +159,9 @@ def test_embed_batches_by_batch_size(monkeypatch):
         mock.json.return_value = {
             "returnCode": 96200,
             "returnMessage": "success",
-            "returnData": [{"index": i, "embedding": [float(i + 1)]} for i in range(len(json["texts"]))],
+            "returnData": [
+                {"index": i, "embedding": [float(i + 1)]} for i in range(len(json["texts"]))
+            ],
         }
         return mock
 
