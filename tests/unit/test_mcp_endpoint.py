@@ -16,15 +16,15 @@ def client():
 
 
 def test_rag_tool_returns_501(client):
-    resp = client.post("/mcp/tools/rag")
+    resp = client.post("/mcp/v1/tools/rag")
     assert resp.status_code == 501
 
 
 def test_rag_tool_returns_problem_json(client):
-    resp = client.post("/mcp/tools/rag")
+    resp = client.post("/mcp/v1/tools/rag")
     assert resp.headers["content-type"].startswith("application/problem+json")
 
 
 def test_rag_tool_error_code(client):
-    resp = client.post("/mcp/tools/rag")
+    resp = client.post("/mcp/v1/tools/rag")
     assert resp.json()["error_code"] == "MCP_NOT_IMPLEMENTED"

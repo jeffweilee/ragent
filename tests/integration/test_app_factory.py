@@ -31,7 +31,7 @@ def test_protected_route_returns_422_without_user_id(dev_env) -> None:
 
     app = create_app()
     with TestClient(app) as client:
-        resp = client.get("/ingest/SOME_ID")
+        resp = client.get("/ingest/v1/SOME_ID")
         assert resp.status_code == 422
         assert resp.json()["error_code"] == "MISSING_USER_ID"
 

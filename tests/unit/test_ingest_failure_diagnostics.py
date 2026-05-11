@@ -49,7 +49,7 @@ def test_get_ingest_returns_error_code_and_reason_on_failed():
     app = FastAPI()
     app.include_router(create_router(svc))
     client = TestClient(app, raise_server_exceptions=False)
-    resp = client.get("/ingest/DOC-FAIL")
+    resp = client.get("/ingest/v1/DOC-FAIL")
 
     assert resp.status_code == 200
     body = resp.json()
@@ -67,7 +67,7 @@ def test_get_ingest_returns_null_error_fields_on_success():
     app = FastAPI()
     app.include_router(create_router(svc))
     client = TestClient(app, raise_server_exceptions=False)
-    resp = client.get("/ingest/DOC-OK")
+    resp = client.get("/ingest/v1/DOC-OK")
 
     assert resp.status_code == 200
     body = resp.json()

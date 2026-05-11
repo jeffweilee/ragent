@@ -71,7 +71,7 @@ def _post_inline(source_id: str, version: int, body: str) -> str:
         "content": body,
     }
     resp = httpx.post(
-        f"{API_URL}/ingest",
+        f"{API_URL}/ingest/v1",
         headers={"X-User-Id": "alice"},
         json=payload,
         timeout=10,
@@ -83,7 +83,7 @@ def _post_inline(source_id: str, version: int, body: str) -> str:
 def _get_status(doc_id: str) -> str:
     """Return status string or 'DELETED' on 404."""
     resp = httpx.get(
-        f"{API_URL}/ingest/{doc_id}",
+        f"{API_URL}/ingest/v1/{doc_id}",
         headers={"X-User-Id": "alice"},
         timeout=5,
     )

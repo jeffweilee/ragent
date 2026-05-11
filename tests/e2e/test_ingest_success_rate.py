@@ -32,7 +32,7 @@ def _post_doc(idx: int) -> str:
         "content": f"document {idx} content",
     }
     resp = httpx.post(
-        f"{API_URL}/ingest",
+        f"{API_URL}/ingest/v1",
         headers={"X-User-Id": "alice"},
         json=payload,
         timeout=10,
@@ -43,7 +43,7 @@ def _post_doc(idx: int) -> str:
 
 def _poll_status(doc_id: str) -> str:
     return (
-        httpx.get(f"{API_URL}/ingest/{doc_id}", headers={"X-User-Id": "alice"}, timeout=5)
+        httpx.get(f"{API_URL}/ingest/v1/{doc_id}", headers={"X-User-Id": "alice"}, timeout=5)
         .json()
         .get("status", "UNKNOWN")
     )

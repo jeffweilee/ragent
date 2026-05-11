@@ -64,7 +64,7 @@ def golden_corpus_loaded(running_stack) -> Iterator[None]:
     for md_path in sorted(CORPUS_DIR.glob("*.md")):
         doc_id = md_path.stem
         resp = httpx.post(
-            f"{API_URL}/ingest",
+            f"{API_URL}/ingest/v1",
             headers={"X-User-Id": "alice"},
             json={
                 "ingest_type": "inline",
@@ -85,7 +85,7 @@ def golden_corpus_loaded(running_stack) -> Iterator[None]:
         for doc_id in list(pending):
             status = (
                 httpx.get(
-                    f"{API_URL}/ingest/{doc_id}",
+                    f"{API_URL}/ingest/v1/{doc_id}",
                     headers={"X-User-Id": "alice"},
                     timeout=5,
                 )
@@ -116,7 +116,7 @@ def test_golden_set_top3_accuracy_at_least_70pct(golden_corpus_loaded) -> None:
     hits = 0
     for row in rows:
         resp = httpx.post(
-            f"{API_URL}/chat",
+            f"{API_URL}/chat/v1",
             headers={"X-User-Id": "alice"},
             json={"query": row["q"], "top_k": 3},
             timeout=10,

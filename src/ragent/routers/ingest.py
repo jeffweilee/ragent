@@ -133,9 +133,9 @@ class _IngestRoute(APIRoute):
 
 
 def create_router(svc: Any) -> APIRouter:
-    router = APIRouter(route_class=_IngestRoute)
+    router = APIRouter(prefix="/ingest/v1", route_class=_IngestRoute)
 
-    @router.post("/ingest", status_code=202, response_model=IngestCreatedResponse)
+    @router.post("", status_code=202, response_model=IngestCreatedResponse)
     async def create_document(
         body: IngestRequest,
         x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
@@ -157,7 +157,7 @@ def create_router(svc: Any) -> APIRouter:
 
         return IngestCreatedResponse(document_id=doc_id)
 
-    @router.get("/ingest/{document_id}", response_model=IngestDetailResponse)
+    @router.get("/{document_id}", response_model=IngestDetailResponse)
     async def get_document(
         document_id: str,
         x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
@@ -187,7 +187,7 @@ def create_router(svc: Any) -> APIRouter:
             error_reason=getattr(doc, "error_reason", None),
         )
 
-    @router.delete("/ingest/{document_id}", status_code=204)
+    @router.delete("/{document_id}", status_code=204)
     async def delete_document(
         document_id: str,
         x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
@@ -195,7 +195,7 @@ def create_router(svc: Any) -> APIRouter:
         await svc.delete(document_id)
         return Response(status_code=204)
 
-    @router.get("/ingest", response_model=IngestListResponse)
+    @router.get("", response_model=IngestListResponse)
     async def list_documents(
         after: str | None = Query(None),
         limit: int = Query(100),
