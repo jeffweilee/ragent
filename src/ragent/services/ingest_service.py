@@ -117,25 +117,45 @@ class IngestService:
         )
         return document_id
 
+    def _put_to_default_site(
+        self,
+        *,
+        data: bytes,
+        source_app: str,
+        source_id: str,
+        document_id: str,
+        mime_type: str,
+        max_bytes: int | None,
+    ) -> str:
+        limit = max_bytes if max_bytes is not None else _MAX_INLINE_BYTES
+        data_len = len(data)
+        if data_len > limit:
+            raise FileTooLarge(f"Content {data_len}B exceeds limit {limit}B")
+        return self._storage.put_object_default(
+            source_app=source_app,
+            source_id=source_id,
+            document_id=document_id,
+            data=io.BytesIO(data),
+            length=data_len,
+            content_type=mime_type,
+        )
+
     def _stage_inline(
         self,
         request: InlineIngestRequest,
         document_id: str,
         max_inline_bytes: int | None,
     ) -> tuple[str, str | None]:
-        limit = max_inline_bytes if max_inline_bytes is not None else _MAX_INLINE_BYTES
         data = request.content.encode("utf-8")
-        if len(data) > limit:
-            raise FileTooLarge(f"Inline content {len(data)}B exceeds {limit}B")
         if request.source_url and len(request.source_url) > SOURCE_URL_MAX:
             raise ValueError("source_url too long")
-        object_key = self._storage.put_object_default(
+        object_key = self._put_to_default_site(
+            data=data,
             source_app=request.source_app,
             source_id=request.source_id,
             document_id=document_id,
-            data=io.BytesIO(data),
-            length=len(data),
-            content_type=request.mime_type.value,
+            mime_type=request.mime_type.value,
+            max_bytes=max_inline_bytes,
         )
         return object_key, None
 
@@ -194,29 +214,6 @@ class IngestService:
             except UnknownMinioSite:
                 return
 
-    def _stage_binary(
-        self,
-        *,
-        data: bytes,
-        source_app: str,
-        source_id: str,
-        document_id: str,
-        mime_type: str,
-        max_bytes: int | None,
-    ) -> tuple[str, str | None]:
-        limit = max_bytes if max_bytes is not None else _MAX_INLINE_BYTES
-        if len(data) > limit:
-            raise FileTooLarge(f"Upload {len(data)}B exceeds {limit}B")
-        object_key = self._storage.put_object_default(
-            source_app=source_app,
-            source_id=source_id,
-            document_id=document_id,
-            data=io.BytesIO(data),
-            length=len(data),
-            content_type=mime_type,
-        )
-        return object_key, None
-
     async def create_from_upload(
         self,
         *,
@@ -231,7 +228,7 @@ class IngestService:
         max_upload_bytes: int | None = None,
     ) -> str:
         document_id = new_id()
-        object_key, _ = self._stage_binary(
+        object_key = self._put_to_default_site(
             data=data,
             source_app=source_app,
             source_id=source_id,
