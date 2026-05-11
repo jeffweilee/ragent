@@ -24,7 +24,7 @@ class RerankClient:
         timeout: float | None = None,
         sleep: Callable[[float], None] = _time.sleep,
     ) -> None:
-        self._url = api_url.rstrip("/")
+        self._url = api_url
         self._http = http
         self._get_token = get_token
         self._timeout = timeout or float(os.environ.get("RERANK_TIMEOUT_SECONDS", "30"))

@@ -25,7 +25,7 @@ class LLMClient:
         timeout: float | None = None,
         sleep: Callable[[float], None] = _time.sleep,
     ) -> None:
-        self._url = api_url.rstrip("/") + "/gpt_oss_120b/v1/chat/completions"
+        self._url = api_url
         self._http = http
         self._get_token = get_token
         self._timeout = timeout or float(os.environ.get("LLM_TIMEOUT_SECONDS", "120"))

@@ -15,14 +15,14 @@ Cap: `INGEST_INLINE_MAX_BYTES` (default 50 MB) on the UTF-8 byte length of `cont
 curl -X POST http://localhost:8000/ingest \
   -H "X-User-Id: user-123" -H "Content-Type: application/json" \
   -d '{
-    "ingest_type":      "inline",
-    "content_type":     "text/markdown",
-    "content":          "# Q3 OKRs\n\n```python\npool = create_pool()\n```",
-    "source_id":        "DOC-123",
-    "source_app":       "confluence",
-    "source_title":     "Q3 OKR Planning",
-    "source_meta": "engineering",
-    "source_url":       "https://wiki.example/q3-okr"
+    "ingest_type":  "inline",
+    "mime_type":    "text/markdown",
+    "content":      "# Q3 OKRs\n\n```python\npool = create_pool()\n```",
+    "source_id":    "DOC-123",
+    "source_app":   "confluence",
+    "source_title": "Q3 OKR Planning",
+    "source_meta":  "engineering",
+    "source_url":   "https://wiki.example/q3-okr"
   }'
 ```
 
@@ -34,14 +34,14 @@ The server reads from `(minio_site, object_key)` directly — no copy, no post-R
 curl -X POST http://localhost:8000/ingest \
   -H "X-User-Id: user-123" -H "Content-Type: application/json" \
   -d '{
-    "ingest_type":      "file",
-    "content_type":     "text/html",
-    "minio_site":       "tenant-eu-1",
-    "object_key":       "reports/2025.html",
-    "source_id":        "DOC-456",
-    "source_app":       "s3-importer",
-    "source_title":     "Annual Report 2025",
-    "source_url":       "https://example.com/reports/2025"
+    "ingest_type":  "file",
+    "mime_type":    "text/html",
+    "minio_site":   "tenant-eu-1",
+    "object_key":   "reports/2025.html",
+    "source_id":    "DOC-456",
+    "source_app":   "s3-importer",
+    "source_title": "Annual Report 2025",
+    "source_url":   "https://example.com/reports/2025"
   }'
 ```
 
@@ -53,7 +53,7 @@ curl -X POST http://localhost:8000/ingest \
 The returned `document_id` is the same identifier used by `GET /ingest/{document_id}` and `DELETE /ingest/{document_id}`.
 
 **Errors (RFC 9457 problem+json):**
-- `415 INGEST_MIME_UNSUPPORTED` — `content_type` not in allow-list.
+- `415 INGEST_MIME_UNSUPPORTED` — `mime_type` not in allow-list.
 - `413 INGEST_FILE_TOO_LARGE` — inline content or file size exceeds the cap.
 - `422 INGEST_VALIDATION` — discriminator/required-field shape errors.
 - `422 INGEST_MINIO_SITE_UNKNOWN` — `minio_site` not in registry.
@@ -62,7 +62,8 @@ The returned `document_id` is the same identifier used by `GET /ingest/{document
 ### `GET /ingest/{document_id}` — Get document status
 
 ```bash
-curl http://localhost:8000/ingest/01J9ABCDEFGHJKMNPQRSTVWXYZ
+curl http://localhost:8000/ingest/01J9ABCDEFGHJKMNPQRSTVWXYZ \
+  -H "X-User-Id: user-123"
 ```
 
 ```json
@@ -87,7 +88,8 @@ For `ingest_type=file` rows, `minio_site` is the registered site name (e.g. `ten
 ### `GET /ingest` — List documents (cursor-paginated)
 
 ```bash
-curl "http://localhost:8000/ingest?limit=20&after=01J9..."
+curl "http://localhost:8000/ingest?limit=20&after=01J9..." \
+  -H "X-User-Id: user-123"
 ```
 
 ```json
@@ -112,7 +114,8 @@ curl "http://localhost:8000/ingest?limit=20&after=01J9..."
 Cascade-deletes chunks from ES and all plugin stores.
 
 ```bash
-curl -X DELETE http://localhost:8000/ingest/01J9ABCDEFGHJKMNPQRSTVWXYZ
+curl -X DELETE http://localhost:8000/ingest/01J9ABCDEFGHJKMNPQRSTVWXYZ \
+  -H "X-User-Id: user-123"
 # 204 No Content
 ```
 
