@@ -7,30 +7,24 @@ because `content-type: multipart/...` cannot satisfy the JSON discriminator.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Annotated, Any
 
 import structlog
-from fastapi import APIRouter, Header, Query, Request, Response
+from fastapi import APIRouter, Header, Query, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import ValidationError
+from fastapi.routing import APIRoute
 
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
-from ragent.schemas.ingest import FileIngestRequest, IngestRequest, InlineIngestRequest
+from ragent.schemas.ingest import IngestRequest
 from ragent.services.ingest_service import (
     FileTooLarge,
     MimeNotAllowed,
     ObjectNotFoundError,
     UnknownMinioSiteError,
 )
-
-_INGEST_BODY_SCHEMA = {
-    "oneOf": [
-        InlineIngestRequest.model_json_schema(),
-        FileIngestRequest.model_json_schema(),
-    ],
-    "discriminator": {"propertyName": "ingest_type"},
-}
 
 logger = structlog.get_logger(__name__)
 
@@ -39,8 +33,7 @@ def _is_mime_error(errors: list[dict]) -> bool:
     return any(any(part == "mime_type" for part in e.get("loc", ())) for e in errors)
 
 
-def _validation_problem(exc: ValidationError):
-    raw = exc.errors()
+def _validation_problem(raw: list[dict]) -> Response:
     flat = [
         {"field": ".".join(str(p) for p in e.get("loc", ())), "message": e.get("msg", "")}
         for e in raw
@@ -73,36 +66,37 @@ def _validation_problem(exc: ValidationError):
     )
 
 
-def create_router(svc: Any) -> APIRouter:
-    router = APIRouter()
+class _IngestRoute(APIRoute):
+    """Route class that converts RequestValidationError to problem+json.
 
-    @router.post(
-        "/ingest",
-        status_code=202,
-        openapi_extra={
-            "requestBody": {
-                "required": True,
-                "content": {"application/json": {"schema": _INGEST_BODY_SCHEMA}},
-            }
-        },
-    )
+    FastAPI validates the typed body before calling the endpoint function.
+    By wrapping the route handler here we intercept RequestValidationError
+    before it reaches the app-level 422 handler, preserving the 415/422
+    distinction for ingest without needing openapi_extra.
+    """
+
+    def get_route_handler(self) -> Callable:
+        original = super().get_route_handler()
+
+        async def handler(request: Any) -> Any:
+            try:
+                return await original(request)
+            except RequestValidationError as exc:
+                return _validation_problem(exc.errors())
+
+        return handler
+
+
+def create_router(svc: Any) -> APIRouter:
+    router = APIRouter(route_class=_IngestRoute)
+
+    @router.post("/ingest", status_code=202)
     async def create_document(
-        request: Request,
+        body: IngestRequest,
         x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
     ):
         try:
-            body = await request.json()
-        except Exception:
-            return problem(415, HttpErrorCode.INGEST_MIME_UNSUPPORTED, "JSON body required")
-        from pydantic import TypeAdapter
-
-        try:
-            payload = TypeAdapter(IngestRequest).validate_python(body)
-        except ValidationError as exc:
-            return _validation_problem(exc)
-
-        try:
-            doc_id = await svc.create(create_user=x_user_id, request=payload)
+            doc_id = await svc.create(create_user=x_user_id, request=body)
         except MimeNotAllowed:
             return problem(415, HttpErrorCode.INGEST_MIME_UNSUPPORTED, "Unsupported media type")
         except FileTooLarge:
