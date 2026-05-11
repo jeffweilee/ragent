@@ -111,6 +111,23 @@ def test_upload_missing_file_returns_422():
     assert resp.status_code == 422
 
 
+def test_upload_file_too_large_via_size_attr_returns_413(monkeypatch):
+    """Early rejection via file.size avoids reading the payload into memory."""
+    import ragent.routers.admin_ingest as mod
+
+    monkeypatch.setattr(mod, "_MAX_UPLOAD_BYTES", 5)
+    client, svc = _make_client()
+    resp = client.post(
+        "/ingest/v1/upload",
+        data=_FORM,
+        files=[("file", ("big.md", b"x" * 10, "text/plain"))],
+        headers={"X-User-Id": "admin"},
+    )
+    assert resp.status_code == 413
+    assert resp.json()["error_code"] == "INGEST_FILE_TOO_LARGE"
+    svc.create_from_upload.assert_not_called()
+
+
 def test_upload_optional_fields_default_to_none():
     svc = AsyncMock()
     svc.create_from_upload.return_value = _DOC_ID
