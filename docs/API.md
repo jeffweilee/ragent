@@ -2,10 +2,11 @@
 
 All endpoints return RFC 9457 problem+json on errors. `X-User-Id` header is recorded for audit in Phase 1.
 
-## Ingest (v2 — JSON only)
+## Ingest
 
 `POST /ingest` accepts a JSON body with discriminator `ingest_type ∈ {inline, file}`.
-Supported MIME types (`content_type`): `text/plain`, `text/markdown`, `text/html`. CSV is no longer accepted.
+`POST /ingest/v1/upload` accepts `multipart/form-data` (admin convenience — server handles MinIO staging).
+Supported MIME types (`mime_type`): `text/plain`, `text/markdown`, `text/html`. CSV is no longer accepted.
 
 ### `POST /ingest` — `ingest_type=inline` (content in body)
 
@@ -115,6 +116,45 @@ Cascade-deletes chunks from ES and all plugin stores.
 curl -X DELETE http://localhost:8000/ingest/01J9ABCDEFGHJKMNPQRSTVWXYZ
 # 204 No Content
 ```
+
+### `POST /ingest/v1/upload` — Multipart file upload (admin)
+
+Admin convenience path: the caller POSTs file bytes directly; the server stages them to the default MinIO site and enqueues the pipeline — identical downstream behaviour to `ingest_type=inline` (server owns the object; `DELETE` cleans it up).
+
+Cap: `INGEST_INLINE_MAX_BYTES` (default 50 MB). When the client includes `Content-Length` for the part, the size is rejected before the file is read into memory.
+
+```bash
+curl -X POST http://localhost:8000/ingest/v1/upload \
+  -H "X-User-Id: user-123" \
+  -F "file=@report.md;type=text/markdown" \
+  -F "source_id=DOC-123" \
+  -F "source_app=admin-cli" \
+  -F "source_title=Q3 OKR Planning" \
+  -F "mime_type=text/markdown" \
+  -F "source_url=https://wiki.example/q3-okr" \
+  -F "source_meta=engineering"
+```
+
+```json
+// 202 Accepted
+{ "document_id": "01J9ABCDEFGHJKMNPQRSTVWXYZ" }
+```
+
+**Form fields:**
+
+| Field | Required | Notes |
+|---|---|---|
+| `file` | Yes | File bytes (any MIME in allow-list) |
+| `source_id` | Yes | Caller-supplied document identifier |
+| `source_app` | Yes | Application namespace |
+| `source_title` | Yes | Human-readable title |
+| `mime_type` | Yes | Must be `text/plain`, `text/markdown`, or `text/html` |
+| `source_meta` | No | Opaque label, max 1024 chars |
+| `source_url` | No | Origin URL, max 2048 chars |
+
+**Errors:**
+- `413 INGEST_FILE_TOO_LARGE` — file exceeds `INGEST_INLINE_MAX_BYTES`.
+- `422` — missing/invalid form fields (FastAPI validation).
 
 ---
 
