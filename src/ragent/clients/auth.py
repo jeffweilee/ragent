@@ -21,7 +21,7 @@ class TokenManager:
     ) -> None:
         if j1_token is None and k8s_sa_token_path is None:
             raise ValueError("Either j1_token or k8s_sa_token_path must be provided")
-        self._url = auth_url.rstrip("/") + "/auth/api/accesstoken"
+        self._url = auth_url
         self._j1_token = j1_token
         self._k8s_path = k8s_sa_token_path
         self._http = http

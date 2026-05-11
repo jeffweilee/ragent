@@ -7,12 +7,14 @@ because `content-type: multipart/...` cannot satisfy the JSON discriminator.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Annotated, Any
 
 import structlog
-from fastapi import APIRouter, Header, Query, Request, Response
+from fastapi import APIRouter, Header, Query, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import ValidationError
+from fastapi.routing import APIRoute
 
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
@@ -31,8 +33,7 @@ def _is_mime_error(errors: list[dict]) -> bool:
     return any(any(part == "mime_type" for part in e.get("loc", ())) for e in errors)
 
 
-def _validation_problem(exc: ValidationError):
-    raw = exc.errors()
+def _validation_problem(raw: list[dict]) -> Response:
     flat = [
         {"field": ".".join(str(p) for p in e.get("loc", ())), "message": e.get("msg", "")}
         for e in raw
@@ -65,27 +66,37 @@ def _validation_problem(exc: ValidationError):
     )
 
 
+class _IngestRoute(APIRoute):
+    """Route class that converts RequestValidationError to problem+json.
+
+    FastAPI validates the typed body before calling the endpoint function.
+    By wrapping the route handler here we intercept RequestValidationError
+    before it reaches the app-level 422 handler, preserving the 415/422
+    distinction for ingest without needing openapi_extra.
+    """
+
+    def get_route_handler(self) -> Callable:
+        original = super().get_route_handler()
+
+        async def handler(request: Any) -> Any:
+            try:
+                return await original(request)
+            except RequestValidationError as exc:
+                return _validation_problem(exc.errors())
+
+        return handler
+
+
 def create_router(svc: Any) -> APIRouter:
-    router = APIRouter()
+    router = APIRouter(route_class=_IngestRoute)
 
     @router.post("/ingest", status_code=202)
     async def create_document(
-        request: Request,
+        body: IngestRequest,
         x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
     ):
         try:
-            body = await request.json()
-        except Exception:
-            return problem(415, HttpErrorCode.INGEST_MIME_UNSUPPORTED, "JSON body required")
-        from pydantic import TypeAdapter
-
-        try:
-            payload = TypeAdapter(IngestRequest).validate_python(body)
-        except ValidationError as exc:
-            return _validation_problem(exc)
-
-        try:
-            doc_id = await svc.create(create_user=x_user_id, request=payload)
+            doc_id = await svc.create(create_user=x_user_id, request=body)
         except MimeNotAllowed:
             return problem(415, HttpErrorCode.INGEST_MIME_UNSUPPORTED, "Unsupported media type")
         except FileTooLarge:
@@ -102,7 +113,10 @@ def create_router(svc: Any) -> APIRouter:
         return JSONResponse({"document_id": doc_id}, status_code=202)
 
     @router.get("/ingest/{document_id}")
-    async def get_document(document_id: str):
+    async def get_document(
+        document_id: str,
+        x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+    ):
         doc = await svc.get(document_id)
         if doc is None:
             logger.info(
@@ -128,7 +142,10 @@ def create_router(svc: Any) -> APIRouter:
         }
 
     @router.delete("/ingest/{document_id}", status_code=204)
-    async def delete_document(document_id: str):
+    async def delete_document(
+        document_id: str,
+        x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+    ):
         await svc.delete(document_id)
         return Response(status_code=204)
 
@@ -136,6 +153,7 @@ def create_router(svc: Any) -> APIRouter:
     async def list_documents(
         after: str | None = Query(None),
         limit: int = Query(100),
+        x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
     ):
         result = await svc.list(after=after, limit=limit)
         items = [
