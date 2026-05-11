@@ -360,7 +360,8 @@ Runs the full retrieval pipeline (embed → kNN + BM25 → RRF join → source h
       "source_title": "Q3 OKR Planning",
       "source_url":   "https://wiki.example/q3-okr",
       "mime_type":    "text/markdown",
-      "excerpt":      "...truncated to EXCERPT_MAX_CHARS..."
+      "excerpt":      "...truncated to EXCERPT_MAX_CHARS...",
+      "score":        0.87
     }
   ]
 }

@@ -51,6 +51,7 @@ def doc_to_source_entry(doc: Any) -> dict:
         "source_url": meta.get("source_url"),
         "mime_type": meta.get("mime_type"),
         "excerpt": excerpt_src[:_EXCERPT_MAX_CHARS],
+        "score": doc.score if hasattr(doc, "score") else None,
     }
 
 

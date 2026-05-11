@@ -370,3 +370,9 @@ v2 replaces the underlying behavior in C2–C6):
 | # | Category | Task | Spec | Status | Owner |
 |---|---|---|:-:|:-:|---|
 | T-EF.4 | Behavioral | • **Achieve:** Enforce `top_k` as a hard post-pipeline cap in `run_retrieval()` — Haystack's `DocumentJoiner` and `_Reranker` use their init `top_k` and may return more results than the per-request value.<br>• **Deliver:** `src/ragent/pipelines/chat.py` (`docs = docs[:top_k]` after pipeline output); `tests/unit/test_retrieve_router.py` (three new tests: hard cap, cap after min_score, top_k=None returns all). | B7 | [x] | Dev |
+
+### score field in retrieve response (branch `claude/fix-top-k-cap`) — 2026-05-11
+
+| # | Category | Task | Spec | Status | Owner |
+|---|---|---|:-:|:-:|---|
+| T-EF.5 | Behavioral | • **Achieve:** Expose retrieval score in `POST /retrieve` chunk response.<br>• **Deliver:** `score: float | None` added to `ChunkEntry` in `routers/retrieve.py`; `doc_to_source_entry()` in `pipelines/chat.py` includes `"score": doc.score`; two new tests (score present, score=None). | §3.4.4 | [x] | Dev |

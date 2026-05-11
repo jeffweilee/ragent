@@ -64,6 +64,27 @@ def _client_capture(app, monkeypatch, calls):
 # ---------------------------------------------------------------------------
 
 
+def test_chunk_response_includes_score(app, monkeypatch):
+    doc = _make_doc()
+    client = _client(app, monkeypatch, [doc])
+    resp = client.post("/retrieve", json={"query": "test"})
+    assert resp.status_code == 200
+    chunk = resp.json()["chunks"][0]
+    assert chunk["score"] == pytest.approx(0.9)
+
+
+def test_chunk_response_score_none_when_not_set(app, monkeypatch):
+    doc = SimpleNamespace(
+        meta={**_make_doc().meta},
+        content="x",
+        score=None,
+    )
+    client = _client(app, monkeypatch, [doc])
+    resp = client.post("/retrieve", json={"query": "test"})
+    chunk = resp.json()["chunks"][0]
+    assert chunk["score"] is None
+
+
 def test_chunk_response_includes_source_meta(app, monkeypatch):
     doc = _make_doc(source_meta="engineering")
     client = _client(app, monkeypatch, [doc])
@@ -102,6 +123,7 @@ def test_response_has_all_chunk_fields(app, monkeypatch):
         "source_url",
         "mime_type",
         "excerpt",
+        "score",
     ):
         assert field in chunk, f"missing field: {field}"
 
