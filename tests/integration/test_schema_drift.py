@@ -1,8 +1,7 @@
 """T0.8b — schema.sql and alembic upgrade head must produce identical schemas."""
 
-import os
 import re
-import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -52,15 +51,22 @@ def _apply_schema_sql(dsn: str) -> None:
 
 
 def _apply_alembic(dsn: str) -> None:
-    from pathlib import Path
+    import os
 
-    subprocess.run(
-        ["uv", "run", "alembic", "upgrade", "head"],
-        env={**os.environ, "MARIADB_DSN": dsn},
-        cwd=str(Path(__file__).parents[2]),
-        check=True,
-        capture_output=True,
-    )
+    from alembic import command
+    from alembic.config import Config
+
+    cfg = Config(str(Path(__file__).parents[2] / "alembic.ini"))
+    # alembic/env.py reads MARIADB_DSN from os.environ; set it for this process.
+    old = os.environ.get("MARIADB_DSN")
+    os.environ["MARIADB_DSN"] = dsn
+    try:
+        command.upgrade(cfg, "head")
+    finally:
+        if old is None:
+            os.environ.pop("MARIADB_DSN", None)
+        else:
+            os.environ["MARIADB_DSN"] = old
 
 
 @pytest.fixture(scope="module")

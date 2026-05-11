@@ -16,7 +16,7 @@ depends_on = None
 
 _SQL = (
     Path(__file__).parent.parent.parent / "migrations" / "006_documents_error_code.sql"
-).read_text()
+).read_text(encoding="utf-8")
 
 
 def _strip_comments(fragment: str) -> str:

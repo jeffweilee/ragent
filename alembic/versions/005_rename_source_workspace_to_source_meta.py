@@ -18,7 +18,7 @@ _SQL = (
     Path(__file__).parent.parent.parent
     / "migrations"
     / "005_rename_source_workspace_to_source_meta.sql"
-).read_text()
+).read_text(encoding="utf-8")
 
 
 def _strip_comments(fragment: str) -> str:
