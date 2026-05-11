@@ -306,4 +306,6 @@ def run_retrieval(
     docs = result.get("excerpt_truncator", {}).get("documents", [])
     if min_score is not None:
         docs = [d for d in docs if d.score is not None and d.score >= min_score]
+    if top_k is not None:
+        docs = docs[:top_k]
     return docs

@@ -226,3 +226,24 @@ def test_run_retrieval_score_threshold_not_passed_to_pipeline():
     call_inputs = pipeline.run.call_args[0][0]
     for component_inputs in call_inputs.values():
         assert "score_threshold" not in component_inputs
+
+
+def test_run_retrieval_top_k_caps_output_regardless_of_pipeline():
+    """Hard cap enforced post-pipeline — joiner may return more than top_k."""
+    docs = [_doc_with_score(float(i)) for i in range(13)]  # pipeline returns 13
+    result = run_retrieval(_fake_pipeline(docs), query="q", top_k=10)
+    assert len(result) == 10
+
+
+def test_run_retrieval_top_k_none_returns_all():
+    docs = [_doc_with_score(float(i)) for i in range(13)]
+    result = run_retrieval(_fake_pipeline(docs), query="q", top_k=None)
+    assert len(result) == 13
+
+
+def test_run_retrieval_top_k_applied_after_min_score():
+    """min_score filters first, then top_k caps — user gets top K above threshold."""
+    docs = [_doc_with_score(0.9), _doc_with_score(0.8), _doc_with_score(0.1), _doc_with_score(0.7)]
+    result = run_retrieval(_fake_pipeline(docs), query="q", top_k=2, min_score=0.5)
+    assert len(result) == 2
+    assert all(d.score >= 0.5 for d in result)
