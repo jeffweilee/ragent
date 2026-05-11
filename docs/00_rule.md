@@ -162,6 +162,29 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 
 ---
 
+### API Endpoint Naming & Versioning
+
+- **Rule: All business API paths carry a `/v<N>` version segment at position `/<resource>/v<N>[/<rest>]`.**
+  - **Format:** `/<resource>/v<N>` for collection operations; `/<resource>/v<N>/{id}` for item operations; `/<resource>/v<N>/<sub-resource>` for nested actions.
+  - **Current surface:** `POST /ingest/v1`, `GET /ingest/v1/{id}`, `DELETE /ingest/v1/{id}`, `GET /ingest/v1`, `POST /chat/v1`, `POST /chat/v1/stream`, `POST /retrieve/v1`, `POST /mcp/v1/tools/rag`.
+  - **Excluded (no version segment):** Infrastructure endpoints `/livez`, `/readyz`, `/startupz`, `/metrics` — these are process health surfaces, not business API.
+
+- **Rule: Resource names are lowercase, hyphen-separated nouns. The version token is `v` followed by a positive integer — no suffix variants (`v1`, never `v1.0`, `v1-beta`, `v1_stable`).**
+
+- **Rule: The version segment lives in the router prefix, never in individual route decorators.**
+  - **Action:** Declare `APIRouter(prefix="/<resource>/v<N>")` and write routes relative to that prefix (`""`, `"/{id}"`, `"/stream"`). Putting the full path in each decorator (e.g. `@router.post("/chat/v1")`) is prohibited — it scatters the version across N decorators and makes a version bump N error-prone edits.
+  - **Rationale:** A single prefix change bumps all routes in the router atomically.
+
+- **Rule: Introducing a new version (`v2`, `v3`) means a new router factory (`create_<resource>_v<N>_router()`) mounted at the new prefix alongside the old one in `bootstrap/app.py`. The old version stays live until explicitly decommissioned in a planned commit.**
+  - **Prohibition:** Do not increment the version in place on a live router — that silently breaks every client pinned to the old path.
+
+- **Rule: Any new business endpoint ships under at least `/v1`. An endpoint without a version segment is a spec drift bug — treat it the same as an undocumented public API.**
+
+- **Verification:** The test `tests/unit/test_api_versioning.py` asserts that every route registered on the FastAPI app (via `app.routes`) whose path does not match the infrastructure set (`/livez`, `/readyz`, `/startupz`, `/metrics`) satisfies `re.match(r"^/[a-z][a-z0-9-]*/v\d+", path)`. This test must pass before every commit that adds or modifies a router registration in `bootstrap/app.py`.
+
+---
+
+
 ### API Error Honesty: Domain Code Must Survive to the Wire
 
 - **Rule**: API responses for non-2xx status codes **must** expose the originating domain `error_code`. The global FastAPI exception handler **must not** collapse typed domain exceptions into `INTERNAL_ERROR`.
