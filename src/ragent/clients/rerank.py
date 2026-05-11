@@ -14,6 +14,8 @@ from ragent.errors.upstream import classify_upstream_error
 logger = structlog.get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
 
+_SUCCESS_CODE = 96200
+
 
 class RerankClient:
     def __init__(
@@ -58,7 +60,13 @@ class RerankClient:
                     )
                     span.set_attribute("http.status_code", getattr(resp, "status_code", 0))
                     resp.raise_for_status()
-                    results = resp.json()["returnData"]
+                    data = resp.json()
+                    if data.get("returnCode") != _SUCCESS_CODE:
+                        raise ValueError(
+                            f"Unexpected returnCode: {data.get('returnCode')}. "
+                            f"Message: {data.get('returnMessage')}"
+                        )
+                    results = data["returnData"]
                     logger.info(
                         "rerank.call",
                         peer_service="rerank",

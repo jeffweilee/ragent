@@ -103,6 +103,22 @@ def test_rerank_wraps_timeout_as_upstream_timeout_error():
     assert http.post.call_count == 3
 
 
+def test_rerank_unexpected_return_code_raises():
+    http = MagicMock()
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.json.return_value = {"returnCode": 50001, "returnMessage": "model error", "returnData": []}
+    http.post.return_value = resp
+    client = RerankClient(
+        api_url="https://rerank.example.com",
+        http=http,
+        get_token=lambda: "tok",
+        sleep=lambda s: None,
+    )
+    with pytest.raises(UpstreamServiceError):
+        client.rerank(query="q", texts=["x"], top_k=1)
+
+
 def test_rerank_retries_3_times_on_error():
     """Successful retry on 3rd attempt returns result without raising."""
     http = MagicMock()

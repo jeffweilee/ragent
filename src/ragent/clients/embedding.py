@@ -93,7 +93,10 @@ class EmbeddingClient:
                     resp.raise_for_status()
                     data = resp.json()
                     if data.get("returnCode") != _SUCCESS_CODE:
-                        raise ValueError(f"Unexpected returnCode: {data.get('returnCode')}")
+                        raise ValueError(
+                            f"Unexpected returnCode: {data.get('returnCode')}. "
+                            f"Message: {data.get('returnMessage')}"
+                        )
                     out = [item["embedding"] for item in data["returnData"]]
                     _validate_vectors(out)
                     if out and isinstance(out[0], list):
