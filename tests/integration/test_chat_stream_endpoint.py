@@ -43,7 +43,7 @@ def test_stream_emits_delta_then_done():
     app = _make_app(stream_deltas=["Hello", " world"])
     with TestClient(app) as client:
         resp = client.post(
-            "/chat/stream",
+            "/chat/v1/stream",
             json={"messages": [{"role": "user", "content": "hi"}]},
             headers={"X-User-Id": "alice"},
         )
@@ -59,7 +59,7 @@ def test_stream_done_event_has_full_body():
     app = _make_app(stream_deltas=["Hi"])
     with TestClient(app) as client:
         resp = client.post(
-            "/chat/stream",
+            "/chat/v1/stream",
             json={"messages": [{"role": "user", "content": "hi"}]},
             headers={"X-User-Id": "alice"},
         )
@@ -75,7 +75,7 @@ def test_stream_error_emits_error_event():
     app = _make_app(llm_error=Exception("LLM down"))
     with TestClient(app) as client:
         resp = client.post(
-            "/chat/stream",
+            "/chat/v1/stream",
             json={"messages": [{"role": "user", "content": "hi"}]},
             headers={"X-User-Id": "alice"},
         )
@@ -89,7 +89,7 @@ def test_stream_sources_null_on_empty_retrieval():
     app = _make_app(retrieval_docs=[])
     with TestClient(app) as client:
         resp = client.post(
-            "/chat/stream",
+            "/chat/v1/stream",
             json={"messages": [{"role": "user", "content": "hi"}]},
             headers={"X-User-Id": "alice"},
         )
@@ -128,7 +128,7 @@ def test_chat_stream_injects_retrieved_context_into_llm_messages():
 
     with TestClient(app) as client:
         client.post(
-            "/chat/stream",
+            "/chat/v1/stream",
             json={"messages": [{"role": "user", "content": "stream question"}]},
             headers={"X-User-Id": "alice"},
         )

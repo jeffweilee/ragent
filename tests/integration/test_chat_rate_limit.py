@@ -40,7 +40,7 @@ def test_requests_under_limit_succeed():
     with TestClient(app) as client:
         for _ in range(3):
             resp = client.post(
-                "/chat",
+                "/chat/v1",
                 json={"messages": [{"role": "user", "content": "hi"}]},
                 headers={"X-User-Id": "alice"},
             )
@@ -52,12 +52,12 @@ def test_request_over_limit_returns_429():
     with TestClient(app) as client:
         for _ in range(2):
             client.post(
-                "/chat",
+                "/chat/v1",
                 json={"messages": [{"role": "user", "content": "hi"}]},
                 headers={"X-User-Id": "alice"},
             )
         resp = client.post(
-            "/chat",
+            "/chat/v1",
             json={"messages": [{"role": "user", "content": "hi"}]},
             headers={"X-User-Id": "alice"},
         )
@@ -72,12 +72,12 @@ def test_different_users_have_independent_budgets():
     app, _ = _make_app(limit=1)
     with TestClient(app) as client:
         client.post(
-            "/chat",
+            "/chat/v1",
             json={"messages": [{"role": "user", "content": "hi"}]},
             headers={"X-User-Id": "alice"},
         )
         resp = client.post(
-            "/chat",
+            "/chat/v1",
             json={"messages": [{"role": "user", "content": "hi"}]},
             headers={"X-User-Id": "bob"},
         )
@@ -88,12 +88,12 @@ def test_stream_also_rate_limited():
     app, _ = _make_app(limit=1)
     with TestClient(app) as client:
         client.post(
-            "/chat/stream",
+            "/chat/v1/stream",
             json={"messages": [{"role": "user", "content": "hi"}]},
             headers={"X-User-Id": "alice"},
         )
         resp = client.post(
-            "/chat/stream",
+            "/chat/v1/stream",
             json={"messages": [{"role": "user", "content": "hi"}]},
             headers={"X-User-Id": "alice"},
         )
@@ -104,14 +104,14 @@ def test_window_reset_allows_new_requests():
     app, fake_redis = _make_app(limit=1)
     with TestClient(app) as client:
         client.post(
-            "/chat",
+            "/chat/v1",
             json={"messages": [{"role": "user", "content": "hi"}]},
             headers={"X-User-Id": "alice"},
         )
         # Simulate window expiry by flushing the rate limit key
         fake_redis.flushall()
         resp = client.post(
-            "/chat",
+            "/chat/v1",
             json={"messages": [{"role": "user", "content": "hi"}]},
             headers={"X-User-Id": "alice"},
         )

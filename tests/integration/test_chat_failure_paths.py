@@ -77,7 +77,7 @@ def _post_chat(client: TestClient, **over):
         "provider": "openai",
     }
     body.update(over)
-    return client.post("/chat", json=body, headers={"X-User-Id": "u1"})
+    return client.post("/chat/v1", json=body, headers={"X-User-Id": "u1"})
 
 
 # ---------------------------------------------------------------------------
@@ -173,7 +173,7 @@ def test_chat_stream_emits_error_event_on_llm_failure():
     app = _build_app(llm_client=llm, retrieval_pipeline=_ok_retrieval())
     with TestClient(app, raise_server_exceptions=False) as client:
         resp = client.post(
-            "/chat/stream",
+            "/chat/v1/stream",
             json={
                 "messages": [{"role": "user", "content": "hi"}],
                 "model": "m",
@@ -239,7 +239,7 @@ def test_chat_stream_rate_limit_precedes_upstream():
     )
     app = _build_app(llm_client=llm, retrieval_pipeline=_ok_retrieval(), rate_limiter=rate_limiter)
     resp = _client(app).post(
-        "/chat/stream",
+        "/chat/v1/stream",
         json={"messages": [{"role": "user", "content": "x"}], "model": "m", "provider": "openai"},
         headers={"X-User-Id": "u1"},
     )

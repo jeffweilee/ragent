@@ -31,7 +31,7 @@ def test_chat_returns_200_with_correct_shape():
     app, _ = _make_app()
     with TestClient(app) as client:
         resp = client.post(
-            "/chat",
+            "/chat/v1",
             json={"messages": [{"role": "user", "content": "hello"}]},
             headers={"X-User-Id": "alice"},
         )
@@ -48,7 +48,7 @@ def test_chat_sources_null_when_retrieval_empty():
     app, _ = _make_app(retrieval_docs=[])
     with TestClient(app) as client:
         resp = client.post(
-            "/chat",
+            "/chat/v1",
             json={"messages": [{"role": "user", "content": "hello"}]},
             headers={"X-User-Id": "alice"},
         )
@@ -72,7 +72,7 @@ def test_chat_sources_populated_with_doc_metadata():
     app, _ = _make_app(retrieval_docs=[doc])
     with TestClient(app) as client:
         resp = client.post(
-            "/chat",
+            "/chat/v1",
             json={"messages": [{"role": "user", "content": "hello"}]},
             headers={"X-User-Id": "alice"},
         )
@@ -88,7 +88,7 @@ def test_chat_sources_populated_with_doc_metadata():
 def test_chat_missing_messages_returns_422():
     app, _ = _make_app()
     with TestClient(app) as client:
-        resp = client.post("/chat", json={}, headers={"X-User-Id": "alice"})
+        resp = client.post("/chat/v1", json={}, headers={"X-User-Id": "alice"})
     assert resp.status_code == 422
 
 
@@ -96,7 +96,7 @@ def test_chat_invalid_provider_returns_422():
     app, _ = _make_app()
     with TestClient(app) as client:
         resp = client.post(
-            "/chat",
+            "/chat/v1",
             json={"messages": [{"role": "user", "content": "hi"}], "provider": "anthropic"},
             headers={"X-User-Id": "alice"},
         )
@@ -120,7 +120,7 @@ def test_chat_injects_retrieved_context_into_llm_messages():
 
     with TestClient(app) as client:
         client.post(
-            "/chat",
+            "/chat/v1",
             json={"messages": [{"role": "user", "content": "What is the answer?"}]},
             headers={"X-User-Id": "alice"},
         )
@@ -143,7 +143,7 @@ def test_chat_no_docs_uses_default_system_prompt_unchanged_and_does_not_wrap_use
 
     with TestClient(app) as client:
         client.post(
-            "/chat",
+            "/chat/v1",
             json={"messages": [{"role": "user", "content": "mystery question"}]},
             headers={"X-User-Id": "alice"},
         )

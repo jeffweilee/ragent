@@ -69,7 +69,7 @@ def test_http_delete_invokes_fan_out_delete_once_for_ready_doc() -> None:
     svc = IngestService(repo=repo, storage=storage, broker=MagicMock(), registry=registry)
     client = _make_app(svc)
 
-    resp = client.delete("/ingest/DOC123", headers={"X-User-Id": "alice"})
+    resp = client.delete("/ingest/v1/DOC123", headers={"X-User-Id": "alice"})
 
     assert resp.status_code == 204
     assert plugin.deleted == ["DOC123"], "fan_out_delete must dispatch plugin.delete exactly once"
@@ -101,7 +101,7 @@ def test_delete_runs_fan_out_before_row_delete() -> None:
     svc = IngestService(repo=repo, storage=MagicMock(), broker=MagicMock(), registry=registry)
     client = _make_app(svc)
 
-    resp = client.delete("/ingest/DOCX", headers={"X-User-Id": "alice"})
+    resp = client.delete("/ingest/v1/DOCX", headers={"X-User-Id": "alice"})
 
     assert resp.status_code == 204
     assert call_order == ["fan_out_delete:DOCX", "repo.delete:DOCX"]
@@ -121,7 +121,7 @@ def test_delete_skips_fan_out_when_lock_unavailable() -> None:
     svc = IngestService(repo=repo, storage=MagicMock(), broker=MagicMock(), registry=registry)
     client = _make_app(svc)
 
-    resp = client.delete("/ingest/DOC1", headers={"X-User-Id": "alice"})
+    resp = client.delete("/ingest/v1/DOC1", headers={"X-User-Id": "alice"})
 
     assert resp.status_code == 204
     registry.fan_out_delete.assert_not_called()

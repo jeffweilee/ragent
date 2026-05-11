@@ -376,3 +376,11 @@ v2 replaces the underlying behavior in C2–C6):
 | # | Category | Task | Spec | Status | Owner |
 |---|---|---|:-:|:-:|---|
 | T-EF.5 | Behavioral | • **Achieve:** Expose retrieval score in `POST /retrieve` chunk response.<br>• **Deliver:** `score: float | None` added to `ChunkEntry` in `routers/retrieve.py`; `doc_to_source_entry()` in `pipelines/chat.py` includes `"score": doc.score`; two new tests (score present, score=None). | §3.4.4 | [x] | Dev |
+
+### API path versioning (branch `claude/add-api-versioning-7jm6C`) — 2026-05-11
+
+> Source: user request 2026-05-11. All business API paths must carry a `/v1` version segment.
+
+| # | Category | Task | Spec | Status | Owner |
+|---|---|---|:-:|:-:|---|
+| T-AV.1 | Behavioral | • **Achieve:** Add `/v1` version segment to all business API paths: `POST/GET/DELETE /ingest/v1[/{id}]`, `POST /chat/v1[/stream]`, `POST /retrieve/v1`, `POST /mcp/v1/tools/rag`.<br>• **Deliver:** `src/ragent/routers/{ingest,chat,retrieve,mcp}.py` — routers gain `prefix="/ingest/v1"` / `/chat/v1` / `/retrieve/v1` / `/mcp/v1`; route decorators drop the resource segment. All tests updated to new paths. Spec §3.4 / §4.1.2 path table updated. | §3.4 | [x] | Dev |

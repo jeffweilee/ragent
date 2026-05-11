@@ -10,7 +10,7 @@ from ragent.errors.problem import problem
 
 
 def create_mcp_router() -> APIRouter:
-    router = APIRouter(prefix="/mcp")
+    router = APIRouter(prefix="/mcp/v1")
 
     @router.post("/tools/rag")
     async def rag_tool() -> Response:

@@ -81,9 +81,9 @@ def _dedupe_by_document(docs: list[Any]) -> list[Any]:
 
 
 def create_retrieve_router(retrieval_pipeline: Any) -> APIRouter:
-    router = APIRouter()
+    router = APIRouter(prefix="/retrieve/v1")
 
-    @router.post("/retrieve", response_model=RetrieveResponse)
+    @router.post("", response_model=RetrieveResponse)
     async def retrieve(
         body: RetrieveRequest,
         x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,

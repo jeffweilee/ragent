@@ -67,7 +67,7 @@ def _client_capture(app, monkeypatch, calls):
 def test_chunk_response_includes_score(app, monkeypatch):
     doc = _make_doc()
     client = _client(app, monkeypatch, [doc])
-    resp = client.post("/retrieve", json={"query": "test"})
+    resp = client.post("/retrieve/v1", json={"query": "test"})
     assert resp.status_code == 200
     chunk = resp.json()["chunks"][0]
     assert chunk["score"] == pytest.approx(0.9)
@@ -80,7 +80,7 @@ def test_chunk_response_score_none_when_not_set(app, monkeypatch):
         score=None,
     )
     client = _client(app, monkeypatch, [doc])
-    resp = client.post("/retrieve", json={"query": "test"})
+    resp = client.post("/retrieve/v1", json={"query": "test"})
     chunk = resp.json()["chunks"][0]
     assert chunk["score"] is None
 
@@ -88,7 +88,7 @@ def test_chunk_response_score_none_when_not_set(app, monkeypatch):
 def test_chunk_response_includes_source_meta(app, monkeypatch):
     doc = _make_doc(source_meta="engineering")
     client = _client(app, monkeypatch, [doc])
-    resp = client.post("/retrieve", json={"query": "test"})
+    resp = client.post("/retrieve/v1", json={"query": "test"})
     assert resp.status_code == 200
     chunk = resp.json()["chunks"][0]
     assert chunk["source_meta"] == "engineering"
@@ -97,7 +97,7 @@ def test_chunk_response_includes_source_meta(app, monkeypatch):
 def test_chunk_response_source_meta_none_when_not_set(app, monkeypatch):
     doc = _make_doc(source_meta=None)
     client = _client(app, monkeypatch, [doc])
-    resp = client.post("/retrieve", json={"query": "test"})
+    resp = client.post("/retrieve/v1", json={"query": "test"})
     assert resp.status_code == 200
     chunk = resp.json()["chunks"][0]
     assert chunk["source_meta"] is None
@@ -110,7 +110,7 @@ def test_chunk_response_source_meta_none_when_not_set(app, monkeypatch):
 
 def test_response_has_all_chunk_fields(app, monkeypatch):
     client = _client(app, monkeypatch, [_make_doc()])
-    resp = client.post("/retrieve", json={"query": "q"})
+    resp = client.post("/retrieve/v1", json={"query": "q"})
     assert resp.status_code == 200
     chunk = resp.json()["chunks"][0]
     for field in (
@@ -130,7 +130,7 @@ def test_response_has_all_chunk_fields(app, monkeypatch):
 
 def test_empty_result_returns_empty_chunks_list(app, monkeypatch):
     client = _client(app, monkeypatch, [])
-    resp = client.post("/retrieve", json={"query": "q"})
+    resp = client.post("/retrieve/v1", json={"query": "q"})
     assert resp.status_code == 200
     assert resp.json() == {"chunks": []}
 
@@ -143,7 +143,7 @@ def test_empty_result_returns_empty_chunks_list(app, monkeypatch):
 def test_top_k_passed_to_run_retrieval(app, monkeypatch):
     calls: list = []
     client = _client_capture(app, monkeypatch, calls)
-    client.post("/retrieve", json={"query": "q", "top_k": 5})
+    client.post("/retrieve/v1", json={"query": "q", "top_k": 5})
     assert calls, "run_retrieval was not called"
     assert calls[0].get("top_k") == 5
 
@@ -153,19 +153,19 @@ def test_top_k_defaults_to_configured_value(app, monkeypatch):
 
     calls: list = []
     client = _client_capture(app, monkeypatch, calls)
-    client.post("/retrieve", json={"query": "q"})
+    client.post("/retrieve/v1", json={"query": "q"})
     assert calls[0].get("top_k") == DEFAULT_TOP_K
 
 
 def test_top_k_must_be_at_least_one(app, monkeypatch):
     client = _client(app, monkeypatch, [])
-    resp = client.post("/retrieve", json={"query": "q", "top_k": 0})
+    resp = client.post("/retrieve/v1", json={"query": "q", "top_k": 0})
     assert resp.status_code == 422
 
 
 def test_top_k_capped_at_200(app, monkeypatch):
     client = _client(app, monkeypatch, [])
-    resp = client.post("/retrieve", json={"query": "q", "top_k": 201})
+    resp = client.post("/retrieve/v1", json={"query": "q", "top_k": 201})
     assert resp.status_code == 422
 
 
@@ -177,27 +177,27 @@ def test_top_k_capped_at_200(app, monkeypatch):
 def test_min_score_passed_to_run_retrieval(app, monkeypatch):
     calls: list = []
     client = _client_capture(app, monkeypatch, calls)
-    client.post("/retrieve", json={"query": "q", "min_score": 0.5})
+    client.post("/retrieve/v1", json={"query": "q", "min_score": 0.5})
     assert calls[0].get("min_score") == pytest.approx(0.5)
 
 
 def test_min_score_defaults_to_none(app, monkeypatch):
     calls: list = []
     client = _client_capture(app, monkeypatch, calls)
-    client.post("/retrieve", json={"query": "q"})
+    client.post("/retrieve/v1", json={"query": "q"})
     assert calls[0].get("min_score") is None
 
 
 def test_min_score_must_be_non_negative(app, monkeypatch):
     client = _client(app, monkeypatch, [])
-    resp = client.post("/retrieve", json={"query": "q", "min_score": -0.1})
+    resp = client.post("/retrieve/v1", json={"query": "q", "min_score": -0.1})
     assert resp.status_code == 422
 
 
 def test_min_score_zero_accepted(app, monkeypatch):
     calls: list = []
     client = _client_capture(app, monkeypatch, calls)
-    resp = client.post("/retrieve", json={"query": "q", "min_score": 0.0})
+    resp = client.post("/retrieve/v1", json={"query": "q", "min_score": 0.0})
     assert resp.status_code == 200
     assert calls[0].get("min_score") == pytest.approx(0.0)
 
