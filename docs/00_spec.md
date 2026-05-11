@@ -40,7 +40,7 @@
 > - `inline` → `{ingest_type, mime_type, content: str, source_id, source_app, source_title, source_meta?, source_url?}`. `content` is UTF-8; size ceiling `INGEST_INLINE_MAX_BYTES` (default 10 MB) on the encoded byte length. API stages the content to MinIO `__default__` site.
 > - `file` → `{ingest_type, mime_type, minio_site, object_key, source_id, source_app, source_title, source_meta?, source_url?}`. API HEAD-probes `(minio_site, object_key)`; absent → 422 `INGEST_OBJECT_NOT_FOUND`; size > `INGEST_FILE_MAX_BYTES` (50 MB) → 413. **No copy** — worker reads from caller's bucket.
 >
-> **MIME allow-list:** `text/plain`, `text/markdown`, `text/html`. Anything else → 415 `INGEST_MIME_UNSUPPORTED`. **CSV is dropped** (was v1).
+> **MIME allow-list:** `text/plain`, `text/markdown`, `text/html`, `application/vnd.openxmlformats-officedocument.wordprocessingml.document` (DOCX), `application/vnd.openxmlformats-officedocument.presentationml.presentation` (PPTX). Anything else → 415 `INGEST_MIME_UNSUPPORTED`. **CSV is dropped** (was v1).
 >
 > **Source columns:** `source_id`, `source_app`, `source_title`, `source_meta?` (free-format ≤ 1024 chars; renamed from `source_workspace` per B35) **plus new `source_url`** (opaque ≤ 2048 chars, display-only in citations).
 >
@@ -135,6 +135,8 @@
 >    ├ text/plain    → DocumentSplitter (Haystack stock, by passage)
 >    ├ text/markdown → _MarkdownASTSplitter (mistletoe AST walk)
 >    ├ text/html     → _HtmlASTSplitter    (selectolax DOM walk)
+>    ├ docx          → _DocxASTSplitter   (python-docx; paragraphs + tables)
+>    ├ pptx          → _PptxASTSplitter   (python-pptx; one atom per slide)
 >    └ unclassified  → _RaiseUnroutable    (worker → FAILED + PIPELINE_UNROUTABLE)
 > → DocumentJoiner → _IdempotencyClean (ES delete by document_id)
 > → _BudgetChunker (1000 target / 1500 max / 100 overlap, mime-agnostic)
@@ -583,8 +585,8 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 | `.html` | `HTMLToDocument`         | `text/html`               | visible text, script/style stripped | **P1** |
 | `.csv`  | `CSVToDocument`          | `text/csv`                | row-as-document; rows packed by `RowMerger` to ~2 000 chars (B24); bounded by global 50 MB file limit (B2) | **P1** |
 | `.pdf`  | `PyPDFToDocument`        | `application/pdf`         | text-extractable only | P2 |
-| `.docx` | `DOCXToDocument`         | `application/vnd.openxmlformats-officedocument.wordprocessingml.document` | body + tables | P2 |
-| `.pptx` | `PPTXToDocument`         | `application/vnd.openxmlformats-officedocument.presentationml.presentation` | slide text + notes | P2 |
+| `.docx` | `_DocxASTSplitter`       | `application/vnd.openxmlformats-officedocument.wordprocessingml.document` | paragraphs + tables (python-docx) | **P1** |
+| `.pptx` | `_PptxASTSplitter`       | `application/vnd.openxmlformats-officedocument.presentationml.presentation` | one atom per slide (python-pptx) | **P1** |
 | `.xlsx` | `XLSXToDocument`         | `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` | active sheets | P2 |
 
 > 415 on unsupported MIME; 413 on > 50 MB. Image-only / scanned documents are not supported in any phase.

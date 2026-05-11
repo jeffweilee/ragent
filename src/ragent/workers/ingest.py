@@ -1,8 +1,9 @@
 """C4 / T2v.39 — V2 ingest worker.
 
 TX-A: claim PENDING (NOWAIT). Pipeline body runs outside any DB tx —
-worker fetches bytes from the right MinIO site, decodes UTF-8, feeds the
-v2 pipeline (``loader → splitter → [idempotency_clean] → chunker →
+worker fetches bytes from the right MinIO site, decodes UTF-8 for text
+mimes or passes raw bytes for binary mimes (DOCX/PPTX), feeds the v2
+pipeline (``loader → splitter → [idempotency_clean] → chunker →
 embedder → writer``). TX-B: commit terminal status. For ``ingest_type ==
 'inline'`` the staging object is best-effort deleted; ``ingest_type ==
 'file'`` is caller-owned, never deleted.
@@ -21,6 +22,7 @@ from anyio import to_thread
 from ragent.bootstrap.broker import broker
 from ragent.bootstrap.metrics import observe_pipeline_duration, record_pipeline_outcome
 from ragent.errors.codes import TaskErrorCode
+from ragent.pipelines.factory import BINARY_MIMES
 from ragent.pipelines.observability import IngestStepError, bind_ingest_context, log_ingest_step
 from ragent.repositories.document_repository import LockNotAvailable
 
@@ -70,33 +72,45 @@ async def ingest_pipeline_task(document_id: str) -> None:
         # rather than silently truncating the source document.
         expected_size = head[0] if head else None
         data = registry.get_object(site, doc.object_key, expected_size=expected_size)
-        try:
-            content = data.decode("utf-8")
-            decode_replacements = 0
-        except UnicodeDecodeError:
-            # Fall back to lossy decode but report how many invalid sequences
-            # were substituted (subtract genuine U+FFFD already in the source
-            # so legitimate text containing the replacement char isn't false-
-            # flagged as decode corruption).
-            content = data.decode("utf-8", errors="replace")
-            source_fffd = data.count(b"\xef\xbf\xbd")
-            decode_replacements = max(0, content.count("\ufffd") - source_fffd)
-            logger.warning(
-                "ingest.utf8_decode_replaced",
-                document_id=document_id,
-                replacement_count=decode_replacements,
-                size=len(data),
-            )
 
-        loader_kwargs = {
-            "content": content,
-            "mime_type": mime,
-            "document_id": document_id,
-            "source_url": doc.source_url,
-            "source_title": doc.source_title,
-            "source_app": doc.source_app,
-            "source_meta": doc.source_meta,
-        }
+        if mime in BINARY_MIMES:
+            loader_kwargs: dict = {
+                "content": "",
+                "content_bytes": data,
+                "mime_type": mime,
+                "document_id": document_id,
+                "source_url": doc.source_url,
+                "source_title": doc.source_title,
+                "source_app": doc.source_app,
+                "source_meta": doc.source_meta,
+            }
+        else:
+            try:
+                content = data.decode("utf-8")
+                decode_replacements = 0
+            except UnicodeDecodeError:
+                # Fall back to lossy decode but report how many invalid sequences
+                # were substituted (subtract genuine U+FFFD already in the source
+                # so legitimate text containing the replacement char isn't false-
+                # flagged as decode corruption).
+                content = data.decode("utf-8", errors="replace")
+                source_fffd = data.count(b"\xef\xbf\xbd")
+                decode_replacements = max(0, content.count("\ufffd") - source_fffd)
+                logger.warning(
+                    "ingest.utf8_decode_replaced",
+                    document_id=document_id,
+                    replacement_count=decode_replacements,
+                    size=len(data),
+                )
+            loader_kwargs = {
+                "content": content,
+                "mime_type": mime,
+                "document_id": document_id,
+                "source_url": doc.source_url,
+                "source_title": doc.source_title,
+                "source_app": doc.source_app,
+                "source_meta": doc.source_meta,
+            }
         result = container.ingest_pipeline.run({"loader": loader_kwargs})
         written = (result.get("writer") or {}).get("documents_written", 0)
         return written if isinstance(written, int) else len(written)

@@ -384,3 +384,12 @@ v2 replaces the underlying behavior in C2–C6):
 | # | Category | Task | Spec | Status | Owner |
 |---|---|---|:-:|:-:|---|
 | T-AV.1 | Behavioral | • **Achieve:** Add `/v1` version segment to all business API paths: `POST/GET/DELETE /ingest/v1[/{id}]`, `POST /chat/v1[/stream]`, `POST /retrieve/v1`, `POST /mcp/v1/tools/rag`.<br>• **Deliver:** `src/ragent/routers/{ingest,chat,retrieve,mcp}.py` — routers gain `prefix="/ingest/v1"` / `/chat/v1` / `/retrieve/v1` / `/mcp/v1`; route decorators drop the resource segment. All tests updated to new paths. Spec §3.4 / §4.1.2 path table updated. | §3.4 | [x] | Dev |
+
+## Binary Document Loaders (DOCX / PPTX)
+
+| # | Category | Task | Spec | Status | Owner |
+|---|---|:-:|:-:|:-:|---|
+| T-BL.1 | Red | • **Achieve:** Pin `_DocxASTSplitter` atom contract.<br>• **Deliver:** `tests/unit/test_docx_ast_splitter.py` — heading/paragraph/table atoms, blank paragraphs skipped, meta passthrough, empty doc → zero atoms, table raw_content is Markdown. | §4.2 | [x] | QA |
+| T-BL.2 | Red | • **Achieve:** Pin `_PptxASTSplitter` atom contract.<br>• **Deliver:** `tests/unit/test_pptx_ast_splitter.py` — one atom per slide, blank slide skipped, slide_number in meta, meta passthrough, empty presentation → zero atoms. | §4.2 | [x] | QA |
+| T-BL.3 | Green | • **Achieve:** Implement `_DocxASTSplitter` and `_PptxASTSplitter`.<br>• **Deliver:** `src/ragent/pipelines/factory.py` — both components; `IngestMime.DOCX`/`IngestMime.PPTX` enum values; `BINARY_MIMES` frozenset derived from `IngestMime`; `_TextLoader` accepts `content_bytes`; `_MimeAwareSplitter` routes via `IngestMime` enum constants; worker `BINARY_MIMES` branch skips UTF-8 decode; `python-docx`/`python-pptx` added as deps. | §4.2 | [x] | Dev |
+| T-BL.4 | Acceptance | • **Achieve:** `_MimeAwareSplitter` dispatch covers all new routes.<br>• **Deliver:** `tests/unit/test_pipeline_routing_v2.py` — DOCX and PPTX routes exercise the full dispatch path end-to-end. | §4.2 | [x] | QA |

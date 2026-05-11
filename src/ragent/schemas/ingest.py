@@ -24,6 +24,8 @@ class IngestMime(StrEnum):
     TEXT_PLAIN = "text/plain"
     TEXT_MARKDOWN = "text/markdown"
     TEXT_HTML = "text/html"
+    DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
 
 class _IngestBase(BaseModel):
