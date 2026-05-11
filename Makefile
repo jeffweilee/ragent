@@ -1,16 +1,6 @@
 .PHONY: check format lint test test-gate test-e2e-golden bootstrap doctor
 
-# One-time dev provisioning: install host binaries the gate needs but `uv`
-# can't ship. mysqldump is the canonical schema-drift differ; without it,
-# tests/integration/test_schema_drift.py hard-fails by design (see the
-# autouse _require_mysqldump fixture). Idempotent.
 bootstrap:
-	@if command -v mysqldump >/dev/null 2>&1; then \
-	  echo "mysqldump present — skipping mariadb-client install."; \
-	else \
-	  echo "Installing mariadb-client (provides mysqldump for schema-drift gate)..."; \
-	  sudo apt-get update -qq && sudo apt-get install -y mariadb-client; \
-	fi
 	uv sync --extra dev
 
 check: format lint test
