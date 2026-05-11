@@ -201,3 +201,83 @@ def test_list_ingest_unchanged():
     client, _ = _make_client(svc)
     resp = client.get("/ingest", headers={"X-User-Id": "alice"})
     assert resp.status_code == 200
+
+
+def test_list_passes_source_id_query_param():
+    from ragent.services.ingest_service import IngestListResult
+
+    svc = AsyncMock()
+    svc.list.return_value = IngestListResult(items=[], next_cursor=None)
+    client, _ = _make_client(svc)
+    client.get("/ingest?source_id=DOC-1", headers={"X-User-Id": "alice"})
+    call_kwargs = svc.list.call_args[1]
+    assert call_kwargs.get("source_id") == "DOC-1"
+
+
+def test_list_passes_source_app_query_param():
+    from ragent.services.ingest_service import IngestListResult
+
+    svc = AsyncMock()
+    svc.list.return_value = IngestListResult(items=[], next_cursor=None)
+    client, _ = _make_client(svc)
+    client.get("/ingest?source_app=confluence", headers={"X-User-Id": "alice"})
+    call_kwargs = svc.list.call_args[1]
+    assert call_kwargs.get("source_app") == "confluence"
+
+
+def test_list_response_schema_has_items_and_next_cursor():
+    import datetime
+
+    from ragent.repositories.document_repository import DocumentRow
+    from ragent.services.ingest_service import IngestListResult
+
+    doc = DocumentRow(
+        document_id="ID1",
+        create_user="alice",
+        source_id="S",
+        source_app="a",
+        source_title="T",
+        source_meta=None,
+        object_key="key",
+        status="READY",
+        attempt=1,
+        created_at=datetime.datetime.now(datetime.UTC),
+        updated_at=datetime.datetime.now(datetime.UTC),
+    )
+    svc = AsyncMock()
+    svc.list.return_value = IngestListResult(items=[doc], next_cursor=None)
+    client, _ = _make_client(svc)
+    resp = client.get("/ingest", headers={"X-User-Id": "alice"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "items" in body
+    assert "next_cursor" in body
+    item = body["items"][0]
+    for field in ("document_id", "status", "source_id", "source_app", "source_title", "updated_at"):
+        assert field in item, f"missing field: {field}"
+
+
+def test_get_document_response_includes_source_meta():
+    import datetime
+
+    from ragent.repositories.document_repository import DocumentRow
+
+    doc = DocumentRow(
+        document_id="ID1",
+        create_user="alice",
+        source_id="S",
+        source_app="a",
+        source_title="T",
+        source_meta="engineering",
+        object_key="key",
+        status="READY",
+        attempt=1,
+        created_at=datetime.datetime.now(datetime.UTC),
+        updated_at=datetime.datetime.now(datetime.UTC),
+    )
+    svc = AsyncMock()
+    svc.get.return_value = doc
+    client, _ = _make_client(svc)
+    resp = client.get("/ingest/ID1", headers={"X-User-Id": "alice"})
+    assert resp.status_code == 200
+    assert resp.json()["source_meta"] == "engineering"

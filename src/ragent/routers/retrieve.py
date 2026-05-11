@@ -7,11 +7,15 @@ from typing import Annotated, Any
 import structlog
 from fastapi import APIRouter, Header
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse
 from opentelemetry import trace
 from pydantic import BaseModel, Field, field_validator
 
-from ragent.pipelines.chat import build_es_filters, doc_to_source_entry, run_retrieval
+from ragent.pipelines.chat import (
+    DEFAULT_TOP_K,
+    build_es_filters,
+    doc_to_source_entry,
+    run_retrieval,
+)
 from ragent.schemas.ingest import SOURCE_META_MAX
 
 _FILTER_MAX_LEN = 64
@@ -24,6 +28,8 @@ class RetrieveRequest(BaseModel):
     query: str = Field(..., min_length=1)
     source_app: str | None = None
     source_meta: str | None = None
+    top_k: int = Field(default=DEFAULT_TOP_K, ge=1, le=200)
+    min_score: float | None = Field(default=None, ge=0.0)
     dedupe: bool = False
 
     @field_validator("source_app", mode="before")
@@ -45,6 +51,22 @@ class RetrieveRequest(BaseModel):
         return v
 
 
+class ChunkEntry(BaseModel):
+    document_id: str | None
+    source_app: str | None
+    source_id: str | None
+    source_meta: str | None
+    type: str
+    source_title: str | None
+    source_url: str | None
+    mime_type: str | None
+    excerpt: str
+
+
+class RetrieveResponse(BaseModel):
+    chunks: list[ChunkEntry]
+
+
 def _dedupe_by_document(docs: list[Any]) -> list[Any]:
     seen: set[str] = set()
     result = []
@@ -60,11 +82,11 @@ def _dedupe_by_document(docs: list[Any]) -> list[Any]:
 def create_retrieve_router(retrieval_pipeline: Any) -> APIRouter:
     router = APIRouter()
 
-    @router.post("/retrieve")
+    @router.post("/retrieve", response_model=RetrieveResponse)
     async def retrieve(
         body: RetrieveRequest,
         x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
-    ) -> JSONResponse:
+    ) -> RetrieveResponse:
         with _tracer.start_as_current_span("retrieve.request") as span:
             if x_user_id:
                 span.set_attribute("user_id", x_user_id)
@@ -76,6 +98,8 @@ def create_retrieve_router(retrieval_pipeline: Any) -> APIRouter:
                     retrieval_pipeline,
                     query=body.query,
                     filters=build_es_filters(body.source_app, body.source_meta),
+                    top_k=body.top_k,
+                    min_score=body.min_score,
                 )
                 p_span.set_attribute("result_count", len(docs))
                 logger.info(
@@ -94,6 +118,6 @@ def create_retrieve_router(retrieval_pipeline: Any) -> APIRouter:
                         input_count=input_count,
                         output_count=len(docs),
                     )
-            return JSONResponse({"chunks": [doc_to_source_entry(d) for d in docs]})
+            return RetrieveResponse(chunks=[ChunkEntry(**doc_to_source_entry(d)) for d in docs])
 
     return router

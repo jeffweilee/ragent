@@ -83,3 +83,25 @@ async def test_list_no_cursor_on_empty():
     result = await svc.list()
     assert result.items == []
     assert result.next_cursor is None
+
+
+async def test_list_passes_source_id_filter_to_repo():
+    svc, repo = _make_service([])
+    await svc.list(source_id="DOC-1")
+    call_kwargs = repo.list.call_args[1]
+    assert call_kwargs["source_id"] == "DOC-1"
+
+
+async def test_list_passes_source_app_filter_to_repo():
+    svc, repo = _make_service([])
+    await svc.list(source_app="confluence")
+    call_kwargs = repo.list.call_args[1]
+    assert call_kwargs["source_app"] == "confluence"
+
+
+async def test_list_source_filters_default_to_none():
+    svc, repo = _make_service([])
+    await svc.list()
+    call_kwargs = repo.list.call_args[1]
+    assert call_kwargs.get("source_id") is None
+    assert call_kwargs.get("source_app") is None

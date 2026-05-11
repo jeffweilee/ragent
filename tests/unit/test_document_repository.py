@@ -238,6 +238,42 @@ async def test_list_after_cursor_filters():
     assert results[0].document_id == "ID5"
 
 
+async def test_list_uses_desc_order_and_lt_cursor():
+    """Cursor for DESC ordering must use < (not >) and SQL must be DESC."""
+    engine, conn = _mock_engine(rows=[])
+    repo = DocumentRepository(engine)
+    await repo.list(after="ID4", limit=5)
+    call_args = conn.execute.call_args
+    sql_text = str(call_args[0][0])
+    assert "DESC" in sql_text.upper(), "expected ORDER BY … DESC"
+    assert "< :after" in sql_text or "< :cursor" in sql_text, "expected < cursor condition for DESC"
+
+
+async def test_list_source_id_filter_adds_where_clause():
+    engine, conn = _mock_engine(rows=[])
+    repo = DocumentRepository(engine)
+    await repo.list(after=None, limit=10, source_id="DOC-1")
+    sql_text = str(conn.execute.call_args[0][0])
+    assert "source_id" in sql_text
+
+
+async def test_list_source_app_filter_adds_where_clause():
+    engine, conn = _mock_engine(rows=[])
+    repo = DocumentRepository(engine)
+    await repo.list(after=None, limit=10, source_app="confluence")
+    sql_text = str(conn.execute.call_args[0][0])
+    assert "source_app" in sql_text
+
+
+async def test_list_source_id_and_source_app_combined():
+    engine, conn = _mock_engine(rows=[])
+    repo = DocumentRepository(engine)
+    await repo.list(after=None, limit=10, source_id="DOC-1", source_app="confluence")
+    sql_text = str(conn.execute.call_args[0][0])
+    assert "source_id" in sql_text
+    assert "source_app" in sql_text
+
+
 # ---------------------------------------------------------------------------
 # delete
 # ---------------------------------------------------------------------------
