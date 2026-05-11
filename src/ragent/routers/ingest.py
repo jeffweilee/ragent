@@ -16,7 +16,15 @@ from pydantic import ValidationError
 
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
-from ragent.schemas.ingest import IngestRequest
+from ragent.schemas.ingest import FileIngestRequest, InlineIngestRequest, IngestRequest
+
+_INGEST_BODY_SCHEMA = {
+    "oneOf": [
+        InlineIngestRequest.model_json_schema(),
+        FileIngestRequest.model_json_schema(),
+    ],
+    "discriminator": {"propertyName": "ingest_type"},
+}
 from ragent.services.ingest_service import (
     FileTooLarge,
     MimeNotAllowed,
@@ -68,7 +76,16 @@ def _validation_problem(exc: ValidationError):
 def create_router(svc: Any) -> APIRouter:
     router = APIRouter()
 
-    @router.post("/ingest", status_code=202)
+    @router.post(
+        "/ingest",
+        status_code=202,
+        openapi_extra={
+            "requestBody": {
+                "required": True,
+                "content": {"application/json": {"schema": _INGEST_BODY_SCHEMA}},
+            }
+        },
+    )
     async def create_document(
         request: Request,
         x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
@@ -102,7 +119,10 @@ def create_router(svc: Any) -> APIRouter:
         return JSONResponse({"document_id": doc_id}, status_code=202)
 
     @router.get("/ingest/{document_id}")
-    async def get_document(document_id: str):
+    async def get_document(
+        document_id: str,
+        x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+    ):
         doc = await svc.get(document_id)
         if doc is None:
             logger.info(
@@ -128,7 +148,10 @@ def create_router(svc: Any) -> APIRouter:
         }
 
     @router.delete("/ingest/{document_id}", status_code=204)
-    async def delete_document(document_id: str):
+    async def delete_document(
+        document_id: str,
+        x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+    ):
         await svc.delete(document_id)
         return Response(status_code=204)
 
@@ -136,6 +159,7 @@ def create_router(svc: Any) -> APIRouter:
     async def list_documents(
         after: str | None = Query(None),
         limit: int = Query(100),
+        x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
     ):
         result = await svc.list(after=after, limit=limit)
         items = [

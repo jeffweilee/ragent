@@ -382,7 +382,7 @@ def dev_env(
         "RAGENT_ENV": "dev",
         "RAGENT_AUTH_DISABLED": "true",
         "RAGENT_HOST": "127.0.0.1",
-        "AI_API_AUTH_URL": wiremock_url,
+        "AI_API_AUTH_URL": f"{wiremock_url}/auth/api/accesstoken",
         "AI_LLM_API_J1_TOKEN": "test-llm-j1",
         "AI_EMBEDDING_API_J1_TOKEN": "test-embedding-j1",
         "AI_RERANK_API_J1_TOKEN": "test-rerank-j1",

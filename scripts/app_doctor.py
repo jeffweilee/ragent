@@ -98,10 +98,10 @@ def check_tools() -> None:
     _section("Toolchain")
 
     py = sys.version_info
-    if py >= (3, 12):
-        _ok("python ≥ 3.12", f"{py.major}.{py.minor}.{py.micro}")
+    if py >= (3, 11):
+        _ok("python ≥ 3.11", f"{py.major}.{py.minor}.{py.micro}")
     else:
-        _fail("python ≥ 3.12", f"got {py.major}.{py.minor}.{py.micro}")
+        _fail("python ≥ 3.11", f"got {py.major}.{py.minor}.{py.micro}")
 
     if shutil.which("uv"):
         _ok("uv installed")
@@ -252,7 +252,7 @@ def check_mariadb() -> None:
         from sqlalchemy import create_engine, text
 
         # Force sync driver for the doctor — avoids a fresh asyncio loop here.
-        sync_dsn = dsn.replace("+aiomysql", "+pymysql").replace("mysql://", "mysql+pymysql://")
+        sync_dsn = dsn.replace("+aiomysql", "+pymysql")
         eng = create_engine(sync_dsn, pool_pre_ping=True)
         with eng.connect() as c:
             row = c.execute(text("SELECT VERSION()")).scalar()
@@ -264,7 +264,7 @@ def check_mariadb() -> None:
     def _alembic() -> str:
         from sqlalchemy import create_engine, text
 
-        sync_dsn = dsn.replace("+aiomysql", "+pymysql").replace("mysql://", "mysql+pymysql://")
+        sync_dsn = dsn.replace("+aiomysql", "+pymysql")
         eng = create_engine(sync_dsn)
         with eng.connect() as c:
             try:
@@ -474,7 +474,7 @@ def check_ai_endpoints() -> None:
         return
 
     def _exchange() -> str:
-        url = auth_url.rstrip("/") + "/auth/api/accesstoken"
+        url = auth_url
         with httpx.Client(timeout=5.0, verify=False) as c:
             resp = c.post(url, json={"key": j1})
         if resp.status_code >= 400:
