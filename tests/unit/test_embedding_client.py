@@ -43,14 +43,28 @@ def test_embed_post_shape():
     assert body.get("model") == "bge-m3"
 
 
-def test_embed_uses_bearer_token():
+def test_embed_uses_raw_token_no_bearer():
     http = _mock_http([[0.1]])
     client = EmbeddingClient(
         api_url="https://embed.example.com", http=http, get_token=lambda: "mytoken"
     )
     client.embed(["text"])
     headers = http.post.call_args[1]["headers"]
-    assert headers["Authorization"] == "Bearer mytoken"
+    assert headers["Authorization"] == "mytoken"
+
+
+def test_embed_custom_auth_header_name():
+    http = _mock_http([[0.1]])
+    client = EmbeddingClient(
+        api_url="https://embed.example.com",
+        http=http,
+        get_token=lambda: "mytoken",
+        auth_header_name="X-API-Key",
+    )
+    client.embed(["text"])
+    headers = http.post.call_args[1]["headers"]
+    assert "Authorization" not in headers
+    assert headers["X-API-Key"] == "mytoken"
 
 
 def test_embed_raises_on_bad_return_code():

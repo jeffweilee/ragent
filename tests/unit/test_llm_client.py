@@ -73,12 +73,26 @@ def test_stream_post_shape():
     assert body.get("stream_options", {}).get("include_usage") is True
 
 
-def test_stream_bearer_token():
+def test_stream_raw_token_no_bearer():
     http = _mock_streaming_http(["hi"])
     client = LLMClient(api_url="https://llm.example.com", http=http, get_token=lambda: "mytoken")
     list(client.stream(messages=[{"role": "user", "content": "q"}], model="m"))
     headers = http.post.call_args[1]["headers"]
-    assert headers["Authorization"] == "Bearer mytoken"
+    assert headers["Authorization"] == "mytoken"
+
+
+def test_stream_custom_auth_header_name():
+    http = _mock_streaming_http(["hi"])
+    client = LLMClient(
+        api_url="https://llm.example.com",
+        http=http,
+        get_token=lambda: "mytoken",
+        auth_header_name="X-API-Key",
+    )
+    list(client.stream(messages=[{"role": "user", "content": "q"}], model="m"))
+    headers = http.post.call_args[1]["headers"]
+    assert "Authorization" not in headers
+    assert headers["X-API-Key"] == "mytoken"
 
 
 def test_stream_timeout_passed():

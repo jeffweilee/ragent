@@ -39,14 +39,28 @@ def test_rerank_post_shape():
     assert body["top_k"] == 2
 
 
-def test_rerank_uses_bearer_token():
+def test_rerank_uses_raw_token_no_bearer():
     http = _mock_http([0.5])
     client = RerankClient(
         api_url="https://rerank.example.com", http=http, get_token=lambda: "secret"
     )
     client.rerank(query="q", texts=["x"], top_k=1)
     headers = http.post.call_args[1]["headers"]
-    assert headers["Authorization"] == "Bearer secret"
+    assert headers["Authorization"] == "secret"
+
+
+def test_rerank_custom_auth_header_name():
+    http = _mock_http([0.5])
+    client = RerankClient(
+        api_url="https://rerank.example.com",
+        http=http,
+        get_token=lambda: "secret",
+        auth_header_name="X-API-Key",
+    )
+    client.rerank(query="q", texts=["x"], top_k=1)
+    headers = http.post.call_args[1]["headers"]
+    assert "Authorization" not in headers
+    assert headers["X-API-Key"] == "secret"
 
 
 def test_rerank_raises_upstream_service_error_after_3_failed_retries():

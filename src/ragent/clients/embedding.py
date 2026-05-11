@@ -47,6 +47,7 @@ class EmbeddingClient:
         ingest_timeout: float | None = None,
         query_timeout: float | None = None,
         sleep: Callable[[float], None] = _time.sleep,
+        auth_header_name: str | None = None,
     ) -> None:
         self._url = api_url
         self._http = http
@@ -59,6 +60,9 @@ class EmbeddingClient:
             os.environ.get("EMBEDDER_QUERY_TIMEOUT_SECONDS", "10")
         )
         self._sleep = sleep
+        self._auth_header_name = auth_header_name or os.environ.get(
+            "EMBEDDING_AUTH_HEADER_NAME", "Authorization"
+        )
 
     def embed(self, texts: list[str], query: bool = False) -> list[list[float]]:
         if not texts:
@@ -82,7 +86,7 @@ class EmbeddingClient:
                     resp = self._http.post(
                         self._url,
                         json={"model": _EMBED_MODEL, "texts": texts},
-                        headers={"Authorization": f"Bearer {self._get_token()}"},
+                        headers={self._auth_header_name: self._get_token()},
                         timeout=timeout,
                     )
                     span.set_attribute("http.status_code", getattr(resp, "status_code", 0))
