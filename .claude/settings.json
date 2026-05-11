@@ -16,7 +16,8 @@
       {
         "matcher": "Bash",
         "hooks": [
-          { "type": "command", "command": "bash .claude/hooks/pre_commit_gate.sh" }
+          { "type": "command", "command": "bash .claude/hooks/pre_commit_gate.sh" },
+          { "type": "command", "command": "bash .claude/hooks/pre_push_gate.sh" }
         ]
       }
     ],
