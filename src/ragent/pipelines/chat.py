@@ -266,7 +266,6 @@ def build_retrieval_pipeline(
 def _retriever_params(
     filters: dict | None,
     top_k: int | None,
-    min_score: float | None,
 ) -> dict[str, Any]:
     """Build shared optional params for ES retriever components."""
     p: dict[str, Any] = {}
@@ -274,8 +273,6 @@ def _retriever_params(
         p["filters"] = filters
     if top_k is not None:
         p["top_k"] = top_k
-    if min_score is not None:
-        p["score_threshold"] = min_score
     return p
 
 
@@ -292,7 +289,7 @@ def run_retrieval(
     """
     nodes = set(pipeline.graph.nodes)
     inputs: dict[str, dict] = {}
-    rp = _retriever_params(filters, top_k, min_score)
+    rp = _retriever_params(filters, top_k)
 
     if "query_embedder" in nodes:
         inputs["query_embedder"] = {"query": query}
@@ -306,4 +303,7 @@ def run_retrieval(
         inputs["reranker"] = {"query": query}
 
     result = pipeline.run(inputs)
-    return result.get("excerpt_truncator", {}).get("documents", [])
+    docs = result.get("excerpt_truncator", {}).get("documents", [])
+    if min_score is not None:
+        docs = [d for d in docs if d.score is not None and d.score >= min_score]
+    return docs

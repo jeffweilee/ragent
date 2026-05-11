@@ -13,7 +13,6 @@ from typing import Annotated, Any
 import structlog
 from fastapi import APIRouter, Header, Query, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
 from fastapi.routing import APIRoute
 from pydantic import BaseModel
 
@@ -156,7 +155,7 @@ def create_router(svc: Any) -> APIRouter:
                 "Object not found at minio_site/object_key",
             )
 
-        return JSONResponse({"document_id": doc_id}, status_code=202)
+        return IngestCreatedResponse(document_id=doc_id)
 
     @router.get("/ingest/{document_id}", response_model=IngestDetailResponse)
     async def get_document(

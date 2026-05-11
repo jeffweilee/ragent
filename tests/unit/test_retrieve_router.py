@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import dataclasses
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from haystack.dataclasses import Document
 
+from ragent.pipelines.chat import run_retrieval
 from ragent.routers.retrieve import create_retrieve_router
 
 
@@ -175,3 +178,51 @@ def test_min_score_zero_accepted(app, monkeypatch):
     resp = client.post("/retrieve", json={"query": "q", "min_score": 0.0})
     assert resp.status_code == 200
     assert calls[0].get("min_score") == pytest.approx(0.0)
+
+
+# ---------------------------------------------------------------------------
+# run_retrieval post-retrieval score filtering
+# (score_threshold is not a valid ES retriever run() param — filtering is
+# applied after pipeline.run() on the returned documents)
+# ---------------------------------------------------------------------------
+
+
+def _fake_pipeline(docs: list[Document]):
+    """Minimal pipeline stub whose run() returns docs via excerpt_truncator."""
+    pipeline = MagicMock()
+    pipeline.graph.nodes = []
+    pipeline.run.return_value = {"excerpt_truncator": {"documents": docs}}
+    return pipeline
+
+
+def _doc_with_score(score: float | None) -> Document:
+    return dataclasses.replace(Document(content="x"), score=score)
+
+
+def test_run_retrieval_min_score_filters_below_threshold():
+    docs = [_doc_with_score(0.8), _doc_with_score(0.3), _doc_with_score(0.5)]
+    result = run_retrieval(_fake_pipeline(docs), query="q", min_score=0.5)
+    scores = [d.score for d in result]
+    assert scores == [0.8, 0.5]
+
+
+def test_run_retrieval_min_score_none_returns_all():
+    docs = [_doc_with_score(0.1), _doc_with_score(0.9)]
+    result = run_retrieval(_fake_pipeline(docs), query="q", min_score=None)
+    assert len(result) == 2
+
+
+def test_run_retrieval_min_score_drops_none_score_docs():
+    docs = [_doc_with_score(None), _doc_with_score(0.7)]
+    result = run_retrieval(_fake_pipeline(docs), query="q", min_score=0.5)
+    assert len(result) == 1
+    assert result[0].score == pytest.approx(0.7)
+
+
+def test_run_retrieval_score_threshold_not_passed_to_pipeline():
+    """score_threshold must NOT appear in inputs — ES retrievers don't accept it."""
+    pipeline = _fake_pipeline([])
+    run_retrieval(pipeline, query="q", min_score=0.5)
+    call_inputs = pipeline.run.call_args[0][0]
+    for component_inputs in call_inputs.values():
+        assert "score_threshold" not in component_inputs
