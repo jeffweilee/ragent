@@ -26,8 +26,7 @@ def _dump_schema(dsn: str) -> str:
                 if row[0] != "alembic_version"  # tracking table, not part of app schema
             )
             ddls = [
-                conn.execute(text(f"SHOW CREATE TABLE `{table}`")).fetchone()[1]
-                for table in tables
+                conn.execute(text(f"SHOW CREATE TABLE `{table}`")).fetchone()[1] for table in tables
             ]
     finally:
         engine.dispose()
