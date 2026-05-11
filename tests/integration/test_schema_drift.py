@@ -18,16 +18,19 @@ def _dump_schema(dsn: str) -> str:
     from sqlalchemy import text
 
     engine = sqlalchemy.create_engine(dsn)
-    with engine.connect() as conn:
-        tables = sorted(
-            row[0]
-            for row in conn.execute(text("SHOW TABLES")).fetchall()
-            if row[0] != "alembic_version"  # tracking table, not part of app schema
-        )
-        ddls = []
-        for table in tables:
-            ddl = conn.execute(text(f"SHOW CREATE TABLE `{table}`")).fetchone()[1]
-            ddls.append(ddl)
+    try:
+        with engine.connect() as conn:
+            tables = sorted(
+                row[0]
+                for row in conn.execute(text("SHOW TABLES")).fetchall()
+                if row[0] != "alembic_version"  # tracking table, not part of app schema
+            )
+            ddls = [
+                conn.execute(text(f"SHOW CREATE TABLE `{table}`")).fetchone()[1]
+                for table in tables
+            ]
+    finally:
+        engine.dispose()
     schema = "\n\n".join(ddls)
     schema = re.sub(r" AUTO_INCREMENT=\d+", "", schema)
     return schema.strip()
