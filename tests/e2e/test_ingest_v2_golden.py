@@ -156,7 +156,9 @@ def _es_refresh(es_url: str) -> None:
 
 
 def _doc_row(doc_id: str) -> dict:
-    return httpx.get(f"{API_URL}/ingest/v1/{doc_id}", headers={"X-User-Id": "alice"}, timeout=5).json()
+    return httpx.get(
+        f"{API_URL}/ingest/v1/{doc_id}", headers={"X-User-Id": "alice"}, timeout=5
+    ).json()
 
 
 def _verify_chunks_table_dropped(mariadb_dsn: str) -> None:
