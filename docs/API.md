@@ -1,5 +1,9 @@
 # API Reference
 
+Interactive docs (auto-generated from OpenAPI schema):
+- Swagger UI: http://localhost:8000/docs
+- ReDoc: http://localhost:8000/redoc
+
 All endpoints return RFC 9457 problem+json on errors. `X-User-Id` header is recorded for audit in Phase 1.
 
 ## Ingest (v2 — JSON only)
@@ -179,9 +183,13 @@ curl -X POST http://localhost:8000/chat \
       "document_id": "01J9ABCDEFGHJKMNPQRSTVWXYZ",
       "source_app": "confluence",
       "source_id": "DOC-123",
+      "source_meta": "engineering",
       "type": "knowledge",
       "source_title": "Q3 OKR Planning",
-      "excerpt": "Key results for Q3 include..."
+      "source_url": "https://wiki.example/q3-okr",
+      "mime_type": "text/markdown",
+      "excerpt": "Key results for Q3 include...",
+      "score": 0.87
     }
   ]
 }
@@ -263,7 +271,7 @@ curl -X POST http://localhost:8000/retrieve \
 
 **How `excerpt` works:**
 
-Each chunk stored in ES is the raw text segment produced by the indexing pipeline's splitter. The `excerpt` field in the response is that chunk's text, truncated to `EXCERPT_MAX_CHARS` characters (default `512`, configurable via env var) by `SourceHydrator` before it reaches the router. Truncation is a hard character cut — no semantic boundary is preserved. The same truncation applies to `sources[].excerpt` in `/chat` and `/chat/stream` responses.
+Each chunk stored in ES is the raw text segment produced by the indexing pipeline's splitter. The `excerpt` field in the response is that chunk's text, truncated to `EXCERPT_MAX_CHARS` characters (default `512`, configurable via env var) by `_ExcerptTruncator` before it reaches the router. Truncation is a hard character cut — no semantic boundary is preserved. The same truncation applies to `sources[].excerpt` in `/chat` and `/chat/stream` responses.
 
 ---
 
