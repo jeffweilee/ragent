@@ -243,7 +243,8 @@ curl -X POST http://localhost:8000/retrieve \
       "source_title": "Q3 OKR Planning",
       "source_url": "https://wiki.example/q3-okr",
       "mime_type": "text/markdown",
-      "excerpt": "Key results for Q3 include..."
+      "excerpt": "Key results for Q3 include...",
+      "score": 0.87
     }
   ]
 }

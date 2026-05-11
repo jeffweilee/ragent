@@ -364,3 +364,15 @@ v2 replaces the underlying behavior in C2–C6):
 | T-EF.1 | Behavioral | • **Achieve:** Add `top_k`/`min_score` request params to `POST /retrieve`; expose `source_meta` in chunk response; add Pydantic `response_model=` to all endpoints.<br>• **Deliver:** `src/ragent/routers/retrieve.py` (`ChunkEntry`, `RetrieveResponse`, `top_k`/`min_score` fields); `src/ragent/pipelines/chat.py` (`source_meta` in `doc_to_source_entry`, `top_k`/`min_score` in `run_retrieval`, `_retriever_params` helper); `src/ragent/routers/ingest.py` (four response models, `response_model=` on all routes); `tests/unit/test_retrieve_router.py`. | B7/B35 | [x] | Dev |
 | T-EF.2 | Behavioral | • **Achieve:** Add `source_id`/`source_app` filter params to `GET /ingest` list; change list ordering to newest-first (`document_id DESC`).<br>• **Deliver:** `src/ragent/repositories/document_repository.py` (`list()` adds filter params + DESC order + `< :after` cursor); `src/ragent/services/ingest_service.py` (pass-through); `src/ragent/routers/ingest.py` (query params); `tests/unit/test_document_repository.py` + `test_ingest_service_list.py` + `test_ingest_router_v2.py`. | B7 | [x] | Dev |
 | T-EF.3 | Behavioral | • **Achieve:** Fix `min_score` implementation — `score_threshold` is not a valid ES retriever `run()` param; apply as post-retrieval filter instead.<br>• **Deliver:** `src/ragent/pipelines/chat.py` (`_retriever_params` drops `score_threshold`; `run_retrieval` filters by score after `pipeline.run()`); four new tests in `tests/unit/test_retrieve_router.py`. | B7 | [x] | Dev |
+
+### top_k hard cap fix (branch `claude/fix-top-k-cap`) — 2026-05-11
+
+| # | Category | Task | Spec | Status | Owner |
+|---|---|---|:-:|:-:|---|
+| T-EF.4 | Behavioral | • **Achieve:** Enforce `top_k` as a hard post-pipeline cap in `run_retrieval()` — Haystack's `DocumentJoiner` and `_Reranker` use their init `top_k` and may return more results than the per-request value.<br>• **Deliver:** `src/ragent/pipelines/chat.py` (`docs = docs[:top_k]` after pipeline output); `tests/unit/test_retrieve_router.py` (three new tests: hard cap, cap after min_score, top_k=None returns all). | B7 | [x] | Dev |
+
+### score field in retrieve response (branch `claude/fix-top-k-cap`) — 2026-05-11
+
+| # | Category | Task | Spec | Status | Owner |
+|---|---|---|:-:|:-:|---|
+| T-EF.5 | Behavioral | • **Achieve:** Expose retrieval score in `POST /retrieve` chunk response.<br>• **Deliver:** `score: float | None` added to `ChunkEntry` in `routers/retrieve.py`; `doc_to_source_entry()` in `pipelines/chat.py` includes `"score": doc.score`; two new tests (score present, score=None). | §3.4.4 | [x] | Dev |

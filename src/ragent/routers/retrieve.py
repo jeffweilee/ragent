@@ -61,6 +61,7 @@ class ChunkEntry(BaseModel):
     source_url: str | None
     mime_type: str | None
     excerpt: str
+    score: float | None
 
 
 class RetrieveResponse(BaseModel):
