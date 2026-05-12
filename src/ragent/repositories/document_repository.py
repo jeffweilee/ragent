@@ -309,7 +309,7 @@ class DocumentRepository:
                 self._log_transition(document_id, "PENDING", "READY")
                 return True
 
-            await conn.execute(
+            demoted = await conn.execute(
                 text(
                     """
                     UPDATE documents
@@ -319,7 +319,8 @@ class DocumentRepository:
                 ),
                 {"id": document_id},
             )
-            self._log_transition(document_id, "PENDING", "DELETING")
+            if demoted.rowcount == 1:
+                self._log_transition(document_id, "PENDING", "DELETING")
             return False
 
     # ------------------------------------------------------------------
