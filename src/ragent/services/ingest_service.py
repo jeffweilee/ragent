@@ -29,6 +29,7 @@ from ragent.utility.id_gen import new_id
 logger = structlog.get_logger(__name__)
 
 _MAX_INLINE_BYTES = int(os.environ.get("INGEST_INLINE_MAX_BYTES", "52428800"))
+_MAX_FILE_BYTES = int(os.environ.get("INGEST_FILE_MAX_BYTES", "52428800"))
 _LIST_MAX = int(os.environ.get("INGEST_LIST_MAX_LIMIT", "100"))
 
 
@@ -77,13 +78,14 @@ class IngestService:
         create_user: str,
         request: InlineIngestRequest | FileIngestRequest,
         max_inline_bytes: int | None = None,
+        max_file_bytes: int | None = None,
     ) -> str:
         document_id = new_id()
         if isinstance(request, InlineIngestRequest):
             object_key, minio_site = self._stage_inline(request, document_id, max_inline_bytes)
             ingest_type = "inline"
         else:
-            object_key, minio_site = self._record_file(request)
+            object_key, minio_site = self._record_file(request, max_file_bytes)
             ingest_type = "file"
 
         await self._repo.create(
@@ -159,14 +161,18 @@ class IngestService:
         )
         return object_key, None
 
-    def _record_file(self, request: FileIngestRequest) -> tuple[str, str]:
+    def _record_file(
+        self, request: FileIngestRequest, max_file_bytes: int | None = None
+    ) -> tuple[str, str]:
         try:
-            self._storage.get(request.minio_site)
+            size = self._storage.stat_object(request.minio_site, request.object_key)
         except UnknownMinioSite as exc:
             raise UnknownMinioSiteError(request.minio_site) from exc
-        size = self._storage.stat_object(request.minio_site, request.object_key)
         if size is None:
             raise ObjectNotFoundError(f"{request.minio_site}/{request.object_key} not found")
+        limit = max_file_bytes if max_file_bytes is not None else _MAX_FILE_BYTES
+        if size > limit:
+            raise FileTooLarge(f"File {size}B exceeds limit {limit}B")
         return request.object_key, request.minio_site
 
     async def get(self, document_id: str) -> Any | None:
@@ -206,7 +212,8 @@ class IngestService:
                 if site:
                     self._storage.delete_object(site, doc.object_key)
                 else:
-                    # Legacy MinIOClient signature OR v2 registry default site.
+                    # v1 MinIOClient takes only object_key; v2 registry requires
+                    # (site, key). TypeError from v2 is the disambiguator.
                     try:
                         self._storage.delete_object(doc.object_key)
                     except TypeError:

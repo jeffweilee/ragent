@@ -149,7 +149,7 @@ class MinioSiteRegistry:
             raise
         return getattr(stat, "size", None)
 
-    def head_object(self, site: str, object_key: str) -> tuple[int, str | None] | None:
+    def head_object(self, site: str, object_key: str) -> tuple[int | None, str | None] | None:
         """Return (size, content_type) for the object, or None if missing.
 
         Worker uses this to recover the mime type stored at upload time —
@@ -164,7 +164,7 @@ class MinioSiteRegistry:
             if exc.code in {"NoSuchKey", "NoSuchBucket"}:
                 return None
             raise
-        size = getattr(stat, "size", None) or 0
+        size = getattr(stat, "size", None)
         content_type = getattr(stat, "content_type", None)
         return size, content_type
 

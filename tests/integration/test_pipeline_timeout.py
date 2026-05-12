@@ -3,12 +3,8 @@
 import datetime
 from unittest.mock import patch
 
-import pytest
-
 from ragent.repositories.document_repository import DocumentRow
 from tests.conftest import make_ingest_container
-
-pytestmark = pytest.mark.docker
 
 
 def _make_doc() -> DocumentRow:

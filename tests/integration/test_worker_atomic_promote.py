@@ -161,69 +161,32 @@ async def test_older_worker_finishing_after_newer_ready_self_demotes(fresh_engin
 
 
 @pytest.mark.asyncio
-async def test_for_update_serializes_concurrent_promotes(fresh_engine) -> None:
-    """Lock semantic: a second concurrent promote on the same (source_id,
-    source_app) must block on the FOR UPDATE row lock until the first tx
-    commits. Validates that retrieval correctness is enforced by the DB,
-    not by application-level serialization.
+async def test_concurrent_promotes_elect_correct_survivor(fresh_engine) -> None:
+    """Concurrent promotes on the same (source_id, source_app): atomic UPDATE
+    election ensures exactly one survivor (the newest doc) reaches READY while
+    the other self-demotes to DELETING, with no row-level blocking between the
+    two workers (each UPDATE targets only its own document_id row).
     """
     repo = DocumentRepository(engine=fresh_engine)
     await _seed(repo, "DOC_A", "S5", "confluence")
     await asyncio.sleep(0.01)
     await _seed(repo, "DOC_B", "S5", "confluence")  # newer
 
-    t1_locked = asyncio.Event()
-    t1_release = asyncio.Event()
-
-    async def hold_for_update() -> None:
-        async with fresh_engine.begin() as conn:
-            # Mirrors the survivor SELECT in
-            # document_repository.py::promote_to_ready_and_demote_siblings —
-            # keep in sync so the lock acquired here is the same lock the
-            # production code waits on.
-            await conn.execute(
-                text(
-                    """
-                    SELECT document_id FROM documents
-                    WHERE source_id=:src AND source_app=:app
-                      AND status IN ('PENDING','READY')
-                    ORDER BY created_at DESC, document_id DESC
-                    LIMIT 1
-                    FOR UPDATE
-                    """
-                ),
-                {"src": "S5", "app": "confluence"},
-            )
-            t1_locked.set()
-            await t1_release.wait()
-            # tx commits on context exit, releasing the lock
-
-    holder = asyncio.create_task(hold_for_update())
-    await t1_locked.wait()
-
-    promote_task = asyncio.create_task(
+    # Run both promotes concurrently — no blocking expected.
+    result_a, result_b = await asyncio.gather(
+        repo.promote_to_ready_and_demote_siblings(
+            document_id="DOC_A", source_id="S5", source_app="confluence"
+        ),
         repo.promote_to_ready_and_demote_siblings(
             document_id="DOC_B", source_id="S5", source_app="confluence"
-        )
+        ),
     )
-    try:
-        # Deterministic block-check: shield the task and bound a small wait;
-        # if the row lock holds, this raises TimeoutError. Avoids the flake-
-        # prone `sleep(N) + assert not done()` pattern.
-        with pytest.raises(asyncio.TimeoutError):
-            await asyncio.wait_for(asyncio.shield(promote_task), timeout=0.1)
-    finally:
-        # Always release T1 even on assertion failure so the holder task
-        # doesn't hang holding the row lock and stall test teardown.
-        t1_release.set()
 
-    await holder
-    promoted = await asyncio.wait_for(promote_task, timeout=5.0)
+    # B is newer: B must win (True), A must lose (False).
+    assert result_b is True
+    assert result_a is False
 
-    assert promoted is True
     a = await repo.get("DOC_A")
     b = await repo.get("DOC_B")
-    # A remains PENDING (it has its own worker pending; A's promote will then
-    # see B already READY and self-demote). B is the survivor and is READY.
-    assert a is not None and a.status == "PENDING"
+    assert a is not None and a.status == "DELETING"
     assert b is not None and b.status == "READY"

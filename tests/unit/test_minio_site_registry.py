@@ -165,3 +165,40 @@ def test_delete_object_propagates_other_s3_errors():
     reg = MinioSiteRegistry.from_json(raw, minio_factory=_factory(stub))
     with pytest.raises(S3Error):
         reg.delete_object("__default__", "key")
+
+
+def test_head_object_returns_size_and_content_type():
+    raw = json.dumps([_site()])
+    stub = MagicMock()
+    stub.stat_object.return_value = MagicMock(size=1024, content_type="text/plain")
+    reg = MinioSiteRegistry.from_json(raw, minio_factory=_factory(stub))
+    result = reg.head_object("__default__", "key")
+    assert result == (1024, "text/plain")
+
+
+def test_head_object_returns_none_when_object_missing():
+    raw = json.dumps([_site()])
+    stub = MagicMock()
+    stub.stat_object.side_effect = S3Error(
+        code="NoSuchKey",
+        message="missing",
+        resource="/x",
+        request_id="r",
+        host_id="h",
+        response=MagicMock(status=404, headers={}, text=""),
+    )
+    reg = MinioSiteRegistry.from_json(raw, minio_factory=_factory(stub))
+    assert reg.head_object("__default__", "missing") is None
+
+
+def test_head_object_preserves_none_size_so_worker_skips_size_check():
+    """When MinIO stat returns size=None the worker must receive None (not 0)
+    so it skips size-mismatch validation instead of failing every non-empty file.
+    Regression guard for the `or 0` bug in head_object."""
+    raw = json.dumps([_site()])
+    stub = MagicMock()
+    stub.stat_object.return_value = MagicMock(size=None, content_type="application/octet-stream")
+    reg = MinioSiteRegistry.from_json(raw, minio_factory=_factory(stub))
+    size, ct = reg.head_object("__default__", "key")
+    assert size is None, "None size must pass through so worker uses expected_size=None"
+    assert ct == "application/octet-stream"

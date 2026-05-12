@@ -18,9 +18,17 @@ from ragent.services.ingest_service import (
 def _registry(
     *, default_put_key="app_sid_DOC", stat_size: int | None = 100, sites=("__default__",)
 ):
+    from ragent.storage.minio_registry import UnknownMinioSite
+
     reg = MagicMock()
     reg.put_object_default.return_value = default_put_key
-    reg.stat_object.return_value = stat_size
+
+    def _stat(site, _key):
+        if site not in sites:
+            raise UnknownMinioSite(site)
+        return stat_size
+
+    reg.stat_object.side_effect = _stat
 
     def _get(name):
         if name in sites:
@@ -28,8 +36,6 @@ def _registry(
             r.name = name
             r.read_only = name != "__default__"
             return r
-        from ragent.storage.minio_registry import UnknownMinioSite
-
         raise UnknownMinioSite(name)
 
     reg.get.side_effect = _get
@@ -107,6 +113,15 @@ async def test_file_head_probe_miss_raises():
     svc, repo, _, _ = _service(registry=reg)
     with pytest.raises(ObjectNotFoundError):
         await svc.create(create_user="alice", request=_file())
+    repo.create.assert_not_called()
+
+
+async def test_file_too_large_raises_413():
+    """spec §4.2: file HEAD-probe size > INGEST_FILE_MAX_BYTES → FileTooLarge (413)."""
+    reg = _registry(sites=("__default__", "tenant-eu-1"), stat_size=52428801)
+    svc, repo, _, _ = _service(registry=reg)
+    with pytest.raises(FileTooLarge):
+        await svc.create(create_user="alice", request=_file(), max_file_bytes=52428800)
     repo.create.assert_not_called()
 
 
