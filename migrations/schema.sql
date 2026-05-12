@@ -4,6 +4,7 @@
 -- Or via Alembic:  alembic upgrade head  (produces identical schema)
 
 CREATE TABLE IF NOT EXISTS documents (
+  id               BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   document_id      CHAR(26)     NOT NULL,
   create_user      VARCHAR(64)  NOT NULL,
   source_id        VARCHAR(128) NOT NULL,
@@ -26,7 +27,8 @@ CREATE TABLE IF NOT EXISTS documents (
   -- 006_documents_error_code.sql: failure diagnostics for async task failures.
   error_code       VARCHAR(64)  NULL,
   error_reason     VARCHAR(255) NULL,
-  PRIMARY KEY (document_id),
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_document_id (document_id),
   INDEX idx_status_updated (status, updated_at),
   INDEX idx_source_app_id_status_created (source_app, source_id, status, created_at),
   INDEX idx_create_user_document (create_user, document_id)
