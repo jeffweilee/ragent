@@ -537,6 +537,8 @@ Exposes ragent's retrieval pipeline as a **Model Context Protocol** tool so exte
 - **Notification** (no response): omit `id`. P2.5 supports `notifications/initialized` only.
 - **Auth:** `Authorization: Bearer <jwt>` (P2.2 onwards) or `X-User-Id` fallback (`RAGENT_TRUST_X_USER_ID_HEADER=true`, dev only). Auth applies before JSON-RPC dispatch; failure returns HTTP 401 with `application/problem+json` (NOT a JSON-RPC error — auth is a transport-layer concern).
 - **Stateless mode:** P2.5 supports stateless requests only (no `Mcp-Session-Id` header). Stateful sessions deferred to P3 — gate condition: an MCP client requires server-initiated SSE or long-running tool resumption.
+- **Request body cap:** `MCP_REQUEST_MAX_BYTES` (default 256 KiB) defence-in-depth limit enforced by the router itself; over-limit requests return HTTP 413 `application/problem+json` (transport-layer, NOT a JSON-RPC error envelope — mirrors the auth-failure rule above). Production ingress (nginx / ALB) remains the canonical first bound; the router cap protects against direct-to-pod abuse.
+- **Batch requests:** P2.5 does NOT implement JSON-RPC 2.0 §6 batch (array) requests. Rationale: the sole tool `retrieve` is a single-shot read; no current MCP client (Claude Desktop, Cursor, MCP Inspector) sends batched calls against a read-only server, and batch dispatch adds non-trivial error-correlation complexity. An array body returns the same `Invalid Request` (-32600) as any other non-object envelope. Deferred to P3 if a downstream client requires it.
 
 #### 3.8.2 Supported methods
 
@@ -858,8 +860,9 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `RAGENT_RAG_GROUNDING_RULES`          | *(rules-only variant)*        | Rules-only system prompt prepended when the caller supplies their own `system` message alongside retrieved docs. Preserves the caller's persona while enforcing context-only grounding. |
 | `CHAT_RATE_LIMIT_PER_MINUTE`          | `30`             | Per-user request cap on `/chat/v1` + `/chat/v1/stream` within the rate-limit window (B31). Excess returns 429 `CHAT_RATE_LIMITED`. |
 | `CHAT_RATE_LIMIT_WINDOW_SECONDS`      | `60`             | Fixed-window length for `CHAT_RATE_LIMIT_PER_MINUTE` (B31). |
+| `MCP_REQUEST_MAX_BYTES`               | `262144` (256 KiB) | Defence-in-depth cap on `POST /mcp/v1` request bodies; over-limit returns HTTP 413 `application/problem+json` (§3.8.1). |
 
-> **No MCP env vars** — `protocolVersion` (`2024-11-05`) and `serverInfo.name` (`ragent`) are **pinned in spec §3.8.1 / B47** and live as module-level constants in `src/ragent/routers/mcp.py`. Operators flipping the protocol version would silently break the contract; the pin is intentional.
+> **MCP protocol pins are NOT env-driven** — `protocolVersion` (`2024-11-05`) and `serverInfo.name` (`ragent`) are **pinned in spec §3.8.1 / B47** and live as module-level constants in `src/ragent/routers/mcp.py`. Operators flipping the protocol version would silently break the contract; the pin is intentional. The only MCP env knob is the body cap above.
 
 #### 4.6.7 Per-call timeouts (matches §4.3 catalog)
 

@@ -6,6 +6,8 @@ Covers BDD scenarios S61 (method not found), S64 (parse error), S65
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -16,7 +18,7 @@ from ragent.routers.mcp import create_mcp_router
 @pytest.fixture(scope="module")
 def client() -> TestClient:
     app = FastAPI()
-    app.include_router(create_mcp_router())
+    app.include_router(create_mcp_router(retrieval_pipeline=MagicMock()))
     with TestClient(app) as c:
         yield c
 
@@ -97,6 +99,63 @@ def test_unknown_notification_also_returns_204(client: TestClient) -> None:
     )
     assert resp.status_code == 204
     assert resp.content == b""
+
+
+def test_parse_error_on_invalid_utf8_body(client: TestClient) -> None:
+    """Non-UTF-8 byte payloads raise UnicodeDecodeError inside json.loads;
+    the dispatcher must still surface them as JSON-RPC -32700, not 500."""
+    resp = client.post(
+        "/mcp/v1",
+        content=b"\xff\xfe\xff invalid utf-8",
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["error"]["code"] == -32700
+    assert body["error"]["data"]["error_code"] == "MCP_PARSE_ERROR"
+
+
+@pytest.mark.parametrize("method_value", [[], {}, 42, None])
+def test_invalid_request_for_non_string_method(client: TestClient, method_value) -> None:
+    """Non-string `method` is Invalid Request (-32600), not a 500 from
+    `dict.get(unhashable)`. JSON-RPC 2.0 §4 says `method` MUST be a String."""
+    resp = client.post(
+        "/mcp/v1",
+        json={"jsonrpc": "2.0", "id": 1, "method": method_value},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["error"]["code"] == -32600
+    assert body["error"]["data"]["error_code"] == "MCP_INVALID_REQUEST"
+
+
+def test_tools_call_with_array_params_returns_invalid_params(client: TestClient) -> None:
+    """JSON-RPC §4.2 allows positional (array) params; this server accepts
+    only named-argument objects, so an array surfaces as -32602
+    MCP_TOOL_INPUT_INVALID instead of a 500 AttributeError."""
+    resp = client.post(
+        "/mcp/v1",
+        json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": []},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["error"]["code"] == -32602
+    assert body["error"]["data"]["error_code"] == "MCP_TOOL_INPUT_INVALID"
+
+
+def test_request_body_exceeding_cap_returns_413(client: TestClient) -> None:
+    """Spec §3.8.1 — defence-in-depth: bodies > 256 KiB return HTTP 413 with
+    application/problem+json (transport-layer, NOT a JSON-RPC error). The
+    cap protects against direct-to-pod abuse when ingress isn't in front.
+    """
+    oversized = (
+        b'{"jsonrpc":"2.0","id":1,"method":"ping","params":{"x":"' + (b"a" * (260 * 1024)) + b'"}}'
+    )
+    resp = client.post("/mcp/v1", content=oversized, headers={"Content-Type": "application/json"})
+    assert resp.status_code == 413
+    assert resp.headers["content-type"].startswith("application/problem+json")
+    body = resp.json()
+    assert body["error_code"] == "MCP_INVALID_REQUEST"
 
 
 def test_response_content_type_is_application_json_for_success(client: TestClient) -> None:
