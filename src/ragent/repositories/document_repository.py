@@ -261,55 +261,38 @@ class DocumentRepository:
     ) -> bool:
         """Atomic, DB-arbitrated READY transition for (source_id, source_app).
 
-        The newest PENDING/READY sibling — elected by ``MAX(created_at)`` under
-        ``FOR UPDATE`` — is the survivor. If the caller's ``document_id`` is the
-        survivor, it promotes to READY and any prior READY siblings demote to
-        DELETING. If the caller is *not* the survivor (out-of-order worker
-        completion: an older worker finishing after a newer revision was
-        created), it self-demotes to DELETING so the newer worker's tx is the
-        one that flips retrieval. The reconciler is therefore a safety-net for
-        crash recovery only — never load-bearing for retrieval correctness.
-
-        Returns ``True`` if the caller is the survivor (was promoted to READY),
-        ``False`` if the caller self-demoted or there was nothing to promote
-        (caller's row already non-PENDING). Callers should gate post-READY
-        side effects (enrichment fan-out, READY-only event publication) on
-        this return value.
+        Returns ``True`` if the caller is the survivor (promoted to READY),
+        ``False`` if the caller self-demoted (a newer sibling exists or the
+        row is no longer PENDING). Callers should gate post-READY side effects
+        on this return value.
         """
         assert_transition("PENDING", "READY")
         async with self._engine.begin() as conn:
-            survivor = (
-                await conn.execute(
-                    text(
-                        """
-                        SELECT document_id FROM documents
-                        WHERE source_id = :src
-                          AND source_app = :app
-                          AND status IN ('PENDING', 'READY')
-                        ORDER BY created_at DESC, document_id DESC
-                        LIMIT 1
-                        FOR UPDATE
-                        """
-                    ),
-                    {"src": source_id, "app": source_app},
-                )
-            ).scalar()
+            # Derived table required: MariaDB forbids referencing the UPDATE
+            # target table directly in the subquery predicate.
+            promoted = await conn.execute(
+                text(
+                    """
+                    UPDATE documents
+                    SET status = 'READY', updated_at = NOW(6)
+                    WHERE document_id = :id
+                      AND status = 'PENDING'
+                      AND document_id = (
+                        SELECT document_id FROM (
+                          SELECT document_id FROM documents
+                          WHERE source_id = :src
+                            AND source_app = :app
+                            AND status IN ('PENDING', 'READY')
+                          ORDER BY created_at DESC, document_id DESC
+                          LIMIT 1
+                        ) AS elected
+                      )
+                    """
+                ),
+                {"id": document_id, "src": source_id, "app": source_app},
+            )
 
-            if survivor == document_id:
-                promoted = await conn.execute(
-                    text(
-                        """
-                        UPDATE documents
-                        SET status = 'READY', updated_at = NOW(6)
-                        WHERE document_id = :id AND status = 'PENDING'
-                        """
-                    ),
-                    {"id": document_id},
-                )
-                if promoted.rowcount == 0:
-                    raise IllegalStateTransition(
-                        f"promote_to_ready: PENDING → READY failed for {document_id}"
-                    )
+            if promoted.rowcount == 1:
                 await conn.execute(
                     text(
                         """
@@ -323,9 +306,10 @@ class DocumentRepository:
                     ),
                     {"src": source_id, "app": source_app, "id": document_id},
                 )
+                self._log_transition(document_id, "PENDING", "READY")
                 return True
 
-            await conn.execute(
+            demoted = await conn.execute(
                 text(
                     """
                     UPDATE documents
@@ -335,6 +319,8 @@ class DocumentRepository:
                 ),
                 {"id": document_id},
             )
+            if demoted.rowcount == 1:
+                self._log_transition(document_id, "PENDING", "DELETING")
             return False
 
     # ------------------------------------------------------------------

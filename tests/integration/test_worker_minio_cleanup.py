@@ -3,15 +3,11 @@
 import datetime
 from unittest.mock import patch
 
-import pytest
-
 from ragent.repositories.document_repository import DocumentRow
 from tests.conftest import make_ingest_container
 
-pytestmark = pytest.mark.docker
 
-
-def _make_doc(doc_status: str = "UPLOADED") -> DocumentRow:
+def _make_doc(doc_status: str = "UPLOADED", ingest_type: str = "inline") -> DocumentRow:
     return DocumentRow(
         document_id="DOC001",
         create_user="alice",
@@ -24,6 +20,8 @@ def _make_doc(doc_status: str = "UPLOADED") -> DocumentRow:
         attempt=1,
         created_at=datetime.datetime.now(datetime.UTC),
         updated_at=datetime.datetime.now(datetime.UTC),
+        ingest_type=ingest_type,
+        minio_site="caller-site" if ingest_type == "file" else None,
     )
 
 
@@ -99,3 +97,20 @@ async def test_self_demote_skips_post_ready_fan_out():
         await ingest_pipeline_task("DOC001")
 
     container.registry.fan_out.assert_not_called()
+
+
+async def test_file_type_ingest_does_not_delete_minio_object():
+    """ingest_type='file': caller owns the object — worker must NEVER call
+    delete_object, even after a successful READY transition (S spec §3.1).
+    This is the negative counterpart to the inline-delete ordering test.
+    """
+    from ragent.workers.ingest import ingest_pipeline_task
+
+    doc = _make_doc(ingest_type="file")
+    container = make_ingest_container(doc)
+
+    with patch("ragent.bootstrap.composition.get_container", return_value=container):
+        await ingest_pipeline_task("DOC001")
+
+    container.minio_registry.delete_object.assert_not_called()
+    container.doc_repo.promote_to_ready_and_demote_siblings.assert_awaited_once()
