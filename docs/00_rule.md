@@ -215,10 +215,10 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 
 ### Haystack Pipeline Contracts
 
-- **Rule: Verify every component `run()` kwarg before passing it.** Before passing any kwarg to a Haystack component via `pipeline.run()` inputs, confirm it appears in that component's `run()` signature (check the library source or `inspect.signature`). Assumptions about "common" parameter names (e.g. `score_threshold`) that don't exist in the actual signature raise `TypeError` in production but pass silently in mock-based unit tests.
+- **Rule: Verify every component `run()` kwarg before passing it.** Before passing any kwarg to a Haystack component via `pipeline.run()` inputs, confirm it appears in that component's `run()` signature (check the library source or `inspect.signature`). Assumptions about "common" parameter names (e.g. `score_threshold`) that don't exist in the actual signature raise `TypeError` in production but pass silently in mock-based unit tests; use `autospec=True` (or `spec=ComponentClass`) when mocking Haystack components in unit tests to catch these mismatches at test time.
   - **Action**: Add a `# verified against haystack-elasticsearch X.Y.Z` comment next to any non-obvious kwarg passed to a third-party Haystack component.
 
-- **Rule: Enforce `top_k` as a hard output slice at the pipeline boundary, not as a per-component hint.** Always cap the final document list returned by any retrieval pipeline call with `docs = docs[:top_k]`. Per-component `top_k` hints reduce upstream work but do not guarantee the count contract when Haystack internals fall back to init-time values over runtime overrides.
+- **Rule: Enforce `top_k` as a hard output slice at the pipeline boundary, not as a per-component hint.** Always cap the final document list returned by any retrieval pipeline call with `docs = docs[:top_k]` (ensuring `top_k` is a validated non-negative integer at the retrieval function's entry point). Per-component `top_k` hints reduce upstream work but do not guarantee the count contract when Haystack internals fall back to init-time values over runtime overrides.
 
 - **Rule: Score filtering is a post-pipeline operation.** `min_score` / `score_threshold` cutoffs MUST be applied after `pipeline.run()` on the returned document list. The `ElasticsearchBM25Retriever` and `ElasticsearchEmbeddingRetriever` `run()` methods only accept `query` / `query_embedding`, `filters`, and `top_k`; there is no retriever-level score gate.
 
