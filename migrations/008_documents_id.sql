@@ -4,8 +4,8 @@
 -- positioned FIRST. `document_id` retains a UNIQUE constraint so all existing
 -- lookups by ULID continue to work unchanged.
 --
--- This migration requires ALGORITHM=COPY (swapping the clustered PK forces a
--- full table rebuild; INSTANT/INPLACE cannot reorder the clustered index).
+-- This migration requires ALGORITHM=COPY: swapping the clustered PK forces a
+-- full table rebuild. INSTANT/INPLACE cannot reorder the clustered index.
 -- Expect a brief table lock proportional to table size.
 
 ALTER TABLE documents
