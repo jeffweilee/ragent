@@ -22,9 +22,9 @@ from anyio import to_thread
 from ragent.bootstrap.broker import broker
 from ragent.bootstrap.metrics import observe_pipeline_duration, record_pipeline_outcome
 from ragent.errors.codes import TaskErrorCode
-from ragent.pipelines.factory import BINARY_MIMES
 from ragent.pipelines.observability import IngestStepError, bind_ingest_context, log_ingest_step
 from ragent.repositories.document_repository import LockNotAvailable
+from ragent.schemas.ingest import BINARY_MIMES
 
 logger = structlog.get_logger(__name__)
 
@@ -60,11 +60,11 @@ async def ingest_pipeline_task(document_id: str) -> None:
     site = doc.minio_site or "__default__"
 
     def _run_pipeline() -> int:
-        # head_object recovers the content-type set at upload time. For file
-        # ingests the caller's MinIO put metadata is the source of truth; for
-        # inline ingests IngestService.create writes content_type explicitly.
+        # doc.mime_type (declared at ingest time) is the authoritative routing key.
+        # MinIO content-type is used only when doc.mime_type is NULL (legacy rows).
         head = registry.head_object(site, doc.object_key)
-        mime = (head[1] if head else None) or DEFAULT_MIME
+        minio_content_type = head[1] if head else None
+        mime = doc.mime_type or minio_content_type or DEFAULT_MIME
         # Strip charset suffix etc. ("text/markdown; charset=utf-8" → "text/markdown").
         mime = mime.split(";", 1)[0].strip()
 

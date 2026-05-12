@@ -128,6 +128,24 @@ def test_upload_file_too_large_via_size_attr_returns_413(monkeypatch):
     svc.create_from_upload.assert_not_called()
 
 
+def test_upload_pptx_alias_accepted():
+    """Short alias 'pptx' is normalised to the full MIME by IngestMime._missing_."""
+    from ragent.schemas.ingest import IngestMime
+
+    svc = AsyncMock()
+    svc.create_from_upload.return_value = _DOC_ID
+    client, _ = _make_client(svc)
+    resp = client.post(
+        "/ingest/v1/upload",
+        data={**_FORM, "mime_type": "pptx"},
+        files=[("file", ("deck.pptx", b"PK\x03\x04", "application/octet-stream"))],
+        headers={"X-User-Id": "admin"},
+    )
+    assert resp.status_code == 202
+    kwargs = svc.create_from_upload.call_args.kwargs
+    assert kwargs["mime_type"] == IngestMime.PPTX
+
+
 def test_upload_optional_fields_default_to_none():
     svc = AsyncMock()
     svc.create_from_upload.return_value = _DOC_ID

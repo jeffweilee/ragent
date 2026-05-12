@@ -399,3 +399,11 @@ v2 replaces the underlying behavior in C2–C6):
 | # | Category | Task | Spec | Status | Owner |
 |---|---|:-:|:-:|:-:|---|
 | T-BL.5 | Structural | • **Achieve:** Address Gemini/Codex PR review findings.<br>• **Deliver:** `_DocxASTSplitter`/`_PptxASTSplitter` strip `raw_bytes` from atom meta (`base_meta`); `_PptxASTSplitter` extracts table cell text; `_table_to_markdown` escapes `|` and normalises newlines in cell text; `_PptxASTSplitter` uses `para.text` instead of manual run join. | §4.2 | [x] | Dev |
+
+### PPTX mime_type UX + pipeline error fix — 2026-05-12
+
+| # | Category | Task | Spec | Status | Owner |
+|---|---|:-:|:-:|:-:|---|
+| T-BL.6 | Behavioral | • **Achieve:** Accept short aliases `pptx`/`docx` at all API entry points.<br>• **Deliver:** `IngestMime._missing_` classmethod + module-level `_MIME_ALIASES` constant; `BINARY_MIMES` moved to `schemas/ingest.py` as canonical source; `factory.py` and `workers/ingest.py` import from there. Alias coverage: JSON body, Form field (upload endpoint), case-insensitive. | §4.1 | [x] | Dev |
+| T-BL.7 | Behavioral | • **Achieve:** Reject binary MIME (DOCX/PPTX) on `ingest_type=inline` at schema validation time.<br>• **Deliver:** `InlineIngestRequest.model_validator(mode="after")` raises 422 `INGEST_VALIDATION` when `mime_type in BINARY_MIMES`; clears "file is not a zip file" pipeline crash for inline callers. | §4.1 | [x] | Dev |
+| T-BL.8 | Behavioral | • **Achieve:** Worker uses `doc.mime_type` (DB) as authoritative MIME routing key, not MinIO content-type.<br>• **Deliver:** `workers/ingest.py` — `mime = doc.mime_type or minio_content_type or DEFAULT_MIME`; fixes "file is not a zip file" for `ingest_type=file` when caller's MinIO object has generic/missing content-type. | §4.1 | [x] | Dev |

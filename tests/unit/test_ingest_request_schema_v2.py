@@ -128,3 +128,83 @@ def test_ingest_mime_enum_values():
     assert IngestMime.TEXT_HTML.value == "text/html"
     # CSV is intentionally NOT in v2 enum
     assert "text/csv" not in {m.value for m in IngestMime}
+
+
+# ---------------------------------------------------------------------------
+# Alias support: short names normalise to full MIME strings
+# ---------------------------------------------------------------------------
+
+_FILE_PPTX_BASE = {
+    "ingest_type": "file",
+    "source_id": "DOC-3",
+    "source_app": "upload-cli",
+    "source_title": "Slides",
+    "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    "minio_site": "corp",
+    "object_key": "slides.pptx",
+}
+
+_FILE_DOCX_BASE = {
+    **_FILE_PPTX_BASE,
+    "source_id": "DOC-4",
+    "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "object_key": "report.docx",
+}
+
+
+def test_pptx_alias_normalises_to_full_mime():
+    req = _adapter().validate_python({**_FILE_PPTX_BASE, "mime_type": "pptx"})
+    assert req.mime_type == IngestMime.PPTX
+
+
+def test_docx_alias_normalises_to_full_mime():
+    req = _adapter().validate_python({**_FILE_DOCX_BASE, "mime_type": "docx"})
+    assert req.mime_type == IngestMime.DOCX
+
+
+def test_pptx_alias_case_insensitive():
+    req = _adapter().validate_python({**_FILE_PPTX_BASE, "mime_type": "PPTX"})
+    assert req.mime_type == IngestMime.PPTX
+
+
+def test_file_pptx_full_mime_accepted():
+    req = _adapter().validate_python(_FILE_PPTX_BASE)
+    assert isinstance(req, FileIngestRequest)
+    assert req.mime_type == IngestMime.PPTX
+
+
+def test_file_docx_full_mime_accepted():
+    req = _adapter().validate_python(_FILE_DOCX_BASE)
+    assert isinstance(req, FileIngestRequest)
+    assert req.mime_type == IngestMime.DOCX
+
+
+# ---------------------------------------------------------------------------
+# Binary MIME types are rejected for ingest_type=inline
+# ---------------------------------------------------------------------------
+
+
+def test_inline_pptx_mime_rejected():
+    bad = {
+        **_INLINE_BASE,
+        "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    }
+    with pytest.raises(ValidationError) as exc_info:
+        _adapter().validate_python(bad)
+    assert "binary" in str(exc_info.value).lower()
+
+
+def test_inline_docx_mime_rejected():
+    bad = {
+        **_INLINE_BASE,
+        "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    }
+    with pytest.raises(ValidationError) as exc_info:
+        _adapter().validate_python(bad)
+    assert "binary" in str(exc_info.value).lower()
+
+
+def test_inline_pptx_alias_also_rejected():
+    bad = {**_INLINE_BASE, "mime_type": "pptx"}
+    with pytest.raises(ValidationError):
+        _adapter().validate_python(bad)

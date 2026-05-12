@@ -4,7 +4,11 @@ Discriminated union over `ingest_type`:
   - inline: `content` is in the JSON body.
   - file:   bytes live in caller-supplied `(minio_site, object_key)`.
 
-`mime_type` is a closed enum (text/plain | text/markdown | text/html).
+`mime_type` is a closed enum (text/plain | text/markdown | text/html | docx | pptx).
+Short aliases "pptx" and "docx" are accepted and normalised to their full IANA MIME
+strings at validation time.  Binary MIME types (DOCX, PPTX) are rejected for
+ingest_type "inline" because the `content` field is a UTF-8 string — use
+POST /ingest/v1/upload for binary files.
 `minio_site` is validated against the runtime registry at the service layer
 (not here) so the schema stays config-free.
 """
@@ -14,7 +18,7 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 SOURCE_URL_MAX = 2048
 SOURCE_META_MAX = 1024
@@ -26,6 +30,18 @@ class IngestMime(StrEnum):
     TEXT_HTML = "text/html"
     DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+
+    @classmethod
+    def _missing_(cls, value: object) -> IngestMime | None:
+        return _MIME_ALIASES.get(str(value).lower())
+
+
+_MIME_ALIASES: dict[str, IngestMime] = {
+    "docx": IngestMime.DOCX,
+    "pptx": IngestMime.PPTX,
+}
+
+BINARY_MIMES: frozenset[IngestMime] = frozenset({IngestMime.DOCX, IngestMime.PPTX})
 
 
 class _IngestBase(BaseModel):
@@ -42,6 +58,15 @@ class _IngestBase(BaseModel):
 class InlineIngestRequest(_IngestBase):
     ingest_type: Literal["inline"]
     content: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _reject_binary_mime(self) -> InlineIngestRequest:
+        if self.mime_type in BINARY_MIMES:
+            raise ValueError(
+                f"{self.mime_type!r} is a binary format; "
+                "binary MIME types require ingest_type='file' or POST /ingest/v1/upload"
+            )
+        return self
 
 
 class FileIngestRequest(_IngestBase):
