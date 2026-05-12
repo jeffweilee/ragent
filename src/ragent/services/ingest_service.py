@@ -165,13 +165,14 @@ class IngestService:
         self, request: FileIngestRequest, max_file_bytes: int | None = None
     ) -> tuple[str, str]:
         try:
-            size = self._storage.stat_object(request.minio_site, request.object_key)
+            res = self._storage.head_object(request.minio_site, request.object_key)
         except UnknownMinioSite as exc:
             raise UnknownMinioSiteError(request.minio_site) from exc
-        if size is None:
+        if res is None:
             raise ObjectNotFoundError(f"{request.minio_site}/{request.object_key} not found")
+        size, _ = res
         limit = max_file_bytes if max_file_bytes is not None else _MAX_FILE_BYTES
-        if size > limit:
+        if size is not None and size > limit:
             raise FileTooLarge(f"File {size}B exceeds limit {limit}B")
         return request.object_key, request.minio_site
 

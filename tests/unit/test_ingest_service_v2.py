@@ -23,12 +23,15 @@ def _registry(
     reg = MagicMock()
     reg.put_object_default.return_value = default_put_key
 
-    def _stat(site, _key):
+    def _head(site, _key):
         if site not in sites:
             raise UnknownMinioSite(site)
-        return stat_size
+        # None stat_size means object not found (head_object returns None)
+        if stat_size is None:
+            return None
+        return (stat_size, None)
 
-    reg.stat_object.side_effect = _stat
+    reg.head_object.side_effect = _head
 
     def _get(name):
         if name in sites:
