@@ -76,6 +76,24 @@ if [[ $TRIGGERS_GATE -eq 1 ]]; then
             printf 'Pre-commit reminder: src/tests/pyproject changes staged but no docs/00_plan.md, docs/00_spec.md, docs/00_journal.md update. Update them now if this change adds/alters behavior, contracts, env vars, or lessons learned.\n' >&2
         fi
     fi
+
+    # 4b. API.md gate — router/api.py changes alter HTTP contracts visible to
+    #     callers; docs/API.md must stay in sync. Hard-block on [BEHAVIORAL];
+    #     non-blocking reminder on [STRUCTURAL].
+    #     Use --diff-filter=AM so a staged *deletion* of docs/API.md does not
+    #     satisfy the requirement (deleted files appear in --name-only output).
+    API_CODE_HITS="$(printf '%s\n' "$STAGED" | grep -E '^src/ragent/(routers/|api\.py$)' || true)"
+    STAGED_API_DOC="$(git diff --cached --name-only --diff-filter=AM 2>/dev/null | grep -E '^docs/API\.md$' || true)"
+    if [[ -n "$API_CODE_HITS" ]]; then
+        if [[ -z "$STAGED_API_DOC" ]]; then
+            if [[ $IS_BEHAVIORAL -eq 1 ]]; then
+                block "docs/API.md missing: [BEHAVIORAL] commits that change src/ragent/routers/ or src/ragent/api.py MUST stage docs/API.md (HTTP contract may have changed).
+  Review docs/API.md and stage it alongside this commit before proceeding."
+            else
+                printf 'Pre-commit reminder: API code changes (src/ragent/routers/ or src/ragent/api.py) staged but docs/API.md not updated. Update it if endpoints, request/response shapes, or supported MIME types changed.\n' >&2
+            fi
+        fi
+    fi
 fi
 
 if [[ $TRIGGERS_GATE -eq 0 ]]; then
