@@ -56,12 +56,69 @@ async def _handle_initialize(_params: Any) -> dict[str, Any]:
     }
 
 
-# Dispatch table. T-MCP.6 / T-MCP.8 extend with `tools/list`, `tools/call`.
-# Handlers are coroutines so the future `tools/call` handler (T-MCP.8) can
-# `await` the async retrieval pipeline without a sync/async branch.
+# Tool schema is the single source of truth: `tools/list` advertises it,
+# `tools/call` (T-MCP.10) validates arguments against it. Mirrors
+# §3.8.3 verbatim.
+_RETRIEVE_TOOL_SCHEMA: dict[str, Any] = {
+    "name": "retrieve",
+    "description": (
+        "Retrieve relevant document chunks from the ragent corpus using "
+        "hybrid vector+BM25 search with optional reranking. Returns ranked "
+        "chunks (no LLM synthesis)."
+    ),
+    "inputSchema": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Natural-language query.",
+            },
+            "top_k": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 200,
+                "default": 20,
+            },
+            "source_app": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64,
+                "description": "Optional ES term filter.",
+            },
+            "source_meta": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 1024,
+                "description": "Optional ES term filter.",
+            },
+            "min_score": {
+                "type": "number",
+                "minimum": 0,
+                "description": "Optional post-pipeline score floor.",
+            },
+            "dedupe": {
+                "type": "boolean",
+                "default": False,
+                "description": "Keep one chunk per document_id.",
+            },
+        },
+        "required": ["query"],
+    },
+}
+
+
+async def _handle_tools_list(_params: Any) -> dict[str, Any]:
+    return {"tools": [_RETRIEVE_TOOL_SCHEMA]}
+
+
+# Dispatch table. T-MCP.8 extends with `tools/call`. Handlers are coroutines
+# so the future `tools/call` handler (T-MCP.8) can `await` the async
+# retrieval pipeline without a sync/async branch.
 _METHODS: dict[str, Callable[[Any], Awaitable[dict[str, Any]]]] = {
     "ping": _handle_ping,
     "initialize": _handle_initialize,
+    "tools/list": _handle_tools_list,
 }
 
 
