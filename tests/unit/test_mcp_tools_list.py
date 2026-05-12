@@ -4,6 +4,8 @@ with inputSchema matching spec §3.8.3 verbatim.
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -14,7 +16,7 @@ from ragent.routers.mcp import create_mcp_router
 @pytest.fixture(scope="module")
 def client() -> TestClient:
     app = FastAPI()
-    app.include_router(create_mcp_router())
+    app.include_router(create_mcp_router(retrieval_pipeline=MagicMock()))
     with TestClient(app) as c:
         yield c
 

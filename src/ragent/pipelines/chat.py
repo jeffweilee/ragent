@@ -19,7 +19,19 @@ from haystack_integrations.components.retrievers.elasticsearch import (
 from ragent.utility.env import int_env
 
 _EXCERPT_MAX_CHARS = int_env("EXCERPT_MAX_CHARS", 512)
+# Upper bound on top_k — pinned by spec §3.4.4 (`POST /retrieve/v1` Pydantic
+# `le=200`) and §3.8.3 (MCP retrieve tool `maximum: 200`). DEFAULT_TOP_K is the
+# fallback when callers omit `top_k`; if an operator sets RETRIEVAL_TOP_K above
+# the advertised maximum, MCP clients calling with omitted top_k would silently
+# over-fetch past the contract. Fast-fail at boot instead.
+MAX_TOP_K = 200
 DEFAULT_TOP_K = int_env("RETRIEVAL_TOP_K", 20)
+if not 1 <= DEFAULT_TOP_K <= MAX_TOP_K:
+    raise RuntimeError(
+        f"RETRIEVAL_TOP_K={DEFAULT_TOP_K} is outside the advertised [1, {MAX_TOP_K}] "
+        f"contract (spec §3.4.4 / §3.8.3). MCP clients calling with omitted top_k "
+        f"would bypass the schema maximum."
+    )
 _VALID_MODES = frozenset({"rrf", "concatenate", "vector_only", "bm25_only"})
 
 _logger = structlog.get_logger(__name__)
