@@ -85,7 +85,9 @@ If the endpoint is infrastructure-style (health probe, internal ping), it goes i
 
 ## Step 3 — Spec and plan before code
 
-Before writing tests, update two documents:
+Before writing tests, run a **Decision-Surface audit** (see `docs/00_rule.md §Spec Completeness: Pre-Red Gate`): every HTTP contract detail (request shape, response shape, error codes, streaming framing) MUST have an explicit answer in spec or a Decision-Log row — no implicit defaults. Block this step until every field is filled.
+
+Then update two documents:
 
 1. **`docs/00_spec.md`** — add a row to the endpoint table (§4.1.2 or the
    relevant section) with method, path, auth header, request schema ref,
@@ -222,7 +224,8 @@ endpoints (any path under `/<resource>/v<N>`) must NOT be in this list.
 
 - [ ] Situation classified: new route on existing router / new resource / v2 bump
 - [ ] Path follows `/<resource>/v<N>[/<rest>]` naming convention; version in router prefix only
-- [ ] `docs/00_spec.md` endpoint table row + scenario(s) added
+- [ ] Decision-Surface audit passed: every HTTP contract detail has an explicit spec answer or Decision-Log row (per `docs/00_rule.md §Spec Completeness: Pre-Red Gate`)
+- [ ] `docs/00_spec.md` endpoint table row + scenario(s) added; each scenario has a matching `00_plan.md` row
 - [ ] `docs/00_plan.md` Red + Green task rows added
 - [ ] Failing test written first; confirmed to fail with 404 or assertion before any production code
 - [ ] `response_model=` annotation on every new route decorator

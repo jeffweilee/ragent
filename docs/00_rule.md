@@ -269,6 +269,64 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 ---
 
 
+### Worker & State Machine Safety
+
+- **Rule: Status mutations use pessimistic locking.** All `documents.status` mutations MUST use `SELECT … FOR UPDATE` (worker: `NOWAIT` variant — re-kiq self on contention) or `FOR UPDATE SKIP LOCKED` (Reconciler). `Repository.update_status` MUST raise `IllegalStateTransition` on invalid transitions; callers never bypass it.
+
+- **Rule: Separate short transactions for lock vs. work.** Acquire `FOR UPDATE NOWAIT`, write the transitional status, **commit**; run external work (embed, ES write, plugins) outside any DB transaction; acquire briefly again to commit the terminal status. Never hold a row lock across an external call.
+
+- **Rule: Durable state commit before external cleanup.** Within any worker: (1) commit terminal status; (2) best-effort cleanup of staging artefacts (MinIO, Redis); (3) log orphan-tolerated event if cleanup fails. Cleanup-before-commit is a silent data-loss footgun on crash.
+
+- **Rule: Replace lock-as-liveness when decomposing long locks.** When a long-held lock is replaced by short transactions, the implicit liveness signal it provided is lost. Add a heartbeat (periodic `updated_at` refresh, default 30 s) or a lease column. Reconciler sweeps key on heartbeat freshness, never on raw status-age. Every `FOR UPDATE` removal must answer: "what now tells observers this row is being worked on?"
+
+- **Rule: Every non-terminal state and every eventual-consistency invariant has a Reconciler arm.** When introducing a new transient state or async convergence task, add: (a) a sweep query keyed on age or invariant violation; (b) a BDD scenario; (c) a plan row. The Reconciler emits a `reconciler_tick_total` heartbeat with a Prometheus alert at > 10 min absence.
+
+- **Rule: Convergence queries elect the winner inside SQL.** Supersede / pick-the-winner queries MUST use a subquery, window function, or `MAX`/`MIN` over the candidate set to select the survivor — never trust a caller-supplied identifier. Verify the caller-supplied ID matches the DB-elected winner and no-op on mismatch.
+
+- **Rule: Recovery re-claim path does not assert source state.** When the Reconciler redispatches a task landing on a `PENDING` row (after a worker crash), the re-claim MUST use a dedicated `reclaim_for_processing` that increments `attempt` and refreshes `updated_at` without an `assert_transition` source check. Every state-machine transition MUST have a paired chaos test under `tests/e2e/test_chaos/` that injects a mid-transition crash and asserts reconciler recovery reaches the terminal state — `pytest.mark.xfail(run=False)` is never acceptable for a SLO-bound recovery path.
+
+- **Rule: Per-call timeouts do not bound aggregates.** Every loop, fan-out, or pipeline that issues N external calls MUST carry an explicit aggregate wall-clock ceiling (e.g. `PIPELINE_TIMEOUT_SECONDS`). Overrun maps to a deterministic terminal failure with a dedicated `error_code`. Audit checklist: for each spec call site, list (per-call timeout, aggregate ceiling) — a blank in column 2 is a bug.
+
+---
+
+
+### Retrieval & Auth Separation
+
+- **Rule: Auth fields never on the retrieval index.** Authorization fields (answer "can this caller see this row?" — owner, viewer set, ACL relation) MUST NOT live on the retrieval index (ES, vector store, graph store), regardless of phase. Permission gating is a post-retrieval layer behind a Protocol; the backend (OpenFGA, DB lookup, etc.) is swappable without re-indexing. Column names in the data layer must describe what they record (`create_user` = creator audit), never what they authorize (`owner_user_id` implied an ACL role the column did not enforce).
+
+- **Rule: Classify every new retrieval index field before adding it.** Two classes: **(1) Authorization** — "can this caller see this row?" — never on the index; **(2) Scope/content metadata** — "what kind of content is this?" (language, source app, workspace, content type, title) — denormalize freely when the access pattern requires filtering at scoring time. Litmus test: "if this field's value changes, is it still fundamentally the same record?" Yes ⇒ scope metadata, denormalize; No (identity changes) ⇒ auth-adjacent, keep off the index. Document the class in the spec when the field is added; a Decision-Log row must explicitly state which class it belongs to.
+
+- **Rule: Every retrieval-augmented endpoint tests the LLM messages payload.** Every endpoint that passes retrieved chunks to an LLM MUST have a Red test asserting the exact `messages` argument sent to the LLM client (system + user wrapping, chunk rendering). Spec sections describing retrieval MUST state: (a) how chunks render into the user message; (b) the system-prompt style/intent contract — absence of either blocks plan freeze for that domain.
+
+---
+
+
+### DI & Constructor Discipline
+
+- **Rule: Never pass `None` for a required DI dependency.** When a constructor argument is typed non-Optional, pass the real instance. If the callee calls `dep.method()` unconditionally, `None` is a latent `AttributeError`. Use a mock in tests — do not default the production path to `None`. Review every `SomeClass(dep=None)` call site before committing.
+
+- **Rule: Container fields are typed, never opaque dicts.** The composition root (`Container`) dataclass fields MUST be typed explicitly. Never use `dict` or `Any` fields as bundled config bundles — each distinct value gets its own named field. Private (`_`) fields that leak to callers are a design smell; if a caller needs the value, make it a public typed field.
+
+- **Rule: Frozen interface → constructor injection, not Protocol widening.** When a new requirement introduces data that a frozen interface cannot pass, the default resolution is constructor injection in the implementation, not Protocol widening. Audit checklist for any cross-cutting field addition: list every consumer, mark `direct-arg` / `injected-dep` / `missing`. A `missing` entry blocks the change.
+
+- **Rule: Internal dispatch uses typed `Callable`, not `str + getattr`.** Two-branch method selection (e.g. `"extract"` vs `"delete"`) MUST use typed `Callable` parameters, extracting the callable at the call site (`p.extract`, `p.delete`). `getattr(obj, str)` is acceptable only for user-supplied dynamic attribute names (config-driven field names); never for internal dispatch over a known-finite method set.
+
+---
+
+
+### Spec Completeness: Pre-Red Gate
+
+- **Rule: Run a Decision-Surface audit before any track starts Red phase.** Every external-facing contract (HTTP body shape, streaming framing, object keys, scheduler runtime, test fixture provider, schema-migration mechanism) MUST have an explicit answer in spec, or a row in `§7. Decision Log` with rationale and rejected alternatives. Implicit defaults are blocking — no Red phase begins until the row is filled.
+
+- **Rule: Every plan must include a runnable-system track.** Required rows: (a) broker/message-bus module with one canonical export; (b) composition root constructing every singleton from env vars; (c) app factory with routers, middleware, lifespan, and composition root; (d) process entrypoints (`python -m <pkg>.api`, `python -m <pkg>.worker`, etc.); (e) operator config artifact (`.env.example`) with a drift test against the env-var inventory. Acceptance criterion: a reader following the plan alone can produce the operator-facing quickstart command list.
+
+- **Rule: Every "no cap on N" decision must include worst-case multiplication.** `worst_case = max_X × cost_per_unit`. If the result exceeds an existing system budget (timeout, memory, count, cost), the "no cap" is implicit and false — introduce packing, aggregation, or a hard cap before the decision is accepted. Applies to file-size limits, list endpoints, fan-out plugins, retry counts.
+
+- **Rule: Every BDD scenario in `00_spec.md` must be backed by ≥1 row in `00_plan.md`.** The test path must match the scenario name; verified at end of each round. Every exit metric must list its measurement asset (test file, dataset path) and the week it becomes available — block plan freeze if missing.
+
+---
+
+
 
 ## Third-Party API
 
