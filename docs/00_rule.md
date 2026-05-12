@@ -4,6 +4,7 @@
    - `docs/00_spec.md`: Specification Standards
    - `docs/00_plan.md`: Master TDD Implementation Checklist
    - `docs/00_journal.md` (Blameless Team Reflection)
+   - `docs/API.md` (API example reference)
 - **(Mandatory)** Execute the full pre-commit sequence (**start Docker daemon** → format → lint → **full test suite including docker testcontainers integration tests** → security scan) before every commit. Do **not** skip `@pytest.mark.docker` tests; skipped docker tests are a blocking violation. Start the Docker daemon **in advance** so testcontainers (MariaDB, ES, Redis, MinIO) actually run. See `# Command` section.
 - **Always** refer to `00_agent_team.md` and use "RAGENT Agent Team" workflow for planning, implementation, delivery.
 - **Always** refer to "Context7" MCP for any library and framework standard spec and example.
