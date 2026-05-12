@@ -65,9 +65,6 @@ ALLOWED_MIMES = (
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",
 )
 
-BINARY_MIMES = frozenset({IngestMime.DOCX, IngestMime.PPTX})
-
-
 # ---------------------------------------------------------------------------
 # _TextLoader (T2v.30/31)
 # ---------------------------------------------------------------------------

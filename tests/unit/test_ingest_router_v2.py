@@ -121,6 +121,25 @@ def test_post_ingest_file_object_missing_returns_422():
     assert resp.json()["error_code"] == "INGEST_OBJECT_NOT_FOUND"
 
 
+def test_post_ingest_pptx_inline_returns_422():
+    bad = {
+        **_INLINE,
+        "mime_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    }
+    client, _ = _make_client()
+    resp = client.post("/ingest/v1", json=bad, headers={"X-User-Id": "alice"})
+    assert resp.status_code == 422
+    assert resp.json()["error_code"] == "INGEST_VALIDATION"
+
+
+def test_post_ingest_pptx_alias_inline_returns_422():
+    bad = {**_INLINE, "mime_type": "pptx"}
+    client, _ = _make_client()
+    resp = client.post("/ingest/v1", json=bad, headers={"X-User-Id": "alice"})
+    assert resp.status_code == 422
+    assert resp.json()["error_code"] == "INGEST_VALIDATION"
+
+
 def test_post_ingest_multipart_returns_415():
     """Old multipart callers must hit a clean 415 — no surprise routing."""
     client, _ = _make_client()
