@@ -13,6 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
+from ragent import __version__ as _RAGENT_VERSION
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
 
@@ -20,6 +21,11 @@ from ragent.errors.problem import problem
 _PARSE_ERROR = -32700
 _INVALID_REQUEST = -32600
 _METHOD_NOT_FOUND = -32601
+
+# MCP protocol pin (B47). Code constants, not env-driven — operators flipping
+# these would silently break the contract advertised in `initialize`.
+_MCP_PROTOCOL_VERSION = "2024-11-05"
+_MCP_SERVER_NAME = "ragent"
 
 
 def _jsonrpc_result(req_id: Any, result: Any) -> dict[str, Any]:
@@ -42,12 +48,20 @@ async def _handle_ping(_params: Any) -> dict[str, Any]:
     return {}
 
 
-# Dispatch table. T-MCP.4 / T-MCP.6 / T-MCP.8 extend with `initialize`,
-# `tools/list`, `tools/call`. Handlers are coroutines so the future
-# `tools/call` handler (T-MCP.8) can `await` the async retrieval pipeline
-# without a sync/async branch in the dispatcher.
+async def _handle_initialize(_params: Any) -> dict[str, Any]:
+    return {
+        "protocolVersion": _MCP_PROTOCOL_VERSION,
+        "capabilities": {"tools": {}},
+        "serverInfo": {"name": _MCP_SERVER_NAME, "version": _RAGENT_VERSION},
+    }
+
+
+# Dispatch table. T-MCP.6 / T-MCP.8 extend with `tools/list`, `tools/call`.
+# Handlers are coroutines so the future `tools/call` handler (T-MCP.8) can
+# `await` the async retrieval pipeline without a sync/async branch.
 _METHODS: dict[str, Callable[[Any], Awaitable[dict[str, Any]]]] = {
     "ping": _handle_ping,
+    "initialize": _handle_initialize,
 }
 
 
