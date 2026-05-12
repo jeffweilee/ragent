@@ -139,8 +139,6 @@ def test_C1_worker_sigkill_recovers_to_ready(
     worker.wait(timeout=5)
     spawn_module("ragent.worker")  # fresh consumer for the reconciler's re-kiq
 
-    from ragent.bootstrap.metrics import chaos_drill_outcome_total
-
     # The reconciler runs as a subprocess (not in-process). Rationale: the
     # test-process broker captured `REDIS_BROKER_URL` at conftest pre-import
     # time (before `dev_env` set the testcontainer URL), so an in-process
@@ -148,6 +146,8 @@ def test_C1_worker_sigkill_recovers_to_ready(
     # inherits the current `os.environ` and gets the right URL.
     import subprocess
     import sys
+
+    from ragent.bootstrap.metrics import chaos_drill_outcome_total
 
     reconciler_log = open("/tmp/e2e_chaos_C1_reconciler.log", "w")  # noqa: SIM115
     recovered = False
