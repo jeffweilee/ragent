@@ -181,7 +181,9 @@ def test_request_body_413_post_read_fallback_without_content_length(client: Test
     iterator, so the pre-read branch must skip and the post-read length
     check is the one that fires.
     """
-    chunk = b'{"jsonrpc":"2.0","id":1,"method":"ping","params":{"x":"' + (b"a" * (260 * 1024)) + b'"}}'
+    chunk = (
+        b'{"jsonrpc":"2.0","id":1,"method":"ping","params":{"x":"' + (b"a" * (260 * 1024)) + b'"}}'
+    )
 
     def _stream():
         yield chunk
