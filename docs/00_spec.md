@@ -382,7 +382,7 @@ Runs the full retrieval pipeline (embed → kNN + BM25 → RRF join → source h
 
 - **S36 CJK BM25 via icu_tokenizer (B26)** — Given a document body containing `"產品規格"` (no whitespace) indexed under the `icu_text` analyzer, When a chat query for `"產品規格"` runs against `chunks_v1`, Then the BM25 retriever returns the chunk; the same query against a `standard`-analyzed control index does not. Proves the analyzer choice (B26) is functionally required for CJK retrieval.
 - **S37 chat rate-limit per user (B31)** — Given `CHAT_RATE_LIMIT_PER_MINUTE=N` and a single `X-User-Id`, When the same caller issues N+1 `POST /chat` (or `/chat/stream`) requests within the window, Then the first N succeed and the (N+1)th returns 429 `application/problem+json` with `error_code=CHAT_RATE_LIMITED` and a `Retry-After` header equal to seconds until window reset. A different `X-User-Id` gets an independent budget; ingest, MCP, and health endpoints are unaffected. After the window expires the counter resets.
-- **S8** — `POST /mcp/v1/tools/rag` returns 501 in P1 (handler not yet wired). Superseded by S58–S67 (§3.8) in P2.5.
+- ~~**S8**~~ — Superseded by S58–S67 (§3.8) in P2.5; the `POST /mcp/v1/tools/rag` 501 stub was removed.
 
 ---
 
@@ -643,7 +643,7 @@ App-level errors (-32000..-32099) carry `data.error_code` matching the existing 
 | DELETE | `/ingest/v1/{id}`          | `X-User-Id` | — | `204` idempotent |
 | POST   | `/chat/v1`                 | `X-User-Id` | §3.4.1 schema (`messages` required; rest default) | `200 application/json` per §3.4.2 |
 | POST   | `/chat/v1/stream`          | `X-User-Id` | §3.4.1 schema | `text/event-stream` per §3.4.3 (`data: {type:delta\|done\|error}`) |
-| POST   | `/mcp/v1`               | `X-User-Id` (P1) / `Authorization: Bearer` (P2) | JSON-RPC 2.0 envelope per §3.8 | `200` with JSON-RPC response envelope; `204` for `notifications/*`. Auth failure (401) returns `application/problem+json` per §3.8.1 (transport-layer). P1 `POST /mcp/v1/tools/rag` 501-stub **removed** in P2.5. |
+| POST   | `/mcp/v1`               | `X-User-Id` (P1) / `Authorization: Bearer` (P2) | JSON-RPC 2.0 envelope per §3.8 | `200` with JSON-RPC response envelope; `204` for `notifications/*`. Auth failure (401) returns `application/problem+json` per §3.8.1 (transport-layer). |
 | GET    | `/livez`                | none        | — | `200 {"status":"ok"}` — process up; no dependency probes |
 | GET    | `/readyz`               | none        | — | `200` if all dep probes pass; else `503 application/problem+json` listing failed deps. Probes: **MariaDB** (`SELECT 1`), **ES** (`GET /_cluster/health` + `analysis-icu` plugin loaded + every `resources/es/*.json` index exists; B26, I5), **Redis broker & rate-limiter** (`PING` against active topology per `REDIS_MODE`; B27), **MinIO** (`ListBuckets`). Each probe ≤ 2 s. |
 | GET    | `/metrics`              | none        | — | `200 text/plain; version=0.0.4` — Prometheus exposition (counters/histograms in §3.7) |
@@ -687,7 +687,6 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 | `CHAT_RATE_LIMITED`                  | 429 + `Retry-After` | Per-user fixed-window quota exceeded on `/chat/v1` or `/chat/v1/stream` (B31, S37) | Router-level Depends T3.16 |
 | `CHAT_LLM_ERROR`                     | 502 / SSE-error | Pre-stream LLM failure (problem+json) or mid-stream LLM failure (`data: {type:error}`, B6) | Router T3.10/T3.12 |
 | `CHAT_RETRIEVER_ERROR`               | 502 / SSE-error | ES vector / BM25 retriever failure | Router T3.10/T3.12 |
-| `MCP_NOT_IMPLEMENTED`                | 501         | `POST /mcp/v1/tools/rag` (P1 stub, removed in P2.5) | Router T6.1 |
 | `MCP_PARSE_ERROR`                    | JSON-RPC `-32700` | Request body is not valid JSON (S64) | Router P2.5 |
 | `MCP_INVALID_REQUEST`                | JSON-RPC `-32600` | Missing `jsonrpc:"2.0"` / `method`; malformed envelope | Router P2.5 |
 | `MCP_METHOD_NOT_FOUND`               | JSON-RPC `-32601` | Method outside §3.8.2 allow-list (S61) | Router P2.5 |
@@ -1060,7 +1059,7 @@ ragent/
 │   ├── routers/
 │   │   ├── ingest.py                             # T2.14 (B5) — /ingest CRUD + RFC 9457
 │   │   ├── chat.py                               # T3.10/T3.12 (B12, B6) — /chat + /chat/stream
-│   │   ├── mcp.py                                # T6.1 (P1) / T-MCP.* (P2.5) — /mcp/v1 JSON-RPC 2.0 server (§3.8)
+│   │   ├── mcp.py                                # T-MCP.* — /mcp/v1 JSON-RPC 2.0 server (§3.8)
 │   │   └── health.py                             # T7.8  (B4, C9) — /livez /readyz /metrics
 │   ├── services/
 │   │   └── ingest_service.py                     # T2.8 / T2.10 / T2.12 / T3.2d — create / delete / list / supersede

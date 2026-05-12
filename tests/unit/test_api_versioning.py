@@ -62,7 +62,7 @@ def test_version_segment_is_positive_integer():
     assert _VERSION_RE.match("/chat/v1")
     assert _VERSION_RE.match("/chat/v1/stream")
     assert _VERSION_RE.match("/retrieve/v1")
-    assert _VERSION_RE.match("/mcp/v1/tools/rag")
+    assert _VERSION_RE.match("/mcp/v1")
     assert _VERSION_RE.match("/ingest/v10")
     assert not _VERSION_RE.match("/ingest/v0")
     assert not _VERSION_RE.match("/ingest")

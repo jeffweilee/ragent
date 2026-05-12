@@ -57,9 +57,6 @@ class HttpErrorCode(StrEnum):
     # Chat (429).
     CHAT_RATE_LIMITED = "CHAT_RATE_LIMITED"
 
-    # MCP stub (501) — deprecated, removed in T-MCP.12.
-    MCP_NOT_IMPLEMENTED = "MCP_NOT_IMPLEMENTED"
-
     # MCP JSON-RPC 2.0 server (§3.8, B47). Surfaces as `data.error_code`
     # inside JSON-RPC error envelopes (NOT as problem+json), but lives in
     # this enum so the API-emitted code inventory remains single-source.

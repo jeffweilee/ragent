@@ -1,7 +1,7 @@
-"""MCP server router (§3.8, B47).
+"""MCP server router — `POST /mcp/v1` JSON-RPC 2.0 (§3.8, B47).
 
-P1 (T6.1): `POST /mcp/v1/tools/rag` returns 501 — removed in T-MCP.12.
-P2.5: `POST /mcp/v1` JSON-RPC 2.0 server exposing the `retrieve` tool.
+Methods: initialize / notifications/initialized / tools/list / tools/call / ping.
+Sole tool: `retrieve` (wraps POST /retrieve/v1).
 """
 
 from __future__ import annotations
@@ -18,7 +18,6 @@ from jsonschema import Draft7Validator, ValidationError
 
 from ragent import __version__ as _RAGENT_VERSION
 from ragent.errors.codes import HttpErrorCode
-from ragent.errors.problem import problem
 from ragent.pipelines.chat import (
     build_es_filters,
     dedupe_by_document,
@@ -211,14 +210,6 @@ def create_mcp_router(retrieval_pipeline: Any = None) -> APIRouter:
         **_STATELESS_METHODS,
         "tools/call": _handle_tools_call,
     }
-
-    @router.post("/tools/rag")
-    async def rag_tool() -> Response:
-        return problem(
-            501,
-            HttpErrorCode.MCP_NOT_IMPLEMENTED,
-            "MCP RAG tool not implemented in Phase 1",
-        )
 
     @router.post("")
     async def mcp_jsonrpc(request: Request) -> Response:
