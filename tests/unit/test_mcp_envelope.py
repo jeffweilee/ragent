@@ -143,6 +143,23 @@ def test_tools_call_with_array_params_returns_invalid_params(client: TestClient)
     assert body["error"]["data"]["error_code"] == "MCP_TOOL_INPUT_INVALID"
 
 
+def test_request_body_413_via_content_length_preread(client: TestClient) -> None:
+    """Defence-in-depth: when the client advertises Content-Length larger
+    than the cap, the router rejects BEFORE buffering the body — protects
+    against an attacker streaming megabytes through `await request.body()`.
+
+    TestClient sets Content-Length automatically from `content=`, so a
+    payload over the cap should hit the pre-read branch first.
+    """
+    oversized = (
+        b'{"jsonrpc":"2.0","id":1,"method":"ping","params":{"x":"' + (b"a" * (260 * 1024)) + b'"}}'
+    )
+    resp = client.post("/mcp/v1", content=oversized, headers={"Content-Type": "application/json"})
+    assert resp.status_code == 413
+    assert resp.headers["content-type"].startswith("application/problem+json")
+    assert resp.json()["error_code"] == "MCP_INVALID_REQUEST"
+
+
 def test_request_body_exceeding_cap_returns_413(client: TestClient) -> None:
     """Spec §3.8.1 — defence-in-depth: bodies > 256 KiB return HTTP 413 with
     application/problem+json (transport-layer, NOT a JSON-RPC error). The
@@ -156,6 +173,26 @@ def test_request_body_exceeding_cap_returns_413(client: TestClient) -> None:
     assert resp.headers["content-type"].startswith("application/problem+json")
     body = resp.json()
     assert body["error_code"] == "MCP_INVALID_REQUEST"
+
+
+def test_request_body_413_post_read_fallback_without_content_length(client: TestClient) -> None:
+    """Pins the post-read fallback for clients sending chunked transfer (no
+    `Content-Length` header). httpx sends chunked when `content=` is an
+    iterator, so the pre-read branch must skip and the post-read length
+    check is the one that fires.
+    """
+    chunk = b'{"jsonrpc":"2.0","id":1,"method":"ping","params":{"x":"' + (b"a" * (260 * 1024)) + b'"}}'
+
+    def _stream():
+        yield chunk
+
+    resp = client.post(
+        "/mcp/v1",
+        content=_stream(),
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code == 413
+    assert resp.json()["error_code"] == "MCP_INVALID_REQUEST"
 
 
 def test_response_content_type_is_application_json_for_success(client: TestClient) -> None:

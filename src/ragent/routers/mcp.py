@@ -232,11 +232,23 @@ def create_mcp_router(retrieval_pipeline: Any) -> APIRouter:
 
     @router.post("")
     async def mcp_jsonrpc(request: Request) -> Response:
+        # 413 Payload Too Large — transport-layer concern (NOT a JSON-RPC
+        # error envelope) so the caller can distinguish from in-protocol
+        # errors. Mirrors the §3.8.1 auth-failure rule.
+        #
+        # Pre-read on Content-Length where the client advertised one — avoids
+        # buffering an attacker-sized body into memory before rejecting it.
+        # Fall back to a post-read length check (covers clients that omit
+        # Content-Length, e.g. chunked transfer).
+        content_length = request.headers.get("content-length")
+        if content_length and content_length.isdigit() and int(content_length) > _MAX_REQUEST_BYTES:
+            return problem(
+                413,
+                HttpErrorCode.MCP_INVALID_REQUEST,
+                f"request body exceeds {_MAX_REQUEST_BYTES} bytes",
+            )
         raw = await request.body()
         if len(raw) > _MAX_REQUEST_BYTES:
-            # 413 Payload Too Large — transport-layer concern (NOT a
-            # JSON-RPC error envelope) so the caller can distinguish from
-            # in-protocol errors. Mirrors the §3.8.1 auth-failure rule.
             return problem(
                 413,
                 HttpErrorCode.MCP_INVALID_REQUEST,
