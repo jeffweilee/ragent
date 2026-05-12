@@ -32,4 +32,4 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("ALTER TABLE documents DROP PRIMARY KEY, DROP COLUMN id, ADD PRIMARY KEY (document_id), ALGORITHM=COPY")
+    op.execute("ALTER TABLE documents DROP INDEX uq_document_id, DROP PRIMARY KEY, DROP COLUMN id, ADD PRIMARY KEY (document_id), ALGORITHM=COPY")
