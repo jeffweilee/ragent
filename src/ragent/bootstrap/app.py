@@ -9,6 +9,7 @@ import anyio
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.responses import Response
+from starlette.middleware.cors import CORSMiddleware
 
 from ragent.bootstrap.guard import enforce
 from ragent.bootstrap.init_schema import init_schema
@@ -28,8 +29,21 @@ from ragent.routers.health import create_health_router
 from ragent.routers.ingest import create_router as create_ingest_router
 from ragent.routers.mcp import create_mcp_router
 from ragent.routers.retrieve import create_retrieve_router
+from ragent.utility.env import list_env as _list_env
 
 logger = structlog.get_logger(__name__)
+
+
+def _add_cors_middleware(app: FastAPI, origins: list[str]) -> None:
+    if not origins:
+        return
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
 
 _NO_USER_ID_PATHS = frozenset(
     {"/livez", "/readyz", "/startupz", "/metrics", "/docs", "/redoc", "/openapi.json"}
@@ -263,9 +277,12 @@ def create_app() -> FastAPI:
     _register_unhandled_exception_handler(app)
 
     _x_user_id_middleware(app)
-    # RequestLoggingMiddleware is registered after _x_user_id_middleware so that
-    # it runs FIRST (Starlette wraps middleware in reverse order). This way the
-    # api.request log captures the missing-X-User-Id 422 too.
+    # CORSMiddleware is registered after _x_user_id_middleware so it runs
+    # BEFORE the user-ID check (Starlette wraps in reverse order). This lets
+    # CORS preflight OPTIONS requests short-circuit before hitting the 422 gate.
+    _add_cors_middleware(app, _list_env("CORS_ALLOW_ORIGINS"))
+    # RequestLoggingMiddleware is registered last so it runs FIRST (outermost),
+    # capturing every request including preflight and missing-X-User-Id 422s.
     app.add_middleware(RequestLoggingMiddleware)
 
     return app
