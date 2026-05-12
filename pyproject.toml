@@ -9,6 +9,7 @@ dependencies = [
     "fastapi>=0.115.0",
     "haystack-ai>=2.7,<3",
     "httpx>=0.27.0",
+    "jsonschema>=4.20,<5",
     "minio>=7.2.0",
     "mistletoe>=1.4,<2",
     "selectolax>=0.3,<0.4",

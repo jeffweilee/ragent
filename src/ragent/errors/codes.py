@@ -66,6 +66,9 @@ class HttpErrorCode(StrEnum):
     MCP_PARSE_ERROR = "MCP_PARSE_ERROR"  # -32700
     MCP_INVALID_REQUEST = "MCP_INVALID_REQUEST"  # -32600
     MCP_METHOD_NOT_FOUND = "MCP_METHOD_NOT_FOUND"  # -32601
+    MCP_TOOL_NOT_FOUND = "MCP_TOOL_NOT_FOUND"  # -32602 (tools/call unknown name)
+    MCP_TOOL_INPUT_INVALID = "MCP_TOOL_INPUT_INVALID"  # -32602 (inputSchema violation)
+    MCP_TOOL_EXECUTION_FAILED = "MCP_TOOL_EXECUTION_FAILED"  # -32001 (handler raised)
 
 
 class TaskErrorCode(StrEnum):

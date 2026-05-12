@@ -10,9 +10,11 @@ import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
+import structlog
 from fastapi import APIRouter, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response
+from jsonschema import Draft7Validator, ValidationError
 
 from ragent import __version__ as _RAGENT_VERSION
 from ragent.errors.codes import HttpErrorCode
@@ -24,10 +26,24 @@ from ragent.pipelines.chat import (
     run_retrieval,
 )
 
+logger = structlog.get_logger(__name__)
+
 # JSON-RPC 2.0 standard error codes (spec §3.8.4).
 _PARSE_ERROR = -32700
 _INVALID_REQUEST = -32600
 _METHOD_NOT_FOUND = -32601
+_INVALID_PARAMS = -32602
+_TOOL_EXECUTION_FAILED = -32001
+
+
+class _McpToolError(Exception):
+    """Raised by handlers to surface a JSON-RPC error envelope."""
+
+    def __init__(self, code: int, error_code: str, message: str) -> None:
+        self.code = code
+        self.error_code = error_code
+        super().__init__(message)
+
 
 # MCP protocol pin (B47). Code constants, not env-driven — operators flipping
 # these would silently break the contract advertised in `initialize`.
@@ -119,6 +135,30 @@ async def _handle_tools_list(_params: Any) -> dict[str, Any]:
     return {"tools": [_RETRIEVE_TOOL_SCHEMA]}
 
 
+_RETRIEVE_INPUT_VALIDATOR = Draft7Validator(_RETRIEVE_TOOL_SCHEMA["inputSchema"])
+
+
+def _validate_retrieve_args(args: Any) -> None:
+    """Validate `tools/call retrieve` arguments against the inputSchema.
+
+    Raises `_McpToolError(-32602, MCP_TOOL_INPUT_INVALID, ...)` on the first
+    failure. Draft7 is used because the schema authored in §3.8.3 uses
+    `default`/`minimum`/`maximum`/`required` — all in scope of Draft7
+    without needing 2020-12-only keywords.
+    """
+    try:
+        _RETRIEVE_INPUT_VALIDATOR.validate(args)
+    except ValidationError as exc:
+        # `path` is the dotted location inside `args`; the root error has no
+        # path so we substitute "arguments" for a readable message.
+        location = ".".join(str(p) for p in exc.absolute_path) or "arguments"
+        raise _McpToolError(
+            _INVALID_PARAMS,
+            HttpErrorCode.MCP_TOOL_INPUT_INVALID.value,
+            f"{location}: {exc.message}",
+        ) from exc
+
+
 # Stateless handlers — composed before per-router state (the retrieval
 # pipeline) is bound. T-MCP.8 adds the stateful `tools/call` handler as a
 # closure inside `create_mcp_router` that captures the pipeline.
@@ -133,18 +173,32 @@ def create_mcp_router(retrieval_pipeline: Any = None) -> APIRouter:
     router = APIRouter(prefix="/mcp/v1")
 
     async def _handle_tools_call(params: Any) -> dict[str, Any]:
-        # Argument extraction (T-MCP.10 will add schema validation +
-        # MCP_TOOL_NOT_FOUND / MCP_TOOL_INPUT_INVALID error mapping).
         params = params or {}
+        name = params.get("name")
+        if name != _RETRIEVE_TOOL_SCHEMA["name"]:
+            raise _McpToolError(
+                _INVALID_PARAMS,
+                HttpErrorCode.MCP_TOOL_NOT_FOUND.value,
+                f"unknown tool: {name!r}",
+            )
         arguments = params.get("arguments") or {}
-        docs = await run_in_threadpool(
-            run_retrieval,
-            retrieval_pipeline,
-            query=arguments["query"],
-            filters=build_es_filters(arguments.get("source_app"), arguments.get("source_meta")),
-            top_k=arguments.get("top_k", 20),
-            min_score=arguments.get("min_score"),
-        )
+        _validate_retrieve_args(arguments)
+        try:
+            docs = await run_in_threadpool(
+                run_retrieval,
+                retrieval_pipeline,
+                query=arguments["query"],
+                filters=build_es_filters(arguments.get("source_app"), arguments.get("source_meta")),
+                top_k=arguments.get("top_k", 20),
+                min_score=arguments.get("min_score"),
+            )
+        except Exception as exc:
+            logger.exception("mcp.tool.error", tool=name, error_type=type(exc).__name__)
+            raise _McpToolError(
+                _TOOL_EXECUTION_FAILED,
+                HttpErrorCode.MCP_TOOL_EXECUTION_FAILED.value,
+                str(exc) or "tool execution failed",
+            ) from exc
         if arguments.get("dedupe"):
             docs = dedupe_by_document(docs)
         payload = {"chunks": [doc_to_source_entry(d) for d in docs]}
@@ -223,7 +277,17 @@ def create_mcp_router(retrieval_pipeline: Any = None) -> APIRouter:
                 )
             )
 
-        result = await handler(envelope.get("params"))
+        try:
+            result = await handler(envelope.get("params"))
+        except _McpToolError as exc:
+            return JSONResponse(
+                _jsonrpc_error(
+                    req_id,
+                    exc.code,
+                    str(exc),
+                    data={"error_code": exc.error_code},
+                )
+            )
         return JSONResponse(_jsonrpc_result(req_id, result))
 
     return router
