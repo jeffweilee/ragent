@@ -57,8 +57,15 @@ class HttpErrorCode(StrEnum):
     # Chat (429).
     CHAT_RATE_LIMITED = "CHAT_RATE_LIMITED"
 
-    # MCP stub (501).
-    MCP_NOT_IMPLEMENTED = "MCP_NOT_IMPLEMENTED"
+    # MCP JSON-RPC 2.0 server (§3.8, B47). Surfaces as `data.error_code`
+    # inside JSON-RPC error envelopes (NOT as problem+json), but lives in
+    # this enum so the API-emitted code inventory remains single-source.
+    MCP_PARSE_ERROR = "MCP_PARSE_ERROR"  # -32700
+    MCP_INVALID_REQUEST = "MCP_INVALID_REQUEST"  # -32600
+    MCP_METHOD_NOT_FOUND = "MCP_METHOD_NOT_FOUND"  # -32601
+    MCP_TOOL_NOT_FOUND = "MCP_TOOL_NOT_FOUND"  # -32602 (tools/call unknown name)
+    MCP_TOOL_INPUT_INVALID = "MCP_TOOL_INPUT_INVALID"  # -32602 (inputSchema violation)
+    MCP_TOOL_EXECUTION_FAILED = "MCP_TOOL_EXECUTION_FAILED"  # -32001 (handler raised)
 
 
 class TaskErrorCode(StrEnum):

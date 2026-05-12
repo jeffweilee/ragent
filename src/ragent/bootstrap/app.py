@@ -269,7 +269,7 @@ def create_app() -> FastAPI:
         )
     )
     app.include_router(create_retrieve_router(retrieval_pipeline=container.retrieval_pipeline))
-    app.include_router(create_mcp_router())
+    app.include_router(create_mcp_router(retrieval_pipeline=container.retrieval_pipeline))
     app.include_router(create_health_router(probes=_build_probes(container)))
     setup_metrics(app)
     _register_document_stats_collector()

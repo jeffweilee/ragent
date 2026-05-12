@@ -23,6 +23,16 @@ os.environ.setdefault("RAGENT_ES_RESOURCES_DIR", str(Path(__file__).parent / "re
 if _PREFIX:
     os.environ.setdefault("RYUK_CONTAINER_IMAGE", tc_image("testcontainers/ryuk:0.8.1"))
 
+# Pre-import ragent.workers.ingest so its @broker.task decorators bind to
+# the real broker before any test can monkeypatch
+# ragent.bootstrap.broker.broker. Without this, a test that patches that
+# attribute and then triggers the first-time import of the worker module
+# (e.g. via ragent.reconciler._build_from_env) replaces
+# ingest_pipeline_task with a MagicMock and leaks that replacement into
+# every later test in the run. Invariant pinned by
+# tests/unit/test_worker_decoration_invariant.py.
+import ragent.workers.ingest  # noqa: E402, F401
+
 
 def run_in_threadpool(fn: Callable[[], Any]) -> Any:
     """Run a sync callable inside ``anyio.to_thread.run_sync``.

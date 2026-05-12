@@ -167,7 +167,7 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 
 - **Rule: All business API paths carry a `/v<N>` version segment at position `/<resource>/v<N>[/<rest>]`.**
   - **Format:** `/<resource>/v<N>` for collection operations; `/<resource>/v<N>/{id}` for item operations; `/<resource>/v<N>/<sub-resource>` for nested actions.
-  - **Current surface:** `POST /ingest/v1`, `GET /ingest/v1/{id}`, `DELETE /ingest/v1/{id}`, `GET /ingest/v1`, `POST /chat/v1`, `POST /chat/v1/stream`, `POST /retrieve/v1`, `POST /mcp/v1/tools/rag`.
+  - **Current surface:** `POST /ingest/v1`, `GET /ingest/v1/{id}`, `DELETE /ingest/v1/{id}`, `GET /ingest/v1`, `POST /chat/v1`, `POST /chat/v1/stream`, `POST /retrieve/v1`, `POST /mcp/v1`.
   - **Excluded (no version segment):** Infrastructure endpoints `/livez`, `/readyz`, `/startupz`, `/metrics` — these are process health surfaces, not business API.
 
 - **Rule: Resource names are lowercase, hyphen-separated nouns. The version token is `v` followed by a positive integer — no suffix variants (`v1`, never `v1.0`, `v1-beta`, `v1_stable`).**

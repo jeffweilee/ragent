@@ -129,6 +129,16 @@ readyz_probe_status = Gauge(
     labelnames=("probe",),
 )
 
+# Chaos drill outcome — emitted by `tests/e2e/test_chaos/` (T-CHAOS suite, B49).
+# Each case (C1..C6) increments {case=<id>, outcome=pass|fail} when the
+# drill asserts the resilience invariant. Surfaced on /metrics so a nightly
+# CI lane can persist drill history.
+chaos_drill_outcome_total = Counter(
+    "ragent_chaos_drill_outcome_total",
+    "Chaos drill outcomes — incremented by tests/e2e/test_chaos cases (B49).",
+    labelnames=("case", "outcome"),
+)
+
 
 DocumentStatsRow = tuple[str, str | None, str | None, int]
 """(status, source_app, mime_type, count)."""

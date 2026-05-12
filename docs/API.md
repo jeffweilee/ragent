@@ -344,4 +344,23 @@ curl http://localhost:8000/metrics
 
 ## MCP (Phase 2)
 
-`POST /mcp/v1/tools/rag` — Returns `501 MCP_NOT_IMPLEMENTED` in Phase 1.
+`POST /mcp/v1` — Model Context Protocol server speaking JSON-RPC 2.0
+(spec `2024-11-05`). Exposes the corpus as a single tool `retrieve` so
+external MCP-aware agents (Claude Desktop, Cursor, in-house agents) can
+invoke the retrieval pipeline through the MCP standard.
+
+Supported methods (full spec: `docs/00_spec.md` §3.8):
+
+| Method | Direction | Purpose |
+|---|---|---|
+| `initialize` | client → server | Capability negotiation. |
+| `notifications/initialized` | client → server (notification) | Client signals init complete; server returns 204. |
+| `tools/list` | client → server | Returns the single `retrieve` tool with its inputSchema. |
+| `tools/call` | client → server | Invokes the tool. Result `content[0].text` is JSON-stringified `{chunks:[...]}`. |
+| `ping` | bidirectional | Returns `{}`. |
+
+Errors surface as JSON-RPC error envelopes with `data.error_code` mapping
+to the standard catalog (`MCP_PARSE_ERROR`, `MCP_INVALID_REQUEST`,
+`MCP_METHOD_NOT_FOUND`, `MCP_TOOL_NOT_FOUND`, `MCP_TOOL_INPUT_INVALID`,
+`MCP_TOOL_EXECUTION_FAILED`). Transport-layer failures (e.g. auth 401)
+still come through as `application/problem+json`, not as JSON-RPC errors.
