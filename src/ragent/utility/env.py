@@ -41,3 +41,8 @@ def float_env(var: str, default: float) -> float:
     except ValueError:
         print(f"[ragent] {var!r} must be a float, got {raw!r}", file=sys.stderr)
         sys.exit(1)
+
+
+def list_env(var: str) -> list[str]:
+    raw = os.environ.get(var, "")
+    return [item.strip() for item in raw.split(",") if item.strip()]
