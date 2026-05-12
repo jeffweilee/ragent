@@ -11,11 +11,18 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from fastapi import APIRouter, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response
 
 from ragent import __version__ as _RAGENT_VERSION
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
+from ragent.pipelines.chat import (
+    build_es_filters,
+    dedupe_by_document,
+    doc_to_source_entry,
+    run_retrieval,
+)
 
 # JSON-RPC 2.0 standard error codes (spec §3.8.4).
 _PARSE_ERROR = -32700
@@ -112,18 +119,44 @@ async def _handle_tools_list(_params: Any) -> dict[str, Any]:
     return {"tools": [_RETRIEVE_TOOL_SCHEMA]}
 
 
-# Dispatch table. T-MCP.8 extends with `tools/call`. Handlers are coroutines
-# so the future `tools/call` handler (T-MCP.8) can `await` the async
-# retrieval pipeline without a sync/async branch.
-_METHODS: dict[str, Callable[[Any], Awaitable[dict[str, Any]]]] = {
+# Stateless handlers — composed before per-router state (the retrieval
+# pipeline) is bound. T-MCP.8 adds the stateful `tools/call` handler as a
+# closure inside `create_mcp_router` that captures the pipeline.
+_STATELESS_METHODS: dict[str, Callable[[Any], Awaitable[dict[str, Any]]]] = {
     "ping": _handle_ping,
     "initialize": _handle_initialize,
     "tools/list": _handle_tools_list,
 }
 
 
-def create_mcp_router() -> APIRouter:
+def create_mcp_router(retrieval_pipeline: Any = None) -> APIRouter:
     router = APIRouter(prefix="/mcp/v1")
+
+    async def _handle_tools_call(params: Any) -> dict[str, Any]:
+        # Argument extraction (T-MCP.10 will add schema validation +
+        # MCP_TOOL_NOT_FOUND / MCP_TOOL_INPUT_INVALID error mapping).
+        params = params or {}
+        arguments = params.get("arguments") or {}
+        docs = await run_in_threadpool(
+            run_retrieval,
+            retrieval_pipeline,
+            query=arguments["query"],
+            filters=build_es_filters(arguments.get("source_app"), arguments.get("source_meta")),
+            top_k=arguments.get("top_k", 20),
+            min_score=arguments.get("min_score"),
+        )
+        if arguments.get("dedupe"):
+            docs = dedupe_by_document(docs)
+        payload = {"chunks": [doc_to_source_entry(d) for d in docs]}
+        return {
+            "content": [{"type": "text", "text": json.dumps(payload)}],
+            "isError": False,
+        }
+
+    methods: dict[str, Callable[[Any], Awaitable[dict[str, Any]]]] = {
+        **_STATELESS_METHODS,
+        "tools/call": _handle_tools_call,
+    }
 
     @router.post("/tools/rag")
     async def rag_tool() -> Response:
@@ -179,7 +212,7 @@ def create_mcp_router() -> APIRouter:
             # transport mapping.
             return Response(status_code=204)
 
-        handler = _METHODS.get(method)
+        handler = methods.get(method)
         if handler is None:
             return JSONResponse(
                 _jsonrpc_error(
