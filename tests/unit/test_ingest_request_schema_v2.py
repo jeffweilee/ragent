@@ -217,9 +217,6 @@ def test_full_mime_string_case_insensitive():
 
 
 def test_full_pptx_mime_mixed_case_normalises():
-    mixed = (
-        "Application/Vnd.Openxmlformats-"
-        "Officedocument.Presentationml.Presentation"
-    )
+    mixed = "Application/Vnd.Openxmlformats-Officedocument.Presentationml.Presentation"
     req = _adapter().validate_python({**_FILE_PPTX_BASE, "mime_type": mixed})
     assert req.mime_type == IngestMime.PPTX
