@@ -38,6 +38,20 @@ def build_es_filters(source_app: str | None, source_meta: str | None) -> dict | 
     return {"operator": "AND", "conditions": clauses}
 
 
+def dedupe_by_document(docs: list[Any]) -> list[Any]:
+    """Keep one chunk per `document_id`, preserving order; chunks without a
+    `document_id` are passed through unchanged."""
+    seen: set[str] = set()
+    out = []
+    for doc in docs:
+        doc_id = (doc.meta or {}).get("document_id")
+        if doc_id not in seen:
+            if doc_id is not None:
+                seen.add(doc_id)
+            out.append(doc)
+    return out
+
+
 def doc_to_source_entry(doc: Any) -> dict:
     meta = doc.meta or {}
     excerpt_src = meta.get("raw_content") or (doc.content or "")

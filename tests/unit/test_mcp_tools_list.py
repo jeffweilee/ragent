@@ -42,10 +42,9 @@ def test_tools_list_deep_equals_spec_literal(client: TestClient) -> None:
     """
     from ragent.routers.mcp import _RETRIEVE_TOOL_SCHEMA
 
-    [tool] = (
-        client.post("/mcp/v1", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
-        .json()["result"]["tools"]
-    )
+    [tool] = client.post(
+        "/mcp/v1", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+    ).json()["result"]["tools"]
     assert tool == _RETRIEVE_TOOL_SCHEMA
 
 

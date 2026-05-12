@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field, field_validator
 from ragent.pipelines.chat import (
     DEFAULT_TOP_K,
     build_es_filters,
+    dedupe_by_document,
     doc_to_source_entry,
     run_retrieval,
 )
@@ -68,18 +69,6 @@ class RetrieveResponse(BaseModel):
     chunks: list[ChunkEntry]
 
 
-def _dedupe_by_document(docs: list[Any]) -> list[Any]:
-    seen: set[str] = set()
-    result = []
-    for doc in docs:
-        doc_id = (doc.meta or {}).get("document_id")
-        if doc_id not in seen:
-            if doc_id is not None:
-                seen.add(doc_id)
-            result.append(doc)
-    return result
-
-
 def create_retrieve_router(retrieval_pipeline: Any) -> APIRouter:
     router = APIRouter(prefix="/retrieve/v1")
 
@@ -111,7 +100,7 @@ def create_retrieve_router(retrieval_pipeline: Any) -> APIRouter:
             if body.dedupe:
                 input_count = len(docs)
                 with _tracer.start_as_current_span("retrieve.dedupe") as d_span:
-                    docs = _dedupe_by_document(docs)
+                    docs = dedupe_by_document(docs)
                     d_span.set_attribute("input_count", input_count)
                     d_span.set_attribute("output_count", len(docs))
                     logger.info(
