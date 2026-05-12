@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.middleware.cors import CORSMiddleware
 
-from ragent.bootstrap.app import _add_cors_middleware
+from ragent.bootstrap.app import _add_cors_middleware, _x_user_id_middleware
 
 
 def _build_app(origins: list[str]) -> FastAPI:
@@ -83,3 +83,25 @@ def test_list_env_returns_empty_for_blank_value(monkeypatch: pytest.MonkeyPatch)
     from ragent.utility.env import list_env
 
     assert list_env("CORS_ALLOW_ORIGINS") == []
+
+
+def test_preflight_succeeds_without_x_user_id() -> None:
+    """OPTIONS preflight must not be blocked by the X-User-Id gate."""
+    app = FastAPI()
+    _x_user_id_middleware(app)
+    _add_cors_middleware(app, ["https://example.com"])
+
+    @app.get("/data")
+    def data() -> dict:
+        return {"ok": True}
+
+    with TestClient(app, raise_server_exceptions=True) as client:
+        resp = client.options(
+            "/data",
+            headers={
+                "Origin": "https://example.com",
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        assert resp.status_code == 200
+        assert resp.headers.get("access-control-allow-origin") == "https://example.com"

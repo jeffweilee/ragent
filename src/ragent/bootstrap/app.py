@@ -276,11 +276,13 @@ def create_app() -> FastAPI:
 
     _register_unhandled_exception_handler(app)
 
-    _add_cors_middleware(app, _list_env("CORS_ALLOW_ORIGINS"))
     _x_user_id_middleware(app)
-    # RequestLoggingMiddleware is registered after _x_user_id_middleware so that
-    # it runs FIRST (Starlette wraps middleware in reverse order). This way the
-    # api.request log captures the missing-X-User-Id 422 too.
+    # CORSMiddleware is registered after _x_user_id_middleware so it runs
+    # BEFORE the user-ID check (Starlette wraps in reverse order). This lets
+    # CORS preflight OPTIONS requests short-circuit before hitting the 422 gate.
+    _add_cors_middleware(app, _list_env("CORS_ALLOW_ORIGINS"))
+    # RequestLoggingMiddleware is registered last so it runs FIRST (outermost),
+    # capturing every request including preflight and missing-X-User-Id 422s.
     app.add_middleware(RequestLoggingMiddleware)
 
     return app
