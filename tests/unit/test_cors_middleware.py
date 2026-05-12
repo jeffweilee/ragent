@@ -49,8 +49,8 @@ def test_cors_headers_absent_for_unlisted_origin() -> None:
 
 def test_no_cors_middleware_when_origins_empty() -> None:
     app = _build_app([])
-    middleware_types = [type(m.cls) if hasattr(m, "cls") else type(m) for m in app.user_middleware]
-    assert CORSMiddleware not in middleware_types
+    middleware_classes = [m.cls for m in app.user_middleware if hasattr(m, "cls")]
+    assert CORSMiddleware not in middleware_classes
 
 
 def test_multiple_origins_all_allowed() -> None:
