@@ -65,8 +65,9 @@ async def ingest_pipeline_task(document_id: str) -> None:
         head = registry.head_object(site, doc.object_key)
         minio_content_type = head[1] if head else None
         mime = doc.mime_type or minio_content_type or DEFAULT_MIME
-        # Strip charset suffix etc. ("text/markdown; charset=utf-8" → "text/markdown").
-        mime = mime.split(";", 1)[0].strip()
+        # Strip charset suffix and lowercase — MinIO metadata casing isn't guaranteed
+        # (RFC 2045 §5.1: media-type matching is case-insensitive).
+        mime = mime.split(";", 1)[0].strip().lower()
 
         # Pass HEAD size into get_object so a partial network read raises
         # rather than silently truncating the source document.

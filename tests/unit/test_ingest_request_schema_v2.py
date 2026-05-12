@@ -208,3 +208,18 @@ def test_inline_pptx_alias_also_rejected():
     bad = {**_INLINE_BASE, "mime_type": "pptx"}
     with pytest.raises(ValidationError):
         _adapter().validate_python(bad)
+
+
+def test_full_mime_string_case_insensitive():
+    """RFC 2045 §5.1: media-type matching is case-insensitive."""
+    req = _adapter().validate_python({**_INLINE_BASE, "mime_type": "TEXT/PLAIN"})
+    assert req.mime_type == IngestMime.TEXT_PLAIN
+
+
+def test_full_pptx_mime_mixed_case_normalises():
+    mixed = (
+        "Application/Vnd.Openxmlformats-"
+        "Officedocument.Presentationml.Presentation"
+    )
+    req = _adapter().validate_python({**_FILE_PPTX_BASE, "mime_type": mixed})
+    assert req.mime_type == IngestMime.PPTX

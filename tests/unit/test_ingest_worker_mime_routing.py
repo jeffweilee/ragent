@@ -81,3 +81,19 @@ async def test_doc_mime_type_none_falls_back_to_minio_content_type():
     loader_kwargs = call_kwargs["loader"]
     assert "content_bytes" not in loader_kwargs, "expected text path"
     assert loader_kwargs["mime_type"] == "text/plain"
+
+
+@pytest.mark.asyncio
+async def test_minio_content_type_uppercase_lowercased_for_routing():
+    """MinIO metadata may return uppercase content-type; worker lowercases for routing."""
+    doc = _doc(mime_type=None)
+    container = _container(doc, minio_content_type="TEXT/PLAIN")
+
+    from ragent.workers import ingest as worker_mod
+
+    with patch("ragent.bootstrap.composition.get_container", return_value=container):
+        await worker_mod.ingest_pipeline_task("DOC-MIME-1")
+
+    call_kwargs = container.ingest_pipeline.run.call_args[0][0]
+    loader_kwargs = call_kwargs["loader"]
+    assert loader_kwargs["mime_type"] == "text/plain"

@@ -33,7 +33,11 @@ class IngestMime(StrEnum):
 
     @classmethod
     def _missing_(cls, value: object) -> IngestMime | None:
-        return _MIME_ALIASES.get(str(value).lower())
+        # RFC 2045 §5.1: media-type matching is case-insensitive.
+        v = str(value).lower()
+        if v in _MIME_ALIASES:
+            return _MIME_ALIASES[v]
+        return next((m for m in cls if m.value == v), None)
 
 
 _MIME_ALIASES: dict[str, IngestMime] = {
