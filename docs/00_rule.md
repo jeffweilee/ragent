@@ -275,7 +275,7 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 
 - **Rule: Separate short transactions for lock vs. work.** Acquire `FOR UPDATE NOWAIT`, write the transitional status, **commit**; run external work (embed, ES write, plugins) outside any DB transaction; acquire briefly again to commit the terminal status. Never hold a row lock across an external call.
 
-- **Rule: Durable state commit before external cleanup.** Within any worker: (1) commit terminal status; (2) best-effort cleanup of staging artefacts (MinIO, Redis); (3) log orphan-tolerated event if cleanup fails. Cleanup-before-commit is a silent data-loss footgun on crash.
+- **Rule: Durable state commit before external cleanup.** Within any worker: (1) commit terminal status; (2) best-effort cleanup of staging artifacts (MinIO, Redis); (3) log orphan-tolerated event if cleanup fails. Cleanup-before-commit is a silent data-loss footgun on crash.
 
 - **Rule: Replace lock-as-liveness when decomposing long locks.** When a long-held lock is replaced by short transactions, the implicit liveness signal it provided is lost. Add a heartbeat (periodic `updated_at` refresh, default 30 s) or a lease column. Reconciler sweeps key on heartbeat freshness, never on raw status-age. Every `FOR UPDATE` removal must answer: "what now tells observers this row is being worked on?"
 
@@ -309,7 +309,7 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 
 - **Rule: Frozen interface → constructor injection, not Protocol widening.** When a new requirement introduces data that a frozen interface cannot pass, the default resolution is constructor injection in the implementation, not Protocol widening. Audit checklist for any cross-cutting field addition: list every consumer, mark `direct-arg` / `injected-dep` / `missing`. A `missing` entry blocks the change.
 
-- **Rule: Internal dispatch uses typed `Callable`, not `str + getattr`.** Two-branch method selection (e.g. `"extract"` vs `"delete"`) MUST use typed `Callable` parameters, extracting the callable at the call site (`p.extract`, `p.delete`). `getattr(obj, str)` is acceptable only for user-supplied dynamic attribute names (config-driven field names); never for internal dispatch over a known-finite method set.
+- **Rule: Internal dispatch uses typed `Callable`, not `str + getattr`.** Finite method selection (e.g. `"extract"` vs `"delete"`) MUST use typed `Callable` parameters, extracting the callable at the call site (`p.extract`, `p.delete`). `getattr(obj, str)` is acceptable only for user-supplied dynamic attribute names (config-driven field names); never for internal dispatch over a known-finite method set.
 
 ---
 
