@@ -43,6 +43,11 @@ CHUNK_OVERLAP_CHARS = int_env("CHUNK_OVERLAP_CHARS", 100)
 # and can blow up to millions of chunks on a 1 MB atom).
 CHUNK_MAX_PIECES_PER_ATOM = int_env("CHUNK_MAX_PIECES_PER_ATOM", 10_000)
 
+PDF_PAGE_BATCH_THRESHOLD = int_env("PDF_PAGE_BATCH_THRESHOLD", 50)
+PDF_BYTES_BATCH_THRESHOLD = int_env("PDF_BYTES_BATCH_THRESHOLD", 5_000_000)
+PDF_BATCH_PAGES = int_env("PDF_BATCH_PAGES", 20)
+PDF_OCR_LANGUAGES = "eng+chi_sim+chi_tra+jpn+deu"
+
 
 def validate_chunk_config() -> None:
     """Bootstrap-time invariant check.
@@ -379,6 +384,75 @@ class _PptxASTSplitter:
                         meta={**base_meta, "raw_content": combined, "slide_number": idx},
                     )
                 )
+        return {"documents": atoms}
+
+
+# ---------------------------------------------------------------------------
+# _PdfASTSplitter
+# ---------------------------------------------------------------------------
+
+
+def _pdf_page_text(page: Any) -> str:
+    """Return extracted text for one fitz page.
+
+    Image-free pages skip Tesseract entirely. Image-bearing pages attempt OCR;
+    on any failure (Tesseract absent, language pack missing, etc.) falls back to
+    plain text extraction.
+    """
+    if not page.get_images(full=False):
+        return page.get_text("text").strip()
+    try:
+        tp = page.get_textpage_ocr(language=PDF_OCR_LANGUAGES, full=True)
+        return page.get_text(textpage=tp).strip()
+    except Exception:
+        return page.get_text("text").strip()
+
+
+@component
+class _PdfASTSplitter:
+    """PDF binary → one atom per page (PyMuPDF; Tesseract OCR for image pages).
+
+    Reads raw bytes from ``meta["raw_bytes"]``. Empty pages are skipped.
+    ``meta["page_number"]`` carries the 1-based page index.
+
+    Text-based pages use fast MuPDF extraction (no Tesseract cost).
+    Image-bearing pages trigger OCR for that page only, capturing text
+    embedded in graphics without burning CPU on purely textual pages.
+
+    Files exceeding ``PDF_PAGE_BATCH_THRESHOLD`` pages or
+    ``PDF_BYTES_BATCH_THRESHOLD`` bytes are processed ``PDF_BATCH_PAGES``
+    pages at a time to bound peak memory.
+    """
+
+    @component.output_types(documents=list[Document])
+    def run(self, documents: list[Document]) -> dict:
+        import fitz  # PyMuPDF — bundled engine of pymupdf4llm
+
+        atoms: list[Document] = []
+        for doc in documents:
+            base_meta = {k: v for k, v in doc.meta.items() if k != "raw_bytes"}
+            raw_bytes: bytes = doc.meta.get("raw_bytes") or b""
+            with fitz.open(stream=raw_bytes, filetype="pdf") as pdf:
+                total = pdf.page_count
+                use_batch = (
+                    total > PDF_PAGE_BATCH_THRESHOLD or len(raw_bytes) > PDF_BYTES_BATCH_THRESHOLD
+                )
+                step = PDF_BATCH_PAGES if use_batch else max(total, 1)
+                for batch_start in range(0, total, step):
+                    for page_idx in range(batch_start, min(batch_start + step, total)):
+                        text = _pdf_page_text(pdf[page_idx])
+                        if not text:
+                            continue
+                        atoms.append(
+                            Document(
+                                content=text,
+                                meta={
+                                    **base_meta,
+                                    "raw_content": text,
+                                    "page_number": page_idx + 1,
+                                },
+                            )
+                        )
         return {"documents": atoms}
 
 
