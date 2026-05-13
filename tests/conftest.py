@@ -49,20 +49,28 @@ def run_in_threadpool(fn: Callable[[], Any]) -> Any:
     return anyio.run(_wrap)
 
 
-def make_ingest_container(doc: Any, *, pipeline_side_effect: Any = None) -> MagicMock:
+def make_ingest_container(
+    doc: Any,
+    *,
+    pipeline_side_effect: Any = None,
+    unprotect_client: Any = None,
+    minio_bytes: bytes = b"data",
+    minio_content_type: str = "text/plain",
+) -> MagicMock:
     """Mock composition container used by ``ingest_pipeline_task`` tests."""
     container = MagicMock()
     container.doc_repo = AsyncMock()
     container.doc_repo.claim_for_processing.return_value = doc
     # v2 worker reads via minio_registry.head_object + get_object.
     container.minio_registry = MagicMock()
-    container.minio_registry.head_object.return_value = (4, "text/plain")
-    container.minio_registry.get_object.return_value = b"data"
+    container.minio_registry.head_object.return_value = (len(minio_bytes), minio_content_type)
+    container.minio_registry.get_object.return_value = minio_bytes
     if pipeline_side_effect is not None:
         container.ingest_pipeline.run.side_effect = pipeline_side_effect
     else:
         container.ingest_pipeline.run.return_value = {"writer": {"documents_written": []}}
     container.registry = AsyncMock()
+    container.unprotect_client = unprotect_client
     return container
 
 
