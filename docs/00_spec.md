@@ -786,6 +786,7 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | Variable | Default | Description |
 |---|---|---|
 | `MARIADB_DSN`                         | (required)       | Full SQLAlchemy DSN, e.g. `mysql+aiomysql://user:pass@host:3306/ragent?charset=utf8mb4`. Used by repositories, bootstrap, `/readyz`. |
+| `MARIADB_POOL_RECYCLE_SECONDS`        | `280`            | SQLAlchemy `pool_recycle` value. Connections older than this are discarded on checkout. Must be less than the server-side `wait_timeout`; default 280 s assumes a 300 s server timeout. |
 | `ES_HOSTS`                            | (required)       | Comma-separated `https?://host:port` list. |
 | `ES_USERNAME`                         | (optional)       | Basic-auth username; omit for unauthenticated dev clusters. |
 | `ES_PASSWORD`                         | (optional)       | Basic-auth password. |
