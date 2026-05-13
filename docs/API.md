@@ -204,11 +204,15 @@ Request schema is shared by both endpoints. Only `messages` is required.
   "temperature": 0.7,
   "max_tokens": 4096,
   "source_app": "confluence",
-  "source_meta": "engineering"
+  "source_meta": "engineering",
+  "top_k": 20,
+  "min_score": null
 }
 ```
 
 `source_app` and `source_meta` are optional retrieval filters (AND when both supplied; omit to retrieve across all documents).
+
+`top_k` (default `RETRIEVAL_TOP_K`, default 20, range 1–200) caps the number of chunks passed to the LLM context. `min_score` (default `RETRIEVAL_MIN_SCORE`, default `null`) is a post-retrieval score floor; chunks below this threshold are dropped before building LLM context. Both fields use the same semantics as `/retrieve/v1`.
 
 ### `POST /chat/v1` — Non-streaming chat
 

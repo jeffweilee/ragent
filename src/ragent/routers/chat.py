@@ -35,6 +35,8 @@ def _run_retrieval(retrieval_pipeline: Any, req: ChatRequest) -> list[Any]:
         retrieval_pipeline,
         query=last_user,
         filters=build_es_filters(req.source_app, req.source_meta),
+        top_k=req.top_k,
+        min_score=req.min_score,
     )
 
 

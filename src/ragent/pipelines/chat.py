@@ -16,7 +16,7 @@ from haystack_integrations.components.retrievers.elasticsearch import (
     ElasticsearchEmbeddingRetriever,
 )
 
-from ragent.utility.env import int_env
+from ragent.utility.env import int_env, optional_float_env
 
 _EXCERPT_MAX_CHARS = int_env("EXCERPT_MAX_CHARS", 512)
 # Upper bound on top_k — pinned by spec §3.4.4 (`POST /retrieve/v1` Pydantic
@@ -31,6 +31,12 @@ if not 1 <= DEFAULT_TOP_K <= MAX_TOP_K:
         f"RETRIEVAL_TOP_K={DEFAULT_TOP_K} is outside the advertised [1, {MAX_TOP_K}] "
         f"contract (spec §3.4.4 / §3.8.3). MCP clients calling with omitted top_k "
         f"would bypass the schema maximum."
+    )
+DEFAULT_MIN_SCORE: float | None = optional_float_env("RETRIEVAL_MIN_SCORE")
+if DEFAULT_MIN_SCORE is not None and DEFAULT_MIN_SCORE < 0.0:
+    raise RuntimeError(
+        f"RETRIEVAL_MIN_SCORE={DEFAULT_MIN_SCORE} must be >= 0.0 — "
+        f"score thresholds cannot be negative."
     )
 _VALID_MODES = frozenset({"rrf", "concatenate", "vector_only", "bm25_only"})
 
