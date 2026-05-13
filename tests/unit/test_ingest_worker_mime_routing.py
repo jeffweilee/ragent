@@ -45,6 +45,7 @@ def _container(doc: MagicMock, *, minio_content_type: str | None) -> MagicMock:
     container.ingest_pipeline.run.return_value = {"writer": {"documents_written": 1}}
     container.registry = MagicMock()
     container.registry.fan_out = AsyncMock()
+    container.unprotect_client = None
     return container
 
 

@@ -74,6 +74,13 @@ async def ingest_pipeline_task(document_id: str) -> None:
         expected_size = head[0] if head else None
         data = registry.get_object(site, doc.object_key, expected_size=expected_size)
 
+        if container.unprotect_client is not None:
+            data = container.unprotect_client.unprotect(
+                file_bytes=data,
+                user_id=doc.create_user,
+                filename=doc.object_key,
+            )
+
         if mime in BINARY_MIMES:
             loader_kwargs: dict = {
                 "content": "",

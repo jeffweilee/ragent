@@ -31,6 +31,7 @@ class Container:
     rate_limit_window: int
     http: Any  # shared httpx.Client for embedding/LLM/rerank; closed at shutdown
     auth_http: Any  # httpx.Client for token exchange (10s timeout); closed at shutdown
+    unprotect_client: Any  # UnprotectClient | None — optional pre-pipeline file unprotection
 
 
 def build_container() -> Container:
@@ -167,6 +168,17 @@ def build_container() -> Container:
         document_store=document_store,
     )
 
+    unprotect_client = None
+    if _bool_env("UNPROTECT_ENABLED", False):
+        from ragent.clients.unprotect import UnprotectClient
+
+        unprotect_client = UnprotectClient(
+            api_url=_require("UNPROTECT_API_URL"),
+            apikey=_require("UNPROTECT_APIKEY"),
+            delegated_user_suffix=_require("UNPROTECT_DELEGATED_USER_SUFFIX"),
+            http=http,
+        )
+
     return Container(
         token_managers=(llm_tm, embedding_tm, rerank_tm),
         embedding_client=embedding_client,
@@ -184,6 +196,7 @@ def build_container() -> Container:
         rate_limit_window=_int_env("CHAT_RATE_LIMIT_WINDOW_SECONDS", 60),
         http=http,
         auth_http=auth_http,
+        unprotect_client=unprotect_client,
     )
 
 
