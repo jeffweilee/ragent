@@ -61,6 +61,11 @@ def test_optional_float_env_parses_float_when_set(monkeypatch: pytest.MonkeyPatc
     assert optional_float_env("OPT_F") == pytest.approx(0.75)
 
 
+def test_optional_float_env_returns_none_when_empty_string(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPT_F", "")
+    assert optional_float_env("OPT_F") is None
+
+
 def test_optional_float_env_exits_on_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OPT_F", "not-a-float")
     with pytest.raises(SystemExit):

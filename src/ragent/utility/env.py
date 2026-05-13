@@ -45,7 +45,7 @@ def float_env(var: str, default: float) -> float:
 
 def optional_float_env(var: str) -> float | None:
     raw = os.environ.get(var)
-    if raw is None:
+    if not raw:
         return None
     try:
         return float(raw)
