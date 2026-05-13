@@ -10,6 +10,7 @@ Sync bridge for Haystack pipeline components (anyio threads): use
 
 from __future__ import annotations
 
+import asyncio
 import datetime
 from dataclasses import dataclass
 from typing import Any
@@ -21,6 +22,12 @@ from sqlalchemy.exc import OperationalError
 from ragent.utility.state_machine import IllegalStateTransition, assert_transition
 
 logger = structlog.get_logger(__name__)
+
+_MARIADB_DEADLOCK = 1213
+
+
+def _is_deadlock(exc: OperationalError) -> bool:
+    return getattr(getattr(exc, "orig", None), "args", (None,))[0] == _MARIADB_DEADLOCK
 
 
 class LockNotAvailable(Exception):
@@ -265,8 +272,22 @@ class DocumentRepository:
         ``False`` if the caller self-demoted (a newer sibling exists or the
         row is no longer PENDING). Callers should gate post-READY side effects
         on this return value.
+
+        Retries up to 3 times on MariaDB deadlock (error 1213) which can
+        occur when concurrent tasks for the same source_id group race on
+        the row-level locks in the election subquery.
         """
         assert_transition("PENDING", "READY")
+        for attempt in range(3):
+            try:
+                return await self._promote_or_demote(document_id, source_id, source_app)
+            except OperationalError as exc:
+                if attempt < 2 and _is_deadlock(exc):
+                    await asyncio.sleep(0.05 * (attempt + 1))
+                    continue
+                raise
+
+    async def _promote_or_demote(self, document_id: str, source_id: str, source_app: str) -> bool:
         async with self._engine.begin() as conn:
             # Derived table required: MariaDB forbids referencing the UPDATE
             # target table directly in the subquery predicate.
