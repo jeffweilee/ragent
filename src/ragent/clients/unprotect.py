@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-
 import httpx
 
 
@@ -14,13 +12,13 @@ class UnprotectClient:
         apikey: str,
         delegated_user_suffix: str,
         http: httpx.Client,
-        timeout: float | None = None,
+        timeout: float = 30.0,
     ) -> None:
         self._api_url = api_url
         self._apikey = apikey
         self._suffix = delegated_user_suffix
         self._http = http
-        self._timeout = timeout or float(os.environ.get("UNPROTECT_TIMEOUT_SECONDS", "30"))
+        self._timeout = timeout
 
     def unprotect(self, file_bytes: bytes, user_id: str, filename: str) -> bytes:
         response = self._http.post(

@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from ragent.utility.env import bool_env as _bool_env
+from ragent.utility.env import float_env as _float_env
 from ragent.utility.env import int_env as _int_env
 from ragent.utility.env import require as _require
 
@@ -177,6 +178,7 @@ def build_container() -> Container:
             apikey=_require("UNPROTECT_APIKEY"),
             delegated_user_suffix=_require("UNPROTECT_DELEGATED_USER_SUFFIX"),
             http=http,
+            timeout=_float_env("UNPROTECT_TIMEOUT_SECONDS", 30.0),
         )
 
     return Container(
