@@ -45,6 +45,7 @@ def _container(doc: MagicMock, *, minio_content_type: str | None) -> MagicMock:
     container.ingest_pipeline.run.return_value = {"writer": {"documents_written": 1}}
     container.registry = MagicMock()
     container.registry.fan_out = AsyncMock()
+    container.unprotect_client = None
     return container
 
 
@@ -97,3 +98,24 @@ async def test_minio_content_type_uppercase_lowercased_for_routing():
     call_kwargs = container.ingest_pipeline.run.call_args[0][0]
     loader_kwargs = call_kwargs["loader"]
     assert loader_kwargs["mime_type"] == "text/plain"
+
+
+@pytest.mark.asyncio
+async def test_worker_binds_doc_mime_type_to_structlog_context():
+    """Worker must bind doc.mime_type into the structlog context.
+
+    Every ``ingest.step.*`` log inherits the context, so step logs for PPTX
+    uploads must show the full PPTX MIME string rather than None.
+    """
+    from ragent.workers import ingest as worker_mod
+
+    doc = _doc(mime_type=IngestMime.PPTX, minio_site="corp")
+    container = _container(doc, minio_content_type="application/octet-stream")
+
+    with (
+        patch("ragent.bootstrap.composition.get_container", return_value=container),
+        patch("ragent.workers.ingest.bind_ingest_context") as mock_bind,
+    ):
+        await worker_mod.ingest_pipeline_task("DOC-MIME-1")
+
+    mock_bind.assert_called_once_with(document_id="DOC-MIME-1", mime_type=IngestMime.PPTX)

@@ -21,6 +21,7 @@ import io
 import re
 from typing import Any
 
+import structlog
 from haystack.components.preprocessors import DocumentSplitter
 from haystack.components.writers import DocumentWriter
 from haystack.core.component import component
@@ -385,6 +386,14 @@ class _PptxASTSplitter:
 # _MimeAwareSplitter (T2v.38/39 — replaces FileTypeRouter+joiner+3-splitters)
 # ---------------------------------------------------------------------------
 
+_SPLITTER_LABEL: dict[str, str] = {
+    "text/plain": "plain",
+    "text/markdown": "markdown",
+    "text/html": "html",
+    IngestMime.DOCX: "docx",
+    IngestMime.PPTX: "pptx",
+}
+
 
 @component
 class _MimeAwareSplitter:
@@ -411,6 +420,11 @@ class _MimeAwareSplitter:
         atoms: list[Document] = []
         for doc in documents:
             mime = doc.meta.get("mime_type") or "text/plain"
+            if mime not in _SPLITTER_LABEL:
+                raise IngestStepError(
+                    f"unroutable mime: {mime!r}", error_code=TaskErrorCode.PIPELINE_UNROUTABLE
+                )
+            structlog.contextvars.bind_contextvars(splitter=_SPLITTER_LABEL[mime])
             if mime == "text/plain":
                 out = self._plain.run([doc])["documents"]
                 # DocumentSplitter doesn't set raw_content; default to its content.
@@ -423,12 +437,8 @@ class _MimeAwareSplitter:
                 out = self._html.run([doc])["documents"]
             elif mime == IngestMime.DOCX:
                 out = self._docx.run([doc])["documents"]
-            elif mime == IngestMime.PPTX:
-                out = self._pptx.run([doc])["documents"]
             else:
-                raise IngestStepError(
-                    f"unroutable mime: {mime!r}", error_code=TaskErrorCode.PIPELINE_UNROUTABLE
-                )
+                out = self._pptx.run([doc])["documents"]
             atoms.extend(out)
         return {"documents": atoms}
 

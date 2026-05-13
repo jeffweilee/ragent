@@ -47,11 +47,7 @@ def bind_ingest_context(*, document_id: str, mime_type: str | None = None) -> It
 
 
 def _ctx() -> dict[str, Any]:
-    cv = structlog.contextvars.get_contextvars()
-    return {
-        "document_id": cv.get("document_id"),
-        "mime_type": cv.get("mime_type"),
-    }
+    return {k: v for k, v in structlog.contextvars.get_contextvars().items() if v is not None}
 
 
 def _count_documents(value: Any) -> int | None:
@@ -112,7 +108,7 @@ def wrap_component_run(
                     val = result[key]
                     chunks_out = val if isinstance(val, int) else _count_documents(val)
                     break
-        payload: dict[str, Any] = {"step": step, "duration_ms": duration_ms, **ctx}
+        payload: dict[str, Any] = {"step": step, "duration_ms": duration_ms, **_ctx()}
         if atoms_in is not None:
             payload["atoms_in"] = atoms_in
         if chunks_out is not None:

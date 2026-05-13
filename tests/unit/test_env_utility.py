@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from ragent.utility.env import bool_env, float_env, int_env, require
+from ragent.utility.env import bool_env, float_env, int_env, optional_float_env, require
 
 
 def test_require_returns_value(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -49,3 +49,24 @@ def test_float_env_default_parse_and_garbage(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setenv("F", "nope")
     with pytest.raises(SystemExit):
         float_env("F", 0.0)
+
+
+def test_optional_float_env_returns_none_when_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("OPT_F", raising=False)
+    assert optional_float_env("OPT_F") is None
+
+
+def test_optional_float_env_parses_float_when_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPT_F", "0.75")
+    assert optional_float_env("OPT_F") == pytest.approx(0.75)
+
+
+def test_optional_float_env_returns_none_when_empty_string(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPT_F", "")
+    assert optional_float_env("OPT_F") is None
+
+
+def test_optional_float_env_exits_on_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("OPT_F", "not-a-float")
+    with pytest.raises(SystemExit):
+        optional_float_env("OPT_F")

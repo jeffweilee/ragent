@@ -73,6 +73,14 @@ async def ingest_pipeline_task(document_id: str) -> None:
         # rather than silently truncating the source document.
         expected_size = head[0] if head else None
         data = registry.get_object(site, doc.object_key, expected_size=expected_size)
+        structlog.contextvars.bind_contextvars(file_size_bytes=len(data), mime_type=mime)
+
+        if container.unprotect_client is not None:
+            data = container.unprotect_client.unprotect(
+                file_bytes=data,
+                user_id=doc.create_user,
+                filename=doc.object_key,
+            )
 
         if mime in BINARY_MIMES:
             loader_kwargs: dict = {
@@ -117,7 +125,7 @@ async def ingest_pipeline_task(document_id: str) -> None:
         return written if isinstance(written, int) else len(written)
 
     started = time.monotonic()
-    with bind_ingest_context(document_id=document_id):
+    with bind_ingest_context(document_id=document_id, mime_type=doc.mime_type):
         try:
             chunks_total = await asyncio.wait_for(
                 to_thread.run_sync(_run_pipeline, abandon_on_cancel=True),
