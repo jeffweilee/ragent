@@ -4,9 +4,10 @@ Graph: ``_TextLoader → _MimeAwareSplitter → _BudgetChunker →
 DocumentEmbedder → DocumentWriter`` (ES only).
 
 Splitter dispatches per ``meta["mime_type"]``:
-- ``text/plain``    → Haystack ``DocumentSplitter`` (passage)
-- ``text/markdown`` → ``_MarkdownASTSplitter`` (mistletoe)
-- ``text/html``     → ``_HtmlASTSplitter`` (selectolax)
+- ``text/plain``      → Haystack ``DocumentSplitter`` (passage)
+- ``text/markdown``   → ``_MarkdownASTSplitter`` (mistletoe)
+- ``text/html``       → ``_HtmlASTSplitter`` (selectolax)
+- ``application/pdf`` → ``_PdfASTSplitter`` (PyMuPDF + Tesseract OCR)
 
 Each splitter emits atoms whose ``meta["raw_content"]`` is the original
 byte slice (markdown fences / HTML fragments preserved). ``_BudgetChunker``
@@ -69,6 +70,7 @@ ALLOWED_MIMES = (
     "text/html",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    IngestMime.PDF,
 )
 
 # ---------------------------------------------------------------------------
@@ -466,6 +468,7 @@ _SPLITTER_LABEL: dict[str, str] = {
     "text/html": "html",
     IngestMime.DOCX: "docx",
     IngestMime.PPTX: "pptx",
+    IngestMime.PDF: "pdf",
 }
 
 
@@ -488,6 +491,7 @@ class _MimeAwareSplitter:
         self._html = _HtmlASTSplitter()
         self._docx = _DocxASTSplitter()
         self._pptx = _PptxASTSplitter()
+        self._pdf = _PdfASTSplitter()
 
     @component.output_types(documents=list[Document])
     def run(self, documents: list[Document]) -> dict:
@@ -511,8 +515,10 @@ class _MimeAwareSplitter:
                 out = self._html.run([doc])["documents"]
             elif mime == IngestMime.DOCX:
                 out = self._docx.run([doc])["documents"]
-            else:
+            elif mime == IngestMime.PPTX:
                 out = self._pptx.run([doc])["documents"]
+            elif mime == IngestMime.PDF:
+                out = self._pdf.run([doc])["documents"]
             atoms.extend(out)
         return {"documents": atoms}
 
