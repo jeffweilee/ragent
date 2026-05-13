@@ -34,11 +34,7 @@
 
 ### 3.1 Ingest Lifecycle
 
-> **v2 OVERRIDE (2026-05-06):** `POST /ingest` is **JSON only** with discriminator `ingest_type ∈ {inline, file}`.
-> - `inline` → `{content: str, mime_type, source_id, source_app, source_title, source_meta?, source_url?}`; staged to MinIO `__default__`; cap `INGEST_INLINE_MAX_BYTES` (10 MB).
-> - `file` → adds `{minio_site, object_key}`; HEAD-probed (422 if missing, 413 if > `INGEST_FILE_MAX_BYTES` 50 MB); **no copy**; no post-READY MinIO delete (caller's bucket).
->
-> **MIME allow-list:** `text/plain`, `text/markdown`, `text/html`, DOCX, PPTX — CSV dropped → 415. **Source columns:** `source_id`, `source_app`, `source_title`, `source_meta?` (≤ 1024, B35), `source_url?` (≤ 2048). **MinIO multi-site:** `MINIO_SITES` JSON → `MinioSiteRegistry`; `__default__` mandatory; `read_only=true` blocks delete. **Storage:** chunks in ES `chunks_v1` only — DB `chunks` table dropped. Worker emits `event=ingest.step.{started,ok,failed}` per component.
+> **v2 OVERRIDE (2026-05-06):** `POST /ingest` is **JSON only** (`ingest_type ∈ {inline, file}`). `inline` → body with `content: str`; staged to `__default__` MinIO; cap `INGEST_INLINE_MAX_BYTES` (10 MB). `file` → adds `{minio_site, object_key}`; HEAD-probed (absent → 422 `INGEST_OBJECT_NOT_FOUND`, size > 50 MB → 413); no copy; no post-READY delete. MIME: `text/plain`, `text/markdown`, `text/html`, DOCX, PPTX — CSV dropped → 415. Source cols: `source_id`, `source_app`, `source_title`, `source_meta?` (≤ 1024), `source_url?` (≤ 2048). `MINIO_SITES` JSON → `MinioSiteRegistry`; `__default__` mandatory; `read_only=true` blocks delete. Chunks in ES `chunks_v1` only — DB `chunks` table dropped. Worker emits `event=ingest.step.{started,ok,failed}` per component.
 
 **State machine:** `UPLOADED → PENDING → READY | FAILED`; `DELETING` transient on delete.
 
@@ -646,7 +642,12 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `ES_PASSWORD`                         | (optional)       | Basic-auth password. |
 | `ES_API_KEY`                          | (optional)       | Alternative to user/password (mutually exclusive). |
 | `ES_VERIFY_CERTS`                     | `true`           | Set `false` for self-signed dev clusters. |
-| `MINIO_SITES`                         | (required)       | v2: JSON list of `{name, endpoint, access_key, secret_key, bucket, secure?, read_only?}`. Must include `name="__default__"` (inline ingest). Legacy single-site vars (`MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY/SECURE/BUCKET`) are DEPRECATED (removed in C6 cleanup). |
+| `MINIO_SITES`                         | (required)       | v2: JSON list of `{name, endpoint, access_key, secret_key, bucket, secure?, read_only?}`. Must include `name="__default__"` (inline ingest). Supersedes the five legacy vars below. |
+| `MINIO_ENDPOINT`                      | (optional)       | DEPRECATED. |
+| `MINIO_ACCESS_KEY`                    | (optional)       | DEPRECATED. |
+| `MINIO_SECRET_KEY`                    | (optional)       | DEPRECATED. |
+| `MINIO_SECURE`                        | `false`          | DEPRECATED. |
+| `MINIO_BUCKET`                        | `ragent`         | DEPRECATED. |
 
 #### 4.6.3 Redis (B27)
 
