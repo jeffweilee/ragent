@@ -259,12 +259,16 @@ The factory assembles the appropriate component graph at startup; the chat route
   "temperature":      0.7,
   "maxTokens":        4096,
   "source_app":       "confluence",
-  "source_meta":      "engineering"
+  "source_meta":      "engineering",
+  "top_k":            20,
+  "min_score":        null
 }
 ```
 
 - Only `messages` is required. All other fields are optional and fall back to the defaults shown above.
 - **Retrieval filters (B29 → B35):** `source_app` and `source_meta` are optional. When present, both retrievers apply an ES `term` filter on the matching chunk field (denormalised at ingest, §5.2). Both supplied ⇒ AND. Both omitted ⇒ unrestricted retrieval. Empty string is rejected (422 `error_code=CHAT_FILTER_INVALID`); to skip a filter, omit the field. `source_app` length ≤ 64, `source_meta` length ≤ 1024 (matches §5.1 column widths).
+- `top_k` (default `RETRIEVAL_TOP_K`, env-configurable, default 20): max chunks passed to the LLM context; range 1–200. Same semantics as `/retrieve/v1`.
+- `min_score` (default `RETRIEVAL_MIN_SCORE`, env-configurable, default `null`): post-retrieval score floor — chunks below this threshold are dropped before building LLM context. `null` means no filtering. Same semantics as `/retrieve/v1`.
 - `maxTokens` caps the LLM output (`completionTokens`); not the prompt.
 - If `messages` does not contain a `role:"system"` entry, the server **prepends** `{"role":"system","content":"You are a helpful assistant"}` before invoking the LLM.
 - The retrieval query is the **last `role:"user"` message**; preceding messages are passed through to the LLM as conversation history.
@@ -856,6 +860,7 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `CHAT_JOIN_MODE`                      | `rrf`            | `rrf` \| `concatenate` \| `vector_only` \| `bm25_only` (C6). |
 | `CHAT_RERANK_ENABLED`                 | `true`           | Insert `_Reranker` between joiner and `_SourceHydrator` (F1). |
 | `RETRIEVAL_TOP_K`                     | `20`             | Cap applied to retrievers, joiner, and reranker (F7). |
+| `RETRIEVAL_MIN_SCORE`                 | *(unset)*        | Global default score floor for `/retrieve/v1` and `/chat/v1`; unset = no filtering (`null`). Must be >= 0.0 if set; boot fails otherwise. |
 | `EXCERPT_MAX_CHARS`                   | `512`            | `_ExcerptTruncator` truncation length (B23). |
 | `RAGENT_DEFAULT_LLM_PROVIDER`         | `openai`         | Echoed when request omits `provider`. |
 | `RAGENT_DEFAULT_LLM_MODEL`            | `gptoss-120b`    | Echoed when request omits `model`. |

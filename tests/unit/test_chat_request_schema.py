@@ -160,3 +160,67 @@ def test_source_meta_long_value_accepted():
     ChatRequest, _ = _import()
     req = ChatRequest(messages=[{"role": "user", "content": "hi"}], source_meta="y" * 1024)
     assert req.source_meta == "y" * 1024
+
+
+# ---------------------------------------------------------------------------
+# top_k and min_score fields
+# ---------------------------------------------------------------------------
+
+
+def test_chat_request_top_k_defaults_to_DEFAULT_TOP_K():
+    from ragent.pipelines.chat import DEFAULT_TOP_K
+    ChatRequest, _ = _import()
+    req = ChatRequest(messages=[{"role": "user", "content": "hi"}])
+    assert req.top_k == DEFAULT_TOP_K
+
+
+def test_chat_request_top_k_accepts_explicit_value():
+    ChatRequest, _ = _import()
+    req = ChatRequest(messages=[{"role": "user", "content": "hi"}], top_k=5)
+    assert req.top_k == 5
+
+
+def test_chat_request_top_k_must_be_at_least_one():
+    ChatRequest, _ = _import()
+    with pytest.raises(ValidationError) as exc:
+        ChatRequest(messages=[{"role": "user", "content": "hi"}], top_k=0)
+    assert any("top_k" in str(e["loc"]) for e in exc.value.errors())
+
+
+def test_chat_request_top_k_capped_at_200():
+    ChatRequest, _ = _import()
+    with pytest.raises(ValidationError) as exc:
+        ChatRequest(messages=[{"role": "user", "content": "hi"}], top_k=201)
+    assert any("top_k" in str(e["loc"]) for e in exc.value.errors())
+
+
+def test_chat_request_min_score_defaults_to_DEFAULT_MIN_SCORE():
+    from ragent.pipelines.chat import DEFAULT_MIN_SCORE
+    ChatRequest, _ = _import()
+    req = ChatRequest(messages=[{"role": "user", "content": "hi"}])
+    assert req.min_score == DEFAULT_MIN_SCORE
+
+
+def test_chat_request_min_score_accepts_explicit_value():
+    ChatRequest, _ = _import()
+    req = ChatRequest(messages=[{"role": "user", "content": "hi"}], min_score=0.5)
+    assert req.min_score == pytest.approx(0.5)
+
+
+def test_chat_request_min_score_accepts_zero():
+    ChatRequest, _ = _import()
+    req = ChatRequest(messages=[{"role": "user", "content": "hi"}], min_score=0.0)
+    assert req.min_score == pytest.approx(0.0)
+
+
+def test_chat_request_min_score_must_be_non_negative():
+    ChatRequest, _ = _import()
+    with pytest.raises(ValidationError) as exc:
+        ChatRequest(messages=[{"role": "user", "content": "hi"}], min_score=-0.1)
+    assert any("min_score" in str(e["loc"]) for e in exc.value.errors())
+
+
+def test_chat_request_min_score_accepts_none_explicitly():
+    ChatRequest, _ = _import()
+    req = ChatRequest(messages=[{"role": "user", "content": "hi"}], min_score=None)
+    assert req.min_score is None

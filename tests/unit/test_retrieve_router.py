@@ -269,3 +269,37 @@ def test_run_retrieval_top_k_applied_after_min_score():
     result = run_retrieval(_fake_pipeline(docs), query="q", top_k=2, min_score=0.5)
     assert len(result) == 2
     assert all(d.score >= 0.5 for d in result)
+
+
+def test_min_score_defaults_to_DEFAULT_MIN_SCORE(app, monkeypatch):
+    """When RETRIEVAL_MIN_SCORE is not set, min_score defaults to DEFAULT_MIN_SCORE (None)."""
+    from ragent.pipelines.chat import DEFAULT_MIN_SCORE
+    calls: list = []
+    client = _client_capture(app, monkeypatch, calls)
+    client.post("/retrieve/v1", json={"query": "q"})
+    assert calls[0].get("min_score") == DEFAULT_MIN_SCORE
+
+
+def test_min_score_env_driven_default_flows_to_router(monkeypatch):
+    """RETRIEVAL_MIN_SCORE=0.6 → RetrieveRequest default min_score is 0.6."""
+    import importlib
+    import sys
+
+    monkeypatch.setenv("RETRIEVAL_MIN_SCORE", "0.6")
+    sys.modules.pop("ragent.pipelines.chat", None)
+    sys.modules.pop("ragent.routers.retrieve", None)
+    sys.modules.pop("ragent.schemas.chat", None)
+    importlib.import_module("ragent.pipelines.chat")
+    importlib.import_module("ragent.routers.retrieve")
+
+    from ragent.routers.retrieve import RetrieveRequest
+    req = RetrieveRequest(query="q")
+    assert req.min_score == pytest.approx(0.6)
+
+    # Teardown: restore clean module state
+    sys.modules.pop("ragent.pipelines.chat", None)
+    sys.modules.pop("ragent.routers.retrieve", None)
+    sys.modules.pop("ragent.schemas.chat", None)
+    importlib.import_module("ragent.pipelines.chat")
+    importlib.import_module("ragent.routers.retrieve")
+    importlib.import_module("ragent.schemas.chat")

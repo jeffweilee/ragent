@@ -62,3 +62,54 @@ def test_default_top_k_out_of_range_refuses_to_import(_reload_chat, bad_value) -
     `top_k`."""
     with pytest.raises(RuntimeError, match="outside the advertised"):
         _reload_chat(bad_value)
+
+
+@pytest.fixture
+def _reload_chat_min_score(monkeypatch: pytest.MonkeyPatch):
+    """Force re-import of `ragent.pipelines.chat` with a patched RETRIEVAL_MIN_SCORE."""
+
+    def _reload(retrieval_min_score: str | None) -> None:
+        if retrieval_min_score is None:
+            monkeypatch.delenv("RETRIEVAL_MIN_SCORE", raising=False)
+        else:
+            monkeypatch.setenv("RETRIEVAL_MIN_SCORE", retrieval_min_score)
+        sys.modules.pop("ragent.pipelines.chat", None)
+        importlib.import_module("ragent.pipelines.chat")
+
+    yield _reload
+    monkeypatch.delenv("RETRIEVAL_MIN_SCORE", raising=False)
+    sys.modules.pop("ragent.pipelines.chat", None)
+    importlib.import_module("ragent.pipelines.chat")
+
+
+def test_default_min_score_is_none_when_unset(_reload_chat_min_score) -> None:
+    """RETRIEVAL_MIN_SCORE absent → DEFAULT_MIN_SCORE is None (no filtering)."""
+    _reload_chat_min_score(None)
+    from ragent.pipelines.chat import DEFAULT_MIN_SCORE
+
+    assert DEFAULT_MIN_SCORE is None
+
+
+def test_default_min_score_accepts_valid_float(_reload_chat_min_score) -> None:
+    """RETRIEVAL_MIN_SCORE=0.3 → DEFAULT_MIN_SCORE == 0.3."""
+    _reload_chat_min_score("0.3")
+    from ragent.pipelines.chat import DEFAULT_MIN_SCORE
+
+    assert DEFAULT_MIN_SCORE == pytest.approx(0.3)
+
+
+def test_default_min_score_accepts_zero(_reload_chat_min_score) -> None:
+    """RETRIEVAL_MIN_SCORE=0.0 is the minimum accepted value."""
+    _reload_chat_min_score("0.0")
+    from ragent.pipelines.chat import DEFAULT_MIN_SCORE
+
+    assert DEFAULT_MIN_SCORE == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize("bad_value", ["-0.1", "-1", "-99.9"])
+def test_default_min_score_negative_refuses_to_import(
+    _reload_chat_min_score, bad_value
+) -> None:
+    """Negative RETRIEVAL_MIN_SCORE raises at import — score thresholds cannot be negative."""
+    with pytest.raises(RuntimeError, match="RETRIEVAL_MIN_SCORE"):
+        _reload_chat_min_score(bad_value)

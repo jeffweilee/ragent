@@ -11,6 +11,7 @@ from opentelemetry import trace
 from pydantic import BaseModel, Field, field_validator
 
 from ragent.pipelines.chat import (
+    DEFAULT_MIN_SCORE,
     DEFAULT_TOP_K,
     build_es_filters,
     dedupe_by_document,
@@ -30,7 +31,7 @@ class RetrieveRequest(BaseModel):
     source_app: str | None = None
     source_meta: str | None = None
     top_k: int = Field(default=DEFAULT_TOP_K, ge=1, le=200)
-    min_score: float | None = Field(default=None, ge=0.0)
+    min_score: float | None = Field(default=DEFAULT_MIN_SCORE, ge=0.0)
     dedupe: bool = False
 
     @field_validator("source_app", mode="before")
