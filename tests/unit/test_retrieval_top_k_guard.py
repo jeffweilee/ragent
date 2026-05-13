@@ -95,7 +95,7 @@ def test_default_min_score_accepts_valid_float(_reload_chat_min_score) -> None:
     _reload_chat_min_score("0.3")
     from ragent.pipelines.chat import DEFAULT_MIN_SCORE
 
-    assert DEFAULT_MIN_SCORE == pytest.approx(0.3)
+    assert pytest.approx(0.3) == DEFAULT_MIN_SCORE
 
 
 def test_default_min_score_accepts_zero(_reload_chat_min_score) -> None:
@@ -103,13 +103,11 @@ def test_default_min_score_accepts_zero(_reload_chat_min_score) -> None:
     _reload_chat_min_score("0.0")
     from ragent.pipelines.chat import DEFAULT_MIN_SCORE
 
-    assert DEFAULT_MIN_SCORE == pytest.approx(0.0)
+    assert pytest.approx(0.0) == DEFAULT_MIN_SCORE
 
 
 @pytest.mark.parametrize("bad_value", ["-0.1", "-1", "-99.9"])
-def test_default_min_score_negative_refuses_to_import(
-    _reload_chat_min_score, bad_value
-) -> None:
+def test_default_min_score_negative_refuses_to_import(_reload_chat_min_score, bad_value) -> None:
     """Negative RETRIEVAL_MIN_SCORE raises at import — score thresholds cannot be negative."""
     with pytest.raises(RuntimeError, match="RETRIEVAL_MIN_SCORE"):
         _reload_chat_min_score(bad_value)

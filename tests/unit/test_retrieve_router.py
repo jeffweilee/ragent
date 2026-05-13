@@ -274,6 +274,7 @@ def test_run_retrieval_top_k_applied_after_min_score():
 def test_min_score_defaults_to_DEFAULT_MIN_SCORE(app, monkeypatch):
     """When RETRIEVAL_MIN_SCORE is not set, min_score defaults to DEFAULT_MIN_SCORE (None)."""
     from ragent.pipelines.chat import DEFAULT_MIN_SCORE
+
     calls: list = []
     client = _client_capture(app, monkeypatch, calls)
     client.post("/retrieve/v1", json={"query": "q"})
@@ -293,6 +294,7 @@ def test_min_score_env_driven_default_flows_to_router(monkeypatch):
     importlib.import_module("ragent.routers.retrieve")
 
     from ragent.routers.retrieve import RetrieveRequest
+
     req = RetrieveRequest(query="q")
     assert req.min_score == pytest.approx(0.6)
 
