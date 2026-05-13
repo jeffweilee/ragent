@@ -117,7 +117,7 @@ async def ingest_pipeline_task(document_id: str) -> None:
         return written if isinstance(written, int) else len(written)
 
     started = time.monotonic()
-    with bind_ingest_context(document_id=document_id):
+    with bind_ingest_context(document_id=document_id, mime_type=doc.mime_type):
         try:
             chunks_total = await asyncio.wait_for(
                 to_thread.run_sync(_run_pipeline, abandon_on_cancel=True),
