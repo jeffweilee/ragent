@@ -73,6 +73,7 @@ async def ingest_pipeline_task(document_id: str) -> None:
         # rather than silently truncating the source document.
         expected_size = head[0] if head else None
         data = registry.get_object(site, doc.object_key, expected_size=expected_size)
+        structlog.contextvars.bind_contextvars(file_size_bytes=len(data))
 
         if mime in BINARY_MIMES:
             loader_kwargs: dict = {

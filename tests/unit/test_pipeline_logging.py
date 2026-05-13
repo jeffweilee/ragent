@@ -209,3 +209,60 @@ def test_log_ingest_step_failed_emits_terminal_event() -> None:
     assert e["document_id"] == "DOC-9"
     assert e["reason"] == "pipeline_error"
     assert e["error_code"] == "EMBEDDER_ERROR"
+
+
+def test_extra_context_vars_appear_in_step_logs() -> None:
+    """Extra vars bound to structlog context (e.g. file_size_bytes) propagate to step logs.
+
+    _ctx() must pass through all bound contextvars, not just document_id and mime_type.
+    This is the mechanism that puts file_size_bytes in the load step and splitter in
+    the split step.
+    """
+    comp = _FakeComponent()
+    wrap_component_run(comp, step="load")
+
+    with (
+        structlog.testing.capture_logs() as logs,
+        bind_ingest_context(document_id="DOC-X", mime_type="text/plain"),
+    ):
+        structlog.contextvars.bind_contextvars(file_size_bytes=1234)
+        comp.run(documents=[{"a": 1}])
+
+    ok = [e for e in logs if e.get("event") == "ingest.step.ok"][0]
+    assert ok["file_size_bytes"] == 1234
+
+
+def test_splitter_context_var_appears_in_split_step_log() -> None:
+    """splitter bound to context during _MimeAwareSplitter.run() appears in ingest.step.ok.
+
+    _MimeAwareSplitter must bind splitter=<name> to structlog context so the
+    split step's ingest.step.ok log carries the routing decision.
+    """
+    import io
+
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    from ragent.pipelines.factory import _MimeAwareSplitter
+    from ragent.schemas.ingest import IngestMime
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    slide.shapes.add_textbox(Inches(1), Inches(1), Inches(6), Inches(1)).text_frame.text = "hi"
+    buf = io.BytesIO()
+    prs.save(buf)
+    data = buf.getvalue()
+
+    from haystack.dataclasses import Document
+
+    splitter = _MimeAwareSplitter()
+    wrap_component_run(splitter, step="split")
+    with (
+        structlog.testing.capture_logs() as logs,
+        bind_ingest_context(document_id="DOC-Y", mime_type=IngestMime.PPTX),
+    ):
+        doc = Document(content=None, meta={"mime_type": IngestMime.PPTX, "raw_bytes": data})
+        splitter.run(documents=[doc])
+
+    ok = [e for e in logs if e.get("event") == "ingest.step.ok"][0]
+    assert ok["splitter"] == "pptx"
