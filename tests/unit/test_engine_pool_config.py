@@ -29,6 +29,7 @@ def _env(monkeypatch: pytest.MonkeyPatch) -> None:
         '[{"name":"__default__","endpoint":"minio.example:9000",'
         '"access_key":"ak","secret_key":"sk","bucket":"b"}]',
     )
+    monkeypatch.delenv("MARIADB_POOL_RECYCLE_SECONDS", raising=False)
 
 
 def test_async_engine_pool_pre_ping_and_recycle(_env: None) -> None:
