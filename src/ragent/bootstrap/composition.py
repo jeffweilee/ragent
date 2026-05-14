@@ -41,6 +41,7 @@ def build_container() -> Container:
     from haystack_integrations.document_stores.elasticsearch import ElasticsearchDocumentStore
     from sqlalchemy.ext.asyncio import create_async_engine
 
+    from ragent.bootstrap.http_logging import install_error_logging
     from ragent.clients.auth import TokenManager
     from ragent.clients.embedding import EmbeddingClient
     from ragent.clients.llm import LLMClient
@@ -56,6 +57,8 @@ def build_container() -> Container:
 
     http = httpx.Client(timeout=60.0)
     auth_http = httpx.Client(timeout=10.0)  # dedicated client for token exchange (10 s per spec)
+    install_error_logging(http, client_name="upstream")
+    install_error_logging(auth_http, client_name="auth", redact_auth_body=True)
 
     auth_url = _require("AI_API_AUTH_URL")
     use_k8s = _bool_env("AI_USE_K8S_SERVICE_ACCOUNT_TOKEN", False)
