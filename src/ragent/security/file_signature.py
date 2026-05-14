@@ -30,9 +30,7 @@ class MagicByteMismatchError(Exception):
     error_code: str = HttpErrorCode.INGEST_MAGIC_MISMATCH
 
     def __init__(self, mime: IngestMime, *, expected: bytes, got_prefix: bytes) -> None:
-        super().__init__(
-            f"{mime.value} requires signature {expected!r}; got {got_prefix!r}"
-        )
+        super().__init__(f"{mime.value} requires signature {expected!r}; got {got_prefix!r}")
         self.mime = mime
 
 
