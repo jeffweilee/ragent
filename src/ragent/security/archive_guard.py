@@ -22,6 +22,7 @@ import zipfile
 from enum import StrEnum
 from typing import Final
 
+from ragent.bootstrap.metrics import record_ingest_rejection
 from ragent.errors.codes import HttpErrorCode
 from ragent.utility.env import int_env
 
@@ -53,6 +54,10 @@ class ArchiveBombError(Exception):
     def __init__(self, reason: ArchiveBombReason, detail: str) -> None:
         super().__init__(f"{reason.value}: {detail}")
         self.reason = reason
+        # Emit at construction time so the six raise-sites stay 1-line and the
+        # closed `ArchiveBombReason` enum is the single source of truth for
+        # both the exception's `reason` attribute and the metric label.
+        record_ingest_rejection(reason.value)
 
 
 def _is_traversal(name: str) -> bool:
@@ -107,6 +112,7 @@ class PdfTooManyPagesError(Exception):
         super().__init__(f"PDF has {page_count} pages, cap is {cap}")
         self.page_count = page_count
         self.cap = cap
+        record_ingest_rejection("pdf_pages")
 
 
 def assert_safe_pdf_page_count(page_count: int, *, max_pages: int) -> None:

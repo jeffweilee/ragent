@@ -10,6 +10,7 @@ Text MIME types have no fixed signature and are not checked.
 
 from __future__ import annotations
 
+from ragent.bootstrap.metrics import record_ingest_rejection
 from ragent.errors.codes import HttpErrorCode
 from ragent.schemas.ingest import IngestMime
 
@@ -43,4 +44,5 @@ def assert_magic_byte(mime: IngestMime, raw: bytes) -> None:
     if expected is None:
         return
     if not raw.startswith(expected):
+        record_ingest_rejection("magic")
         raise MagicByteMismatchError(mime, expected=expected, got_prefix=raw[: len(expected)])
