@@ -185,7 +185,7 @@ curl -X POST http://localhost:8000/ingest/v1/upload \
 | `source_url` | No | Origin URL, max 2048 chars |
 
 **Errors:**
-- `413 INGEST_FILE_TOO_LARGE` — file exceeds `INGEST_INLINE_MAX_BYTES`.
+- `413 INGEST_FILE_TOO_LARGE` — file exceeds `INGEST_INLINE_MAX_BYTES` (default 10 MB).
 - `422` — missing/invalid form fields (FastAPI validation).
 
 ---

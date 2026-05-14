@@ -19,7 +19,7 @@ from ragent.errors.problem import problem
 from ragent.schemas.ingest import SOURCE_META_MAX, SOURCE_URL_MAX, IngestMime
 from ragent.services.ingest_service import FileTooLarge
 
-_MAX_UPLOAD_BYTES = int(os.environ.get("INGEST_INLINE_MAX_BYTES", "52428800"))
+_MAX_UPLOAD_BYTES = int(os.environ.get("INGEST_INLINE_MAX_BYTES", "10485760"))
 
 
 def create_router(svc: Any) -> APIRouter:
