@@ -33,6 +33,7 @@ from haystack.document_stores.types import DuplicatePolicy
 from ragent.errors.codes import TaskErrorCode
 from ragent.pipelines.observability import IngestStepError, wrap_component_run
 from ragent.schemas.ingest import IngestMime
+from ragent.security.archive_guard import INGEST_MAX_PDF_PAGES
 from ragent.utility.env import int_env, str_env
 
 _logger = structlog.get_logger(__name__)
@@ -436,12 +437,15 @@ class _PdfASTSplitter:
     def run(self, documents: list[Document]) -> dict:
         import fitz  # PyMuPDF — bundled engine of pymupdf4llm
 
+        from ragent.security.archive_guard import assert_safe_pdf_page_count
+
         atoms: list[Document] = []
         for doc in documents:
             if not (raw_bytes := doc.meta.get("raw_bytes")):
                 continue
             base_meta = {k: v for k, v in doc.meta.items() if k != "raw_bytes"}
             with fitz.open(stream=raw_bytes, filetype="pdf") as pdf:
+                assert_safe_pdf_page_count(pdf.page_count, max_pages=INGEST_MAX_PDF_PAGES)
                 for page_idx in range(pdf.page_count):
                     page = pdf[page_idx]
                     text = _pdf_page_text(page)

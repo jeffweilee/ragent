@@ -30,6 +30,7 @@ INGEST_MAX_ARCHIVE_RATIO: Final[int] = int_env("INGEST_MAX_ARCHIVE_RATIO", 100)
 INGEST_MAX_ARCHIVE_EXPANDED_BYTES: Final[int] = int_env(
     "INGEST_MAX_ARCHIVE_EXPANDED_BYTES", 524288000
 )
+INGEST_MAX_PDF_PAGES: Final[int] = int_env("INGEST_MAX_PDF_PAGES", 2000)
 
 
 class ArchiveBombReason(StrEnum):
@@ -94,3 +95,29 @@ def assert_safe_zip(
         raw_size = max(len(raw), 1)
         if total // raw_size > max_ratio:
             raise ArchiveBombError(ArchiveBombReason.RATIO, f"{total}/{raw_size} > {max_ratio}")
+
+
+class PdfTooManyPagesError(Exception):
+    """PDF page count exceeds the configured cap."""
+
+    http_status: int = 413
+    error_code: str = HttpErrorCode.INGEST_PDF_TOO_MANY_PAGES
+
+    def __init__(self, page_count: int, cap: int) -> None:
+        super().__init__(f"PDF has {page_count} pages, cap is {cap}")
+        self.page_count = page_count
+        self.cap = cap
+
+
+def assert_safe_pdf_page_count(page_count: int, *, max_pages: int) -> None:
+    """Raise PdfTooManyPagesError when page_count > max_pages.
+
+    Called from `_PdfASTSplitter.run` immediately after `fitz.open(...)` and
+    before the per-page extraction loop, bounding worst-case work to
+    `max_pages` * per-page OCR cost.  `max_pages` is required (no default)
+    so the caller's module-level constant is the single source of truth —
+    pinning that to a `int_env(...)` default here would evaluate at import
+    time and shadow runtime monkeypatching in tests.
+    """
+    if page_count > max_pages:
+        raise PdfTooManyPagesError(page_count, max_pages)
