@@ -70,6 +70,7 @@ The returned `document_id` is the same identifier used by `GET /ingest/v1/{docum
 
 **Errors (RFC 9457 problem+json):**
 - `415 INGEST_MIME_UNSUPPORTED` — `mime_type` not in allow-list.
+- `415 INGEST_MAGIC_MISMATCH` — declared binary `mime_type` (docx/pptx/pdf) does not match the file's leading signature bytes.
 - `413 INGEST_FILE_TOO_LARGE` — inline content or file size exceeds the cap.
 - `422 INGEST_VALIDATION` — discriminator/required-field shape errors.
 - `422 INGEST_MINIO_SITE_UNKNOWN` — `minio_site` not in registry.
@@ -185,6 +186,7 @@ curl -X POST http://localhost:8000/ingest/v1/upload \
 | `source_url` | No | Origin URL, max 2048 chars |
 
 **Errors:**
+- `415 INGEST_MAGIC_MISMATCH` — declared `mime_type` (docx/pptx/pdf) does not match the uploaded file's signature (`PK\x03\x04` for docx/pptx; `%PDF-` for pdf).
 - `413 INGEST_FILE_TOO_LARGE` — file exceeds `INGEST_INLINE_MAX_BYTES`.
 - `422` — missing/invalid form fields (FastAPI validation).
 
