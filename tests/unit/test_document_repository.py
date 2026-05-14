@@ -8,7 +8,6 @@ import pytest
 from ragent.repositories.document_repository import (
     DocumentRepository,
     DocumentRow,
-    LockNotAvailable,
 )
 
 # ---------------------------------------------------------------------------
@@ -287,80 +286,96 @@ async def test_delete_executes_delete_sql():
 
 
 # ---------------------------------------------------------------------------
-# claim_for_processing
+# claim_for_processing — atomic conditional UPDATE + post-state SELECT
 # ---------------------------------------------------------------------------
 
 
-async def test_claim_for_processing_returns_document_row():
-    row = _row(status="UPLOADED")
-    engine, _ = _mock_engine(rows=[row])
+async def test_claim_for_processing_returns_document_row_when_claimed():
+    row = _row(status="PENDING", attempt=1)
+    engine, _ = _mock_engine(rows=[row], rowcount=1)
     repo = DocumentRepository(engine)
     doc = await repo.claim_for_processing("ID1")
-    assert doc.status == "UPLOADED"
+    assert doc is not None
+    assert doc.status == "PENDING"
     assert doc.document_id == "AAAAAAAAAAAAAAAAAAAAAAAAAAA"
 
 
-async def test_claim_for_processing_raises_on_lock_contention():
-    from sqlalchemy.exc import OperationalError
-
-    engine, conn = _mock_engine()
-    conn.execute.side_effect = OperationalError("s", {}, Exception("lock"))
-    repo = DocumentRepository(engine)
-    with pytest.raises(LockNotAvailable):
-        await repo.claim_for_processing("ID1")
-
-
-async def test_claim_for_processing_raises_when_row_not_found():
-    engine, _ = _mock_engine(rows=[])
-    repo = DocumentRepository(engine)
-    with pytest.raises(LockNotAvailable):
-        await repo.claim_for_processing("MISSING")
-
-
-async def test_claim_for_processing_executes_select_and_update():
-    row = _row(status="UPLOADED")
-    engine, conn = _mock_engine(rows=[row])
-    repo = DocumentRepository(engine)
-    await repo.claim_for_processing("ID1")
-    assert conn.execute.call_count == 2  # SELECT FOR UPDATE NOWAIT + UPDATE
-
-
-# ---------------------------------------------------------------------------
-# claim_for_deletion
-# ---------------------------------------------------------------------------
-
-
-async def test_claim_for_deletion_returns_document_row():
+async def test_claim_for_processing_returns_none_when_status_terminal():
+    """READY/FAILED/DELETING source state → not in accept_from → None."""
     row = _row(status="READY")
-    engine, _ = _mock_engine(rows=[row])
+    engine, _ = _mock_engine(rows=[row], rowcount=1)
+    repo = DocumentRepository(engine)
+    doc = await repo.claim_for_processing("ID1")
+    assert doc is None
+
+
+async def test_claim_for_processing_returns_none_when_row_missing():
+    engine, _ = _mock_engine(rows=[], rowcount=0)
+    repo = DocumentRepository(engine)
+    doc = await repo.claim_for_processing("MISSING")
+    assert doc is None
+
+
+async def test_claim_for_processing_returns_prior_status():
+    """Returned DocumentRow carries the *prior* status, so callers can branch
+    on what the row was before the transition."""
+    row = _row(status="UPLOADED", attempt=0)
+    engine, _ = _mock_engine(rows=[row], rowcount=1)
+    repo = DocumentRepository(engine)
+    doc = await repo.claim_for_processing("ID1")
+    assert doc is not None
+    assert doc.status == "UPLOADED"  # pre-state, not "PENDING"
+    assert doc.attempt == 0  # pre-bump
+
+
+async def test_claim_for_processing_returns_none_on_toctou_race():
+    """SELECT shows status in accept_from, but UPDATE rowcount=0: another writer
+    raced us between the SELECT and UPDATE statements."""
+    row = _row(status="UPLOADED")
+    engine, _ = _mock_engine(rows=[row], rowcount=0)
+    repo = DocumentRepository(engine)
+    doc = await repo.claim_for_processing("ID1")
+    assert doc is None
+
+
+# ---------------------------------------------------------------------------
+# claim_for_deletion — atomic conditional UPDATE + post-state SELECT
+# ---------------------------------------------------------------------------
+
+
+async def test_claim_for_deletion_returns_document_row_when_claimed():
+    row = _row(status="READY")
+    engine, _ = _mock_engine(rows=[row], rowcount=1)
     repo = DocumentRepository(engine)
     doc = await repo.claim_for_deletion("ID1")
-    assert doc.status == "READY"
+    assert doc is not None
+    assert doc.status == "READY"  # pre-state
 
 
-async def test_claim_for_deletion_raises_on_lock_contention():
-    from sqlalchemy.exc import OperationalError
-
-    engine, conn = _mock_engine()
-    conn.execute.side_effect = OperationalError("s", {}, Exception("lock"))
+async def test_claim_for_deletion_returns_none_when_already_deleting():
+    row = _row(status="DELETING")
+    engine, _ = _mock_engine(rows=[row], rowcount=1)
     repo = DocumentRepository(engine)
-    with pytest.raises(LockNotAvailable):
-        await repo.claim_for_deletion("ID1")
+    doc = await repo.claim_for_deletion("ID1")
+    assert doc is None  # DELETING not in accept_from
 
 
-async def test_claim_for_deletion_raises_when_row_not_found():
-    engine, _ = _mock_engine(rows=[])
+async def test_claim_for_deletion_returns_none_when_row_missing():
+    engine, _ = _mock_engine(rows=[], rowcount=0)
     repo = DocumentRepository(engine)
-    with pytest.raises(LockNotAvailable):
-        await repo.claim_for_deletion("MISSING")
+    doc = await repo.claim_for_deletion("MISSING")
+    assert doc is None
 
 
-async def test_claim_for_deletion_executes_select_and_update():
-    row = _row(status="READY")
-    engine, conn = _mock_engine(rows=[row])
+async def test_claim_for_deletion_returns_prior_status_for_cascade_branching():
+    """Cascade in IngestService.delete reads doc.status to decide MinIO
+    cleanup; the prior status must survive the claim."""
+    row = _row(status="UPLOADED")
+    engine, _ = _mock_engine(rows=[row], rowcount=1)
     repo = DocumentRepository(engine)
-    await repo.claim_for_deletion("ID1")
-    assert conn.execute.call_count == 2  # SELECT FOR UPDATE NOWAIT + UPDATE
+    doc = await repo.claim_for_deletion("ID1")
+    assert doc is not None
+    assert doc.status == "UPLOADED"  # pre-state, drives MinIO delete branch
 
 
 # ---------------------------------------------------------------------------

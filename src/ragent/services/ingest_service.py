@@ -16,7 +16,6 @@ from typing import Any
 
 import structlog
 
-from ragent.repositories.document_repository import LockNotAvailable
 from ragent.schemas.ingest import (
     SOURCE_URL_MAX,
     FileIngestRequest,
@@ -180,9 +179,8 @@ class IngestService:
         return await self._repo.get(document_id)
 
     async def delete(self, document_id: str) -> None:
-        try:
-            doc = await self._repo.claim_for_deletion(document_id)
-        except LockNotAvailable:
+        doc = await self._repo.claim_for_deletion(document_id)
+        if doc is None:
             return
 
         # Cascade plugin cleanup (ES chunks, etc.) before the DB row is
