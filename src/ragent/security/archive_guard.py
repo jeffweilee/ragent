@@ -93,6 +93,4 @@ def assert_safe_zip(
 
         raw_size = max(len(raw), 1)
         if total // raw_size > max_ratio:
-            raise ArchiveBombError(
-                ArchiveBombReason.RATIO, f"{total}/{raw_size} > {max_ratio}"
-            )
+            raise ArchiveBombError(ArchiveBombReason.RATIO, f"{total}/{raw_size} > {max_ratio}")
