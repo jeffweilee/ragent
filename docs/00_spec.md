@@ -872,9 +872,7 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `CHAT_RATE_LIMIT_PER_MINUTE`          | `30`             | Per-user request cap on `/chat/v1` + `/chat/v1/stream` within the rate-limit window (B31). Excess returns 429 `CHAT_RATE_LIMITED`. |
 | `CHAT_RATE_LIMIT_WINDOW_SECONDS`      | `60`             | Fixed-window length for `CHAT_RATE_LIMIT_PER_MINUTE` (B31). |
 | `MCP_REQUEST_MAX_BYTES`               | `262144` (256 KiB) | Defence-in-depth cap on `POST /mcp/v1` request bodies; over-limit returns HTTP 413 `application/problem+json` (§3.8.1). |
-| `PDF_PAGE_BATCH_THRESHOLD`            | `50`             | PDFs with more pages than this are processed in batches of `PDF_BATCH_PAGES` to bound peak memory. |
-| `PDF_BYTES_BATCH_THRESHOLD`           | `5000000`        | PDFs whose raw byte size exceeds this (≈ 5 MB) are also processed in batches regardless of page count. |
-| `PDF_BATCH_PAGES`                     | `20`             | Pages per batch when batch mode is active (i.e., when either threshold is exceeded). |
+| `PDF_OCR_LANGUAGES`                   | `eng+chi_sim+chi_tra+jpn+deu` | Tesseract language pack list (plus-separated) used by `_PdfASTSplitter` when OCR-ing image-bearing pages. Install matching `tesseract-ocr-<lang>` packages if non-default languages are added. |
 
 > **MCP protocol pins are NOT env-driven** — `protocolVersion` (`2024-11-05`) and `serverInfo.name` (`ragent`) are **pinned in spec §3.8.1 / B47** and live as module-level constants in `src/ragent/routers/mcp.py`. Operators flipping the protocol version would silently break the contract; the pin is intentional. The only MCP env knob is the body cap above.
 

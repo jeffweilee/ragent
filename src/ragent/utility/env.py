@@ -54,6 +54,11 @@ def optional_float_env(var: str) -> float | None:
         sys.exit(1)
 
 
+def str_env(var: str, default: str) -> str:
+    raw = os.environ.get(var)
+    return default if raw is None else raw
+
+
 def list_env(var: str) -> list[str]:
     raw = os.environ.get(var, "")
     return [item.strip() for item in raw.split(",") if item.strip()]

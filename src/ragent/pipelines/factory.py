@@ -33,7 +33,9 @@ from haystack.document_stores.types import DuplicatePolicy
 from ragent.errors.codes import TaskErrorCode
 from ragent.pipelines.observability import IngestStepError, wrap_component_run
 from ragent.schemas.ingest import IngestMime
-from ragent.utility.env import int_env
+from ragent.utility.env import int_env, str_env
+
+_logger = structlog.get_logger(__name__)
 
 # Single mime-agnostic budget profile (replaces v1 EN/CJK/CSV constants).
 CHUNK_TARGET_CHARS = int_env("CHUNK_TARGET_CHARS", 1000)
@@ -44,10 +46,7 @@ CHUNK_OVERLAP_CHARS = int_env("CHUNK_OVERLAP_CHARS", 100)
 # and can blow up to millions of chunks on a 1 MB atom).
 CHUNK_MAX_PIECES_PER_ATOM = int_env("CHUNK_MAX_PIECES_PER_ATOM", 10_000)
 
-PDF_PAGE_BATCH_THRESHOLD = int_env("PDF_PAGE_BATCH_THRESHOLD", 50)
-PDF_BYTES_BATCH_THRESHOLD = int_env("PDF_BYTES_BATCH_THRESHOLD", 5_000_000)
-PDF_BATCH_PAGES = int_env("PDF_BATCH_PAGES", 20)
-PDF_OCR_LANGUAGES = "eng+chi_sim+chi_tra+jpn+deu"
+PDF_OCR_LANGUAGES = str_env("PDF_OCR_LANGUAGES", "eng+chi_sim+chi_tra+jpn+deu")
 
 
 def validate_chunk_config() -> None:
@@ -407,6 +406,7 @@ def _pdf_page_text(page: Any) -> str:
         tp = page.get_textpage_ocr(language=PDF_OCR_LANGUAGES, full=True)
         return page.get_text(textpage=tp).strip()
     except Exception:
+        _logger.warning("pdf_ocr_fallback_to_plain_text", exc_info=True)
         return page.get_text("text").strip()
 
 
@@ -420,10 +420,6 @@ class _PdfASTSplitter:
     Text-based pages use fast MuPDF extraction (no Tesseract cost).
     Image-bearing pages trigger OCR for that page only, capturing text
     embedded in graphics without burning CPU on purely textual pages.
-
-    Files exceeding ``PDF_PAGE_BATCH_THRESHOLD`` pages or
-    ``PDF_BYTES_BATCH_THRESHOLD`` bytes are processed ``PDF_BATCH_PAGES``
-    pages at a time to bound peak memory.
     """
 
     @component.output_types(documents=list[Document])
@@ -432,29 +428,24 @@ class _PdfASTSplitter:
 
         atoms: list[Document] = []
         for doc in documents:
+            if not (raw_bytes := doc.meta.get("raw_bytes")):
+                continue
             base_meta = {k: v for k, v in doc.meta.items() if k != "raw_bytes"}
-            raw_bytes: bytes = doc.meta.get("raw_bytes") or b""
             with fitz.open(stream=raw_bytes, filetype="pdf") as pdf:
-                total = pdf.page_count
-                use_batch = (
-                    total > PDF_PAGE_BATCH_THRESHOLD or len(raw_bytes) > PDF_BYTES_BATCH_THRESHOLD
-                )
-                step = PDF_BATCH_PAGES if use_batch else max(total, 1)
-                for batch_start in range(0, total, step):
-                    for page_idx in range(batch_start, min(batch_start + step, total)):
-                        text = _pdf_page_text(pdf[page_idx])
-                        if not text:
-                            continue
-                        atoms.append(
-                            Document(
-                                content=text,
-                                meta={
-                                    **base_meta,
-                                    "raw_content": text,
-                                    "page_number": page_idx + 1,
-                                },
-                            )
+                for page_idx in range(pdf.page_count):
+                    text = _pdf_page_text(pdf[page_idx])
+                    if not text:
+                        continue
+                    atoms.append(
+                        Document(
+                            content=text,
+                            meta={
+                                **base_meta,
+                                "raw_content": text,
+                                "page_number": page_idx + 1,
+                            },
                         )
+                    )
         return {"documents": atoms}
 
 

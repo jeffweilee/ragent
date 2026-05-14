@@ -61,6 +61,12 @@ def test_pdf_meta_passthrough():
     assert atoms[0].meta["mime_type"] == "application/pdf"
 
 
+def test_pdf_empty_bytes_skipped():
+    """Documents with no raw_bytes payload are skipped without raising."""
+    atoms = _run_splitter(b"")
+    assert atoms == []
+
+
 def test_pdf_empty_page_skipped():
     from fpdf import FPDF
 
@@ -129,21 +135,3 @@ def test_pdf_page_text_ocr_fallback_on_failure():
     result = _pdf_page_text(page)
     assert result == "Fallback plain text"
     page.get_textpage_ocr.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# Batch mode — large-document OOM guard
-# ---------------------------------------------------------------------------
-
-
-def test_pdf_batch_mode_processes_all_pages(monkeypatch):
-    """With a zero page threshold, batch step=PDF_BATCH_PAGES; all pages are emitted."""
-    import ragent.pipelines.factory as factory_mod
-
-    monkeypatch.setattr(factory_mod, "PDF_PAGE_BATCH_THRESHOLD", 0)
-    monkeypatch.setattr(factory_mod, "PDF_BATCH_PAGES", 1)
-
-    data = _make_pdf_bytes(["Alpha", "Beta", "Gamma"])
-    atoms = _run_splitter(data)
-    assert len(atoms) == 3
-    assert [a.meta.get("page_number") for a in atoms] == [1, 2, 3]
