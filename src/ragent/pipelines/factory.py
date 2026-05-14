@@ -315,10 +315,13 @@ class _DocxASTSplitter:
         from docx.table import Table
         from docx.text.paragraph import Paragraph
 
+        from ragent.security.archive_guard import assert_safe_zip
+
         atoms: list[Document] = []
         for doc in documents:
             base_meta = {k: v for k, v in doc.meta.items() if k != "raw_bytes"}
             raw_bytes: bytes = doc.meta.get("raw_bytes") or b""
+            assert_safe_zip(raw_bytes)
             docx = DocxDocument(io.BytesIO(raw_bytes))
             for block in docx.element.body:
                 tag = block.tag.split("}")[-1] if "}" in block.tag else block.tag
@@ -357,10 +360,13 @@ class _PptxASTSplitter:
     def run(self, documents: list[Document]) -> dict:
         from pptx import Presentation
 
+        from ragent.security.archive_guard import assert_safe_zip
+
         atoms: list[Document] = []
         for doc in documents:
             base_meta = {k: v for k, v in doc.meta.items() if k != "raw_bytes"}
             raw_bytes: bytes = doc.meta.get("raw_bytes") or b""
+            assert_safe_zip(raw_bytes)
             prs = Presentation(io.BytesIO(raw_bytes))
             for idx, slide in enumerate(prs.slides, start=1):
                 texts = []
