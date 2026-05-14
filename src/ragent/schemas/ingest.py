@@ -4,9 +4,9 @@ Discriminated union over `ingest_type`:
   - inline: `content` is in the JSON body.
   - file:   bytes live in caller-supplied `(minio_site, object_key)`.
 
-`mime_type` is a closed enum (text/plain | text/markdown | text/html | docx | pptx).
-Short aliases "pptx" and "docx" are accepted and normalised to their full IANA MIME
-strings at validation time.  Binary MIME types (DOCX, PPTX) are rejected for
+`mime_type` is a closed enum (text/plain | text/markdown | text/html | docx | pptx | pdf).
+Short aliases "pptx", "docx", and "pdf" are accepted and normalised to their full IANA MIME
+strings at validation time.  Binary MIME types (DOCX, PPTX, PDF) are rejected for
 ingest_type "inline" because the `content` field is a UTF-8 string — use
 POST /ingest/v1/upload for binary files.
 `minio_site` is validated against the runtime registry at the service layer
@@ -30,6 +30,7 @@ class IngestMime(StrEnum):
     TEXT_HTML = "text/html"
     DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    PDF = "application/pdf"
 
     @classmethod
     def _missing_(cls, value: object) -> IngestMime | None:
@@ -43,9 +44,10 @@ class IngestMime(StrEnum):
 _MIME_ALIASES: dict[str, IngestMime] = {
     "docx": IngestMime.DOCX,
     "pptx": IngestMime.PPTX,
+    "pdf": IngestMime.PDF,
 }
 
-BINARY_MIMES: frozenset[IngestMime] = frozenset({IngestMime.DOCX, IngestMime.PPTX})
+BINARY_MIMES: frozenset[IngestMime] = frozenset({IngestMime.DOCX, IngestMime.PPTX, IngestMime.PDF})
 
 
 class _IngestBase(BaseModel):
