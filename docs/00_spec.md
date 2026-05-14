@@ -225,14 +225,14 @@ Title participates in **both** retrieval surfaces (B15): semantic (baked into ev
 
 - `sources` is `null` when empty; otherwise all fields are populated. `type` is always `"knowledge"` in P1 (reserved enum).
 - `sources[].source_title/url/mime_type` from `documents`; `score` is RRF retrieval score; `excerpt` is truncated to `EXCERPT_MAX_CHARS` (default 512) in router (B23) — LLM receives full text untruncated.
-- `usage` from `LLMClient`; streaming requires `stream_options.include_usage=true` on the LLM API.
+- `usage` from `LLMClient` (non-streaming only; streaming `done` event omits `usage` — P1 limitation).
 
 #### 3.4.3 Streaming wire format (`/chat/stream` only)
 
 ```
 data: {"type":"delta","content":"<token chunk>"}\n\n
 …
-data: {"type":"done", ...response schema as 3.4.2…}\n\n
+data: {"type":"done","content":"<full>","model":"…","provider":"…","sources":[…]}\n\n
 ```
 
 **Error mid-stream (B6):** If the LLM or any retriever fails *after* the first `delta` has been written, the server emits a single default-event `data:` line with payload `{"type":"error","error_code":"<CODE>","message":"<text>"}` and closes the connection. **No `event: error` named-event is used.** Pre-stream failures (before the first `delta`) return a normal RFC 9457 problem+json response. `/chat` always uses problem+json on error (it has no streaming surface).
@@ -381,7 +381,7 @@ The chaos suite asserts the resilience claims of §3.6 (reconciler recovery, ide
 - **Heartbeat metrics (R8):** `reconciler_tick_total` (counter); Prometheus alert when missing > 10 min. Worker emits `worker_pipeline_duration_seconds` (histogram) and `event=ingest.{started,failed,ready}`.
 - **Orphan/leak counters:** `minio_orphan_object_total` (post-commit cleanup failure), `multi_ready_repaired_total` (Reconciler R3 sweep).
 - **ES events (B26):** `event=es.bbq_unsupported` (cluster rejected `bbq_hnsw`; bootstrap retried with standard HNSW); `event=schema.drift` (resource file ↔ live mapping mismatch). Both surface in `/readyz` as degraded (B4).
-- **Structured logging (structlog).** JSON to stdout. Categories: (1) **API trace** (`api.request/error`) — per-request `{request_id, method, path, status_code, duration_ms, user_id, trace_id}` via `RequestLoggingMiddleware` (excl. /livez, /readyz, /metrics). (2) **Business** — `chat.retrieval/llm`, `ingest.failed/ready`, `reconciler.tick`, `embedding/rerank.call`, etc., paired with OTEL spans sharing `trace_id`. (3) **Error** — `error_type, error_code`, traceback, redacted. Format: ISO 8601 UTC; `LOG_FORMAT=console` for dev. **Privacy:** identity + metric fields only; denylist processor drops `query/prompt/messages/completion/chunks/embedding/token/secret/…` and stamps `content_redacted=true`. `HAYSTACK_CONTENT_TRACING_ENABLED` pinned off.
+- **Structured logging (structlog).** JSON to stdout. Categories: (1) **API trace** (`api.request/error`) — per-request `{request_id, method, path, status_code, duration_ms, user_id, trace_id}` via `RequestLoggingMiddleware` (excl. /livez, /readyz, /metrics). (2) **Business** — `chat.retrieval/llm`, `ingest.failed/ready`, `reconciler.tick`, `embedding/rerank.call`, etc., paired with OTEL spans sharing `trace_id`. (3) **Error** — `error_type, error_code`, traceback, redacted. Format: ISO 8601 UTC; `LOG_FORMAT=console` for dev. **Privacy:** identity + metric fields only; denylist processor drops `query/prompt/messages/completion/chunks/embedding/documents/body/authorization/cookie/password/token/secret` and stamps `content_redacted=true`. `HAYSTACK_CONTENT_TRACING_ENABLED` pinned off.
 
 ---
 
@@ -492,7 +492,7 @@ App-level errors (-32000..-32099) carry `data.error_code` matching the existing 
 
 ### 4.1 Endpoints
 
-Validation order: discriminator-shape (422) → `mime_type` in §4.2 allow-list (415) → size cap (413) → `minio_site` in registry (422 `INGEST_MINIO_SITE_UNKNOWN`) → file HEAD-probe (422 `INGEST_OBJECT_NOT_FOUND`).
+Validation order: discriminator-shape (422) → `mime_type` in §4.2 allow-list (415) → `minio_site` in registry (422 `INGEST_MINIO_SITE_UNKNOWN`) → file HEAD-probe (422 `INGEST_OBJECT_NOT_FOUND`) → size cap (413).
 
 | Method | Path | P1 Auth | Request | Response |
 |---|---|---|---|---|
