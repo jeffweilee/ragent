@@ -105,6 +105,11 @@ curl http://localhost:8000/ingest/v1/01J9ABCDEFGHJKMNPQRSTVWXYZ \
 Status values: `UPLOADED → PENDING → READY | FAILED`; `DELETING` during delete.
 For `ingest_type=file` rows, `minio_site` is the registered site name (e.g. `tenant-eu-1`); for `ingest_type=inline` it is `null` and bytes were staged to `__default__`.
 
+**Terminal-failure `error_code` values** (worker-side, surfaced when `status="FAILED"`):
+- `INGEST_ARCHIVE_UNSAFE` — DOCX/PPTX zip preflight rejected the file (zip bomb shape: too many members, ratio too high, declared size exceeds 500 MB cap, single oversized member, or path-traversal entry).
+- `INGEST_PDF_TOO_MANY_PAGES` — PDF page count exceeded `INGEST_MAX_PDF_PAGES` (default 2000).
+- Plus the per-step pipeline codes (`EMBEDDER_ERROR`, `ES_WRITE_ERROR`, `PIPELINE_TIMEOUT_AGGREGATE`, etc.) emitted from the worker pipeline.
+
 ### `GET /ingest/v1` — List documents (cursor-paginated)
 
 Results are ordered newest-first (`document_id DESC`). Pass `next_cursor` as `after` to fetch the next page of older items.
