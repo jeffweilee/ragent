@@ -420,6 +420,10 @@ class _PdfASTSplitter:
     Text-based pages use fast MuPDF extraction (no Tesseract cost).
     Image-bearing pages trigger OCR for that page only, capturing text
     embedded in graphics without burning CPU on purely textual pages.
+
+    After each page ``fitz.TOOLS.store_shrink(100)`` evicts MuPDF's 256 MB
+    LRU cache (decompressed streams, OCR pixmaps, font data), bounding peak
+    RSS to roughly one page's worth of intermediate data at a time.
     """
 
     @component.output_types(documents=list[Document])
@@ -433,7 +437,10 @@ class _PdfASTSplitter:
             base_meta = {k: v for k, v in doc.meta.items() if k != "raw_bytes"}
             with fitz.open(stream=raw_bytes, filetype="pdf") as pdf:
                 for page_idx in range(pdf.page_count):
-                    text = _pdf_page_text(pdf[page_idx])
+                    page = pdf[page_idx]
+                    text = _pdf_page_text(page)
+                    del page  # drop Python ref; triggers fz_drop_page
+                    fitz.TOOLS.store_shrink(100)  # evict MuPDF LRU cache
                     if not text:
                         continue
                     atoms.append(

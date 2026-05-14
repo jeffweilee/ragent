@@ -135,3 +135,15 @@ def test_pdf_page_text_ocr_fallback_on_failure():
     result = _pdf_page_text(page)
     assert result == "Fallback plain text"
     page.get_textpage_ocr.assert_called_once()
+
+
+def test_pdf_store_shrink_called_once_per_page(monkeypatch):
+    """MuPDF LRU cache is evicted after every page to bound peak RSS."""
+    import fitz
+
+    shrink_calls: list[int] = []
+    monkeypatch.setattr(fitz.TOOLS, "store_shrink", lambda pct: shrink_calls.append(pct))
+
+    data = _make_pdf_bytes(["Alpha", "Beta", "Gamma"])
+    _run_splitter(data)
+    assert shrink_calls == [100, 100, 100]
