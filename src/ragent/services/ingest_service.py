@@ -44,6 +44,10 @@ class DocumentNotFound(Exception):
     pass
 
 
+class DocumentNotRerunnable(Exception):
+    """Rerun requested on a document whose status is READY or DELETING."""
+
+
 class UnknownMinioSiteError(Exception):
     pass
 
@@ -177,6 +181,16 @@ class IngestService:
 
     async def get(self, document_id: str) -> Any | None:
         return await self._repo.get(document_id)
+
+    async def rerun(self, document_id: str) -> None:
+        """Manually re-dispatch the ingest pipeline for a non-READY document."""
+        outcome = await self._repo.mark_for_rerun(document_id)
+        if outcome == "not_found":
+            raise DocumentNotFound(document_id)
+        if outcome == "not_rerunnable":
+            raise DocumentNotRerunnable(document_id)
+        await self._broker.enqueue("ingest.pipeline", document_id=document_id)
+        logger.info("ingest.rerun_dispatched", document_id=document_id)
 
     async def delete(self, document_id: str) -> None:
         doc = await self._repo.claim_for_deletion(document_id)

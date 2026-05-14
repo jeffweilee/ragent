@@ -120,6 +120,7 @@
 - **S33 worker heartbeat (B16)** — Given a worker has been running the pipeline body for 4 min, When the Reconciler ticks at 5 min, Then it sees `updated_at` was refreshed < 30 s ago and **does not** re-dispatch the row. Conversely, when a worker dies and `updated_at` ages past 5 min, the Reconciler re-dispatches exactly once.
 - **S34 pipeline timeout (B18)** — Given a pipeline body runs longer than `PIPELINE_TIMEOUT_SECONDS`, When the ceiling fires, Then the worker transitions the row to `FAILED` with `error_code=PIPELINE_TIMEOUT`, runs cleanup (`fan_out_delete` + `delete_by_document_id`), and emits `event=ingest.failed reason=pipeline_timeout`.
 - **S35 CSV row packing (B24)** — Given a CSV with 10 000 short rows (~50 chars each), When ingested, Then `chunks` row count is bounded by `ceil(total_chars / CSV_CHUNK_TARGET_CHARS)` (≈ 250 for the example), not 10 000. Non-CSV formats are unaffected.
+- **S36 manual rerun** — Given a document with status in `{UPLOADED, PENDING, FAILED}`, When `POST /ingest/v1/{id}/rerun` is called with `X-User-Id`, Then the row's `status` is flipped to `PENDING` (clearing `error_code`/`error_reason`), `ingest.pipeline` is re-enqueued, and the response is `202 {"document_id": ...}`. Given the status is `READY` or `DELETING`, the response is `409 INGEST_NOT_RERUNNABLE` (use re-POST with same `(source_id, source_app)` for READY supersede). Given the document does not exist, the response is `404 INGEST_NOT_FOUND`. The endpoint does **not** touch `attempt`; the worker's claim path bumps it on re-pickup.
 
 ---
 
@@ -644,6 +645,7 @@ App-level errors (-32000..-32099) carry `data.error_code` matching the existing 
 | GET    | `/ingest/v1/{id}`          | `X-User-Id` | — | `200 { status, attempt, updated_at }` |
 | GET    | `/ingest/v1?after=&limit=&source_id=&source_app=` | `X-User-Id` | — | `200 { items, next_cursor }` (limit ≤ 100; ordered `document_id DESC`; `source_id`/`source_app` are optional exact-match filters) |
 | DELETE | `/ingest/v1/{id}`          | `X-User-Id` | — | `204` idempotent |
+| POST   | `/ingest/v1/{id}/rerun`    | `X-User-Id` | — | `202 { document_id }` — manual re-dispatch of `ingest.pipeline` for non-READY/non-DELETING rows; `404 INGEST_NOT_FOUND` / `409 INGEST_NOT_RERUNNABLE` per S36. |
 | POST   | `/chat/v1`                 | `X-User-Id` | §3.4.1 schema (`messages` required; rest default) | `200 application/json` per §3.4.2 |
 | POST   | `/chat/v1/stream`          | `X-User-Id` | §3.4.1 schema | `text/event-stream` per §3.4.3 (`data: {type:delta\|done\|error}`) |
 | POST   | `/mcp/v1`               | `X-User-Id` (P1) / `Authorization: Bearer` (P2) | JSON-RPC 2.0 envelope per §3.8 | `200` with JSON-RPC response envelope; `204` for `notifications/*`. Auth failure (401) returns `application/problem+json` per §3.8.1 (transport-layer). |
@@ -683,7 +685,8 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 | `INGEST_MIME_UNSUPPORTED`            | 415         | MIME outside the §4.2 P1 allow-list | Router T2.13 |
 | `INGEST_FILE_TOO_LARGE`              | 413         | Multipart body > 50 MB | Router T2.13 |
 | `INGEST_VALIDATION`                  | 422         | Missing/empty `source_id` / `source_app` / `source_title` (S23) — `errors[]` lists offending fields | Router T2.13 |
-| `INGEST_NOT_FOUND`                   | 404         | `GET /ingest/v1/{id}` / `DELETE /ingest/v1/{id}` on unknown id | Service T2.10 |
+| `INGEST_NOT_FOUND`                   | 404         | `GET /ingest/v1/{id}` / `DELETE /ingest/v1/{id}` / `POST /ingest/v1/{id}/rerun` on unknown id | Service T2.10 |
+| `INGEST_NOT_RERUNNABLE`              | 409         | `POST /ingest/v1/{id}/rerun` on a document whose status is `READY` or `DELETING` (re-POST is the supersede path for READY; DELETING is mid-cascade) | Router (rerun endpoint) |
 | `CHAT_MESSAGES_MISSING`              | 422         | `messages` absent or empty | Schema T3.3 |
 | `CHAT_PROVIDER_UNSUPPORTED`          | 422         | `provider` outside `{"openai"}` allow-list (B22) | Schema T3.3 |
 | `CHAT_FILTER_INVALID`                | 422         | `source_app` empty / > 64 chars, or `source_meta` empty / > 1024 chars (B29 → B35) | Schema T3.3 |

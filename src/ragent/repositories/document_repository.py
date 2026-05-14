@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import structlog
 from sqlalchemy import text
@@ -250,6 +250,42 @@ class DocumentRepository:
             to_status="DELETING",
             accept_from=("UPLOADED", "PENDING", "READY", "FAILED"),
         )
+
+    async def mark_for_rerun(
+        self, document_id: str
+    ) -> Literal["ok", "not_rerunnable", "not_found"]:
+        """Transition any non-READY/non-DELETING row back to PENDING for manual rerun.
+
+        Returns ``"ok"`` on success, ``"not_rerunnable"`` if the row exists
+        but is in a terminal/in-flight-delete state (READY or DELETING), and
+        ``"not_found"`` if no row matches ``document_id``. Clears
+        ``error_code``/``error_reason`` and refreshes ``updated_at`` so the
+        reconciler's stale-sweep doesn't immediately race the manual dispatch.
+        Does not touch ``attempt`` — that belongs to the worker's claim path.
+        """
+        async with self._engine.begin() as conn:
+            update_result = await conn.execute(
+                text(
+                    "UPDATE documents SET status='PENDING',"
+                    " updated_at=NOW(6), error_code=NULL, error_reason=NULL"
+                    " WHERE document_id=:id AND status IN ('UPLOADED','PENDING','FAILED')"
+                ),
+                {"id": document_id},
+            )
+            if update_result.rowcount == 1:
+                self._log_transition(document_id, "<rerun>", "PENDING")
+                return "ok"
+            exists = (
+                (
+                    await conn.execute(
+                        text("SELECT 1 FROM documents WHERE document_id=:id"),
+                        {"id": document_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            return "not_rerunnable" if exists else "not_found"
 
     # ------------------------------------------------------------------
     # Status mutations

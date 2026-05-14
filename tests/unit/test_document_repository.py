@@ -379,6 +379,52 @@ async def test_claim_for_deletion_returns_prior_status_for_cascade_branching():
 
 
 # ---------------------------------------------------------------------------
+# mark_for_rerun — manual run endpoint helper
+# ---------------------------------------------------------------------------
+
+
+async def test_mark_for_rerun_returns_ok_for_failed():
+    row = _row(status="FAILED")
+    engine, _ = _mock_engine(rows=[row], rowcount=1)
+    repo = DocumentRepository(engine)
+    assert await repo.mark_for_rerun("ID1") == "ok"
+
+
+async def test_mark_for_rerun_returns_ok_for_uploaded():
+    row = _row(status="UPLOADED")
+    engine, _ = _mock_engine(rows=[row], rowcount=1)
+    repo = DocumentRepository(engine)
+    assert await repo.mark_for_rerun("ID1") == "ok"
+
+
+async def test_mark_for_rerun_returns_ok_for_pending():
+    row = _row(status="PENDING")
+    engine, _ = _mock_engine(rows=[row], rowcount=1)
+    repo = DocumentRepository(engine)
+    assert await repo.mark_for_rerun("ID1") == "ok"
+
+
+async def test_mark_for_rerun_returns_not_rerunnable_for_ready():
+    row = _row(status="READY")
+    engine, _ = _mock_engine(rows=[row], rowcount=0)
+    repo = DocumentRepository(engine)
+    assert await repo.mark_for_rerun("ID1") == "not_rerunnable"
+
+
+async def test_mark_for_rerun_returns_not_rerunnable_for_deleting():
+    row = _row(status="DELETING")
+    engine, _ = _mock_engine(rows=[row], rowcount=0)
+    repo = DocumentRepository(engine)
+    assert await repo.mark_for_rerun("ID1") == "not_rerunnable"
+
+
+async def test_mark_for_rerun_returns_not_found_when_missing():
+    engine, _ = _mock_engine(rows=[], rowcount=0)
+    repo = DocumentRepository(engine)
+    assert await repo.mark_for_rerun("MISSING") == "not_found"
+
+
+# ---------------------------------------------------------------------------
 # list_ready_by_source
 # ---------------------------------------------------------------------------
 

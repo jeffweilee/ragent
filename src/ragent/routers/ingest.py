@@ -20,6 +20,8 @@ from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
 from ragent.schemas.ingest import IngestRequest
 from ragent.services.ingest_service import (
+    DocumentNotFound,
+    DocumentNotRerunnable,
     FileTooLarge,
     MimeNotAllowed,
     ObjectNotFoundError,
@@ -111,6 +113,15 @@ def _validation_problem(raw: list[dict]) -> Response:
     )
 
 
+def _log_and_problem(
+    event: str, document_id: str, status: int, code: HttpErrorCode, message: str
+) -> Response:
+    """Bind structured-log + problem+json so the http_status arg can't drift
+    away from the actual response status."""
+    logger.info(event, document_id=document_id, error_code=code, http_status=status)
+    return problem(status, code, message)
+
+
 class _IngestRoute(APIRoute):
     """Route class that converts RequestValidationError to problem+json.
 
@@ -164,13 +175,13 @@ def create_router(svc: Any) -> APIRouter:
     ):
         doc = await svc.get(document_id)
         if doc is None:
-            logger.info(
+            return _log_and_problem(
                 "ingest.not_found",
-                document_id=document_id,
-                error_code=HttpErrorCode.INGEST_NOT_FOUND,
-                http_status=404,
+                document_id,
+                404,
+                HttpErrorCode.INGEST_NOT_FOUND,
+                "Document not found",
             )
-            return problem(404, HttpErrorCode.INGEST_NOT_FOUND, "Document not found")
         return IngestDetailResponse(
             document_id=doc.document_id,
             status=doc.status,
@@ -186,6 +197,31 @@ def create_router(svc: Any) -> APIRouter:
             error_code=getattr(doc, "error_code", None),
             error_reason=getattr(doc, "error_reason", None),
         )
+
+    @router.post("/{document_id}/rerun", status_code=202, response_model=IngestCreatedResponse)
+    async def rerun_document(
+        document_id: str,
+        x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+    ):
+        try:
+            await svc.rerun(document_id)
+        except DocumentNotFound:
+            return _log_and_problem(
+                "ingest.rerun_not_found",
+                document_id,
+                404,
+                HttpErrorCode.INGEST_NOT_FOUND,
+                "Document not found",
+            )
+        except DocumentNotRerunnable:
+            return _log_and_problem(
+                "ingest.rerun_not_rerunnable",
+                document_id,
+                409,
+                HttpErrorCode.INGEST_NOT_RERUNNABLE,
+                "Document is READY or DELETING; rerun not allowed",
+            )
+        return IngestCreatedResponse(document_id=document_id)
 
     @router.delete("/{document_id}", status_code=204)
     async def delete_document(
