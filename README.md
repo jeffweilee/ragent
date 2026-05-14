@@ -36,6 +36,25 @@ uv run ruff check . --fix
 uv run pytest --cov=src/ragent --cov-branch --cov-fail-under=92
 ```
 
+#### PDF OCR (Windows)
+
+PDF ingest uses PyMuPDF for text extraction and Tesseract for image-bearing pages (OCR).
+Tesseract must be installed at the OS level:
+
+```powershell
+winget install UB-Mannheim.TesseractOCR
+# Re-open your terminal, then verify:
+tesseract --version
+```
+
+Add the Tesseract install directory (e.g. `C:\Program Files\Tesseract-OCR`) to `PATH` and set
+`TESSDATA_PREFIX` to its `tessdata` subfolder if PyMuPDF cannot locate language data at runtime.
+For CJK / Japanese / German documents, install the matching language packs from the same
+UB-Mannheim installer (select additional languages during setup).
+
+On Linux and macOS, install via the system package manager (`apt`, `brew`, etc.).
+The production `Dockerfile` installs `tesseract-ocr-eng`, `-chi-sim`, `-chi-tra`, `-jpn`, `-deu`.
+
 ---
 
 ## Docs

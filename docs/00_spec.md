@@ -34,7 +34,29 @@
 
 ### 3.1 Ingest Lifecycle
 
-> **v2 OVERRIDE (2026-05-06):** `POST /ingest` is **JSON only** (`ingest_type ∈ {inline, file}`). `inline` → body with `content: str`; staged to `__default__` MinIO; cap `INGEST_INLINE_MAX_BYTES` (10 MB). `file` → adds `{minio_site, object_key}`; HEAD-probed (absent → 422 `INGEST_OBJECT_NOT_FOUND`, size > 50 MB → 413); no copy; no post-READY delete. MIME: `text/plain`, `text/markdown`, `text/html`, DOCX, PPTX — CSV dropped → 415. Source cols: `source_id`, `source_app`, `source_title`, `source_meta?` (≤ 1024), `source_url?` (≤ 2048). `MINIO_SITES` JSON → `MinioSiteRegistry`; `__default__` mandatory; `read_only=true` blocks delete. Chunks in ES `chunks_v1` only — DB `chunks` table dropped. Worker emits `event=ingest.step.{started,ok,failed}` per component.
+> **v2 OVERRIDE (2026-05-06)** — see `docs/team/2026_05_06_ingest_api_v2.md` for the full team decision; the operative contract below supersedes the v1 multipart description further down.
+>
+> **API:** `POST /ingest` is **JSON only** (no multipart). Body discriminator `ingest_type ∈ {inline, file}`:
+> - `inline` → `{ingest_type, mime_type, content: str, source_id, source_app, source_title, source_meta?, source_url?}`. `content` is UTF-8; size ceiling `INGEST_INLINE_MAX_BYTES` (default 10 MB) on the encoded byte length. API stages the content to MinIO `__default__` site.
+> - `file` → `{ingest_type, mime_type, minio_site, object_key, source_id, source_app, source_title, source_meta?, source_url?}`. API HEAD-probes `(minio_site, object_key)`; absent → 422 `INGEST_OBJECT_NOT_FOUND`; size > `INGEST_FILE_MAX_BYTES` (50 MB) → 413. **No copy** — worker reads from caller's bucket.
+>
+> **MIME allow-list:** `text/plain`, `text/markdown`, `text/html`, `application/vnd.openxmlformats-officedocument.wordprocessingml.document` (DOCX), `application/vnd.openxmlformats-officedocument.presentationml.presentation` (PPTX), `application/pdf` (PDF). Anything else → 415 `INGEST_MIME_UNSUPPORTED`. **CSV is dropped** (was v1).
+>
+> **Source columns:** `source_id`, `source_app`, `source_title`, `source_meta?` (free-format ≤ 1024 chars; renamed from `source_workspace` per B35) **plus new `source_url`** (opaque ≤ 2048 chars, display-only in citations).
+>
+> **MinIO multi-site:** server reads `MINIO_SITES` JSON env at boot → `MinioSiteRegistry`. `__default__` is mandatory (used by inline). Sites with `read_only=true` refuse post-READY delete (`file` ingests against caller-owned buckets).
+>
+> **Cleanup branching by `documents.ingest_type`:**
+> | `ingest_type` | Worker reads from | Post-READY delete |
+> |---|---|---|
+> | `inline` | `__default__/<object_key=document_id>` | yes (same as v1) |
+> | `file` | caller's `(minio_site, object_key)` | **no** (object isn't ours) |
+>
+> **Storage model (revised):** chunks live **only** in ES `chunks_v1`. The MariaDB `chunks` table is **dropped**. `documents` keeps metadata. Two stores total: `documents` (MariaDB, metadata) + `chunks_v1` (ES, content + embedding + raw_content).
+>
+> **Per-step structured logging (Logging Rule extension):** every pipeline component emits `event=ingest.step.{started,ok,failed}` with `{document_id, step, mime_type, duration_ms, error_code?, error?}`. Failures map to a small enum (`PIPELINE_UNROUTABLE`, `EMBEDDER_ERROR`, `ES_WRITE_ERROR`, `PIPELINE_TIMEOUT`). Happy path emits `event=ingest.ready` with chunk count. This is how operators answer "which doc, which step, why failed" from logs alone.
+>
+> **State machine, locking, heartbeat, supersede, reconciler arms — unchanged from v1.** Only the ingress and pipeline interior change.
 
 **State machine:** `UPLOADED → PENDING → READY | FAILED`; `DELETING` transient on delete.
 
@@ -573,13 +595,13 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 | `.txt`  | `TextFileToDocument`     | `text/plain`              | UTF-8 text | **P1** |
 | `.md`   | `MarkdownToDocument`     | `text/markdown`           | front-matter stripped | **P1** |
 | `.html` | `HTMLToDocument`         | `text/html`               | visible text, script/style stripped | **P1** |
-| `.csv`  | (removed)                | `text/csv`                | **Dropped in v2** — returns 415 `INGEST_MIME_UNSUPPORTED`. Was P1 (B2, B24). | removed |
-| `.pdf`  | `PyPDFToDocument`        | `application/pdf`         | text-extractable only | P2 |
+| `.csv`  | `CSVToDocument`          | `text/csv`                | row-as-document; rows packed by `RowMerger` to ~2 000 chars (B24); bounded by global 50 MB file limit (B2) | **P1** |
+| `.pdf`  | `_PdfASTSplitter`        | `application/pdf`         | one atom per page; fast MuPDF text extraction; Tesseract OCR on image-bearing pages; batch-safe for large files | **P1** |
 | `.docx` | `_DocxASTSplitter`       | `application/vnd.openxmlformats-officedocument.wordprocessingml.document` | paragraphs + tables (python-docx) | **P1** |
 | `.pptx` | `_PptxASTSplitter`       | `application/vnd.openxmlformats-officedocument.presentationml.presentation` | one atom per slide (python-pptx) | **P1** |
 | `.xlsx` | `XLSXToDocument`         | `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` | active sheets | P2 |
 
-> 415 on unsupported MIME; 413 on > 50 MB. Image-only / scanned documents are not supported in any phase.
+> 415 on unsupported MIME; 413 on > 50 MB. PDF ingest supports scanned / image-bearing pages via Tesseract OCR (requires OS-level `tesseract`); pages with no raster images use the fast MuPDF text path (no Tesseract cost).
 
 ### 4.3 Pipeline Catalog
 
@@ -718,6 +740,7 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `CHAT_RATE_LIMIT_PER_MINUTE`          | `30`             | Per-user request cap on `/chat/v1` + `/chat/v1/stream` within the rate-limit window (B31). Excess returns 429 `CHAT_RATE_LIMITED`. |
 | `CHAT_RATE_LIMIT_WINDOW_SECONDS`      | `60`             | Fixed-window length for `CHAT_RATE_LIMIT_PER_MINUTE` (B31). |
 | `MCP_REQUEST_MAX_BYTES`               | `262144` (256 KiB) | Defence-in-depth cap on `POST /mcp/v1` request bodies; over-limit returns HTTP 413 `application/problem+json` (§3.8.1). |
+| `PDF_OCR_LANGUAGES`                   | `eng+chi_sim+chi_tra+jpn+deu` | Tesseract language pack list (plus-separated) used by `_PdfASTSplitter` when OCR-ing image-bearing pages. Install matching `tesseract-ocr-<lang>` packages if non-default languages are added. |
 
 > **MCP protocol pins are NOT env-driven** — `protocolVersion` (`2024-11-05`) and `serverInfo.name` (`ragent`) are **pinned in spec §3.8.1 / B47** and live as module-level constants in `src/ragent/routers/mcp.py`. Operators flipping the protocol version would silently break the contract; the pin is intentional. The only MCP env knob is the body cap above.
 
