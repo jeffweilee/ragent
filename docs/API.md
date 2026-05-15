@@ -155,6 +155,23 @@ curl -X DELETE http://localhost:8000/ingest/v1/01J9ABCDEFGHJKMNPQRSTVWXYZ \
 # 204 No Content
 ```
 
+### `POST /ingest/v1/{document_id}/rerun` — Manually re-dispatch the pipeline
+
+Operator escape hatch for documents that need another pipeline pass without re-uploading. Accepts any source status in `{UPLOADED, PENDING, FAILED}`; flips the row back to `PENDING` (clearing `error_code`/`error_reason`) and re-enqueues `ingest.pipeline`. Does **not** bump `attempt` — the worker's claim path does that on pickup.
+
+```bash
+curl -X POST http://localhost:8000/ingest/v1/01J9ABCDEFGHJKMNPQRSTVWXYZ/rerun \
+  -H "X-User-Id: user-123"
+# 202 {"document_id": "01J9ABCDEFGHJKMNPQRSTVWXYZ"}
+```
+
+Error responses (RFC 9457 problem+json):
+
+| Status | `error_code` | When |
+|---|---|---|
+| 404 | `INGEST_NOT_FOUND` | No document with that id. |
+| 409 | `INGEST_NOT_RERUNNABLE` | Status is `READY` (use re-POST with same `source_id`/`source_app` for supersede) or `DELETING` (mid-cascade). |
+
 ### `POST /ingest/v1/upload` — Multipart file upload (admin)
 
 Admin convenience path: the caller POSTs file bytes directly; the server stages them to the default MinIO site and enqueues the pipeline — identical downstream behaviour to `ingest_type=inline` (server owns the object; `DELETE` cleans it up).

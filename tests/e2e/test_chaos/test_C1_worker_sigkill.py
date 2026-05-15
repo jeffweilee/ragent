@@ -32,28 +32,6 @@ from tests.e2e.conftest import API_URL, wait_api_ready
 
 pytestmark = [
     pytest.mark.docker,
-    # The chaos drill is functional and reaches the four §3.6.1 acceptance
-    # asserts, but currently surfaces a real production bug in the recovery
-    # path: when the reconciler redispatches a stuck PENDING document,
-    # `DocumentRepository.claim_for_processing` invokes
-    # `_claim(doc_id, "PENDING", ...)` which fails the state-machine
-    # transition check `PENDING → PENDING` (worker log shows
-    # `IllegalStateTransition`). The original `claim_for_processing`
-    # contract assumes source state is `UPLOADED`; on reconciler redispatch
-    # the source state is PENDING (the previous worker died mid-process).
-    # Recovery requires a separate re-claim path that bumps `attempt`
-    # without state transition, OR a relaxed `PENDING → PENDING`
-    # idempotent transition. See journal QA 2026-05-12 "Recovery semantics".
-    # `strict=True` so that fixing the production bug auto-flips this test
-    # to xpassed and forces a `[x]` in T-CHAOS.C1.
-    pytest.mark.xfail(
-        strict=True,
-        reason=(
-            "T-CHAOS.C1 surfaces a real bug: claim_for_processing rejects "
-            "PENDING → PENDING on reconciler redispatch. Fix requires a "
-            "production recovery-semantics change (separate commit)."
-        ),
-    ),
 ]
 
 RECOVERY_DEADLINE_SECONDS = 600

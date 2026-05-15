@@ -61,12 +61,9 @@
 **State machine:** `UPLOADED → PENDING → READY | FAILED`; `DELETING` transient on delete.
 
 **Locking discipline:**
-- Status mutations use **two short transactions**, not one long one:
-  - **TX-A** `SELECT … FOR UPDATE NOWAIT` → write `PENDING`/terminal status → **commit** (releases row lock).
-  - **Pipeline body runs OUTSIDE any DB transaction.** No row locks are held while external calls (embedder, ES, plugins, MinIO) run — this prevents pipeline hangs from blocking the Reconciler's `SKIP LOCKED` sweep.
-- Worker uses `FOR UPDATE NOWAIT`: on lock contention (e.g. concurrent dispatch by Reconciler) the worker fails fast and re-kiqs itself instead of blocking on `innodb_lock_wait_timeout`.
-- Reconciler uses `FOR UPDATE SKIP LOCKED`.
-- `update_status` validates the state machine and raises `IllegalStateTransition` on invalid transitions.
+- Status mutations use **atomic conditional UPDATE** with rowcount-based dispatch — no `SELECT FOR UPDATE [NOWAIT]` on the documents row-mutation paths (`claim_for_processing`, `claim_for_deletion`, `update_status`, `promote_to_ready_and_demote_siblings`). The canonical idiom is `UPDATE documents SET status=:to_status, … WHERE document_id=:id AND status IN (:accept_set)`; `rowcount=1` means the caller won the transition, `rowcount=0` means another writer beat us (or the row is gone) and the caller no-ops gracefully. InnoDB's row-level X-lock during the UPDATE statement serialises concurrent writers — the lock window is microseconds, not the multi-statement span of the old `SELECT FOR UPDATE` pattern. (The reconciler stale-sweep and supersede single-loser-per-tx scan retain `SKIP LOCKED` semantics — those are bulk load-shedding scans across rows, not single-row transitions.)
+- Pipeline body runs **outside any DB transaction**: no row locks are held while external calls (embedder, ES, plugins, MinIO) run. The worker's claim (TX-A) is a single atomic UPDATE that flips `UPLOADED|PENDING → PENDING` and bumps `attempt`; the terminal commit (TX-B) is another single atomic UPDATE that flips `PENDING → READY|FAILED`. Heartbeat keeps the `PENDING` row warm; the Reconciler's stale-sweep is governed entirely by `updated_at`, not by row locks.
+- `update_status` and the claim path both validate transitions via the WHERE clause's accept-set; an invalid transition surfaces as `rowcount=0` (no exception) on the claim path, and as `IllegalStateTransition` (raised in code on rowcount=0) on the `update_status` path — preserving the v1 error contract for terminal writes.
 
 **Worker heartbeat (B16) — closes the no-lock-window race:** because the pipeline body holds no row lock, a naive Reconciler "PENDING > 5 min" sweep would happily re-dispatch a still-running worker and produce double processing. The worker therefore **updates `documents.updated_at = NOW()` every 30 s** during the pipeline body (background timer; one cheap PK-keyed `UPDATE`). The Reconciler's threshold becomes `WHERE status='PENDING' AND updated_at < NOW() - INTERVAL 5 MINUTE` — only **stale-heartbeat** rows are re-dispatched. Heartbeat interval is configured via `WORKER_HEARTBEAT_INTERVAL_SECONDS` (default 30).
 
@@ -83,7 +80,7 @@
 **Create flow:**
 1. `POST /ingest` (`source_id`, `source_app`, `source_title`, optional `source_meta`) → MIME/size validation → MinIO upload (staging) → `documents(UPLOADED, source_id, source_app, source_title, source_meta)` → kiq `ingest.pipeline` → 202.
 2. Worker `ingest.pipeline`:
-   - **TX-A:** `acquire FOR UPDATE NOWAIT`. On lock contention → re-kiq self with backoff and exit (no attempt increment). On success → `PENDING`, `attempt+1`, **commit**.
+   - **TX-A (atomic claim):** single statement `UPDATE documents SET status='PENDING', attempt=attempt+1, updated_at=NOW(6) WHERE document_id=:id AND status IN ('UPLOADED','PENDING')`. `rowcount=1` → proceed; `rowcount=0` → log `event=ingest.claim_skipped` and exit gracefully (row is already READY/FAILED/DELETING or missing). The `PENDING` source state in the accept-set is what makes reconciler redispatch and manual rerun (§3.1.x) safe.
    - **Heartbeat (B16):** start a background timer that issues `UPDATE documents SET updated_at=NOW() WHERE document_id=?` every `WORKER_HEARTBEAT_INTERVAL_SECONDS` (default 30) for the lifetime of the pipeline body. Cancelled in `finally` before TX-B.
    - **Pipeline body (no DB tx, wall-clock-bounded by `PIPELINE_TIMEOUT_SECONDS`, default 1800):** `delete_by_document_id` (idempotency) → run §3.2 → `fan_out` → all required ok ⇒ outcome=`READY`; any required error ⇒ outcome=`PENDING_RETRY` (no terminal commit; Reconciler resumes); attempt > 5 ⇒ outcome=`FAILED`; ceiling exceeded ⇒ outcome=`FAILED` with `error_code=PIPELINE_TIMEOUT` (B18).
    - **TX-B (terminal only):** commit `READY` or `FAILED`. **On `FAILED`, also call `fan_out_delete` + `delete_by_document_id` to clean partial output before commit.**
@@ -93,7 +90,7 @@
    - Naturally idempotent: re-delivery finds ≤ 1 row and no-ops.
 
 **Delete flow:**
-1. `DELETE /ingest/{id}` → `acquire FOR UPDATE NOWAIT` → `DELETING` (commit short tx) → outside-tx: `fan_out_delete` → `delete_by_document_id` → if status was `PENDING/UPLOADED` also `MinIO.delete_object` → final tx: delete row → 204.
+1. `DELETE /ingest/{id}` → atomic claim `UPDATE … SET status='DELETING' WHERE document_id=:id AND status IN ('UPLOADED','PENDING','READY','FAILED')`. `rowcount=1` → outside-tx cascade (`fan_out_delete` → `delete_by_document_id` → if prior status was `PENDING/UPLOADED` also `MinIO.delete_object` → final tx: delete row → 204). `rowcount=0` → silent 204 (idempotent re-DELETE or row already DELETING).
 2. Any mid-cascade failure → row stays `DELETING`; Reconciler resumes idempotently.
 
 **BDD:**
@@ -114,11 +111,12 @@
 - **S25 pipeline retry produces no duplicate chunks (R4)** — Given a Reconciler retry of a previously partially-written ingest, When the pipeline reruns, Then `chunks` count for that `document_id` equals the chunker's output and `chunks_v1` ES index has no orphans.
 - **S26 multi-READY invariant repaired (R3)** — Given two `READY` rows for the same `(source_id, source_app)` (e.g. supersede task lost between status commit and kiq), When the Reconciler runs, Then it re-enqueues `ingest.supersede` and convergence happens within one cycle.
 - **S27 FAILED transition cleans partial output (R5)** — Given a doc transitions to `FAILED`, When the FAILED state is committed, Then `chunks` and ES `chunks_v1` for that `document_id` have been cleared (no leakage into chat retrieval).
-- **S28 worker FOR UPDATE NOWAIT contention (R7)** — Given two workers receive the same `document_id`, When the second tries to acquire, Then it fails fast, re-kiqs with backoff, does not increment `attempt`.
+- **S28 worker claim race (R7)** — Given two workers receive the same `document_id` (initial kiq + Reconciler dispatch), When both run the atomic-claim UPDATE concurrently, Then InnoDB serialises them on the row's brief X-lock: the first transitions `UPLOADED→PENDING` (or refreshes `PENDING→PENDING`) and proceeds; the second's UPDATE may also succeed (status was still `PENDING`) — pipeline idempotency (`delete_by_document_id` first step) keeps chunks consistent — or returns `rowcount=0` if the first already advanced the row past the accept-set, in which case the loser logs `event=ingest.claim_skipped` and exits. Neither path raises `LockNotAvailable`; the legacy `NOWAIT`-based contention story no longer applies.
 - **S30 reconciler heartbeat (R8)** — Given a Reconciler tick runs, Then `reconciler_tick_total` increments and `event=reconciler.tick` is emitted; absence > 10 min triggers Prometheus alert.
 - **S31 supersede single-loser-per-tx (P-C)** — Given supersede must delete K=10 losers, When the task runs, Then each is deleted in its own committed tx (loop), not one tx holding K row-locks.
 - **S33 worker heartbeat (B16)** — Given a worker runs 4 min, When the Reconciler ticks at 5 min, Then it sees `updated_at` refreshed < 30 s ago and does **not** re-dispatch. When a worker dies and `updated_at` ages past 5 min, Reconciler re-dispatches exactly once.
 - **S34 pipeline timeout (B18)** — Given a pipeline body runs longer than `PIPELINE_TIMEOUT_SECONDS`, When the ceiling fires, Then the worker transitions the row to `FAILED` with `error_code=PIPELINE_TIMEOUT`, runs cleanup (`fan_out_delete` + `delete_by_document_id`), and emits `event=ingest.failed reason=pipeline_timeout`.
+- **S41 manual rerun** — Given a document with status in `{UPLOADED, PENDING, FAILED}`, When `POST /ingest/v1/{id}/rerun` is called with `X-User-Id`, Then the row's `status` is flipped to `PENDING`, `attempt` is reset to `0` (so an exhausted FAILED row isn't immediately re-FAILED by the reconciler's `_mark_failed` budget check), `error_code`/`error_reason` are cleared, `ingest.pipeline` is re-enqueued, and the response is `202 {"document_id": ...}`. Given the status is `READY` or `DELETING`, the response is `409 INGEST_NOT_RERUNNABLE` (use re-POST with same `(source_id, source_app)` for READY supersede). Given the document does not exist, the response is `404 INGEST_NOT_FOUND`.
 
 ---
 
@@ -535,6 +533,7 @@ App-level errors (-32000..-32099) carry `data.error_code` matching the existing 
 | GET    | `/ingest/v1/{id}`          | `X-User-Id` | — | `200 { status, attempt, updated_at }` |
 | GET    | `/ingest/v1?after=&limit=&source_id=&source_app=` | `X-User-Id` | — | `200 { items, next_cursor }` (limit ≤ 100; ordered `document_id DESC`; `source_id`/`source_app` are optional exact-match filters) |
 | DELETE | `/ingest/v1/{id}`          | `X-User-Id` | — | `204` idempotent |
+| POST   | `/ingest/v1/{id}/rerun`    | `X-User-Id` | — | `202 { document_id }` — manual re-dispatch of `ingest.pipeline` for non-READY/non-DELETING rows; `404 INGEST_NOT_FOUND` / `409 INGEST_NOT_RERUNNABLE` per S41. |
 | POST   | `/ingest/v1/upload`        | `X-User-Id` | `multipart/form-data` (server stages to `__default__` MinIO; identical downstream to inline) | `202 { document_id }` |
 | POST   | `/retrieve/v1`             | `X-User-Id` | §3.4.4 schema (`query` required; rest default) | `200 { chunks[] }` per §3.4.4 |
 | POST   | `/chat/v1`                 | `X-User-Id` | §3.4.1 schema (`messages` required; rest default) | `200 application/json` per §3.4.2 |
@@ -581,7 +580,8 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 | `INGEST_VALIDATION`                  | 422         | Missing/empty `source_id` / `source_app` / `source_title` (S23) — `errors[]` lists offending fields | Router T2.13 |
 | `INGEST_MINIO_SITE_UNKNOWN`          | 422         | `minio_site` not in `MinioSiteRegistry` | Router T2.13 |
 | `INGEST_OBJECT_NOT_FOUND`            | 422         | `(minio_site, object_key)` HEAD-probe miss | Router T2.13 |
-| `INGEST_NOT_FOUND`                   | 404         | `GET /ingest/v1/{id}` / `DELETE /ingest/v1/{id}` on unknown id | Service T2.10 |
+| `INGEST_NOT_FOUND`                   | 404         | `GET /ingest/v1/{id}` / `DELETE /ingest/v1/{id}` / `POST /ingest/v1/{id}/rerun` on unknown id | Service T2.10 |
+| `INGEST_NOT_RERUNNABLE`              | 409         | `POST /ingest/v1/{id}/rerun` on a document whose status is `READY` or `DELETING` (re-POST is the supersede path for READY; DELETING is mid-cascade) | Router (rerun endpoint) |
 | `CHAT_MESSAGES_MISSING`              | 422         | `messages` absent or empty | Schema T3.3 |
 | `CHAT_PROVIDER_UNSUPPORTED`          | 422         | `provider` outside `{"openai"}` allow-list (B22) | Schema T3.3 |
 | `CHAT_FILTER_INVALID`                | 422         | `source_app` empty / > 64 chars, or `source_meta` empty / > 1024 chars (B29 → B35) | Schema T3.3 |

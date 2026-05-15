@@ -107,12 +107,13 @@ def test_delete_runs_fan_out_before_row_delete() -> None:
     assert call_order == ["fan_out_delete:DOCX", "repo.delete:DOCX"]
 
 
-def test_delete_skips_fan_out_when_lock_unavailable() -> None:
-    """LockNotAvailable (concurrent DELETE) → silent 204, no fan-out, no row delete."""
-    from ragent.repositories.document_repository import LockNotAvailable
+def test_delete_skips_fan_out_when_not_claimable() -> None:
+    """claim_for_deletion → None → silent 204, no fan-out, no row delete.
 
+    None means the WHERE clause matched nothing — row already DELETING or missing.
+    """
     repo = AsyncMock()
-    repo.claim_for_deletion.side_effect = LockNotAvailable("locked")
+    repo.claim_for_deletion.return_value = None
     repo.delete = AsyncMock()
 
     registry = MagicMock()

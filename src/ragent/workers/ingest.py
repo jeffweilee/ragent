@@ -1,6 +1,8 @@
 """C4 / T2v.39 — V2 ingest worker.
 
-TX-A: claim PENDING (NOWAIT). Pipeline body runs outside any DB tx —
+TX-A: atomic conditional UPDATE claims the row from UPLOADED|PENDING →
+PENDING (rowcount=0 → row is terminal or missing → graceful skip).
+Pipeline body runs outside any DB tx —
 worker fetches bytes from the right MinIO site, decodes UTF-8 for text
 mimes or passes raw bytes for binary mimes (DOCX/PPTX), feeds the v2
 pipeline (``loader → splitter → [idempotency_clean] → chunker →
@@ -23,7 +25,6 @@ from ragent.bootstrap.broker import broker
 from ragent.bootstrap.metrics import observe_pipeline_duration, record_pipeline_outcome
 from ragent.errors.codes import TaskErrorCode
 from ragent.pipelines.observability import bind_ingest_context, log_ingest_step
-from ragent.repositories.document_repository import LockNotAvailable
 from ragent.schemas.ingest import BINARY_MIMES
 
 logger = structlog.get_logger(__name__)
@@ -43,10 +44,12 @@ async def ingest_pipeline_task(document_id: str) -> None:
     repo = container.doc_repo
     registry = container.minio_registry
 
-    try:
-        doc = await repo.claim_for_processing(document_id)
-    except LockNotAvailable:
-        logger.info("ingest.lock_contention", document_id=document_id)
+    doc = await repo.claim_for_processing(document_id)
+    if doc is None:
+        # Row is terminal (READY/FAILED/DELETING) or missing — another worker
+        # already advanced it past PENDING, or it was deleted. Either way the
+        # task has nothing to do.
+        logger.info("ingest.claim_skipped", document_id=document_id)
         return
 
     logger.info(
