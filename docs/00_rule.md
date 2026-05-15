@@ -412,6 +412,34 @@ Exchanges J1 tokens for J2 tokens. Supports two modes:
 
 The `TokenManager` caches J2 tokens and refreshes them 5 minutes before expiration.
 
+---
+
+#### Unprotect API
+
+**Endpoint:** `UNPROTECT_API_URL` (full URL, no default — required when `UNPROTECT_ENABLED=true`)
+**Timeout:** `UNPROTECT_TIMEOUT_SECONDS` (default: 30s) | **Retry:** none at client layer (worker retries the whole ingest task — `WORKER_MAX_ATTEMPTS`)
+**Content-Type:** `multipart/form-data` (request) / `application/octet-stream` (response — raw binary, **not** JSON)
+
+Decrypts/unprotects a single file before the ingest pipeline runs. Called from the worker at `src/ragent/workers/ingest.py` immediately after `MinIO.get_object`; the returned bytes replace `data` for the rest of the pipeline.
+
+**Request headers:**
+```
+apikey: <UNPROTECT_APIKEY>          # raw JWT, NO "Bearer " prefix. Redacted in http.upstream_error logs.
+Content-Type: multipart/form-data; boundary=<httpx-generated>
+```
+
+**Request body (multipart form fields — names are verbatim):**
+| Field | Type | Value |
+|---|---|---|
+| `fileInput` | file part | filename = `documents.object_key`; payload = raw bytes from MinIO |
+| `delegatedUser` | text part | `{X-User-Id}{UNPROTECT_DELEGATED_USER_SUFFIX}` — single concatenated string, **no separator** |
+
+**Response (success):** HTTP 200, body = raw decrypted bytes. `httpx.Response.content` is returned directly to the pipeline. No JSON envelope, no `returnCode`/`returnData` wrapping.
+
+**Response (failure):** any status ≥ 400 raises `httpx.HTTPStatusError` via `response.raise_for_status()`; the shared `http` client's `install_error_logging` emits one `http.upstream_error` record (request body truncated at `HTTP_ERROR_LOG_MAX_BYTES`, `apikey` header redacted). The worker propagates the error and the document goes through the standard retry → FAILED path.
+
+> **Field-name pins (per 2026-05-11 journal rule):** `fileInput`, `delegatedUser`, `apikey` are the exact wire names — do not rename in client code or test mocks.
+
 
 > **P2 API contracts** (HR API, OpenFGA API) are referenced in `docs/00_spec.md §3.5` (PermissionClient/OpenFGA) and `§4.5` (Third-Party Client Catalog). Verify request/response field names against those samples before implementing any P2 client — field-name drift is a runtime `KeyError` hidden by unit-test mocks.
 
