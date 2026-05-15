@@ -147,3 +147,46 @@ def test_pdf_store_shrink_called_once_per_page(monkeypatch):
     data = _make_pdf_bytes(["Alpha", "Beta", "Gamma"])
     _run_splitter(data)
     assert shrink_calls == [100, 100, 100]
+
+
+# ---------------------------------------------------------------------------
+# T-SEC.5 — Page-count cap (defends against PDF page-count expansion bombs)
+# ---------------------------------------------------------------------------
+
+
+def test_pdf_page_count_exceeds_cap_raises(monkeypatch):
+    """A PDF whose page_count exceeds INGEST_MAX_PDF_PAGES is rejected
+    BEFORE the per-page extraction loop runs."""
+    import pytest
+
+    from ragent.pipelines import factory
+    from ragent.security.archive_guard import PdfTooManyPagesError
+
+    monkeypatch.setattr(factory, "INGEST_MAX_PDF_PAGES", 2)
+    data = _make_pdf_bytes(["A", "B", "C"])  # 3 pages > cap of 2
+
+    with pytest.raises(PdfTooManyPagesError) as exc_info:
+        _run_splitter(data)
+
+    exc = exc_info.value
+    assert exc.http_status == 413
+    assert exc.error_code == "INGEST_PDF_TOO_MANY_PAGES"
+    assert exc.page_count == 3
+    assert exc.cap == 2
+
+
+def test_pdf_page_count_at_cap_passes(monkeypatch):
+    """A PDF exactly at the cap is accepted (boundary)."""
+    from ragent.pipelines import factory
+
+    monkeypatch.setattr(factory, "INGEST_MAX_PDF_PAGES", 3)
+    data = _make_pdf_bytes(["A", "B", "C"])  # exactly 3 pages
+    atoms = _run_splitter(data)
+    assert len(atoms) == 3
+
+
+def test_pdf_max_pages_module_default():
+    """Default cap is 2000 — generous for legitimate scanned reports."""
+    from ragent.security.archive_guard import INGEST_MAX_PDF_PAGES
+
+    assert INGEST_MAX_PDF_PAGES == 2000

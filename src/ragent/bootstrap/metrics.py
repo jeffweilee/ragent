@@ -139,6 +139,32 @@ chaos_drill_outcome_total = Counter(
     labelnames=("case", "outcome"),
 )
 
+# Ingest upload-guard rejections (T-SEC.7).  Closed label set bounds cardinality
+# at 8 series total — one per defense outcome across the three guard layers
+# (magic-byte / zip preflight / PDF page-count cap).  Drives the Grafana panel
+# that surfaces "thresholds too tight" before a user files a ticket.
+_ingest_rejected_total = Counter(
+    "ragent_ingest_rejected_total",
+    "Ingest upload-guard rejections, labelled by reason (T-SEC.7).",
+    labelnames=("reason",),
+)
+
+_INGEST_REJECT_REASONS: frozenset[str] = frozenset(
+    {"magic", "invalid", "members", "ratio", "expanded", "per_member", "traversal", "pdf_pages"}
+)
+
+
+def record_ingest_rejection(reason: str) -> None:
+    """Increment ragent_ingest_rejected_total for one guard rejection.
+
+    `reason` must be one of the closed label set declared in
+    `_INGEST_REJECT_REASONS`; unknown values raise to prevent label-cardinality
+    leaks via typo.
+    """
+    if reason not in _INGEST_REJECT_REASONS:
+        raise ValueError(f"unknown ingest-rejection reason {reason!r}")
+    _ingest_rejected_total.labels(reason=reason).inc()
+
 
 DocumentStatsRow = tuple[str, str | None, str | None, int]
 """(status, source_app, mime_type, count)."""

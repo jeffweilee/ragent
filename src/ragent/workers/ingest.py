@@ -22,7 +22,7 @@ from anyio import to_thread
 from ragent.bootstrap.broker import broker
 from ragent.bootstrap.metrics import observe_pipeline_duration, record_pipeline_outcome
 from ragent.errors.codes import TaskErrorCode
-from ragent.pipelines.observability import IngestStepError, bind_ingest_context, log_ingest_step
+from ragent.pipelines.observability import bind_ingest_context, log_ingest_step
 from ragent.repositories.document_repository import LockNotAvailable
 from ragent.schemas.ingest import BINARY_MIMES
 
@@ -147,9 +147,16 @@ async def ingest_pipeline_task(document_id: str) -> None:
             )
             return
         except Exception as exc:
-            cause = exc.__cause__ if isinstance(exc.__cause__, IngestStepError) else None
+            # Honour any error_code carried by the raised exception or its
+            # cause — preserves typed codes from security guards
+            # (ArchiveBombError / PdfTooManyPagesError) and IngestStepError
+            # alike, per 00_rule.md §API Error Honesty.  Falls back to the
+            # generic pipeline code only when nothing in the chain declared
+            # a more specific value.
             error_code = (
-                cause.error_code if cause is not None else TaskErrorCode.PIPELINE_UNEXPECTED_ERROR
+                getattr(exc, "error_code", None)
+                or getattr(exc.__cause__, "error_code", None)
+                or TaskErrorCode.PIPELINE_UNEXPECTED_ERROR
             )
             reason = f"{type(exc).__name__}: {exc}"
             log_ingest_step.failed(
