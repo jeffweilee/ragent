@@ -424,6 +424,19 @@ async def test_mark_for_rerun_returns_not_found_when_missing():
     assert await repo.mark_for_rerun("MISSING") == "not_found"
 
 
+async def test_mark_for_rerun_resets_attempt_to_zero():
+    """An exhausted FAILED row (attempt > WORKER_MAX_ATTEMPTS) must reset to 0
+    so the reconciler's _mark_failed doesn't immediately re-FAIL it before the
+    worker picks up the re-enqueued task."""
+    row = _row(status="FAILED", attempt=6)
+    engine, conn = _mock_engine(rows=[row], rowcount=1)
+    repo = DocumentRepository(engine)
+    await repo.mark_for_rerun("ID1")
+    # Confirm the UPDATE statement carries attempt=0 (string match on the SQL)
+    update_sql = str(conn.execute.call_args_list[0].args[0])
+    assert "attempt=0" in update_sql.replace(" ", "")
+
+
 # ---------------------------------------------------------------------------
 # list_ready_by_source
 # ---------------------------------------------------------------------------

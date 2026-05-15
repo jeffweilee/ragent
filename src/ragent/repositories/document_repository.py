@@ -262,12 +262,15 @@ class DocumentRepository:
         ``"not_found"`` if no row matches ``document_id``. Clears
         ``error_code``/``error_reason`` and refreshes ``updated_at`` so the
         reconciler's stale-sweep doesn't immediately race the manual dispatch.
-        Does not touch ``attempt`` — that belongs to the worker's claim path.
+        Resets ``attempt`` to 0 so an exhausted FAILED row (the primary use
+        case for manual rerun) isn't immediately swept back to FAILED by the
+        reconciler's ``_mark_failed`` budget check before the worker picks up
+        — the operator's intent on /rerun is "start a fresh attempt budget".
         """
         async with self._engine.begin() as conn:
             update_result = await conn.execute(
                 text(
-                    "UPDATE documents SET status='PENDING',"
+                    "UPDATE documents SET status='PENDING', attempt=0,"
                     " updated_at=NOW(6), error_code=NULL, error_reason=NULL"
                     " WHERE document_id=:id AND status IN ('UPLOADED','PENDING','FAILED')"
                 ),
