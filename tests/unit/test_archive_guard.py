@@ -112,6 +112,29 @@ def test_low_ratio_passes():
     assert_safe_zip(raw, max_ratio=100)
 
 
+def test_fractional_ratio_above_cap_rejected():
+    """Codex PR #72 finding: integer-truncated ratio bypass.
+
+    When `total / raw_size` is fractional (e.g. 7.5) and we set max_ratio to
+    its floor (7), the buggy `total // raw_size > max_ratio` check evaluates
+    `7 > 7 == False` and accepts the archive — even though the true ratio
+    7.5 exceeds the documented cap of 7.  Fix: compare without integer
+    division (`total > max_ratio * raw_size`).
+    """
+    raw = _build_zip([("p", b"\x00" * 1000)])
+    with zipfile.ZipFile(io.BytesIO(raw)) as zf:
+        total = sum(info.file_size for info in zf.infolist())
+    raw_size = len(raw)
+    # Pick the floor of the actual ratio as the cap.  The true ratio strictly
+    # exceeds this value (the payload is highly compressible), so a correct
+    # guard rejects.
+    cap = total // raw_size
+    assert total / raw_size > cap, "test setup: ratio must be fractional"
+    with pytest.raises(ArchiveBombError) as exc_info:
+        assert_safe_zip(raw, max_ratio=cap, max_expanded=10 * 1024 * 1024)
+    assert exc_info.value.reason == "ratio"
+
+
 # ---------------------------------------------------------------------------
 # Rejection: 3) total expanded size > absolute cap
 # ---------------------------------------------------------------------------
@@ -163,6 +186,30 @@ def test_path_traversal_absolute_rejected():
 
 def test_path_traversal_nested_dotdot_rejected():
     raw = _build_zip([("word/../../etc/evil", b"x")])
+    with pytest.raises(ArchiveBombError) as exc_info:
+        assert_safe_zip(raw)
+    assert exc_info.value.reason == "traversal"
+
+
+def test_path_traversal_backslash_absolute_rejected():
+    """Windows-style absolute path with leading backslash (Gemini PR #72 review)."""
+    raw = _build_zip([("\\etc\\passwd", b"x")])
+    with pytest.raises(ArchiveBombError) as exc_info:
+        assert_safe_zip(raw)
+    assert exc_info.value.reason == "traversal"
+
+
+def test_path_traversal_windows_drive_letter_rejected():
+    """Windows drive-letter path is treated as absolute (Gemini PR #72 review)."""
+    raw = _build_zip([("C:\\Windows\\System32\\evil", b"x")])
+    with pytest.raises(ArchiveBombError) as exc_info:
+        assert_safe_zip(raw)
+    assert exc_info.value.reason == "traversal"
+
+
+def test_path_traversal_backslash_dotdot_rejected():
+    """Backslash-separated `..` segment rejected after normalisation."""
+    raw = _build_zip([("word\\..\\..\\etc\\evil", b"x")])
     with pytest.raises(ArchiveBombError) as exc_info:
         assert_safe_zip(raw)
     assert exc_info.value.reason == "traversal"

@@ -9,7 +9,8 @@ declared uncompressed size — no inflation occurs).  Rejects:
   bypass of the ratio check.
 * any single member's `file_size` > `INGEST_MAX_ARCHIVE_EXPANDED_BYTES` —
   defeats "one giant + many small" bomb shape.
-* member name containing `..` segment or starting with `/` — path traversal.
+* member name containing `..` segment, starting with `/` or `\\`, or
+  containing a drive-letter `:` (Windows) — path traversal.
 
 Failure raises `ArchiveBombError(http_status=413, error_code='INGEST_ARCHIVE_UNSAFE')`
 carrying a `reason` tag for metrics / logs.
@@ -54,16 +55,29 @@ class ArchiveBombError(Exception):
     def __init__(self, reason: ArchiveBombReason, detail: str) -> None:
         super().__init__(f"{reason.value}: {detail}")
         self.reason = reason
-        # Emit at construction time so the six raise-sites stay 1-line and the
-        # closed `ArchiveBombReason` enum is the single source of truth for
-        # both the exception's `reason` attribute and the metric label.
-        record_ingest_rejection(reason.value)
+
+
+def _reject_zip(reason: ArchiveBombReason, detail: str) -> ArchiveBombError:
+    """Emit metric then return a fresh ArchiveBombError to raise.
+
+    Centralising emission here keeps the six raise-sites 1-line and avoids
+    side-effects in `__init__` (constructing the exception for inspection /
+    comparison / tests no longer increments the counter).
+    """
+    record_ingest_rejection(reason.value)
+    return ArchiveBombError(reason, detail)
 
 
 def _is_traversal(name: str) -> bool:
-    if name.startswith("/"):
+    """Reject absolute paths (POSIX `/`, Windows `\\` or drive-letter) and any
+    `..` segment.  Normalise backslashes to forward slashes first so a single
+    leading-slash + dot-dot check covers both conventions; the `:` test
+    catches drive-letter prefixes like `C:\\foo` after normalisation.
+    """
+    normalized = name.replace("\\", "/")
+    if normalized.startswith("/") or ":" in normalized:
         return True
-    return any(segment == ".." for segment in name.replace("\\", "/").split("/"))
+    return any(segment == ".." for segment in normalized.split("/"))
 
 
 def assert_safe_zip(
@@ -76,30 +90,32 @@ def assert_safe_zip(
     try:
         zf = zipfile.ZipFile(io.BytesIO(raw))
     except zipfile.BadZipFile as exc:
-        raise ArchiveBombError(ArchiveBombReason.INVALID, f"not a valid zip: {exc}") from exc
+        raise _reject_zip(ArchiveBombReason.INVALID, f"not a valid zip: {exc}") from exc
 
     with zf:
         infos = zf.infolist()
         if len(infos) > max_members:
-            raise ArchiveBombError(ArchiveBombReason.MEMBERS, f"{len(infos)} > {max_members}")
+            raise _reject_zip(ArchiveBombReason.MEMBERS, f"{len(infos)} > {max_members}")
 
         total = 0
         for info in infos:
             if _is_traversal(info.filename):
-                raise ArchiveBombError(ArchiveBombReason.TRAVERSAL, info.filename)
+                raise _reject_zip(ArchiveBombReason.TRAVERSAL, info.filename)
             if info.file_size > max_expanded:
-                raise ArchiveBombError(
+                raise _reject_zip(
                     ArchiveBombReason.PER_MEMBER,
                     f"{info.filename}: {info.file_size} > {max_expanded}",
                 )
             total += info.file_size
 
         if total > max_expanded:
-            raise ArchiveBombError(ArchiveBombReason.EXPANDED, f"{total} > {max_expanded}")
+            raise _reject_zip(ArchiveBombReason.EXPANDED, f"{total} > {max_expanded}")
 
         raw_size = max(len(raw), 1)
-        if total // raw_size > max_ratio:
-            raise ArchiveBombError(ArchiveBombReason.RATIO, f"{total}/{raw_size} > {max_ratio}")
+        # Multiply instead of divide so fractional ratios above the cap (e.g.
+        # 7.5 with cap=7) are not silently truncated by integer division.
+        if total > max_ratio * raw_size:
+            raise _reject_zip(ArchiveBombReason.RATIO, f"{total}/{raw_size} > {max_ratio}")
 
 
 class PdfTooManyPagesError(Exception):
@@ -112,7 +128,6 @@ class PdfTooManyPagesError(Exception):
         super().__init__(f"PDF has {page_count} pages, cap is {cap}")
         self.page_count = page_count
         self.cap = cap
-        record_ingest_rejection("pdf_pages")
 
 
 def assert_safe_pdf_page_count(page_count: int, *, max_pages: int) -> None:
@@ -126,4 +141,5 @@ def assert_safe_pdf_page_count(page_count: int, *, max_pages: int) -> None:
     time and shadow runtime monkeypatching in tests.
     """
     if page_count > max_pages:
+        record_ingest_rejection("pdf_pages")
         raise PdfTooManyPagesError(page_count, max_pages)
