@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 import structlog
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.exc import OperationalError
 
 from ragent.utility.state_machine import IllegalStateTransition, assert_transition
@@ -192,11 +192,12 @@ class DocumentRepository:
         the accept-set between our SELECT and UPDATE (rowcount=0). InnoDB's
         per-statement row lock on the UPDATE serialises concurrent claimers.
         """
-        accept_keys = [f"s{i}" for i in range(len(accept_from))]
-        in_clause = ",".join(f":{k}" for k in accept_keys)
-        params: dict = {"id": document_id, "to_status": to_status}
-        params.update(dict(zip(accept_keys, accept_from, strict=True)))
         extra_set = ", attempt=attempt+1" if bump_attempt else ""
+        update_stmt = text(
+            f"UPDATE documents SET status=:to_status{extra_set},"
+            " updated_at=NOW(6) WHERE document_id=:id"
+            " AND status IN :accept_from"
+        ).bindparams(bindparam("accept_from", expanding=True))
         async with self._engine.begin() as conn:
             pre = (
                 (
@@ -211,12 +212,12 @@ class DocumentRepository:
             if pre is None or pre["status"] not in accept_from:
                 return None
             update_result = await conn.execute(
-                text(
-                    f"UPDATE documents SET status=:to_status{extra_set},"
-                    f" updated_at=NOW(6) WHERE document_id=:id"
-                    f" AND status IN ({in_clause})"
-                ),
-                params,
+                update_stmt,
+                {
+                    "id": document_id,
+                    "to_status": to_status,
+                    "accept_from": list(accept_from),
+                },
             )
             if update_result.rowcount == 0:
                 return None
