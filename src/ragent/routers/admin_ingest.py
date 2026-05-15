@@ -17,6 +17,7 @@ from fastapi.responses import JSONResponse
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
 from ragent.schemas.ingest import SOURCE_META_MAX, SOURCE_URL_MAX, IngestMime
+from ragent.security.file_signature import MagicByteMismatchError, assert_magic_byte
 from ragent.services.ingest_service import FileTooLarge
 
 _MAX_UPLOAD_BYTES = int(os.environ.get("INGEST_INLINE_MAX_BYTES", "10485760"))
@@ -43,6 +44,7 @@ def create_router(svc: Any) -> APIRouter:
             return problem(413, HttpErrorCode.INGEST_FILE_TOO_LARGE, "Upload too large")
         try:
             data = await file.read()
+            assert_magic_byte(mime_type, data)
             document_id = await svc.create_from_upload(
                 create_user=x_user_id,
                 source_id=source_id,
@@ -53,6 +55,8 @@ def create_router(svc: Any) -> APIRouter:
                 source_meta=source_meta,
                 source_url=source_url,
             )
+        except MagicByteMismatchError as exc:
+            return problem(exc.http_status, exc.error_code, str(exc))
         except FileTooLarge:
             return problem(413, HttpErrorCode.INGEST_FILE_TOO_LARGE, "Upload too large")
         finally:

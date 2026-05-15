@@ -514,7 +514,20 @@ App-level errors (-32000..-32099) carry `data.error_code` matching the existing 
 
 ### 4.1 Endpoints
 
-Validation order: discriminator-shape (422) → `mime_type` in §4.2 allow-list (415) → `minio_site` in registry (422 `INGEST_MINIO_SITE_UNKNOWN`) → file HEAD-probe (422 `INGEST_OBJECT_NOT_FOUND`) → size cap (413).
+> **v2 OVERRIDE for `POST /ingest`** — JSON body only (no multipart).
+> ```jsonc
+> // ingest_type=inline
+> { "ingest_type":"inline", "mime_type":"text/markdown", "content":"# Title\n…",
+>   "source_id":"DOC-1", "source_app":"confluence", "source_title":"Q3 OKR",
+>   "source_meta":"eng",              // optional, free-format ≤ 1024
+>   "source_url":"https://wiki/…" }   // optional, opaque ≤ 2048
+> // ingest_type=file
+> { "ingest_type":"file", "mime_type":"text/html",
+>   "minio_site":"tenant-eu-1", "object_key":"reports/2025.html",
+>   "source_id":"DOC-2", "source_app":"s3-importer", "source_title":"Annual Report",
+>   "source_meta":"finance", "source_url":"https://…" }
+> ```
+> Validation order: discriminator-shape (422) → `mime_type ∈ {text/plain,text/markdown,text/html}` (415) → inline `len(content.encode("utf-8")) ≤ INGEST_INLINE_MAX_BYTES` / file HEAD-probe size ≤ `INGEST_FILE_MAX_BYTES` (413) → `minio_site` resolved against `MinioSiteRegistry` (422 `INGEST_MINIO_SITE_UNKNOWN`) → file HEAD-probe object exists (422 `INGEST_OBJECT_NOT_FOUND`). For `POST /ingest/v1/upload`: magic-byte signature check after `file.read()` (415 `INGEST_MAGIC_MISMATCH`) for binary MIMEs (docx/pptx/pdf). Worker-side guards run before splitter parse: DOCX/PPTX zip preflight (`INGEST_MAX_ARCHIVE_MEMBERS` / `_RATIO` / `_EXPANDED_BYTES`) → 413 `INGEST_ARCHIVE_UNSAFE` persisted as `documents.error_code` with terminal `FAILED`; PDF page-count cap (`INGEST_MAX_PDF_PAGES`) → 413 `INGEST_PDF_TOO_MANY_PAGES` likewise. Every guard rejection increments `ragent_ingest_rejected_total{reason}` (T-SEC.7).
 
 | Method | Path | P1 Auth | Request | Response |
 |---|---|---|---|---|
@@ -561,7 +574,10 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 | `error_code` | HTTP / Surface | When | Origin |
 |---|---|---|---|
 | `INGEST_MIME_UNSUPPORTED`            | 415         | MIME outside the §4.2 P1 allow-list | Router T2.13 |
-| `INGEST_FILE_TOO_LARGE`              | 413         | Inline `content` > `INGEST_INLINE_MAX_BYTES` (10 MB) or file HEAD-probe size > `INGEST_FILE_MAX_BYTES` (50 MB) | Router T2.13 |
+| `INGEST_FILE_TOO_LARGE`              | 413         | Multipart body > 50 MB | Router T2.13 |
+| `INGEST_MAGIC_MISMATCH`              | 415         | `POST /ingest/v1/upload`: declared `mime_type` (docx/pptx/pdf) does not match the file's leading signature bytes (T-SEC.1/.2) | Router T-SEC.2 |
+| `INGEST_ARCHIVE_UNSAFE`              | 413 via `documents.error_code` | DOCX/PPTX zip preflight rejected the archive — `reason ∈ {invalid, members, ratio, expanded, per_member, traversal}` (T-SEC.3/.4) | Splitter T-SEC.4 |
+| `INGEST_PDF_TOO_MANY_PAGES`          | 413 via `documents.error_code` | PDF page count exceeds `INGEST_MAX_PDF_PAGES` (T-SEC.5/.6) | Splitter T-SEC.6 |
 | `INGEST_VALIDATION`                  | 422         | Missing/empty `source_id` / `source_app` / `source_title` (S23) — `errors[]` lists offending fields | Router T2.13 |
 | `INGEST_MINIO_SITE_UNKNOWN`          | 422         | `minio_site` not in `MinioSiteRegistry` | Router T2.13 |
 | `INGEST_OBJECT_NOT_FOUND`            | 422         | `(minio_site, object_key)` HEAD-probe miss | Router T2.13 |
@@ -721,6 +737,10 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `INGEST_INLINE_MAX_BYTES`             | `10485760`       | v2: 10 MB cap on inline `content` UTF-8 byte length; 413 on overrun. |
 | `INGEST_FILE_MAX_BYTES`                | `52428800`      | v2: 50 MB cap on file-type ingest size (HEAD-probe at API time); 413 on overrun. |
 | `INGEST_LIST_MAX_LIMIT`               | `100`            | `GET /ingest/v1?limit=` upper bound (§4.1, B7). |
+| `INGEST_MAX_ARCHIVE_MEMBERS`          | `5000`           | DOCX/PPTX zip-archive preflight: max entries in `infolist()`; 413 `INGEST_ARCHIVE_UNSAFE` on overrun (T-SEC.3/.4). |
+| `INGEST_MAX_ARCHIVE_RATIO`            | `100`            | DOCX/PPTX zip-archive preflight: max `sum(file_size) / len(raw)` ratio; 413 `INGEST_ARCHIVE_UNSAFE` on overrun. |
+| `INGEST_MAX_ARCHIVE_EXPANDED_BYTES`   | `524288000`      | DOCX/PPTX zip-archive preflight: 500 MB cap on `sum(file_size)` and per-member `file_size`; 413 `INGEST_ARCHIVE_UNSAFE` on overrun. |
+| `INGEST_MAX_PDF_PAGES`                | `2000`           | PDF preflight: cap on `fitz.Document.page_count` before per-page extraction; 413 `INGEST_PDF_TOO_MANY_PAGES` on overrun (T-SEC.5/.6). |
 | `CHUNK_TARGET_CHARS`                  | `1000`           | v2 `_BudgetChunker` target chars (mime-agnostic). |
 | `CHUNK_MAX_CHARS`                     | `1500`           | v2 `_BudgetChunker` hard cap; atoms above this are hard-split. |
 | `CHUNK_OVERLAP_CHARS`                 | `100`            | v2 `_BudgetChunker` overlap between adjacent chunks. |
@@ -773,6 +793,7 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `HAYSTACK_CONTENT_TRACING_ENABLED`    | `false`          | Include prompts and answers in OTEL spans. Keep `false` unless debugging; sensitive data. |
 | `RAGENT_METRICS_SOURCE_APP_ALLOWLIST` | (empty)          | Comma-separated allow-list of `source_app` values that pass through verbatim as a Prometheus label. Anything outside the list is collapsed to `RAGENT_METRICS_SOURCE_APP_FALLBACK` to bound label cardinality. |
 | `RAGENT_METRICS_SOURCE_APP_FALLBACK`  | `other`          | Bucket name for `source_app` values not in the allow-list. |
+| `HTTP_ERROR_LOG_MAX_BYTES`            | `8192`           | Max bytes of request/response body included in `http.upstream_error` log records. Bodies above this size are truncated with `request_truncated` / `response_truncated` set to `true`. Sensitive headers (`Authorization`, `apikey`, `Cookie`, `X-API-Key`, `Proxy-Authorization`, plus the configured values of `EMBEDDING_AUTH_HEADER_NAME` / `LLM_AUTH_HEADER_NAME` / `RERANK_AUTH_HEADER_NAME`) and the J1 `key` field of the auth POST are always redacted regardless of size. |
 
 ---
 
