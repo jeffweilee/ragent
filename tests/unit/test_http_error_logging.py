@@ -250,3 +250,76 @@ def test_install_marks_client_with_attribute() -> None:
     client = httpx.Client(transport=transport)
     install_error_logging(client, client_name="upstream")
     assert getattr(client, "__ragent_http_error_logging__", False) is True
+
+
+def test_double_install_does_not_double_wrap() -> None:
+    from ragent.bootstrap.http_logging import install_error_logging
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, content=b"err")
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.Client(transport=transport, base_url="https://upstream.test")
+    install_error_logging(client, client_name="upstream")
+    install_error_logging(client, client_name="upstream")
+    with structlog.testing.capture_logs() as logs:
+        client.post("/embed", json={"texts": ["x"]})
+    error_logs = [r for r in logs if r.get("event") == "http.upstream_error"]
+    assert len(error_logs) == 1
+
+
+def test_x_api_key_header_redacted_by_default() -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, content=b"err")
+
+    client = _client(handler)
+    with structlog.testing.capture_logs() as logs:
+        client.post(
+            "/embed",
+            json={"texts": ["x"]},
+            headers={"X-API-Key": "secret-x-api-key"},
+        )
+    rec = _find_error_log(logs)
+    assert rec is not None
+    headers = {k.lower(): v for k, v in rec["headers"].items()}
+    assert headers["x-api-key"] == "***"
+    assert "secret-x-api-key" not in json.dumps(rec["headers"])
+
+
+def test_configured_auth_header_name_is_redacted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("EMBEDDING_AUTH_HEADER_NAME", "X-Custom-Token")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, content=b"err")
+
+    client = _client(handler)
+    with structlog.testing.capture_logs() as logs:
+        client.post(
+            "/embed",
+            json={"texts": ["x"]},
+            headers={"X-Custom-Token": "live-j2-token"},
+        )
+    rec = _find_error_log(logs)
+    assert rec is not None
+    headers = {k.lower(): v for k, v in rec["headers"].items()}
+    assert headers["x-custom-token"] == "***"
+    assert "live-j2-token" not in json.dumps(rec["headers"])
+
+
+def test_streaming_request_body_unread_uses_placeholder(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, content=b"err")
+
+    def _raise(_self: httpx.Request) -> bytes:
+        raise httpx.RequestNotRead()
+
+    monkeypatch.setattr(httpx.Request, "content", property(_raise))
+    client = _client(handler)
+    with structlog.testing.capture_logs() as logs:
+        client.post("/upload", content=iter([b"chunk-one", b"chunk-two"]))
+    rec = _find_error_log(logs)
+    assert rec is not None
+    assert rec["http_request_payload"] == "<stream>"
+    assert rec["request_truncated"] is False

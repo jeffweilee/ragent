@@ -9,10 +9,14 @@ body (when available), redacted headers, status, and exception type.
 Body emission uses keys `http_request_payload` / `http_response_payload`
 which sit outside the project's logging denylist
 (`bootstrap/logging_config.py::_DENY_KEYS`) — a deliberate carve-out for
-upstream-error diagnostics. `Authorization`, `apikey`, and `Cookie`
-headers are redacted at source. When `redact_auth_body=True` the JSON
-`key` field of the request body (the J1 token sent to `AI_API_AUTH_URL`)
-is replaced with ``"***"`` before logging.
+upstream-error diagnostics. Sensitive headers are redacted at source:
+the default set covers `Authorization`, `apikey`, `Cookie`, `X-API-Key`,
+and `Proxy-Authorization`; any header whose name matches the values of
+`EMBEDDING_AUTH_HEADER_NAME`, `LLM_AUTH_HEADER_NAME`, or
+`RERANK_AUTH_HEADER_NAME` is also redacted so custom-named auth headers
+do not leak J2 tokens. When `redact_auth_body=True` the JSON `key` field
+of the request body (the J1 token sent to `AI_API_AUTH_URL`) is replaced
+with ``"***"`` before logging.
 
 Implementation note: httpx `event_hooks` do NOT fire on transport
 exceptions, so a `send` wrapper is used instead. If we later migrate to
@@ -31,8 +35,20 @@ import structlog
 
 _logger = structlog.get_logger(__name__)
 
-_REDACT_HEADERS = frozenset({"authorization", "apikey", "cookie"})
+_REDACT_HEADERS = frozenset(
+    {"authorization", "apikey", "cookie", "x-api-key", "proxy-authorization"}
+)
+_REDACT_HEADER_ENV_VARS = (
+    "EMBEDDING_AUTH_HEADER_NAME",
+    "LLM_AUTH_HEADER_NAME",
+    "RERANK_AUTH_HEADER_NAME",
+)
 _DEFAULT_MAX_BYTES = 8192
+
+
+def _redact_set() -> frozenset[str]:
+    extra = {os.environ[v].lower() for v in _REDACT_HEADER_ENV_VARS if os.environ.get(v)}
+    return _REDACT_HEADERS | extra
 
 
 def _max_bytes() -> int:
@@ -52,10 +68,8 @@ def _decode_and_truncate(payload: bytes, max_bytes: int) -> tuple[str, bool]:
 
 
 def _redact_headers(headers: httpx.Headers) -> dict[str, str]:
-    redacted: dict[str, str] = {}
-    for k, v in headers.items():
-        redacted[k] = "***" if k.lower() in _REDACT_HEADERS else v
-    return redacted
+    deny = _redact_set()
+    return {k: ("***" if k.lower() in deny else v) for k, v in headers.items()}
 
 
 def _redact_auth_body(body: bytes) -> bytes:
@@ -79,7 +93,11 @@ def _emit(
     redact_auth_body: bool,
 ) -> None:
     max_bytes = _max_bytes()
-    request_body = _redact_auth_body(request.content) if redact_auth_body else request.content
+    try:
+        raw_request = request.content
+    except httpx.RequestNotRead:
+        raw_request = b"<stream>"
+    request_body = _redact_auth_body(raw_request) if redact_auth_body else raw_request
     req_text, req_trunc = _decode_and_truncate(request_body, max_bytes)
     fields: dict[str, Any] = {
         "client_name": client_name,
@@ -110,6 +128,8 @@ def install_error_logging(
     redact_auth_body: bool = False,
 ) -> None:
     """Wrap `client.send` so HTTP errors emit `http.upstream_error` records."""
+    if getattr(client, "__ragent_http_error_logging__", False):
+        return
     original_send = client.send
 
     def wrapped_send(request: httpx.Request, **kwargs: Any) -> httpx.Response:
