@@ -64,6 +64,7 @@ The production `Dockerfile` installs `tesseract-ocr-eng`, `-chi-sim`, `-chi-tra`
 | [`docs/API.md`](docs/API.md) | API reference (ingest, chat, retrieve, observability, MCP) |
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | System diagram and key design decisions |
 | [`docs/00_rule.md`](docs/00_rule.md) | Development standards and mandatory workflow |
+| [`docs/00_rule_third_party_api.md`](docs/00_rule_third_party_api.md) | Third-Party API request/response field-name samples (split from `00_rule.md`) |
 | [`docs/00_spec.md`](docs/00_spec.md) | Full technical specification |
 | [`docs/00_plan.md`](docs/00_plan.md) | TDD implementation checklist |
 | [`docs/00_agent_team.md`](docs/00_agent_team.md) | Agent team and workflow |
