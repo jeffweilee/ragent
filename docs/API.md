@@ -25,7 +25,7 @@ CSV is no longer accepted.
 
 ### `POST /ingest/v1` — `ingest_type=inline` (content in body)
 
-Cap: `INGEST_INLINE_MAX_BYTES` (default 50 MB) on the UTF-8 byte length of `content`.
+Cap: `INGEST_INLINE_MAX_BYTES` (default 10 MB) on the UTF-8 byte length of `content`.
 
 ```bash
 curl -X POST http://localhost:8000/ingest/v1 \
@@ -70,6 +70,7 @@ The returned `document_id` is the same identifier used by `GET /ingest/v1/{docum
 
 **Errors (RFC 9457 problem+json):**
 - `415 INGEST_MIME_UNSUPPORTED` — `mime_type` not in allow-list.
+- `415 INGEST_MAGIC_MISMATCH` — declared binary `mime_type` (docx/pptx/pdf) does not match the file's leading signature bytes.
 - `413 INGEST_FILE_TOO_LARGE` — inline content or file size exceeds the cap.
 - `422 INGEST_VALIDATION` — discriminator/required-field shape errors.
 - `422 INGEST_MINIO_SITE_UNKNOWN` — `minio_site` not in registry.
@@ -103,6 +104,11 @@ curl http://localhost:8000/ingest/v1/01J9ABCDEFGHJKMNPQRSTVWXYZ \
 
 Status values: `UPLOADED → PENDING → READY | FAILED`; `DELETING` during delete.
 For `ingest_type=file` rows, `minio_site` is the registered site name (e.g. `tenant-eu-1`); for `ingest_type=inline` it is `null` and bytes were staged to `__default__`.
+
+**Terminal-failure `error_code` values** (worker-side, surfaced when `status="FAILED"`):
+- `INGEST_ARCHIVE_UNSAFE` — DOCX/PPTX zip preflight rejected the file (zip bomb shape: too many members, ratio too high, declared size exceeds 500 MB cap, single oversized member, or path-traversal entry).
+- `INGEST_PDF_TOO_MANY_PAGES` — PDF page count exceeded `INGEST_MAX_PDF_PAGES` (default 2000).
+- Plus the per-step pipeline codes (`EMBEDDER_ERROR`, `ES_WRITE_ERROR`, `PIPELINE_TIMEOUT_AGGREGATE`, etc.) emitted from the worker pipeline.
 
 ### `GET /ingest/v1` — List documents (cursor-paginated)
 
@@ -170,7 +176,7 @@ Error responses (RFC 9457 problem+json):
 
 Admin convenience path: the caller POSTs file bytes directly; the server stages them to the default MinIO site and enqueues the pipeline — identical downstream behaviour to `ingest_type=inline` (server owns the object; `DELETE` cleans it up).
 
-Cap: `INGEST_INLINE_MAX_BYTES` (default 50 MB). When the client includes `Content-Length` for the part, the size is rejected before the file is read into memory.
+Cap: `INGEST_INLINE_MAX_BYTES` (default 10 MB). When the client includes `Content-Length` for the part, the size is rejected before the file is read into memory.
 
 ```bash
 curl -X POST http://localhost:8000/ingest/v1/upload \
@@ -197,11 +203,12 @@ curl -X POST http://localhost:8000/ingest/v1/upload \
 | `source_id` | Yes | Caller-supplied document identifier |
 | `source_app` | Yes | Application namespace |
 | `source_title` | Yes | Human-readable title |
-| `mime_type` | Yes | Must be `text/plain`, `text/markdown`, or `text/html` |
+| `mime_type` | Yes | Any MIME type in the §Supported MIME types allow-list above |
 | `source_meta` | No | Opaque label, max 1024 chars |
 | `source_url` | No | Origin URL, max 2048 chars |
 
 **Errors:**
+- `415 INGEST_MAGIC_MISMATCH` — declared `mime_type` (docx/pptx/pdf) does not match the uploaded file's signature (`PK\x03\x04` for docx/pptx; `%PDF-` for pdf).
 - `413 INGEST_FILE_TOO_LARGE` — file exceeds `INGEST_INLINE_MAX_BYTES`.
 - `422` — missing/invalid form fields (FastAPI validation).
 

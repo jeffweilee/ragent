@@ -27,7 +27,7 @@ from ragent.utility.id_gen import new_id
 
 logger = structlog.get_logger(__name__)
 
-_MAX_INLINE_BYTES = int(os.environ.get("INGEST_INLINE_MAX_BYTES", "52428800"))
+_MAX_INLINE_BYTES = int(os.environ.get("INGEST_INLINE_MAX_BYTES", "10485760"))
 _MAX_FILE_BYTES = int(os.environ.get("INGEST_FILE_MAX_BYTES", "52428800"))
 _LIST_MAX = int(os.environ.get("INGEST_LIST_MAX_LIMIT", "100"))
 
