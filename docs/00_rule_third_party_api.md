@@ -25,11 +25,11 @@ field drift hides contract drift inside the test layer (see `00_journal.md`
 ```
 
 
-** Response Format:**
+**Response Format:**
 ```json
 {
   "returnCode": 96200,
-  "returnMessage": "success"
+  "returnMessage": "success",
   "returnData": [
     {"index": 0, "embedding": [0.1, 0.2, ...]},
     {"index": 1, "embedding": [0.3, 0.4, ...]}
@@ -62,18 +62,20 @@ field drift hides contract drift inside the test layer (see `00_journal.md`
 ```json
 {
   "model": "gptoss-120b",
-    "choices": [
-        {
-            "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": "Under a moonlit sky, the silver‑mane unicorn whispered a lullaby of starlight, gently guiding the sleepy forest creatures into sweet dreams.",
-                "reasoning_content": "The user wants a one-sentence bedtime story about a unicorn. Simple. Provide a single sentence. Maybe whimsical.",
-                "tool_calls": []
-            },
-            "logprobs": null,
-            "finish_reason": "stop",
-            "stop_reason": null
+  "choices": [
+    {
+      "index": 0,
+      "message": {
+        "role": "assistant",
+        "content": "Under a moonlit sky, the silver‑mane unicorn whispered a lullaby of starlight, gently guiding the sleepy forest creatures into sweet dreams.",
+        "reasoning_content": "The user wants a one-sentence bedtime story about a unicorn. Simple. Provide a single sentence. Maybe whimsical.",
+        "tool_calls": []
+      },
+      "logprobs": null,
+      "finish_reason": "stop",
+      "stop_reason": null
+    }
+  ]
 }
 ```
 
