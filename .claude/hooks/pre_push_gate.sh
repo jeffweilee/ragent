@@ -28,6 +28,27 @@ fi
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
 cd "$ROOT"
 
+# Determine the diff range being pushed. Prefer the upstream tracking ref;
+# fall back to origin/<current-branch>, then origin/HEAD. If we can resolve
+# a base AND every changed path is a markdown file, skip docker+test — the
+# gate exists to catch code regressions, and .md-only pushes can't trip them.
+BASE=""
+if UP="$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)"; then
+    BASE="$UP"
+elif BR="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" && git rev-parse --verify "origin/$BR" &>/dev/null; then
+    BASE="origin/$BR"
+elif git rev-parse --verify origin/HEAD &>/dev/null; then
+    BASE="origin/HEAD"
+fi
+
+if [[ -n "$BASE" ]]; then
+    CHANGED="$(git diff --name-only "$BASE"...HEAD 2>/dev/null || true)"
+    if [[ -n "$CHANGED" ]] && ! printf '%s\n' "$CHANGED" | grep -qvE '\.md$'; then
+        printf 'Pre-push gate: markdown-only diff vs %s — skipping docker + test-gate.\n' "$BASE" >&2
+        exit 0
+    fi
+fi
+
 # Docker daemon must be live (testcontainers requirement).
 if ! docker ps &>/dev/null; then
     block "Docker daemon not running — start it before push (00_rule.md §Docker).
