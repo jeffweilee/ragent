@@ -138,6 +138,7 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 - **Rule**: Optional env vars that default to `None` (no-op / disabled) MUST use `if not raw:` (covers both `None` and `""`), never `if raw is None:`.
   - **Rationale**: `--env-file` loaders resolve a blank assignment (e.g. `VAR=` in `.env.example`) as `""`, not as a missing key; `if raw is None:` silently parses the blank as the typed value and crashes at boot with `ValueError`.
   - **Verification**: every `optional_*_env` utility must have a regression test asserting it returns `None` when the var is set to `""`.
+- **Rule**: Any `int_env(...)` or `float_env(...)` constant that backs a schema/Pydantic field default with a declared bound (e.g. `top_k` range 1–200) MUST be validated against that bound at module import time. Use `if not (MIN <= value <= MAX): raise RuntimeError(f"ENV_VAR={value} violates spec bound [{MIN},{MAX}]")`. This prevents an operator setting e.g. `RETRIEVAL_TOP_K=500` from silently over-fetching past the advertised maximum when callers omit the field.
 
 ---
 
@@ -170,6 +171,7 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 - **Silent filters (mandatory count)**: pipeline stages that drop input (e.g. retrieval hydrator filtering by `status='READY'`, dedupe stages, ACL post-filters) **must** log `<domain>.<stage>.dropped` with `dropped_count`, `before_count`, `after_count` — invisible drops disguise correctness gates as silent data loss.
 - **Naming**: follow §Logging naming convention (`<domain>.<event>`, ≤ 4 segments). New events reuse existing prefixes (`ingest.*`, `chat.*`, `reconciler.*`) before inventing.
 - **Verification**: every new service / task / reconciler arm landing in a PR **must** include a unit test that asserts the entry and exit events fire with the documented field set; the test uses `caplog` (records bound `structlog` events), never `capsys` (which misses logger handlers).
+- **Log-context wiring test**: any structured-log context field listed in a spec table (e.g. `{document_id, step, mime_type}`) MUST have a wiring test at the **outermost caller** (the task/worker function), not only in the component's own unit test. Specifically: for every field required in step logs, assert that `bind_ingest_context` (or the equivalent binding call) is called with that field at the task entrypoint — use `patch("module.bind_ingest_context").assert_called_once_with(...)`. A component test that sets context manually cannot detect a missing call-site argument.
 
 ---
 
@@ -206,6 +208,7 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 - **Upstream failure mapping**: client-side retry exhaustion against an external service (`embedding`, `llm`, `rerank`, MinIO, ES, MariaDB) **must** raise a typed `UpstreamServiceError` (`http_status=502`) or `UpstreamTimeoutError` (`http_status=504`); collapsing to a generic 500 hides "they're broken" vs "we're broken" from the caller and from on-call.
 - **Async task failure visibility**: tasks that fail asynchronously **must** persist the terminal `error_code` and a short `error_reason` on the document row (or task-status surface), and the corresponding `GET /<resource>/{id}` endpoint **must** return both fields alongside `status="FAILED"`. A client polling for completion that receives only `"FAILED"` with no diagnostic cannot branch its retry policy.
 - **Verification**: every new domain exception lands with paired tests — (a) handler test asserts the response body's `status` + `error_code` match the exception's attributes; (b) log test asserts the failure log line carries the same `error_code`. A log/response mismatch is a contract bug.
+- **Async task failure handler**: the `except` block in every `@broker.task` function that persists `error_code` to a DB status surface (e.g. `documents.error_code`) MUST use `getattr(exc, "error_code", None) or getattr(exc.__cause__, "error_code", None) or <default>` — the same chain as the HTTP global handler. `isinstance(exc, SpecificErrorClass)` filters are a contract violation: any domain exception with an `error_code` attribute must survive to the status surface regardless of its class hierarchy. Pair each async failure path with a test asserting the correct code persists.
 
 ---
 
@@ -235,6 +238,17 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 
 - **Rule: Custom `@component` wrappers are preferable to adapting stock components beyond their documented input type.** Haystack's `FileTypeRouter` only routes `ByteStream` / `Path`, not `Document`; forcing it over `Document` inputs requires adapter shims that add more code than a bespoke `@component`. Default to a purpose-built component when the stock signature is incompatible with the pipeline's data shape.
 
+
+---
+
+
+### Security: Input Validation
+
+- **Rule: Path-traversal predicates must enumerate the full shape set.** Before any character-class check, list every traversal shape for the deployment surface: leading `/`, leading `\`, `..` segments (POSIX and Windows), drive-letter prefix (`C:`), UNC paths (`\\server\share`). Implementation: normalise separators (backslash → slash) FIRST, then run all checks against the normalised form. Add a positive test case for every shape — adding a shape to the predicate without a paired test is a regression-risk gap. Applies to: zip-member names, multipart form filenames, MinIO object keys, any caller-supplied path-like string.
+
+- **Rule: Numerical security guards must avoid floor truncation at the cap boundary.** Do NOT use integer division (`lhs // denominator > cap`) for "greater-than-cap" semantics — floor division creates a one-unit gap exactly at the threshold (e.g. a 100.9× ratio evaluates `100 > 100 == False`). Use the equivalent multiplication form: `lhs > cap * denominator`. Pair with a fractional-boundary test that picks `floor(actual_lhs / denominator)` as the cap and asserts rejection. Applies to: zip-bomb ratio guards, rate-limit percentage checks, any future numeric cap.
+
+- **Rule: Binary MIME types (DOCX/PPTX/PDF) MUST be rejected at the schema boundary for `ingest_type=inline`.** Use a `model_validator(mode="after")` on `IngestRequest` that checks `if self.ingest_type == "inline" and self.mime_type in BINARY_MIMES: raise ValueError(...)`. The `BINARY_MIMES` constant belongs in `schemas/ingest.py` as the single source of truth imported by the pipeline and worker — never re-defined in a downstream module. Worker routing MUST derive MIME from `doc.mime_type` (DB column, set at ingest time) with MinIO content-type as fallback only for legacy NULL rows.
 
 ---
 

@@ -226,7 +226,7 @@ Request schema is shared by both endpoints. Only `messages` is required.
   "provider": "openai",
   "model": "gptoss-120b",
   "temperature": 0.7,
-  "max_tokens": 4096,
+  "maxTokens": 4096,
   "source_app": "confluence",
   "source_meta": "engineering",
   "top_k": 20,
@@ -359,6 +359,7 @@ Each chunk stored in ES is the raw text segment produced by the indexing pipelin
 | Endpoint | Description |
 |---|---|
 | `GET /livez` | Liveness probe — always 200 if process is up |
+| `GET /startupz` | Startup probe — 200 once every dependency probe has passed at least once; 503 `{"status":"starting"}` until then. K8s `startupProbe` target. |
 | `GET /readyz` | Readiness probe — checks all dependencies (DB, ES, Redis, MinIO) |
 | `GET /metrics` | Prometheus metrics (text/plain) |
 

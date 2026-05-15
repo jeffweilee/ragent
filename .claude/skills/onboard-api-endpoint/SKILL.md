@@ -46,8 +46,8 @@ Existing routers to read as living references:
 | Ingest | `src/ragent/routers/ingest.py` | `/ingest/v1` | `""`, `/{document_id}` (GET+DELETE), `""` (GET list) |
 | Chat | `src/ragent/routers/chat.py` | `/chat/v1` | `""`, `/stream` |
 | Retrieve | `src/ragent/routers/retrieve.py` | `/retrieve/v1` | `""` |
-| MCP | `src/ragent/routers/mcp.py` | `/mcp/v1` | `/tools/rag` |
-| Health | `src/ragent/routers/health.py` | *(none)* | `/livez`, `/readyz`, `/startupz` |
+| MCP | `src/ragent/routers/mcp.py` | `/mcp/v1` | `""` (single JSON-RPC 2.0 endpoint; dispatches on `method` field per §3.8) |
+| Health | `src/ragent/routers/health.py` | *(none)* | `/livez`, `/startupz`, `/readyz`, `/metrics` |
 
 ---
 

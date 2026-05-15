@@ -34,29 +34,7 @@
 
 ### 3.1 Ingest Lifecycle
 
-> **v2 OVERRIDE (2026-05-06)** — see `docs/team/2026_05_06_ingest_api_v2.md` for the full team decision; the operative contract below supersedes the v1 multipart description further down.
->
-> **API:** `POST /ingest` is **JSON only** (no multipart). Body discriminator `ingest_type ∈ {inline, file}`:
-> - `inline` → `{ingest_type, mime_type, content: str, source_id, source_app, source_title, source_meta?, source_url?}`. `content` is UTF-8; size ceiling `INGEST_INLINE_MAX_BYTES` (default 10 MB) on the encoded byte length. API stages the content to MinIO `__default__` site.
-> - `file` → `{ingest_type, mime_type, minio_site, object_key, source_id, source_app, source_title, source_meta?, source_url?}`. API HEAD-probes `(minio_site, object_key)`; absent → 422 `INGEST_OBJECT_NOT_FOUND`; size > `INGEST_FILE_MAX_BYTES` (50 MB) → 413. **No copy** — worker reads from caller's bucket.
->
-> **MIME allow-list:** `text/plain`, `text/markdown`, `text/html`, `application/vnd.openxmlformats-officedocument.wordprocessingml.document` (DOCX), `application/vnd.openxmlformats-officedocument.presentationml.presentation` (PPTX), `application/pdf` (PDF). Anything else → 415 `INGEST_MIME_UNSUPPORTED`. **CSV is dropped** (was v1).
->
-> **Source columns:** `source_id`, `source_app`, `source_title`, `source_meta?` (free-format ≤ 1024 chars; renamed from `source_workspace` per B35) **plus new `source_url`** (opaque ≤ 2048 chars, display-only in citations).
->
-> **MinIO multi-site:** server reads `MINIO_SITES` JSON env at boot → `MinioSiteRegistry`. `__default__` is mandatory (used by inline). Sites with `read_only=true` refuse post-READY delete (`file` ingests against caller-owned buckets).
->
-> **Cleanup branching by `documents.ingest_type`:**
-> | `ingest_type` | Worker reads from | Post-READY delete |
-> |---|---|---|
-> | `inline` | `__default__/<object_key=document_id>` | yes (same as v1) |
-> | `file` | caller's `(minio_site, object_key)` | **no** (object isn't ours) |
->
-> **Storage model (revised):** chunks live **only** in ES `chunks_v1`. The MariaDB `chunks` table is **dropped**. `documents` keeps metadata. Two stores total: `documents` (MariaDB, metadata) + `chunks_v1` (ES, content + embedding + raw_content).
->
-> **Per-step structured logging (Logging Rule extension):** every pipeline component emits `event=ingest.step.{started,ok,failed}` with `{document_id, step, mime_type, duration_ms, error_code?, error?}`. Failures map to a small enum (`PIPELINE_UNROUTABLE`, `EMBEDDER_ERROR`, `ES_WRITE_ERROR`, `PIPELINE_TIMEOUT`). Happy path emits `event=ingest.ready` with chunk count. This is how operators answer "which doc, which step, why failed" from logs alone.
->
-> **State machine, locking, heartbeat, supersede, reconciler arms — unchanged from v1.** Only the ingress and pipeline interior change.
+> **v2 (current):** `POST /ingest` is JSON-only (no multipart). Body discriminator `ingest_type ∈ {inline, file}`. MIME allow-list: text/plain, text/markdown, text/html, DOCX, PPTX, PDF (CSV dropped). Binary MIMEs rejected for `ingest_type=inline` at schema boundary. Worker derives routing MIME from `doc.mime_type` (DB). Cleanup: inline → delete post-READY; file → no delete (caller owns object). Chunks in ES `chunks_v1` only (MariaDB `chunks` table dropped). Source columns: `source_id`, `source_app`, `source_title`, `source_meta` (≤1024), `source_url` (≤2048). See §4.1 for full request shapes, §4.2 for MIME details, §5.1 for schema.
 
 **State machine:** `UPLOADED → PENDING → READY | FAILED`; `DELETING` transient on delete.
 
@@ -124,15 +102,14 @@
 
 > **v2 Pipeline:**
 > ```
-> _TextLoader → FileTypeRouter
+> _TextLoader → _MimeAwareSplitter
 >    ├ text/plain    → DocumentSplitter (Haystack stock, by passage)
 >    ├ text/markdown → _MarkdownASTSplitter (mistletoe AST; atomic units = heading/code/list/table/blockquote; never splits inside fenced code)
 >    ├ text/html     → _HtmlASTSplitter (selectolax; drops script/style/nav/aside/footer/header; atoms = heading/pre/table/article-paragraphs)
 >    ├ docx          → _DocxASTSplitter (python-docx; paragraphs + tables)
 >    ├ pptx          → _PptxASTSplitter (python-pptx; one atom per slide)
 >    └ unclassified  → _RaiseUnroutable (worker → FAILED + PIPELINE_UNROUTABLE)
-> → DocumentJoiner → _IdempotencyClean (ES delete by document_id)
-> → _BudgetChunker (1000 target / 1500 max / 100 overlap, mime-agnostic)
+> → DocumentJoiner → _BudgetChunker (1000 target / 1500 max / 100 overlap, mime-agnostic)
 > → DocumentEmbedder (bge-m3 batched) → DocumentWriter (ES chunks_v1 only)
 > ```
 > Each splitter sets `meta["raw_content"]` = exact byte slice (byte-stable, R4/S25). `_BudgetChunker` is the sole budget enforcer. `chunks_v1` stores both `content` (normalized, BM25-analyzed) and `raw_content` (`index: false`); LLM context and citations use `raw_content`.
@@ -512,24 +489,12 @@ App-level errors (-32000..-32099) carry `data.error_code` matching the existing 
 
 ### 4.1 Endpoints
 
-> **v2 OVERRIDE for `POST /ingest`** — JSON body only (no multipart).
-> ```jsonc
-> // ingest_type=inline
-> { "ingest_type":"inline", "mime_type":"text/markdown", "content":"# Title\n…",
->   "source_id":"DOC-1", "source_app":"confluence", "source_title":"Q3 OKR",
->   "source_meta":"eng",              // optional, free-format ≤ 1024
->   "source_url":"https://wiki/…" }   // optional, opaque ≤ 2048
-> // ingest_type=file
-> { "ingest_type":"file", "mime_type":"text/html",
->   "minio_site":"tenant-eu-1", "object_key":"reports/2025.html",
->   "source_id":"DOC-2", "source_app":"s3-importer", "source_title":"Annual Report",
->   "source_meta":"finance", "source_url":"https://…" }
-> ```
-> Validation order: discriminator-shape (422) → `mime_type ∈ {text/plain,text/markdown,text/html}` (415) → inline `len(content.encode("utf-8")) ≤ INGEST_INLINE_MAX_BYTES` / file HEAD-probe size ≤ `INGEST_FILE_MAX_BYTES` (413) → `minio_site` resolved against `MinioSiteRegistry` (422 `INGEST_MINIO_SITE_UNKNOWN`) → file HEAD-probe object exists (422 `INGEST_OBJECT_NOT_FOUND`). For `POST /ingest/v1/upload`: magic-byte signature check after `file.read()` (415 `INGEST_MAGIC_MISMATCH`) for binary MIMEs (docx/pptx/pdf). Worker-side guards run before splitter parse: DOCX/PPTX zip preflight (`INGEST_MAX_ARCHIVE_MEMBERS` / `_RATIO` / `_EXPANDED_BYTES`) → 413 `INGEST_ARCHIVE_UNSAFE` persisted as `documents.error_code` with terminal `FAILED`; PDF page-count cap (`INGEST_MAX_PDF_PAGES`) → 413 `INGEST_PDF_TOO_MANY_PAGES` likewise. Every guard rejection increments `ragent_ingest_rejected_total{reason}` (T-SEC.7).
+> Request body shapes: see `docs/API.md` §Ingest for full examples.
+> Validation order: discriminator-shape (422) → `mime_type ∈ §4.2 allow-list` (415) → inline: reject binary MIMEs (DOCX/PPTX/PDF) with schema validator (415 `INGEST_MIME_UNSUPPORTED`) → inline `len(content.encode("utf-8")) ≤ INGEST_INLINE_MAX_BYTES` / file HEAD-probe size ≤ `INGEST_FILE_MAX_BYTES` (413) → `minio_site` resolved against `MinioSiteRegistry` (422 `INGEST_MINIO_SITE_UNKNOWN`) → file HEAD-probe object exists (422 `INGEST_OBJECT_NOT_FOUND`). For `POST /ingest/v1/upload`: magic-byte signature check after `file.read()` (415 `INGEST_MAGIC_MISMATCH`) for binary MIMEs (docx/pptx/pdf). Worker-side guards run before splitter parse: DOCX/PPTX zip preflight (`INGEST_MAX_ARCHIVE_MEMBERS` / `_RATIO` / `_EXPANDED_BYTES`) → 413 `INGEST_ARCHIVE_UNSAFE` persisted as `documents.error_code` with terminal `FAILED`; PDF page-count cap (`INGEST_MAX_PDF_PAGES`) → 413 `INGEST_PDF_TOO_MANY_PAGES` likewise. Every guard rejection increments `ragent_ingest_rejected_total{reason}` (T-SEC.7).
 
 | Method | Path | P1 Auth | Request | Response |
 |---|---|---|---|---|
-| POST   | `/ingest/v1`               | `X-User-Id` | **JSON** (v2, see override above) | `202 { task_id }` — `task_id` **is** the `document_id`. |
+| POST   | `/ingest/v1`               | `X-User-Id` | **JSON** (`ingest_type ∈ {inline,file}`; see `docs/API.md` §Ingest for shapes) | `202 { task_id }` — `task_id` **is** the `document_id`. |
 | GET    | `/ingest/v1/{id}`          | `X-User-Id` | — | `200 { status, attempt, updated_at }` |
 | GET    | `/ingest/v1?after=&limit=&source_id=&source_app=` | `X-User-Id` | — | `200 { items, next_cursor }` (limit ≤ 100; ordered `document_id DESC`; `source_id`/`source_app` are optional exact-match filters) |
 | DELETE | `/ingest/v1/{id}`          | `X-User-Id` | — | `204` idempotent |
@@ -540,6 +505,7 @@ App-level errors (-32000..-32099) carry `data.error_code` matching the existing 
 | POST   | `/chat/v1/stream`          | `X-User-Id` | §3.4.1 schema | `text/event-stream` per §3.4.3 (`data: {type:delta\|done\|error}`) |
 | POST   | `/mcp/v1`               | `X-User-Id` (P1) / `Authorization: Bearer` (P2) | JSON-RPC 2.0 envelope per §3.8 | `200` with JSON-RPC response envelope; `204` for `notifications/*`. Auth failure (401) returns `application/problem+json` per §3.8.1 (transport-layer). |
 | GET    | `/livez`                | none        | — | `200 {"status":"ok"}` — process up; no dependency probes |
+| GET    | `/startupz`             | none        | — | `200 {"status":"ok"}` once every dep probe passes for the first time; `503 {"status":"starting"}` until then. K8s `startupProbe` target (latch — never regresses to 503 after first green). |
 | GET    | `/readyz`               | none        | — | `200` if all dep probes pass; else `503 application/problem+json` listing failed deps. Probes: **MariaDB** (`SELECT 1`), **ES** (`GET /_cluster/health` + `analysis-icu` plugin loaded + every `resources/es/*.json` index exists; B26, I5), **Redis broker & rate-limiter** (`PING` against active topology per `REDIS_MODE`; B27), **MinIO** (`ListBuckets`). Each probe ≤ 2 s. |
 | GET    | `/metrics`              | none        | — | `200 text/plain; version=0.0.4` — Prometheus exposition (counters/histograms in §3.7) |
 
@@ -608,10 +574,9 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 
 | Format | Converter | MIME (allow-list) | Notes | Phase |
 |---|---|---|---|:---:|
-| `.txt`  | `TextFileToDocument`     | `text/plain`              | UTF-8 text | **P1** |
-| `.md`   | `MarkdownToDocument`     | `text/markdown`           | front-matter stripped | **P1** |
-| `.html` | `HTMLToDocument`         | `text/html`               | visible text, script/style stripped | **P1** |
-| `.csv`  | `CSVToDocument`          | `text/csv`                | row-as-document; rows packed by `RowMerger` to ~2 000 chars (B24); bounded by global 50 MB file limit (B2) | **P1** |
+| `.txt`  | `DocumentSplitter (stock)` | `text/plain`              | UTF-8 text | **P1** |
+| `.md`   | `_MarkdownASTSplitter`   | `text/markdown`           | front-matter stripped | **P1** |
+| `.html` | `_HtmlASTSplitter`       | `text/html`               | visible text, script/style stripped | **P1** |
 | `.pdf`  | `_PdfASTSplitter`        | `application/pdf`         | one atom per page; fast MuPDF text extraction; Tesseract OCR on image-bearing pages; batch-safe for large files | **P1** |
 | `.docx` | `_DocxASTSplitter`       | `application/vnd.openxmlformats-officedocument.wordprocessingml.document` | paragraphs + tables (python-docx) | **P1** |
 | `.pptx` | `_PptxASTSplitter`       | `application/vnd.openxmlformats-officedocument.presentationml.presentation` | one atom per slide (python-pptx) | **P1** |
@@ -623,7 +588,7 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 
 | Pipeline | Components | Timeouts | Test Path | Phase |
 |---|---|---|---|:---:|
-| **Ingest** | `delete_by_document_id (idempotency) → FileTypeRouter → Converter → DocumentCleaner → LanguageRouter → {cjk_splitter \| en_splitter} (sentence-level, B1) → EmbeddingClient(bge-m3, batch=32) → ChunkRepository.bulk_insert → PluginRegistry.fan_out (per-plugin 60 s)` | Embedder 30 s/batch · ES bulk 60 s · MinIO get 30 s · plugin 60 s | `tests/integration/test_ingest_pipeline.py` | **P1** sync |
+| **Ingest** | `delete_by_document_id + fan_out_delete (idempotency, pre-pipeline) → _TextLoader → _MimeAwareSplitter → DocumentJoiner → _BudgetChunker (target=1000, max=1500, overlap=100) → DocumentEmbedder (bge-m3, batch=32) → DocumentWriter (ES chunks_v1, OVERWRITE)` | Embedder 30 s/batch · ES bulk 60 s · MinIO get 30 s · plugin 60 s | `tests/integration/test_ingest_pipeline.py` | **P1** sync |
 | **Chat** | `QueryEmbedder → ESVector(kNN on `embedding`, `bbq_hnsw` index, optional `term` filter on `source_app`/`source_meta` — B29 → B35) → ESBM25(multi_match `text`+`title^2`, `icu_text` analyzer, B26, same optional filter) → DocumentJoiner (C6 `CHAT_JOIN_MODE`: rrf\|concatenate\|vector_only\|bm25_only) → SourceHydrator(JOIN documents → returns full chunk content) → LLMClient.{chat\|stream}` (retrievers sequential in P1; parallel in P2 — see §3.4 P-A); router truncates `sources[].excerpt` to `EXCERPT_MAX_CHARS` (B23) | Embedder 10 s (single query) · ES query 10 s · LLM 120 s · per-batch ingest embed 30 s (asymmetric — query is one string, ingest is up to 32) | `tests/integration/test_chat_endpoint.py` (T3.9), `tests/integration/test_chat_stream_endpoint.py` (T3.11), `tests/integration/test_chat_pipeline_retrieval.py` (T3.5) | **P1** sync |
 | **Retrieve** | Same as Chat pipeline up to `SourceHydrator` (shared `retrieval_pipeline` instance); no LLM call; router truncates `chunks[].excerpt` to `EXCERPT_MAX_CHARS` (B23); optional `dedupe` post-step (§3.4.4) | Embedder 10 s · ES query 10 s | `tests/unit/test_retrieve_router.py` (T3.19) | **P1** sync |
 
@@ -652,7 +617,6 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 ### 4.6 Environment Variables (C2 + B28)
 
 > **Inventory rules (B28):** every external dependency, every per-call timeout, every operational threshold, and every credential MUST appear in this table. Code that reads a literal value not represented here is a spec drift bug. Vars marked `(required)` have no default and refuse boot.
-
 > **v2 removed vars (C6):** `MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY/SECURE/BUCKET` (→ `MINIO_SITES`), `INGEST_MAX_FILE_SIZE_BYTES` (→ `INGEST_INLINE/FILE_MAX_BYTES`), `CHUNK_TARGET_CHARS_EN/CJK/CSV`, `CHUNK_OVERLAP_CHARS_EN/CJK/CSV`, `CHUNK_HARD_SPLIT_OVERLAP_CHARS`.
 
 #### 4.6.1 Bootstrap & HTTP server
@@ -680,12 +644,8 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `ES_PASSWORD`                         | (optional)       | Basic-auth password. |
 | `ES_API_KEY`                          | (optional)       | Alternative to user/password (mutually exclusive). |
 | `ES_VERIFY_CERTS`                     | `true`           | Set `false` for self-signed dev clusters. |
-| `MINIO_SITES`                         | (required)       | v2: JSON list of `{name, endpoint, access_key, secret_key, bucket, secure?, read_only?}`. Must include `name="__default__"` (inline ingest). Supersedes the five legacy vars below. |
-| `MINIO_ENDPOINT`                      | (optional)       | DEPRECATED. |
-| `MINIO_ACCESS_KEY`                    | (optional)       | DEPRECATED. |
-| `MINIO_SECRET_KEY`                    | (optional)       | DEPRECATED. |
-| `MINIO_SECURE`                        | `false`          | DEPRECATED. |
-| `MINIO_BUCKET`                        | `ragent`         | DEPRECATED. |
+| `MINIO_SITES`                         | (required)       | v2: JSON list of `{name, endpoint, access_key, secret_key, bucket, secure?, read_only?}`. Must include `name="__default__"` (inline ingest). Supersedes the legacy vars below. |
+| `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_SECURE`, `MINIO_BUCKET` | — | **DEPRECATED** — subsumed by `MINIO_SITES`. Ignored when `MINIO_SITES` is set. |
 
 #### 4.6.3 Redis (B27)
 
@@ -801,7 +761,7 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 
 ### 5.1 MariaDB
 
-> **v2 OVERRIDE** — `documents` adds `ingest_type ENUM('inline','file') NOT NULL DEFAULT 'inline'`, `minio_site VARCHAR(64) NULL`, `source_url VARCHAR(2048) NULL`. The **`chunks` table is dropped** — chunks live only in ES `chunks_v1`. `object_key` semantics: for `inline` it points into `__default__` MinIO site; for `file` it is the caller-supplied key in the named site (no copy).
+> **v2:** Schema reflects changes below. `chunks` table dropped (migration `003_drop_chunks.sql`). `documents` gains `ingest_type`, `minio_site`, `source_url`, `object_key` (key-only, no bucket path).
 
 ```sql
 CREATE TABLE documents (
@@ -840,7 +800,6 @@ No physical FK. ORM-level cascade only.
 ### 5.2 Elasticsearch `chunks_v1`
 
 > **v2 OVERRIDE** — adds `raw_content` field (`type: text, index: false`, `_source`-only). `content` (existing `text` column, may also be exposed under that legacy name) holds the **normalized** view embedded by bge-m3 + BM25-analyzed; `raw_content` holds the **original byte slice** the splitter captured (markdown fences, HTML tags, etc.). Chat retrieval scores against `content`, but the LLM context and `sources[].excerpt` use `raw_content` (with `content` fallback for legacy chunks). `source_url` is added as a `keyword` field for citation rendering.
-
 > **Source of truth (B26):** `resources/es/chunks_v1.json` — settings + mappings, checked into git. Bootstrap (§6.1) reads this file and `PUT /chunks_v1` if the index does not exist. The block below is the canonical content; any drift between this spec snippet and the resource file is a CI failure (`tests/integration/test_es_resource_drift.py`).
 
 ```json

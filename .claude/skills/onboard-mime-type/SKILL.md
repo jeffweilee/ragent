@@ -120,9 +120,11 @@ extension users will upload.
 | Structured text with markup | `text/markdown`, `text/html`, `text/csv`, `application/json`, `application/xml` | Custom `@component` AST/DOM walker that emits one atom per logical block | `data.decode("utf-8")` (existing) |
 | Binary container | `application/pdf`, `application/vnd.openxmlformats-…docx`, images | **Stop** — see Step 1a below | New decode branch required |
 
-### Step 1a — Binary MIMEs need a worker-side decode change
+### Step 1a — Binary MIMEs need a schema-boundary guard AND worker decode change
 
-`src/ragent/workers/ingest.py:_run_pipeline` does
+**Schema guard (mandatory for binary MIMEs):** `ingest_type=inline` carries the file content as a UTF-8 string in `content`. Binary formats (DOCX, PPTX, PDF) cannot be transmitted this way — a caller would have to base64-encode and the round-trip would silently corrupt the bytes. Add a `model_validator(mode="after")` on `IngestRequest` in `schemas/ingest.py` that rejects the combination: `if self.ingest_type == IngestType.inline and self.mime_type in BINARY_MIMES: raise ValueError("binary MIME types require ingest_type=file")`. The `BINARY_MIMES` constant must be defined in `schemas/ingest.py` (single source of truth) and imported by any downstream module that needs it — never re-defined.
+
+**Worker decode change:** `src/ragent/workers/ingest.py:_run_pipeline` does
 `data.decode("utf-8")` before handing bytes to the loader. That assumption
 is **load-bearing** for every existing splitter; the loader receives `str`,
 not `bytes`. If the new MIME is binary you must:
