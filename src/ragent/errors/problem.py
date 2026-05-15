@@ -14,6 +14,7 @@ def problem(
     detail: str = "",
     instance: str = "",
     errors: list[dict] | None = None,
+    extra: dict | None = None,
 ) -> JSONResponse:
     body: dict = {
         "type": f"{_BASE}/{error_code.lower().replace('_', '-')}",
@@ -27,6 +28,8 @@ def problem(
         body["instance"] = instance
     if errors is not None:
         body["errors"] = errors
+    if extra:
+        body.update(extra)
     return JSONResponse(
         content=body,
         status_code=status,

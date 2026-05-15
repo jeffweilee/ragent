@@ -57,6 +57,15 @@ class HttpErrorCode(StrEnum):
     # Chat (429).
     CHAT_RATE_LIMITED = "CHAT_RATE_LIMITED"
 
+    # Embedding-model lifecycle (B50). 409 on state-machine rejection;
+    # 409 on cutover preflight failure; 422 on invalid promote payload;
+    # 422 on field-name collision with a still-mapped retired field.
+    EMBEDDING_LIFECYCLE_INVALID_STATE = "EMBEDDING_LIFECYCLE_INVALID_STATE"
+    EMBEDDING_CUTOVER_PREFLIGHT_FAILED = "EMBEDDING_CUTOVER_PREFLIGHT_FAILED"
+    EMBEDDING_INVALID_CONFIG = "EMBEDDING_INVALID_CONFIG"
+    EMBEDDING_FIELD_NAME_COLLISION = "EMBEDDING_FIELD_NAME_COLLISION"
+    EMBEDDING_REGISTRY_NOT_READY = "EMBEDDING_REGISTRY_NOT_READY"  # 503
+
     # MCP JSON-RPC 2.0 server (§3.8, B47). Surfaces as `data.error_code`
     # inside JSON-RPC error envelopes (NOT as problem+json), but lives in
     # this enum so the API-emitted code inventory remains single-source.
