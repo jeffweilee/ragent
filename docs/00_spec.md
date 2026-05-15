@@ -97,7 +97,6 @@
 - **S41 manual rerun** — Given a document with status in `{UPLOADED, PENDING, FAILED}`, When `POST /ingest/v1/{id}/rerun` is called with `X-User-Id`, Then the row's `status` is flipped to `PENDING`, `attempt` is reset to `0` (so an exhausted FAILED row isn't immediately re-FAILED by the reconciler's `_mark_failed` budget check), `error_code`/`error_reason` are cleared, `ingest.pipeline` is re-enqueued, and the response is `202 {"document_id": ...}`. Given the status is `READY` or `DELETING`, the response is `409 INGEST_NOT_RERUNNABLE` (use re-POST with same `(source_id, source_app)` for READY supersede). Given the document does not exist, the response is `404 INGEST_NOT_FOUND`.
 
 ---
-
 ### 3.2 Indexing Pipeline
 
 > **v2 Pipeline:**
@@ -122,7 +121,6 @@
 - The pipeline body runs with no DB transaction open (see §3.1 locking discipline).
 
 ---
-
 ### 3.3 Pluggable Extractors
 
 **Protocol v1 (frozen):**
@@ -151,7 +149,6 @@ class ExtractorPlugin(Protocol):
 - **S11 duplicate registration** — Given a `PluginRegistry` already holding a plugin named `vector`, When `register()` is called with another plugin of the same `name`, Then it raises `DuplicatePluginError` and the existing instance is unaffected.
 
 ---
-
 ### 3.4 Chat Pipeline
 
 ```
@@ -248,7 +245,6 @@ data: {"type":"done","content":"<full>","model":"…","provider":"…","sources"
 - **S6i empty filter rejected (B29)** — `source_app=""` → 422 `CHAT_FILTER_INVALID`; no LLM call.
 
 ---
-
 #### 3.4.4 `POST /retrieve` — Retrieval without LLM
 
 Runs the full retrieval pipeline (embed → kNN + BM25 → RRF join → source hydration) and returns ranked chunks without invoking the LLM. Useful for retrieval quality inspection and custom UIs.
@@ -644,8 +640,12 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `ES_PASSWORD`                         | (optional)       | Basic-auth password. |
 | `ES_API_KEY`                          | (optional)       | Alternative to user/password (mutually exclusive). |
 | `ES_VERIFY_CERTS`                     | `true`           | Set `false` for self-signed dev clusters. |
-| `MINIO_SITES`                         | (required)       | v2: JSON list of `{name, endpoint, access_key, secret_key, bucket, secure?, read_only?}`. Must include `name="__default__"` (inline ingest). Supersedes the legacy vars below. |
-| `MINIO_ENDPOINT`, `MINIO_ACCESS_KEY`, `MINIO_SECRET_KEY`, `MINIO_SECURE`, `MINIO_BUCKET` | — | **DEPRECATED** — subsumed by `MINIO_SITES`. Ignored when `MINIO_SITES` is set. |
+| `MINIO_SITES`                         | (required)       | v2: JSON list of `{name, endpoint, access_key, secret_key, bucket, secure?, read_only?}`. Must include `name="__default__"` (inline ingest). Supersedes the four legacy vars below. |
+| `MINIO_ENDPOINT`                      | (optional)       | **DEPRECATED** — use `MINIO_SITES`. Ignored when `MINIO_SITES` is set. |
+| `MINIO_ACCESS_KEY`                    | (optional)       | **DEPRECATED** — use `MINIO_SITES`. |
+| `MINIO_SECRET_KEY`                    | (optional)       | **DEPRECATED** — use `MINIO_SITES`. |
+| `MINIO_SECURE`                        | `false`          | **DEPRECATED** — use `MINIO_SITES`. |
+| `MINIO_BUCKET`                        | `ragent`         | **DEPRECATED** — use `MINIO_SITES`. |
 
 #### 4.6.3 Redis (B27)
 
