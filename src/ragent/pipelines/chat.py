@@ -329,15 +329,32 @@ class _ExcerptTruncator:
 
 
 def build_retrieval_pipeline(
-    embedder: Any,
-    document_store: Any,
-    doc_repo: Any,
+    embedder: Any = None,
+    document_store: Any = None,
+    doc_repo: Any = None,
     join_mode: str = "rrf",
     top_k: int = DEFAULT_TOP_K,
     rerank_client: Any | None = None,
+    *,
+    registry: Any = None,
+    embed_query_callable: Any = None,
 ) -> Pipeline:
+    """Build the retrieval pipeline.
+
+    Two modes (B50 rollout):
+
+    - **Legacy**: pass ``embedder`` (single ``EmbeddingClient``). The query
+      path embeds with it and runs kNN against the hardcoded ``embedding``
+      ES field. Kept for pre-T-EM tests and back-compat.
+    - **Registry**: pass ``registry`` + ``embed_query_callable``. The query
+      path reads ``registry.read_model()`` per request, embeds with that
+      model, and runs kNN against ``embedding_<m>_<d>`` — picking up
+      cutover/rollback without an App restart.
+    """
     if join_mode not in _VALID_MODES:
         raise ValueError(f"join_mode must be one of {sorted(_VALID_MODES)}, got {join_mode!r}")
+
+    use_registry = registry is not None and embed_query_callable is not None
 
     pipeline = Pipeline()
     pipeline.add_component("source_hydrator", _SourceHydrator(doc_repo))
@@ -353,13 +370,27 @@ def build_retrieval_pipeline(
     else:
         retriever_sink = "source_hydrator.documents"
 
-    if join_mode == "vector_only":
-        pipeline.add_component("query_embedder", _QueryEmbedder(embedder))
-        pipeline.add_component(
-            "vector_retriever",
-            ElasticsearchEmbeddingRetriever(document_store=document_store, top_k=top_k),
+    def _build_query_embedder() -> _QueryEmbedder:
+        return (
+            _QueryEmbedder(registry=registry, embed_callable=embed_query_callable)
+            if use_registry
+            else _QueryEmbedder(embedder)
         )
+
+    def _build_vector_retriever() -> Any:
+        if use_registry:
+            return _DynamicFieldEmbeddingRetriever(document_store=document_store, top_k=top_k)
+        return ElasticsearchEmbeddingRetriever(document_store=document_store, top_k=top_k)
+
+    def _connect_query_to_retriever() -> None:
         pipeline.connect("query_embedder.query_embedding", "vector_retriever.query_embedding")
+        if use_registry:
+            pipeline.connect("query_embedder.embedding_field", "vector_retriever.embedding_field")
+
+    if join_mode == "vector_only":
+        pipeline.add_component("query_embedder", _build_query_embedder())
+        pipeline.add_component("vector_retriever", _build_vector_retriever())
+        _connect_query_to_retriever()
         pipeline.connect("vector_retriever.documents", retriever_sink)
 
     elif join_mode == "bm25_only":
@@ -370,11 +401,8 @@ def build_retrieval_pipeline(
         pipeline.connect("bm25_retriever.documents", retriever_sink)
 
     else:  # rrf or concatenate
-        pipeline.add_component("query_embedder", _QueryEmbedder(embedder))
-        pipeline.add_component(
-            "vector_retriever",
-            ElasticsearchEmbeddingRetriever(document_store=document_store, top_k=top_k),
-        )
+        pipeline.add_component("query_embedder", _build_query_embedder())
+        pipeline.add_component("vector_retriever", _build_vector_retriever())
         pipeline.add_component(
             "bm25_retriever",
             ElasticsearchBM25Retriever(document_store=document_store, top_k=top_k),
@@ -382,7 +410,7 @@ def build_retrieval_pipeline(
         pipeline.add_component(
             "joiner", DocumentJoiner(join_mode=_HAYSTACK_JOIN_MODE[join_mode], top_k=top_k)
         )
-        pipeline.connect("query_embedder.query_embedding", "vector_retriever.query_embedding")
+        _connect_query_to_retriever()
         pipeline.connect("vector_retriever.documents", "joiner.documents")
         pipeline.connect("bm25_retriever.documents", "joiner.documents")
         pipeline.connect("joiner.documents", retriever_sink)

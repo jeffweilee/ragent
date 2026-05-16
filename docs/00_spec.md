@@ -718,6 +718,8 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `UNPROTECT_API_URL`                   | (required when enabled) | Full URL of the unprotect endpoint (multipart POST). |
 | `UNPROTECT_APIKEY`                    | (required when enabled) | Raw JWT (no `Bearer` prefix) sent as `apikey` request header. **Never logged, never echoed.** |
 | `UNPROTECT_DELEGATED_USER_SUFFIX`     | (required when enabled) | Appended to `X-User-Id` to form the `delegatedUser` form field: `{X-User-Id}{suffix}`. |
+| `EMBEDDING_REGISTRY_TTL_SECONDS`      | `10`             | B50 — TTL on the `ActiveModelRegistry` cache of `system_settings.embedding.*`. A cutover/rollback takes effect on the next App-cache refresh within this many seconds; the `dual_write_warmup` preflight gate refuses cutover until `2 × TTL` has elapsed since promote. |
+| `COMMIT_MIN_HOURS`                    | `24`             | B50 — minimum observation window in `CUTOVER` state before `/embedding/v1/commit` is allowed (soft gate; override with `force=true`). Discourages impulsive commits that would retire the old stable field before issues surface. |
 
 #### 4.6.5 Worker, Reconciler & retry policy
 
