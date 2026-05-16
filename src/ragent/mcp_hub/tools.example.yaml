@@ -1,0 +1,74 @@
+# MCP Hub dynamic tool registry. Each entry under `tools` is registered as one
+# MCP Tool at startup. See _TYPE_MAP and Location in mcp_hub.py for the
+# authoritative list of supported `type` and `location` values.
+
+defaults:
+  base_url: https://api.example.com
+  timeout: 30.0
+  headers:
+    Accept: application/json
+    User-Agent: ragent-mcp-hub/0.1
+
+tools:
+  - name: get_user
+    description: Fetch a single user by numeric ID.
+    method: GET
+    path: /users/{user_id}
+    parameters:
+      - name: user_id
+        type: integer
+        location: path
+        required: true
+        description: Numeric user identifier.
+      - name: include_deleted
+        type: boolean
+        location: query
+        required: false
+        default: false
+        description: Include soft-deleted records.
+
+  - name: search_products
+    description: Full-text search over the product catalogue.
+    method: GET
+    path: /products
+    parameters:
+      - name: q
+        type: string
+        location: query
+        required: true
+        description: Search keywords.
+      - name: limit
+        type: integer
+        location: query
+        required: false
+        default: 20
+      - name: x_tenant_id
+        type: string
+        location: header
+        required: true
+        description: Tenant scope for the search.
+
+  - name: create_order
+    description: Create a new order for the given user.
+    method: POST
+    path: /users/{user_id}/orders
+    parameters:
+      - name: user_id
+        type: integer
+        location: path
+        required: true
+      - name: sku
+        type: string
+        location: body
+        required: true
+        description: Stock-keeping unit of the product to purchase.
+      - name: quantity
+        type: integer
+        location: body
+        required: false
+        default: 1
+      - name: metadata
+        type: object
+        location: body
+        required: false
+        description: Arbitrary key/value annotations attached to the order.

@@ -568,3 +568,18 @@ v2 replaces the underlying behavior in C2–C6):
 | T-EM.19 | Green | • **Achieve:** Implement reconciler arm.<br>• **Deliver:** Update `src/ragent/reconciler.py` with `retired_embedding_sweep`. | B50 | [x] | Dev |
 | T-EM.20 | Red | • **Achieve:** End-to-end lifecycle: promote → backfill → cutover → rollback → abort over real MariaDB + ES; integration test asserts ES mapping, dual-write coverage, settings transitions, and rollback-window write safety.<br>• **Deliver:** `tests/integration/test_embedding_lifecycle_e2e.py` (testcontainers `@pytest.mark.docker`). | B50 | [x] | QA |
 | T-EM.21 | Green | • **Achieve:** Wire `ActiveModelRegistry` into composition root, replace hardcoded `bge-m3` / 1024.<br>• **Deliver:** `src/ragent/bootstrap/composition.py` + `src/ragent/clients/embedding.py` (constructor `model: str`) + `.env.example` (`EMBEDDING_REGISTRY_TTL_SECONDS=10`, `COMMIT_MIN_HOURS=24`). | B50 | [x] | Dev |
+
+### MCP Hub microservice (branch `claude/mcp-hub-dynamic-apis-gZ4Jn`) — 2026-05-16
+
+> Source: user kickoff. Standalone FastMCP service that loads `tools.yaml` at
+> startup and dynamically registers each REST endpoint as an MCP Tool, with
+> `inspect.Signature`/`inspect.Parameter` driving FastMCP's Pydantic/JSON
+> Schema inference. Streamable HTTP transport. Used by remote agents
+> (e.g. Haystack) to call upstream REST APIs without hardcoded clients.
+
+| # | Category | Task | Spec | Status | Owner |
+|---|---|---|:-:|:-:|---|
+| T-MH.0 | Kickoff | • **Achieve:** Land the dynamic Hub skeleton — YAML schema, signature factory, httpx forwarder, lifespan-managed client, Streamable HTTP entry point.<br>• **Deliver:** `src/ragent/mcp_hub/{mcp_hub.py,server.py,tools.example.yaml,__init__.py}` + `tests/unit/mcp_hub/test_signature_factory.py` (5 tests covering parse validation, required/optional signature shape, end-to-end multi-location request dispatch via `httpx.MockTransport`, YAML round-trip). | — | [x] | Dev |
+| T-MH.1 | Spec | • **Achieve:** Document the Hub microservice in `docs/00_spec.md` — tools.yaml schema, env-var inventory (`MCP_HUB_*`), Streamable HTTP endpoint contract, deployment topology.<br>• **Deliver:** new `docs/00_spec.md §MCP Hub` section. | — | [ ] | Spec |
+| T-MH.2 | Test | • **Achieve:** Add an integration test that boots the Hub against a stub upstream and exercises one tool call over Streamable HTTP via a FastMCP client.<br>• **Deliver:** `tests/integration/test_mcp_hub_streamable_http.py`. | — | [ ] | QA |
+| T-MH.3 | Hardening | • **Achieve:** Pre-compute per-tool wire dicts (header-name kebab map, partitioned param lists) and connection limits from `defaults`; consider auth header pass-through.<br>• **Deliver:** updates to `src/ragent/mcp_hub/mcp_hub.py`. | — | [ ] | Dev |
