@@ -73,23 +73,29 @@ tools:
         required: false
         description: Arbitrary key/value annotations attached to the order.
 
-  # Heterogeneous upstream: different domain, its own auth, and propagates the
-  # caller's identity from the MCP client through to the upstream API.
+  # Heterogeneous upstream: different domain and propagates identity from the
+  # MCP client through to the upstream API.
   #
-  # `static_headers` values support `${ENV_VAR}` substitution resolved at
-  # startup (the example below uses a literal so the bundled doctor stays
-  # green; replace with `"Bearer ${IDENTITY_API_TOKEN}"` in real configs).
+  # `static_headers` values are sent verbatim (literals only — Hub does not
+  # read env vars for tokens; identity flows in per-request via the MCP
+  # client, see `forward_headers` below).
   #
-  # `forward_headers` maps incoming-header-name -> outgoing-header-name. The
-  # ASGI middleware in server.py publishes each MCP request's headers into a
-  # ContextVar; the tool closure reads them and forwards per this mapping.
+  # `forward_headers` maps OUTGOING header name -> template string. Use
+  # `{header-name}` placeholders to substitute incoming MCP-request headers
+  # (lowercased per ASGI canonical form). If any placeholder is missing on
+  # the incoming request, the entire outgoing header is skipped.
+  #
+  # SECURITY: this Hub TRUSTS the incoming headers verbatim. Deploy behind
+  # mTLS or a trusted internal network; the LLM must NEVER control these
+  # headers (set them in the MCP client's transport, not via tool args).
   - name: get_profile
     description: Fetch the caller's profile from the identity service.
     base_url: https://identity.example.com
     method: GET
     path: /me
     static_headers:
-      Authorization: "Bearer example-token"
+      X-API-Version: "2"
     forward_headers:
-      X-User-Id: X-User-Id
-      X-Trace-Id: X-Request-Id
+      Authorization: "Bearer {x-jwt-token}"
+      X-User-Id: "{x-user-id}"
+      X-Request-Id: "{x-trace-id}"

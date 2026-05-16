@@ -1,5 +1,5 @@
-"""Per-tool base_url override, static headers with env substitution, and
-forward_headers pass-through (X-User-Id and friends)."""
+"""Per-tool base_url override, literal static_headers, and forward_headers
+where the VALUE is a template substituting incoming MCP-client headers."""
 
 from __future__ import annotations
 
@@ -54,13 +54,13 @@ async def test_falls_back_to_default_base_url_when_per_tool_absent():
 
 
 @pytest.mark.asyncio
-async def test_static_headers_sent_on_each_request():
+async def test_static_headers_sent_as_literal():
     spec = _parse_tool(
         {
-            "name": "auth_tool",
+            "name": "static_tool",
             "method": "GET",
             "path": "/x",
-            "static_headers": {"Authorization": "Bearer literal-token"},
+            "static_headers": {"X-API-Version": "2", "Accept": "application/json"},
         }
     )
     seen: dict = {}
@@ -71,11 +71,12 @@ async def test_static_headers_sent_on_each_request():
 
     fn = _make_tool_callable(spec, _client(handler), "https://api.example.com")
     await fn()
-    assert seen["headers"]["authorization"] == "Bearer literal-token"
+    assert seen["headers"]["x-api-version"] == "2"
+    assert seen["headers"]["accept"] == "application/json"
 
 
-def test_static_headers_resolve_env_at_load_time(tmp_path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("API_B_TOKEN", "real-secret")
+def test_static_headers_no_longer_resolve_env_refs(tmp_path):
+    """`${VAR}` is treated as a literal string — env-var substitution removed."""
     yml = tmp_path / "tools.yaml"
     yml.write_text(
         "tools:\n"
@@ -83,35 +84,23 @@ def test_static_headers_resolve_env_at_load_time(tmp_path, monkeypatch: pytest.M
         "    method: GET\n"
         "    path: https://api.example.com/x\n"
         "    static_headers:\n"
-        "      Authorization: 'Bearer ${API_B_TOKEN}'\n"
+        "      X-API-Version: '${UNRESOLVED}'\n"
     )
     _, tools = load_tools_yaml(yml)
-    assert tools[0].static_headers["Authorization"] == "Bearer real-secret"
-
-
-def test_missing_env_var_fails_loud_at_load(tmp_path, monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.delenv("DEFINITELY_NOT_SET", raising=False)
-    yml = tmp_path / "tools.yaml"
-    yml.write_text(
-        "tools:\n"
-        "  - name: t\n"
-        "    method: GET\n"
-        "    path: https://api.example.com/x\n"
-        "    static_headers:\n"
-        "      Authorization: 'Bearer ${DEFINITELY_NOT_SET}'\n"
-    )
-    with pytest.raises(ValueError, match="DEFINITELY_NOT_SET"):
-        load_tools_yaml(yml)
+    assert tools[0].static_headers["X-API-Version"] == "${UNRESOLVED}"
 
 
 @pytest.mark.asyncio
-async def test_forward_headers_propagate_from_contextvar():
+async def test_forward_template_substitutes_incoming_value():
     spec = _parse_tool(
         {
             "name": "userful",
             "method": "GET",
             "path": "/me",
-            "forward_headers": {"X-User-Id": "X-User-Id", "X-Trace-Id": "X-Request-Id"},
+            "forward_headers": {
+                "X-User-Id": "{x-user-id}",
+                "X-Request-Id": "{x-trace-id}",
+            },
         }
     )
     seen: dict = {}
@@ -132,13 +121,123 @@ async def test_forward_headers_propagate_from_contextvar():
 
 
 @pytest.mark.asyncio
-async def test_forward_headers_noop_when_contextvar_empty():
+async def test_forward_template_wraps_with_prefix():
     spec = _parse_tool(
         {
             "name": "userful",
             "method": "GET",
             "path": "/me",
-            "forward_headers": {"X-User-Id": "X-User-Id"},
+            "forward_headers": {"Authorization": "Bearer {x-jwt-token}"},
+        }
+    )
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["headers"] = dict(req.headers)
+        return httpx.Response(200, json={})
+
+    fn = _make_tool_callable(spec, _client(handler), "https://api.example.com")
+    token = _INCOMING_HEADERS.set({"x-jwt-token": "eyJabc"})
+    try:
+        await fn()
+    finally:
+        _INCOMING_HEADERS.reset(token)
+
+    assert seen["headers"]["authorization"] == "Bearer eyJabc"
+
+
+@pytest.mark.asyncio
+async def test_forward_template_combines_multiple_incoming():
+    spec = _parse_tool(
+        {
+            "name": "userful",
+            "method": "GET",
+            "path": "/me",
+            "forward_headers": {
+                "X-Audit-Ctx": "user={x-user-id};tenant={x-tenant-id}",
+            },
+        }
+    )
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["headers"] = dict(req.headers)
+        return httpx.Response(200, json={})
+
+    fn = _make_tool_callable(spec, _client(handler), "https://api.example.com")
+    token = _INCOMING_HEADERS.set({"x-user-id": "u-42", "x-tenant-id": "acme"})
+    try:
+        await fn()
+    finally:
+        _INCOMING_HEADERS.reset(token)
+
+    assert seen["headers"]["x-audit-ctx"] == "user=u-42;tenant=acme"
+
+
+@pytest.mark.asyncio
+async def test_forward_template_skipped_when_placeholder_missing():
+    """If any {placeholder} has no matching incoming header, skip the entire
+    outgoing header (graceful degradation)."""
+    spec = _parse_tool(
+        {
+            "name": "userful",
+            "method": "GET",
+            "path": "/me",
+            "forward_headers": {
+                "X-User-Id": "{x-user-id}",
+                "X-Tenant": "{x-tenant-id}",
+            },
+        }
+    )
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["headers"] = dict(req.headers)
+        return httpx.Response(200, json={})
+
+    fn = _make_tool_callable(spec, _client(handler), "https://api.example.com")
+    token = _INCOMING_HEADERS.set({"x-user-id": "u-42"})
+    try:
+        await fn()
+    finally:
+        _INCOMING_HEADERS.reset(token)
+
+    assert seen["headers"]["x-user-id"] == "u-42"
+    assert "x-tenant" not in seen["headers"]
+
+
+@pytest.mark.asyncio
+async def test_forward_template_with_no_placeholders_sent_as_literal():
+    """A forward_headers value with no {placeholders} is sent verbatim
+    regardless of incoming headers — degenerate but well-defined."""
+    spec = _parse_tool(
+        {
+            "name": "literal",
+            "method": "GET",
+            "path": "/x",
+            "forward_headers": {"X-Audit-Source": "ragent-hub"},
+        }
+    )
+    seen: dict = {}
+
+    def handler(req: httpx.Request) -> httpx.Response:
+        seen["headers"] = dict(req.headers)
+        return httpx.Response(200, json={})
+
+    fn = _make_tool_callable(spec, _client(handler), "https://api.example.com")
+    await fn()
+
+    assert seen["headers"]["x-audit-source"] == "ragent-hub"
+
+
+@pytest.mark.asyncio
+async def test_forward_template_noop_when_contextvar_empty():
+    spec = _parse_tool(
+        {
+            "name": "userful",
+            "method": "GET",
+            "path": "/me",
+            "forward_headers": {"X-User-Id": "{x-user-id}"},
         }
     )
     seen: dict = {}
@@ -161,14 +260,14 @@ def test_header_param_collides_with_static_header_rejected(tmp_path):
         "    method: GET\n"
         "    path: https://api.example.com/x\n"
         "    static_headers:\n"
-        "      Authorization: 'Bearer literal'\n"
+        "      X-API-Version: '2'\n"
         "    parameters:\n"
-        "      - name: authorization\n"
+        "      - name: x_api_version\n"
         "        type: string\n"
         "        location: header\n"
         "        required: true\n"
     )
-    with pytest.raises(ValueError, match="authorization"):
+    with pytest.raises(ValueError, match="x-api-version"):
         load_tools_yaml(yml)
 
 
@@ -180,7 +279,7 @@ def test_header_param_collides_with_forward_header_rejected(tmp_path):
         "    method: GET\n"
         "    path: https://api.example.com/x\n"
         "    forward_headers:\n"
-        "      X-User-Id: X-Caller\n"
+        "      X-Caller: '{x-user-id}'\n"
         "    parameters:\n"
         "      - name: x_caller\n"
         "        type: string\n"
@@ -199,9 +298,9 @@ def test_overlap_static_and_forward_rejected(tmp_path):
         "    method: GET\n"
         "    path: https://api.example.com/x\n"
         "    static_headers:\n"
-        "      X-User-Id: static-val\n"
+        "      X-User-Id: 'static-val'\n"
         "    forward_headers:\n"
-        "      X-User-Id: X-User-Id\n"
+        "      X-User-Id: '{x-user-id}'\n"
     )
     with pytest.raises(ValueError, match="x-user-id"):
         load_tools_yaml(yml)

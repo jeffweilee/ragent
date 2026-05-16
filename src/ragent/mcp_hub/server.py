@@ -24,7 +24,14 @@ from .mcp_hub import _INCOMING_HEADERS, build_hub
 
 class HeaderForwardMiddleware:
     """ASGI middleware that publishes each request's headers into a ContextVar
-    so per-tool `forward_headers` can read them (e.g. X-User-Id pass-through)."""
+    so per-tool `forward_headers` can read them (X-User-Id, X-JWT-Token, etc.).
+
+    SECURITY: This Hub trusts the incoming headers verbatim. Deploy behind
+    mTLS or a trusted internal network so untrusted callers cannot forge
+    these headers. The LLM must never be allowed to control these values —
+    the MCP-client application (Haystack, your agent app) sets them in its
+    transport, out-of-band from the model loop.
+    """
 
     def __init__(self, app: Any) -> None:
         self.app = app
