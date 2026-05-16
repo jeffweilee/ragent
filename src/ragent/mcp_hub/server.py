@@ -25,7 +25,10 @@ def main() -> None:
     yaml_path = os.environ.get("MCP_HUB_TOOLS_YAML", "tools.yaml")
     name = os.environ.get("MCP_HUB_NAME", "ragent-mcp-hub")
     host = os.environ.get("MCP_HUB_HOST", "0.0.0.0")
-    port = int(os.environ.get("MCP_HUB_PORT", "9000"))
+    try:
+        port = int(os.environ.get("MCP_HUB_PORT", "9000"))
+    except ValueError as exc:
+        raise SystemExit(f"MCP_HUB_PORT must be an integer, got {exc.args[0]!r}") from exc
     path = os.environ.get("MCP_HUB_PATH", "/mcp")
 
     hub, client = build_hub(yaml_path, name=name)

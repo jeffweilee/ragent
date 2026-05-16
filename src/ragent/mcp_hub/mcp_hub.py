@@ -233,7 +233,13 @@ def _make_tool_callable(
             }
 
         ctype = resp.headers.get("content-type", "")
-        payload: Any = resp.json() if "application/json" in ctype else resp.text
+        if "application/json" in ctype:
+            try:
+                payload: Any = resp.json()
+            except ValueError:
+                payload = resp.text
+        else:
+            payload = resp.text
         return {"ok": True, "status": resp.status_code, "data": payload}
 
     sig = _build_signature(spec)

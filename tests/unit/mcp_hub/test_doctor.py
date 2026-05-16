@@ -134,10 +134,41 @@ def test_unsupported_type_flagged(tmp_path: Path):
     assert any("unsupported type" in e for e in errors)
 
 
+def test_missing_base_url_with_relative_path_flagged(tmp_path: Path):
+    yml = _write(
+        tmp_path / "tools.yaml",
+        """
+        tools:
+          - name: needs_base
+            method: GET
+            path: /users
+        """,
+    )
+    errors, _ = check_yaml(yml)
+    assert any("base_url" in e for e in errors)
+
+
+def test_missing_base_url_with_absolute_path_is_ok(tmp_path: Path):
+    """Absolute tool paths don't need a base_url."""
+    yml = _write(
+        tmp_path / "tools.yaml",
+        """
+        tools:
+          - name: absolute
+            method: GET
+            path: https://other.example.com/users
+        """,
+    )
+    errors, _ = check_yaml(yml)
+    assert errors == []
+
+
 def test_cli_exits_zero_on_valid(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     yml = _write(
         tmp_path / "tools.yaml",
         """
+        defaults:
+          base_url: https://api.example.com
         tools:
           - name: ping
             method: GET

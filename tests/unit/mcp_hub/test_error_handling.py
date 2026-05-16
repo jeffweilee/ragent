@@ -164,6 +164,22 @@ async def test_connect_error_raises_tool_error():
 
 
 @pytest.mark.asyncio
+async def test_2xx_malformed_json_falls_back_to_text():
+    """Upstream claims JSON but body is invalid — return raw text instead of crashing."""
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=b"not really json", headers={"content-type": "application/json"}
+        )
+
+    fn = _make_tool_callable(_get_spec(), _client(handler), "https://api.example.com")
+    result = await fn(user_id=7)
+
+    assert result["ok"] is True
+    assert result["data"] == "not really json"
+
+
+@pytest.mark.asyncio
 async def test_4xx_text_plain_body_is_passed_through():
     """Plain-text 4xx bodies are surfaced (some APIs return text/plain errors)."""
 

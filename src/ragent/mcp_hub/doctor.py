@@ -21,14 +21,26 @@ def _path_placeholders(path: str) -> set[str]:
     return {field for _, field, _, _ in Formatter().parse(path) if field}
 
 
+def _is_absolute_url(path: str) -> bool:
+    return path.startswith(("http://", "https://"))
+
+
 def check_yaml(path: str | Path) -> tuple[list[str], int]:
     """Return (validation errors, tool count). Empty list of errors means OK."""
     try:
-        _, tools = load_tools_yaml(path)
+        defaults, tools = load_tools_yaml(path)
     except (OSError, ValueError) as exc:
         return [f"failed to load {path}: {exc}"], 0
 
     errors: list[str] = []
+
+    if not defaults.get("base_url"):
+        relative = [t.name for t in tools if not _is_absolute_url(t.path)]
+        if relative:
+            errors.append(
+                f"missing 'base_url' in defaults but tools have relative paths: {relative}"
+            )
+
     for tool in tools:
         placeholders = _path_placeholders(tool.path)
         path_params = {p.name for p in tool.params if p.location == "path"}
