@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# PreToolUse hook on Bash: run the full test suite before any `git push`.
+# PreToolUse hook on Bash: run unit tests before any `git push`.
 # Reads tool input JSON from stdin; exits 2 to block the push with a reason.
 #
-# Moved from pre_commit_gate.sh so commits stay fast: format+lint still run at
-# commit time, but `make test-gate` (testcontainers MariaDB/ES/Redis/MinIO) runs
-# here, immediately before code leaves the machine.
+# Default fast path: unit tests only — no docker, no testcontainers.
+# Integration + e2e are opt-in via `RAGENT_PREPUSH_FULL=1 git push ...`, which
+# restores the original behaviour (docker daemon check + `make test-gate`,
+# which itself excludes tests/e2e; set RAGENT_PREPUSH_FULL=e2e to also include
+# tests/e2e). Markdown-only diffs short-circuit before any of this.
 set -uo pipefail
 
 INPUT="$(cat)"
@@ -49,23 +51,44 @@ if [[ -n "$BASE" ]]; then
     fi
 fi
 
-# Docker daemon must be live (testcontainers requirement).
+LOG_DIR="$(mktemp -d -t ragent-prepush-XXXXXX)"
+trap 'rm -rf "$LOG_DIR"' EXIT
+
+FULL="${RAGENT_PREPUSH_FULL:-}"
+
+if [[ -z "$FULL" ]]; then
+    # Fast path: unit tests only. No docker, no testcontainers.
+    if ! uv run pytest tests/unit >"$LOG_DIR/test.log" 2>&1; then
+        keep="$ROOT/.claude/logs"
+        mkdir -p "$keep"
+        cp "$LOG_DIR/test.log" "$keep/test.log" 2>/dev/null || true
+        block "unit tests failed — see .claude/logs/test.log
+  Integration + e2e are opt-in: re-run with \`RAGENT_PREPUSH_FULL=1 git push ...\`
+  (set RAGENT_PREPUSH_FULL=e2e to also include tests/e2e)."
+    fi
+    exit 0
+fi
+
+# Opt-in full path: requires docker daemon for testcontainers.
 if ! docker ps &>/dev/null; then
     block "Docker daemon not running — start it before push (00_rule.md §Docker).
   Agent SOP: run \`sudo dockerd --host=unix:///var/run/docker.sock &>/tmp/dockerd.log &\` then wait up to 30s. Do NOT declare 'docker unavailable' without having run that command."
 fi
 
-LOG_DIR="$(mktemp -d -t ragent-prepush-XXXXXX)"
-trap 'rm -rf "$LOG_DIR"' EXIT
+if [[ "$FULL" == "e2e" ]]; then
+    TARGET="test"
+else
+    TARGET="test-gate"
+fi
 
-if ! make test-gate >"$LOG_DIR/test.log" 2>&1; then
+if ! make "$TARGET" >"$LOG_DIR/test.log" 2>&1; then
     keep="$ROOT/.claude/logs"
     mkdir -p "$keep"
     cp "$LOG_DIR/test.log" "$keep/test.log" 2>/dev/null || true
-    block "test failed — see .claude/logs/test.log"
+    block "$TARGET failed — see .claude/logs/test.log"
 fi
 
-# Pytest must report 0 skipped @pytest.mark.docker tests.
+# Pytest must report 0 skipped @pytest.mark.docker tests when docker path runs.
 if grep -qE 'docker.*skipped|skipped.*docker' "$LOG_DIR/test.log"; then
     block "@pytest.mark.docker tests were skipped — fix daemon and re-run."
 fi
