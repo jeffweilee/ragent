@@ -234,6 +234,150 @@ class _ExcerptTruncator:
         return {"documents": result}
 
 
+@component
+class _FeedbackMemoryRetriever:
+    """3rd RRF input: boost sources liked on semantically-similar past queries (B50).
+
+    Pipeline within ``run()``:
+      1. ES kNN on ``feedback_v1.query_embedding`` (filter: ``ts > now-90d``,
+         optional source_app/source_meta, score floor for cosine ≥ 0.7).
+      2. Aggregate per (source_app, source_id) → (likes, dislikes, ts_max).
+      3. Gate ``(likes+dislikes) ≥ min_votes``.
+      4. score = wilson_lb(likes, total) × 0.5 ** (days_since_ts_max / half_life_days).
+      5. DocumentRepository.get_document_ids_by_source(pairs) → current READY docs.
+      6. Single ES `terms` query on ``chunks_v1.document_id`` (NOT N+1).
+      7. Each chunk inherits the parent source's Wilson-decayed score.
+
+    All ES calls share the existing ``ES_QUERY_TIMEOUT_SECONDS`` budget.
+    """
+
+    # Score floor: ES cosine similarity maps cos∈[-1,1] → score=(1+cos)/2 ∈ [0,1].
+    # cosine_threshold=0.7 ⇒ min_score = (1 + 0.7) / 2 = 0.85.
+    def __init__(
+        self,
+        es_client: Any,
+        doc_repo: Any,
+        *,
+        feedback_index: str = "feedback_v1",
+        chunks_index: str = "chunks_v1",
+        top_k: int = DEFAULT_TOP_K,
+        min_votes: int = 3,
+        half_life_days: int = 14,
+        cosine_threshold: float = 0.7,
+        lookback_days: int = 90,
+    ) -> None:
+        self._es = es_client
+        self._repo = doc_repo
+        self._feedback_index = feedback_index
+        self._chunks_index = chunks_index
+        self._top_k = top_k
+        self._min_votes = min_votes
+        self._half_life_days = half_life_days
+        self._min_score = (1.0 + cosine_threshold) / 2.0
+        self._lookback_days = lookback_days
+
+    @component.output_types(documents=list[Document])
+    def run(
+        self,
+        query_embedding: list[float],
+        filters: dict | None = None,
+    ) -> dict:
+        from datetime import UTC, datetime
+
+        from ragent.utility.wilson import wilson_lower_bound
+
+        # 1. kNN feedback_v1
+        knn_filter: list[dict] = [{"range": {"ts": {"gte": f"now-{self._lookback_days}d"}}}]
+        if filters:
+            sa = filters.get("source_app")
+            sm = filters.get("source_meta")
+            if sa:
+                knn_filter.append({"term": {"source_app": sa}})
+            if sm:
+                knn_filter.append({"term": {"source_meta": sm}})
+        knn_body = {
+            "size": 100,
+            "min_score": self._min_score,
+            "knn": {
+                "field": "query_embedding",
+                "query_vector": query_embedding,
+                "k": 100,
+                "num_candidates": 400,
+                "filter": {"bool": {"filter": knn_filter}},
+            },
+            "_source": ["source_app", "source_id", "vote", "ts"],
+        }
+        hits = self._es.search(index=self._feedback_index, body=knn_body)["hits"]["hits"]
+
+        # 2. Aggregate per (source_app, source_id)
+        agg: dict[tuple[str, str], dict] = {}
+        for h in hits:
+            src = h["_source"]
+            key = (src["source_app"], src["source_id"])
+            bucket = agg.setdefault(key, {"likes": 0, "dislikes": 0, "ts_max": None})
+            if src["vote"] == 1:
+                bucket["likes"] += 1
+            elif src["vote"] == -1:
+                bucket["dislikes"] += 1
+            ts = src["ts"]
+            if bucket["ts_max"] is None or ts > bucket["ts_max"]:
+                bucket["ts_max"] = ts
+
+        # 3-4. Gate + score
+        now = datetime.now(UTC)
+        scored: list[tuple[tuple[str, str], float]] = []
+        for key, b in agg.items():
+            total = b["likes"] + b["dislikes"]
+            if total < self._min_votes:
+                continue
+            wilson = wilson_lower_bound(b["likes"], total)
+            ts_max = datetime.fromisoformat(b["ts_max"].replace("Z", "+00:00"))
+            age_days = max(0.0, (now - ts_max).total_seconds() / 86400.0)
+            decay = 0.5 ** (age_days / self._half_life_days)
+            scored.append((key, wilson * decay))
+        scored.sort(key=lambda kv: kv[1], reverse=True)
+        scored = scored[: self._top_k]
+        if not scored:
+            return {"documents": []}
+
+        # 5. MariaDB: pair → current READY document_id
+        pairs = [k for k, _ in scored]
+        doc_id_map = anyio.from_thread.run(self._repo.get_document_ids_by_source, pairs)
+        scored_by_doc = {doc_id_map[k]: s for k, s in scored if k in doc_id_map}
+        if not scored_by_doc:
+            return {"documents": []}
+
+        # 6. Single ES terms query on chunks_v1
+        terms_body = {
+            "size": self._top_k * 10,
+            "query": {"terms": {"document_id": list(scored_by_doc.keys())}},
+        }
+        chunk_hits = self._es.search(index=self._chunks_index, body=terms_body)["hits"]["hits"]
+
+        # 7. Build Document list, inherit parent score
+        result: list[Document] = []
+        for ch in chunk_hits:
+            src = ch["_source"]
+            doc_id = src.get("document_id")
+            if doc_id not in scored_by_doc:
+                continue
+            result.append(
+                Document(
+                    content=src.get("text") or "",
+                    meta={
+                        "document_id": doc_id,
+                        "chunk_id": src.get("chunk_id"),
+                        "source_app": src.get("source_app"),
+                        "source_meta": src.get("source_meta"),
+                        "source_url": src.get("source_url"),
+                        "raw_content": src.get("raw_content"),
+                    },
+                    score=scored_by_doc[doc_id],
+                )
+            )
+        return {"documents": result}
+
+
 def build_retrieval_pipeline(
     embedder: Any,
     document_store: Any,
