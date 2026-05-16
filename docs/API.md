@@ -354,6 +354,66 @@ Each chunk stored in ES is the raw text segment produced by the indexing pipelin
 
 ---
 
+## Feedback
+
+### `POST /feedback/v1` — Record a vote against a chat source (T-FB.6, B50/B51)
+
+Closes the feedback loop: the client echoes back the HMAC-signed token from a prior `/chat` response and reports a like / dislike (with optional reason) against one of the source documents shown. Default disabled (`CHAT_FEEDBACK_ENABLED=false`); when enabled, the feedback drives the `_FeedbackMemoryRetriever` (a 3rd RRF input) so future chats with semantically-similar queries surface liked sources.
+
+**Headers:** `X-User-Id` required.
+
+**Body:**
+
+```json
+{
+  "request_id":       "01J9...",
+  "feedback_token":   "<base64url>.<hmac_hex>",
+  "query_text":       "what are our Q3 OKRs?",
+  "shown_source_ids": ["DOC-A", "DOC-B", "DOC-C"],
+  "source_id":        "DOC-A",
+  "vote":             1,
+  "reason":           "irrelevant",
+  "position_shown":   0
+}
+```
+
+- `request_id`, `feedback_token`: from the prior `/chat/v1` response. Token TTL = 7 days.
+- `query_text`, `shown_source_ids`: re-supplied; HMAC binds `sha256(json(shown_source_ids))` so the server detects tampering.
+- `source_id` ∈ `shown_source_ids` (server-enforced).
+- `vote` ∈ {+1, -1}.
+- `reason` (optional): closed enum (B52) — `irrelevant | hallucinated | outdated | incomplete | wrong_citation | other`.
+- `position_shown` (optional): 0-based rank in the original `sources[]` (collected for future IPS; ignored in P1).
+
+**Response:** `204 No Content`.
+
+**Errors** (RFC 9457 `application/problem+json`):
+
+| Status | `error_code` | When |
+|---|---|---|
+| 401 | `FEEDBACK_TOKEN_INVALID` | HMAC mismatch, malformed token, or `shown_source_ids` differs from the signed snapshot. |
+| 410 | `FEEDBACK_TOKEN_EXPIRED` | Token `ts` outside the 7-day window. |
+| 422 | `FEEDBACK_SOURCE_INVALID` | `source_id ∉ shown_source_ids`. |
+| 422 | `FEEDBACK_VALIDATION` | Schema violations: `vote ∉ {±1}`, reason outside enum, missing field. |
+
+**Dual-write semantics:** MariaDB `feedback` (truth) → ES `feedback_v1` (serving view). ES leg failure logs `event=feedback.es_write_failed` + increments `ragent_feedback_es_write_failed_total`; request still returns 204.
+
+```bash
+curl -X POST http://localhost:8000/feedback/v1 \
+  -H "X-User-Id: alice" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "request_id": "01J9...",
+    "feedback_token": "...",
+    "query_text": "what are our Q3 OKRs?",
+    "shown_source_ids": ["DOC-A","DOC-B"],
+    "source_id": "DOC-A",
+    "vote": 1,
+    "reason": "irrelevant"
+  }'
+```
+
+---
+
 ## Observability
 
 | Endpoint | Description |

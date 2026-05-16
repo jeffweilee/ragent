@@ -63,6 +63,12 @@ class HttpErrorCode(StrEnum):
     # Chat (429).
     CHAT_RATE_LIMITED = "CHAT_RATE_LIMITED"
 
+    # Feedback router (§3.4.5, T-FB.6, B51/B52).
+    FEEDBACK_TOKEN_INVALID = "FEEDBACK_TOKEN_INVALID"  # 401 — HMAC mismatch / malformed
+    FEEDBACK_TOKEN_EXPIRED = "FEEDBACK_TOKEN_EXPIRED"  # 410 — ts past 7-day TTL
+    FEEDBACK_SOURCE_INVALID = "FEEDBACK_SOURCE_INVALID"  # 422 — source_id ∉ shown_source_ids
+    FEEDBACK_VALIDATION = "FEEDBACK_VALIDATION"  # 422 — schema / reason enum / vote bounds
+
     # MCP JSON-RPC 2.0 server (§3.8, B47). Surfaces as `data.error_code`
     # inside JSON-RPC error envelopes (NOT as problem+json), but lives in
     # this enum so the API-emitted code inventory remains single-source.

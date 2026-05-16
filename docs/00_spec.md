@@ -333,6 +333,57 @@ Runs the full retrieval pipeline (embed → kNN + BM25 → RRF join → source h
 
 ---
 
+#### 3.4.5 `POST /feedback/v1` — User feedback on chat sources (B50/B51/B52, T-FB.6)
+
+Closes the feedback loop: client echoes back the HMAC-signed token from a prior `/chat` response and reports a vote against one of the shown sources. Dual-writes MariaDB `feedback` (§5.1) and ES `feedback_v1` (§5.4); next `/chat` consults the ES index via `_FeedbackMemoryRetriever` (B50) when `CHAT_FEEDBACK_ENABLED=true`.
+
+**Request schema:**
+
+```json
+{
+  "request_id":       "01J9...",
+  "feedback_token":   "<base64url>.<hmac_hex>",
+  "query_text":       "what are our Q3 OKRs?",
+  "shown_source_ids": ["DOC-A", "DOC-B", "DOC-C"],
+  "source_id":        "DOC-A",
+  "vote":             1,
+  "reason":           "irrelevant",
+  "position_shown":   0
+}
+```
+
+- `request_id`, `feedback_token`: from the `/chat` response (§3.4.2). Token TTL = 7 days.
+- `query_text`, `shown_source_ids`: re-supplied by client; HMAC over `sources_hash = sha256(json(shown_source_ids))` binds them.
+- `source_id` ∈ `shown_source_ids` (server-enforced).
+- `vote` ∈ {+1, -1}.
+- `reason` ∈ {`irrelevant`, `hallucinated`, `outdated`, `incomplete`, `wrong_citation`, `other`} (B52, frozen) or omitted.
+- `position_shown`: 0-based index of `source_id` in the original `/chat sources[]` (recorded for future IPS; B53 item 1, unused in P1).
+
+**Response:** `204 No Content` on success; `application/problem+json` on error per §4.1.1.
+
+**Errors:**
+- `401 FEEDBACK_TOKEN_INVALID` — HMAC mismatch, malformed token, or `shown_source_ids` doesn't match the signed `sources_hash`.
+- `410 FEEDBACK_TOKEN_EXPIRED` — token `ts` outside the 7-day window.
+- `422 FEEDBACK_SOURCE_INVALID` — `source_id ∉ shown_source_ids`.
+- `422 FEEDBACK_VALIDATION` — schema violations (vote ∉ {±1}, reason outside enum, missing required field).
+
+**Dual-write semantics (B51):**
+1. MariaDB `feedback` UPSERT keyed on `(user_id, request_id, source_id)` — idempotent; second vote overwrites.
+2. ES `feedback_v1` index with `_id = sha256(user_id|request_id|source_id)` — same idempotency. Re-embeds `query_text` once per call via `EmbeddingClient.embed([query_text], query=True)`.
+3. ES leg failure logs `event=feedback.es_write_failed` and increments `ragent_feedback_es_write_failed_total`; the request still returns 204 because MariaDB is the truth.
+
+**BDD:**
+- **S42 happy** — Valid token + valid shape → 204; MariaDB row exists; ES doc indexed.
+- **S43 tampered token** — Single byte flip → 401 `FEEDBACK_TOKEN_INVALID`.
+- **S44 expired token** — `ts` > 7 days ago → 410 `FEEDBACK_TOKEN_EXPIRED`.
+- **S45 sources_hash mismatch** — Client supplies different `shown_source_ids` than at sign time → 401 `FEEDBACK_TOKEN_INVALID`.
+- **S46 source_id not shown** — `source_id ∉ shown_source_ids` → 422 `FEEDBACK_SOURCE_INVALID`.
+- **S47 reason enum** — Reason outside B52 frozen set → 422.
+- **S48 idempotent re-vote** — Same `(user_id, request_id, source_id)` posted twice → both return 204, single MariaDB row with `updated_at` advanced.
+- **S49 ES fail-open** — ES write raises → 204 + `ragent_feedback_es_write_failed_total += 1`.
+
+---
+
 ### 3.5 Authentication & Permission
 
 Two distinct concerns, kept architecturally separate from retrieval:
@@ -538,6 +589,7 @@ App-level errors (-32000..-32099) carry `data.error_code` matching the existing 
 | POST   | `/retrieve/v1`             | `X-User-Id` | §3.4.4 schema (`query` required; rest default) | `200 { chunks[] }` per §3.4.4 |
 | POST   | `/chat/v1`                 | `X-User-Id` | §3.4.1 schema (`messages` required; rest default) | `200 application/json` per §3.4.2 |
 | POST   | `/chat/v1/stream`          | `X-User-Id` | §3.4.1 schema | `text/event-stream` per §3.4.3 (`data: {type:delta\|done\|error}`) |
+| POST   | `/feedback/v1`             | `X-User-Id` | §3.4.5 schema | `204` on success; `401`/`410`/`422` `application/problem+json` per §3.4.5. |
 | POST   | `/mcp/v1`               | `X-User-Id` (P1) / `Authorization: Bearer` (P2) | JSON-RPC 2.0 envelope per §3.8 | `200` with JSON-RPC response envelope; `204` for `notifications/*`. Auth failure (401) returns `application/problem+json` per §3.8.1 (transport-layer). |
 | GET    | `/livez`                | none        | — | `200 {"status":"ok"}` — process up; no dependency probes |
 | GET    | `/readyz`               | none        | — | `200` if all dep probes pass; else `503 application/problem+json` listing failed deps. Probes: **MariaDB** (`SELECT 1`), **ES** (`GET /_cluster/health` + `analysis-icu` plugin loaded + every `resources/es/*.json` index exists; B26, I5), **Redis broker & rate-limiter** (`PING` against active topology per `REDIS_MODE`; B27), **MinIO** (`ListBuckets`). Each probe ≤ 2 s. |
@@ -586,6 +638,10 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 | `CHAT_PROVIDER_UNSUPPORTED`          | 422         | `provider` outside `{"openai"}` allow-list (B22) | Schema T3.3 |
 | `CHAT_FILTER_INVALID`                | 422         | `source_app` empty / > 64 chars, or `source_meta` empty / > 1024 chars (B29 → B35) | Schema T3.3 |
 | `CHAT_RATE_LIMITED`                  | 429 + `Retry-After` | Per-user fixed-window quota exceeded on `/chat/v1` or `/chat/v1/stream` (B31, S37) | Router-level Depends T3.16 |
+| `FEEDBACK_TOKEN_INVALID`             | 401         | HMAC mismatch, malformed token, or `shown_source_ids` doesn't match the signed `sources_hash` (T-FB.6, B51) | Router (feedback) |
+| `FEEDBACK_TOKEN_EXPIRED`             | 410         | Token `ts` outside the 7-day window (T-FB.6, B51) | Router (feedback) |
+| `FEEDBACK_SOURCE_INVALID`            | 422         | `source_id ∉ shown_source_ids` (T-FB.6) | Router (feedback) |
+| `FEEDBACK_VALIDATION`                | 422         | Schema violations: vote ∉ {±1}, reason outside B52 enum, missing required field | Schema (feedback) |
 | `CHAT_LLM_ERROR`                     | 502 / SSE-error | Pre-stream LLM failure (problem+json) or mid-stream LLM failure (`data: {type:error}`, B6) | Router T3.10/T3.12 |
 | `CHAT_RETRIEVER_ERROR`               | 502 / SSE-error | ES vector / BM25 retriever failure | Router T3.10/T3.12 |
 | `MCP_PARSE_ERROR`                    | JSON-RPC `-32700` | Request body is not valid JSON (S64) | Router P2.5 |
