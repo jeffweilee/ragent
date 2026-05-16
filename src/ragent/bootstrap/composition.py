@@ -33,6 +33,11 @@ class Container:
     http: Any  # shared httpx.Client for embedding/LLM/rerank; closed at shutdown
     auth_http: Any  # httpx.Client for token exchange (10s timeout); closed at shutdown
     unprotect_client: Any  # UnprotectClient | None — optional pre-pipeline file unprotection
+    # B50 T-EM.21 — embedding-model lifecycle plumbing
+    system_settings_repo: Any
+    embedding_registry: Any  # ActiveModelRegistry — refresh() in lifespan startup
+    embedding_lifecycle_service: Any  # EmbeddingLifecycleService — admin router backend
+    chunks_index_name: str  # ES index for the chat retrieval / dual-write
 
 
 def build_container() -> Container:
@@ -44,6 +49,7 @@ def build_container() -> Container:
     from ragent.bootstrap.http_logging import install_error_logging
     from ragent.clients.auth import TokenManager
     from ragent.clients.embedding import EmbeddingClient
+    from ragent.clients.embedding_model_config import EmbeddingModelConfig
     from ragent.clients.llm import LLMClient
     from ragent.clients.rate_limiter import RateLimiter
     from ragent.clients.rerank import RerankClient
@@ -53,6 +59,9 @@ def build_container() -> Container:
     from ragent.plugins.stub_graph import StubGraphExtractor
     from ragent.plugins.vector import VectorExtractor
     from ragent.repositories.document_repository import DocumentRepository
+    from ragent.repositories.system_settings_repository import SystemSettingsRepository
+    from ragent.services.active_model_registry import ActiveModelRegistry
+    from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
     from ragent.storage.minio_registry import MinioSiteRegistry
 
     http = httpx.Client(timeout=60.0)
@@ -93,8 +102,9 @@ def build_container() -> Container:
             else None
         )
 
+    _bootstrap_embed_url = _require("EMBEDDING_API_URL")
     embedding_client = EmbeddingClient(
-        api_url=_require("EMBEDDING_API_URL"),
+        api_url=_bootstrap_embed_url,
         http=http,
         get_token=embedding_tm.get_token,
     )
@@ -165,16 +175,67 @@ def build_container() -> Container:
     )
     registry.register(StubGraphExtractor())
 
+    # B50 T-EM.21 — Embedding-model lifecycle plumbing.
+    # SystemSettingsRepository sits over the same engine as DocumentRepository
+    # (table `system_settings` from migration 009). ActiveModelRegistry caches
+    # the four `embedding.*` rows with a TTL refresh; lifespan startup calls
+    # `await registry.refresh()` so query/ingest paths never see a cold cache.
+    chunks_index_name = os.environ.get("ES_CHUNKS_INDEX", "chunks_v1")
+    system_settings_repo = SystemSettingsRepository(engine=engine)
+    embedding_registry = ActiveModelRegistry(
+        settings_repo=system_settings_repo,
+        ttl_seconds=_int_env("EMBEDDING_REGISTRY_TTL_SECONDS", 10),
+    )
+    embedding_lifecycle_service = EmbeddingLifecycleService(
+        settings_repo=system_settings_repo,
+        es_client=es_client,
+        index_name=chunks_index_name,
+        registry=embedding_registry,
+        cache_ttl_seconds=_int_env("EMBEDDING_REGISTRY_TTL_SECONDS", 10),
+    )
+
+    # Per-model EmbeddingClient cache. Different candidate models can sit
+    # behind different api_urls; cache by (api_url, model_arg) so two
+    # promotes to the same endpoint reuse one HTTP-level client.
+    _embed_cache: dict[tuple[str, str], EmbeddingClient] = {}
+
+    def _client_for(model: EmbeddingModelConfig) -> EmbeddingClient:
+        # Empty `api_url` in the seed row means "use the operator-provided
+        # bootstrap env var". This is the common case for a fresh install:
+        # the seed (migrations/009 / schema.sql) ships with `api_url=""`
+        # and the operator sets `EMBEDDING_API_URL=...` in their .env.
+        # Once they `/promote` a candidate they supply an explicit api_url,
+        # which then takes precedence.
+        url = model.api_url or _bootstrap_embed_url
+        key = (url, model.model_arg)
+        if key not in _embed_cache:
+            _embed_cache[key] = EmbeddingClient(
+                api_url=url,
+                http=http,
+                get_token=embedding_tm.get_token,
+                model=model.model_arg,
+            )
+        return _embed_cache[key]
+
+    from functools import partial
+
+    def _embed(model: EmbeddingModelConfig, texts: list[str], *, query: bool) -> list[list[float]]:
+        return _client_for(model).embed(texts, query=query)
+
     retrieval_pipeline = build_retrieval_pipeline(
-        embedder=embedding_client,
         document_store=document_store,
         doc_repo=doc_repo,
         join_mode=join_mode,
         rerank_client=rerank_client,
+        registry=embedding_registry,
+        embed_query_callable=partial(_embed, query=True),
     )
 
     ingest_pipeline = build_ingest_pipeline(
-        embedder=DocumentEmbedder(embedding_client),
+        embedder=DocumentEmbedder(
+            registry=embedding_registry,
+            embed_callable=partial(_embed, query=False),
+        ),
         document_store=document_store,
     )
 
@@ -208,6 +269,10 @@ def build_container() -> Container:
         http=http,
         auth_http=auth_http,
         unprotect_client=unprotect_client,
+        system_settings_repo=system_settings_repo,
+        embedding_registry=embedding_registry,
+        embedding_lifecycle_service=embedding_lifecycle_service,
+        chunks_index_name=chunks_index_name,
     )
 
 

@@ -145,6 +145,9 @@ class EmbeddingLifecycleService:
             {"embedding.candidate": candidate_payload},
             expect={"embedding.candidate": None},
         )
+        # Force-refresh so the next admin call (cutover) sees CANDIDATE
+        # state without waiting for the TTL window to expire.
+        await self._registry.refresh(force=True)
         return {"state": "CANDIDATE", "candidate": candidate_payload, "promoted_at": promoted_at}
 
     # ------------------------------------------------------------------
@@ -163,8 +166,12 @@ class EmbeddingLifecycleService:
 
     async def _do_cutover(self, *, force: bool) -> dict:
         next_state(self._registry.derived_state(), "cutover")
-        candidate_dict = self._registry.candidate_dict or {}
-        promoted_at_iso = candidate_dict.get("promoted_at")
+        # The dual-write warmup gate compares `promoted_at` to `now`. Use the
+        # registry's raw cached payload — the projected `candidate_dict` drops
+        # `promoted_at`, which would make the warmup elapsed=0 and the gate
+        # always fail.
+        candidate_raw = self._registry.candidate_raw or {}
+        promoted_at_iso = candidate_raw.get("promoted_at")
         promoted_at = from_iso(promoted_at_iso) if promoted_at_iso else utcnow()
 
         report = await _preflight(
@@ -181,6 +188,7 @@ class EmbeddingLifecycleService:
             {"embedding.read": "candidate"},
             expect={"embedding.read": "stable"},
         )
+        await self._registry.refresh(force=True)
         return {
             "state": "CUTOVER",
             "read": "candidate",
@@ -200,6 +208,7 @@ class EmbeddingLifecycleService:
                 {"embedding.read": "stable"},
                 expect={"embedding.read": "candidate"},
             )
+            await self._registry.refresh(force=True)
         except Exception as exc:
             _log_failure("rollback", exc)
             raise
@@ -222,17 +231,18 @@ class EmbeddingLifecycleService:
 
     async def _do_commit(self) -> dict:
         next_state(self._registry.derived_state(), "commit")
-        stable_dict = self._registry.stable_dict
-        candidate_dict = self._registry.candidate_dict
-        if stable_dict is None or candidate_dict is None:
+        # Snapshots come from the registry's cached raw payloads — they
+        # include transient fields like `promoted_at` so the optimistic-
+        # lock `expect=` precondition matches the live JSON byte-for-byte.
+        stable_raw = self._registry.stable_raw
+        candidate_raw = self._registry.candidate_raw
+        if stable_raw is None or candidate_raw is None:
             raise RuntimeError("commit requires both stable and candidate populated")
 
         retired = list(self._registry.retired_list)
-        retired.append(_retired_entry(stable_dict))
+        retired.append(_retired_entry(stable_raw))
 
-        new_stable = {
-            k: candidate_dict[k] for k in ("name", "dim", "api_url", "model_arg", "field")
-        }
+        new_stable = {k: candidate_raw[k] for k in ("name", "dim", "api_url", "model_arg", "field")}
         await self._repo.transition(
             {
                 "embedding.stable": new_stable,
@@ -242,10 +252,11 @@ class EmbeddingLifecycleService:
             },
             expect={
                 "embedding.read": "candidate",
-                "embedding.stable": stable_dict,
-                "embedding.candidate": candidate_dict,
+                "embedding.stable": stable_raw,
+                "embedding.candidate": candidate_raw,
             },
         )
+        await self._registry.refresh(force=True)
         return {"state": "IDLE", "stable": new_stable, "committed_at": _iso_now()}
 
     # ------------------------------------------------------------------
@@ -264,14 +275,15 @@ class EmbeddingLifecycleService:
 
     async def _do_abort(self) -> dict:
         next_state(self._registry.derived_state(), "abort")
-        candidate_dict = self._registry.candidate_dict
-        if candidate_dict is None:
+        candidate_raw = self._registry.candidate_raw
+        if candidate_raw is None:
             raise RuntimeError("abort requires candidate populated")
 
         retired = list(self._registry.retired_list)
-        retired.append(_retired_entry(candidate_dict))
+        retired.append(_retired_entry(candidate_raw))
         await self._repo.transition(
             {"embedding.candidate": None, "embedding.retired": retired},
-            expect={"embedding.candidate": candidate_dict, "embedding.read": "stable"},
+            expect={"embedding.candidate": candidate_raw, "embedding.read": "stable"},
         )
-        return {"state": "IDLE", "aborted": candidate_dict["name"], "aborted_at": _iso_now()}
+        await self._registry.refresh(force=True)
+        return {"state": "IDLE", "aborted": candidate_raw["name"], "aborted_at": _iso_now()}

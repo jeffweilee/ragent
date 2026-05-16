@@ -657,26 +657,94 @@ def _pack_atoms(atoms: list[Document]) -> list[tuple[str, str]]:
 
 
 # ---------------------------------------------------------------------------
-# DocumentEmbedder — unchanged
+# DocumentEmbedder — multi-model dual-write (B50 T-EM.15)
 # ---------------------------------------------------------------------------
 
 
 @component
 class DocumentEmbedder:
-    """Wraps the project's external EmbeddingClient as a Haystack component."""
+    """Wraps the project's external EmbeddingClient as a Haystack component.
 
-    def __init__(self, client: Any) -> None:
-        self._client = client
+    Two construction modes (back-compat):
+
+    - **Legacy single-model**: ``DocumentEmbedder(client)`` — embeds every
+      chunk with the given client and stores the vector on ``doc.embedding``.
+      Kept for tests and the pre-T-EM ingest path.
+
+    - **Dual-write (B50)**: ``DocumentEmbedder(registry, embed_callable)`` —
+      reads ``registry.write_models()`` on every ``run()``; calls
+      ``embed_callable(model, texts)`` once per model. The first model
+      (stable) lands on ``doc.embedding`` so the legacy ``embedding`` ES
+      field stays populated; every later model lands on
+      ``doc.meta[model.field]`` and is expanded to a top-level ES field by
+      the downstream Haystack writer. Empty ``write_models()`` is a bug —
+      raises ``RuntimeError`` rather than emitting unindexed chunks.
+    """
+
+    def __init__(
+        self,
+        client: Any = None,
+        *,
+        registry: Any = None,
+        embed_callable: Any = None,
+    ) -> None:
+        if registry is not None:
+            if embed_callable is None:
+                raise ValueError("registry mode requires embed_callable")
+            self._mode = "dual"
+            self._registry = registry
+            self._embed = embed_callable
+            self._client = None
+        else:
+            self._mode = "legacy"
+            self._client = client
+            self._registry = None
+            self._embed = None
 
     @component.output_types(documents=list[Document])
     def run(self, documents: list[Document]) -> dict:
         if not documents:
             return {"documents": []}
+        if self._mode == "legacy":
+            return self._run_legacy(documents)
+        return self._run_dual(documents)
+
+    def _run_legacy(self, documents: list[Document]) -> dict:
         texts = [d.content or "" for d in documents]
         embeddings = self._client.embed(texts)
         out = [
             dataclasses.replace(d, embedding=e) for d, e in zip(documents, embeddings, strict=True)
         ]
+        return {"documents": out}
+
+    def _run_dual(self, documents: list[Document]) -> dict:
+        models = list(self._registry.write_models())
+        if not models:
+            raise RuntimeError(
+                "ActiveModelRegistry returned no write_models — refusing to emit unindexed chunks"
+            )
+        texts = [d.content or "" for d in documents]
+
+        # IDLE state has exactly one write model — skip the thread-pool
+        # spin-up entirely on the hot path. Only fan out when there's
+        # actually a second model to embed against (CANDIDATE/CUTOVER).
+        if len(models) == 1:
+            results = [self._embed(models[0], texts)]
+        else:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with ThreadPoolExecutor(max_workers=len(models)) as pool:
+                results = list(pool.map(lambda m: self._embed(m, texts), models))
+
+        stable_vectors = results[0]
+        extra_vectors = [(m.field, vecs) for m, vecs in zip(models[1:], results[1:], strict=True)]
+
+        out: list[Document] = []
+        for i, doc in enumerate(documents):
+            new_meta = dict(doc.meta or {})
+            for field, vectors in extra_vectors:
+                new_meta[field] = vectors[i]
+            out.append(dataclasses.replace(doc, embedding=stable_vectors[i], meta=new_meta))
         return {"documents": out}
 
 

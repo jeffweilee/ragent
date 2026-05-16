@@ -9,10 +9,12 @@
 -- setting_key and is UNIQUE-constrained so application code cannot
 -- create duplicates by accident.
 --
--- Seed rows are NOT in this file. They are inserted by the alembic
--- upgrader (versions/009_system_settings.py) using parameterized SQL —
--- file-level `split(";")` is fragile when seed JSON ever needs to
--- contain a semicolon (URL query strings, model args, etc.).
+-- Seed rows use JSON_OBJECT / JSON_QUOTE / JSON_ARRAY to dodge two
+-- known traps. First, `CAST(.. AS JSON)` is MySQL-only and MariaDB 10.6
+-- rejects it. Second, inline JSON string literals carry colon characters
+-- that SQLAlchemy text() would treat as bind parameters. Both alembic
+-- upgrade and `init_mariadb` (which feeds schema.sql back through
+-- SQLAlchemy) run this verbatim — no Python-side seeds.
 
 CREATE TABLE IF NOT EXISTS system_settings (
   id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
@@ -22,3 +24,9 @@ CREATE TABLE IF NOT EXISTS system_settings (
   PRIMARY KEY (id),
   UNIQUE KEY uq_setting_key (setting_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+INSERT IGNORE INTO system_settings (setting_key, setting_value) VALUES
+  ('embedding.stable',    JSON_OBJECT('name','bge-m3','dim',1024,'api_url','','model_arg','bge-m3','field','embedding_bgem3_1024')),
+  ('embedding.candidate', 'null'),
+  ('embedding.read',      JSON_QUOTE('stable')),
+  ('embedding.retired',   JSON_ARRAY());

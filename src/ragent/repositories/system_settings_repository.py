@@ -55,12 +55,14 @@ class SystemSettingsRepository:
         return {row["setting_key"]: _decode(row["setting_value"]) for row in rows}
 
     async def set(self, key: str, value: Any) -> None:
+        # MariaDB 10.6 does not accept `CAST(... AS JSON)`; the JSON column
+        # validates incoming text via its JSON_VALID constraint instead.
         async with self._engine.begin() as conn:
             await conn.execute(
                 text(
                     """
                     INSERT INTO system_settings (setting_key, setting_value)
-                    VALUES (:key, CAST(:value AS JSON))
+                    VALUES (:key, :value)
                     ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)
                     """
                 ),

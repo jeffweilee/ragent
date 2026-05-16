@@ -36,9 +36,15 @@ class ActiveModelRegistry:
         self._ttl = ttl_seconds
         self._stable: EmbeddingModelConfig | None = None
         self._candidate: EmbeddingModelConfig | None = None
+        # Full raw payloads (including transient `promoted_at` etc.) — used
+        # for optimistic-lock `expect=` snapshots that must compare equal
+        # to the live JSON in `system_settings`.
+        self._stable_raw: dict | None = None
+        self._candidate_raw: dict | None = None
         self._read: str = "stable"
         self._retired: list[dict] = []
         self._ready: bool = False
+        self._last_refresh: float = 0.0  # monotonic clock; 0 = never refreshed
 
     _KEYS = (
         "embedding.stable",
@@ -47,7 +53,20 @@ class ActiveModelRegistry:
         "embedding.retired",
     )
 
-    async def refresh(self) -> None:
+    async def refresh(self, *, force: bool = False) -> None:
+        """Pull all four embedding.* settings into the cache.
+
+        TTL-gated: warm-cache calls return immediately without a DB
+        round-trip. Per-task worker refresh (see workers/ingest.py) and
+        per-tick reconciler refresh therefore cost ~0 once primed; a
+        cutover/rollback in the API still propagates within `ttl_seconds`.
+        Admin endpoints and unit tests pass `force=True` to bypass.
+        """
+        import time
+
+        now = time.monotonic()
+        if not force and self._ready and (now - self._last_refresh) < self._ttl:
+            return
         try:
             values = await self._repo.get_many(list(self._KEYS))
         except Exception as exc:
@@ -57,9 +76,12 @@ class ActiveModelRegistry:
         candidate = values.get("embedding.candidate")
         self._stable = EmbeddingModelConfig.from_dict(stable) if stable else None
         self._candidate = EmbeddingModelConfig.from_dict(candidate) if candidate else None
+        self._stable_raw = stable if stable else None
+        self._candidate_raw = candidate if candidate else None
         self._read = values.get("embedding.read") or "stable"
         self._retired = values.get("embedding.retired") or []
         self._ready = True
+        self._last_refresh = now
 
     def _require_ready(self) -> None:
         if not self._ready or self._stable is None:
@@ -98,6 +120,18 @@ class ActiveModelRegistry:
     @property
     def candidate_dict(self) -> dict | None:
         return self._candidate.to_dict() if self._candidate else None
+
+    @property
+    def stable_raw(self) -> dict | None:
+        """Cached full settings payload for `embedding.stable` (includes any
+        transient fields like `promoted_at` that `EmbeddingModelConfig.to_dict`
+        projects out). Used by the lifecycle service's optimistic-lock
+        `expect=` snapshot — must match the live JSON byte-for-byte."""
+        return dict(self._stable_raw) if self._stable_raw else None
+
+    @property
+    def candidate_raw(self) -> dict | None:
+        return dict(self._candidate_raw) if self._candidate_raw else None
 
     @property
     def retired_list(self) -> list[dict]:

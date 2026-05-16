@@ -48,6 +48,7 @@ class EmbeddingClient:
         query_timeout: float | None = None,
         sleep: Callable[[float], None] = _time.sleep,
         auth_header_name: str | None = None,
+        model: str | None = None,
     ) -> None:
         self._url = api_url
         self._http = http
@@ -63,6 +64,9 @@ class EmbeddingClient:
         self._auth_header_name = auth_header_name or os.environ.get(
             "EMBEDDING_AUTH_HEADER_NAME", "Authorization"
         )
+        # B50 T-EM.21: per-instance model name. Defaults to bge-m3 for
+        # back-compat with call sites that pre-date the registry rollout.
+        self._model = model or _EMBED_MODEL
 
     def embed(self, texts: list[str], query: bool = False) -> list[list[float]]:
         if not texts:
@@ -85,7 +89,7 @@ class EmbeddingClient:
                     span.set_attribute("retry_attempt", attempt)
                     resp = self._http.post(
                         self._url,
-                        json={"model": _EMBED_MODEL, "texts": texts, "encoding-format": "float"},
+                        json={"model": self._model, "texts": texts, "encoding-format": "float"},
                         headers={self._auth_header_name: self._get_token()},
                         timeout=timeout,
                     )

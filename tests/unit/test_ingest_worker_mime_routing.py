@@ -46,6 +46,8 @@ def _container(doc: MagicMock, *, minio_content_type: str | None) -> MagicMock:
     container.registry = MagicMock()
     container.registry.fan_out = AsyncMock()
     container.unprotect_client = None
+    # Worker awaits embedding_registry.refresh() per task (B50 T-EM.21).
+    container.embedding_registry.refresh = AsyncMock()
     return container
 
 
@@ -130,6 +132,7 @@ async def test_worker_claim_returns_none_skips_pipeline():
     container.doc_repo.claim_for_processing.return_value = None
     container.minio_registry = MagicMock()
     container.ingest_pipeline = MagicMock()
+    container.embedding_registry.refresh = AsyncMock()
 
     with patch("ragent.bootstrap.composition.get_container", return_value=container):
         await worker_mod.ingest_pipeline_task("DOC-GONE")

@@ -160,7 +160,9 @@ async def test_refresh_failure_emits_stale_warning() -> None:
 
     repo.get_many.side_effect = RuntimeError("DB blip")
     with structlog.testing.capture_logs() as logs:
-        await reg.refresh()
+        # force=True bypasses the TTL gate so the second refresh actually
+        # hits the failing repo (otherwise the warm cache short-circuits).
+        await reg.refresh(force=True)
 
     events = [e["event"] for e in logs]
     assert "embedding.cache.stale" in events
@@ -180,6 +182,53 @@ async def test_read_before_refresh_raises() -> None:
 # ---------------------------------------------------------------------------
 # Snapshot / promoted_at
 # ---------------------------------------------------------------------------
+
+
+async def test_candidate_raw_preserves_promoted_at_from_settings() -> None:
+    """The lifecycle service's `_do_cutover` reads `promoted_at` via
+    `candidate_raw` to gate the warmup preflight. The projected
+    `candidate_dict` strips it — `candidate_raw` must NOT."""
+    from ragent.services.active_model_registry import ActiveModelRegistry
+
+    candidate_with_ts = {
+        **_bgem3v2(),
+        "promoted_at": "2026-05-15T12:34:56.789Z",
+    }
+    reg = ActiveModelRegistry(
+        _mock_repo(candidate=candidate_with_ts, read="stable"), ttl_seconds=999
+    )
+    await reg.refresh()
+
+    raw = reg.candidate_raw
+    assert raw is not None
+    assert raw["promoted_at"] == "2026-05-15T12:34:56.789Z"
+    # The projected view drops it — that's the bug the raw accessor exists to fix.
+    assert "promoted_at" not in reg.candidate_dict
+
+
+async def test_stable_raw_and_candidate_raw_return_copies() -> None:
+    """Callers mutate retired entries / commit payloads in place; the
+    registry's cached copies must not be visible to those mutations."""
+    from ragent.services.active_model_registry import ActiveModelRegistry
+
+    reg = ActiveModelRegistry(_mock_repo(candidate=_bgem3v2(), read="stable"), ttl_seconds=999)
+    await reg.refresh()
+
+    s1 = reg.stable_raw
+    s2 = reg.stable_raw
+    assert s1 == s2
+    assert s1 is not s2  # defensive copy
+    s1["name"] = "tampered"
+    assert reg.stable_raw["name"] == "bge-m3"
+
+
+async def test_raw_accessors_return_none_when_unset() -> None:
+    from ragent.services.active_model_registry import ActiveModelRegistry
+
+    reg = ActiveModelRegistry(_mock_repo(), ttl_seconds=999)  # no candidate
+    await reg.refresh()
+    assert reg.candidate_raw is None
+    assert reg.stable_raw is not None  # stable always seeded
 
 
 async def test_snapshot_carries_state_and_models() -> None:
