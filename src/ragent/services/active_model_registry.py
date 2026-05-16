@@ -44,6 +44,7 @@ class ActiveModelRegistry:
         self._read: str = "stable"
         self._retired: list[dict] = []
         self._ready: bool = False
+        self._last_refresh: float = 0.0  # monotonic clock; 0 = never refreshed
 
     _KEYS = (
         "embedding.stable",
@@ -52,7 +53,20 @@ class ActiveModelRegistry:
         "embedding.retired",
     )
 
-    async def refresh(self) -> None:
+    async def refresh(self, *, force: bool = False) -> None:
+        """Pull all four embedding.* settings into the cache.
+
+        TTL-gated: warm-cache calls return immediately without a DB
+        round-trip. Per-task worker refresh (see workers/ingest.py) and
+        per-tick reconciler refresh therefore cost ~0 once primed; a
+        cutover/rollback in the API still propagates within `ttl_seconds`.
+        Admin endpoints and unit tests pass `force=True` to bypass.
+        """
+        import time
+
+        now = time.monotonic()
+        if not force and self._ready and (now - self._last_refresh) < self._ttl:
+            return
         try:
             values = await self._repo.get_many(list(self._KEYS))
         except Exception as exc:
@@ -67,6 +81,7 @@ class ActiveModelRegistry:
         self._read = values.get("embedding.read") or "stable"
         self._retired = values.get("embedding.retired") or []
         self._ready = True
+        self._last_refresh = now
 
     def _require_ready(self) -> None:
         if not self._ready or self._stable is None:

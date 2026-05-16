@@ -168,7 +168,14 @@ class Reconciler:
                 await self._es_client.update_by_query(
                     index=self._chunks_index,
                     body={
-                        "script": {"source": f"ctx._source.remove('{field}')"},
+                        # Pass `field` via Painless params (not f-string
+                        # interpolation) — defence in depth even though
+                        # `EmbeddingModelConfig._normalize` already restricts
+                        # the field name to `[a-z0-9_]`.
+                        "script": {
+                            "source": "ctx._source.remove(params.field)",
+                            "params": {"field": field},
+                        },
                         "query": {"exists": {"field": field}},
                     },
                     conflicts="proceed",

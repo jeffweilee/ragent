@@ -69,7 +69,10 @@ async def test_sweep_clears_uncleaned_field_via_update_by_query() -> None:
     kwargs = es.update_by_query.call_args.kwargs
     assert kwargs["index"] == "chunks_v1"
     body = kwargs["body"]
-    assert "embedding_bgem3v2_768" in body["script"]["source"]
+    # Field passed via Painless `params` (not f-string-interpolated into
+    # the script source) per PR #78 Gemini security review.
+    assert body["script"]["params"] == {"field": "embedding_bgem3v2_768"}
+    assert body["script"]["source"] == "ctx._source.remove(params.field)"
     assert body["query"]["exists"]["field"] == "embedding_bgem3v2_768"
 
 
@@ -128,7 +131,7 @@ async def test_sweep_processes_only_pending_entries_in_mixed_list() -> None:
     # Only the one pending entry was swept.
     assert es.update_by_query.await_count == 1
     body = es.update_by_query.call_args.kwargs["body"]
-    assert "embedding_old2_512" in body["script"]["source"]
+    assert body["script"]["params"] == {"field": "embedding_old2_512"}
 
 
 # ---------------------------------------------------------------------------

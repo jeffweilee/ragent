@@ -160,7 +160,9 @@ async def test_refresh_failure_emits_stale_warning() -> None:
 
     repo.get_many.side_effect = RuntimeError("DB blip")
     with structlog.testing.capture_logs() as logs:
-        await reg.refresh()
+        # force=True bypasses the TTL gate so the second refresh actually
+        # hits the failing repo (otherwise the warm cache short-circuits).
+        await reg.refresh(force=True)
 
     events = [e["event"] for e in logs]
     assert "embedding.cache.stale" in events

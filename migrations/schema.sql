@@ -48,3 +48,15 @@ CREATE TABLE IF NOT EXISTS system_settings (
   PRIMARY KEY (id),
   UNIQUE KEY uq_setting_key (setting_key)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Seed the four embedding-lifecycle rows so a fresh boot (init_schema in
+-- dev / e2e / first-time prod) has a stable model immediately readable by
+-- ActiveModelRegistry.refresh(). INSERT IGNORE keeps re-applying idempotent.
+-- JSON_OBJECT / JSON_QUOTE / JSON_ARRAY are used instead of inline string
+-- literals so the SQL contains no `:` characters (SQLAlchemy text() would
+-- otherwise treat `:bge` etc. as bind parameters and bind-validate them).
+INSERT IGNORE INTO system_settings (setting_key, setting_value) VALUES
+  ('embedding.stable',    JSON_OBJECT('name','bge-m3','dim',1024,'api_url','','model_arg','bge-m3','field','embedding_bgem3_1024')),
+  ('embedding.candidate', 'null'),
+  ('embedding.read',      JSON_QUOTE('stable')),
+  ('embedding.retired',   JSON_ARRAY());

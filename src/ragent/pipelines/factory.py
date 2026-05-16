@@ -725,14 +725,16 @@ class DocumentEmbedder:
             )
         texts = [d.content or "" for d in documents]
 
-        # Embed every model's batch in parallel. The embed_callable is sync
-        # (it wraps the project's blocking httpx-based EmbeddingClient), so
-        # a thread pool — not asyncio.gather — is the right primitive. This
-        # halves CUTOVER-state ingest latency for two-model dual-write.
-        from concurrent.futures import ThreadPoolExecutor
+        # IDLE state has exactly one write model — skip the thread-pool
+        # spin-up entirely on the hot path. Only fan out when there's
+        # actually a second model to embed against (CANDIDATE/CUTOVER).
+        if len(models) == 1:
+            results = [self._embed(models[0], texts)]
+        else:
+            from concurrent.futures import ThreadPoolExecutor
 
-        with ThreadPoolExecutor(max_workers=len(models)) as pool:
-            results = list(pool.map(lambda m: self._embed(m, texts), models))
+            with ThreadPoolExecutor(max_workers=len(models)) as pool:
+                results = list(pool.map(lambda m: self._embed(m, texts), models))
 
         stable_vectors = results[0]
         extra_vectors = [(m.field, vecs) for m, vecs in zip(models[1:], results[1:], strict=True)]

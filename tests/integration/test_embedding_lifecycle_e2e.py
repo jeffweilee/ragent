@@ -126,8 +126,8 @@ async def lifecycle_setup(lifecycle_engine, chunks_index):
         }
     )
 
-    registry = ActiveModelRegistry(settings_repo=settings, ttl_seconds=1)
-    await registry.refresh()
+    registry = ActiveModelRegistry(settings_repo=settings, ttl_seconds=0)
+    await registry.refresh(force=True)
 
     service = EmbeddingLifecycleService(
         settings_repo=settings,
@@ -182,7 +182,7 @@ async def test_full_lifecycle_promote_cutover_rollback_abort(lifecycle_setup) ->
     registry = lifecycle_setup["registry"]
 
     await svc.promote(name="bge-m3-v2", dim=768, api_url="http://e2", model_arg="bge-m3-v2")
-    await registry.refresh()
+    await registry.refresh(force=True)
 
     # Cutover — preflight passes for an empty index (coverage check escapes
     # the threshold), warmup gate disabled via cache_ttl_seconds=0.
@@ -190,7 +190,7 @@ async def test_full_lifecycle_promote_cutover_rollback_abort(lifecycle_setup) ->
     assert cutover_result["state"] == "CUTOVER"
     assert await settings.get("embedding.read") == "candidate"
 
-    await registry.refresh()
+    await registry.refresh(force=True)
     rollback_result = await svc.rollback()
     assert rollback_result["state"] == "CANDIDATE"
     assert await settings.get("embedding.read") == "stable"
@@ -198,7 +198,7 @@ async def test_full_lifecycle_promote_cutover_rollback_abort(lifecycle_setup) ->
     # keep updating both vector fields.
     assert (await settings.get("embedding.candidate")) is not None
 
-    await registry.refresh()
+    await registry.refresh(force=True)
     abort_result = await svc.abort()
     assert abort_result["state"] == "IDLE"
     assert await settings.get("embedding.candidate") is None
@@ -226,9 +226,9 @@ async def test_doc_upsert_during_rollback_window_keeps_both_fields_current(
     registry = lifecycle_setup["registry"]
 
     await svc.promote(name="bge-m3-v2", dim=768, api_url="http://e2", model_arg="bge-m3-v2")
-    await registry.refresh()
+    await registry.refresh(force=True)
     await svc.cutover(force=True)
-    await registry.refresh()
+    await registry.refresh(force=True)
 
     # Simulate an ingest landing during CUTOVER: a chunk with BOTH vectors.
     stable_vec = [0.1] * 1024
@@ -293,7 +293,7 @@ async def test_reconciler_sweep_clears_retired_field_values(lifecycle_setup) -> 
 
     # Stage some chunks with the candidate field populated.
     await svc.promote(name="bge-m3-v2", dim=768, api_url="http://e2", model_arg="bge-m3-v2")
-    await registry.refresh()
+    await registry.refresh(force=True)
     for i in range(3):
         await es.index(
             index=index,
@@ -309,7 +309,7 @@ async def test_reconciler_sweep_clears_retired_field_values(lifecycle_setup) -> 
         )
 
     # Abort — candidate enters retired list, cleanup_done=false.
-    await registry.refresh()
+    await registry.refresh(force=True)
     await svc.abort()
 
     # Build a reconciler wired with the settings repo + es client.

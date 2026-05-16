@@ -103,6 +103,7 @@ async def test_ingest_task_started_fires_after_claim(monkeypatch: pytest.MonkeyP
     container.ingest_pipeline.run.return_value = {"writer": {"documents_written": 1}}
     container.registry = MagicMock()
     container.registry.fan_out = AsyncMock()
+    container.embedding_registry.refresh = AsyncMock()
 
     monkeypatch.setattr(
         "ragent.bootstrap.composition.get_container", lambda: container, raising=False

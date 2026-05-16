@@ -41,6 +41,13 @@ async def ingest_pipeline_task(document_id: str) -> None:
     from ragent.bootstrap.composition import get_container
 
     container = get_container()
+    # Worker has no FastAPI lifespan to warm the embedding-model registry —
+    # refresh per-task so the first ingest after worker boot doesn't raise
+    # ActiveModelRegistryNotReady, and so a cutover/rollback in the API
+    # process takes effect on the next task without restarting the worker.
+    # TTL-gated inside refresh() — warm-cache hits return immediately
+    # without a DB round-trip.
+    await container.embedding_registry.refresh()
     repo = container.doc_repo
     registry = container.minio_registry
 

@@ -145,6 +145,9 @@ class EmbeddingLifecycleService:
             {"embedding.candidate": candidate_payload},
             expect={"embedding.candidate": None},
         )
+        # Force-refresh so the next admin call (cutover) sees CANDIDATE
+        # state without waiting for the TTL window to expire.
+        await self._registry.refresh(force=True)
         return {"state": "CANDIDATE", "candidate": candidate_payload, "promoted_at": promoted_at}
 
     # ------------------------------------------------------------------
@@ -185,6 +188,7 @@ class EmbeddingLifecycleService:
             {"embedding.read": "candidate"},
             expect={"embedding.read": "stable"},
         )
+        await self._registry.refresh(force=True)
         return {
             "state": "CUTOVER",
             "read": "candidate",
@@ -204,6 +208,7 @@ class EmbeddingLifecycleService:
                 {"embedding.read": "stable"},
                 expect={"embedding.read": "candidate"},
             )
+            await self._registry.refresh(force=True)
         except Exception as exc:
             _log_failure("rollback", exc)
             raise
@@ -251,6 +256,7 @@ class EmbeddingLifecycleService:
                 "embedding.candidate": candidate_raw,
             },
         )
+        await self._registry.refresh(force=True)
         return {"state": "IDLE", "stable": new_stable, "committed_at": _iso_now()}
 
     # ------------------------------------------------------------------
@@ -279,4 +285,5 @@ class EmbeddingLifecycleService:
             {"embedding.candidate": None, "embedding.retired": retired},
             expect={"embedding.candidate": candidate_raw, "embedding.read": "stable"},
         )
+        await self._registry.refresh(force=True)
         return {"state": "IDLE", "aborted": candidate_raw["name"], "aborted_at": _iso_now()}

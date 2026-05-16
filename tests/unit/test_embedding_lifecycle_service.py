@@ -68,6 +68,10 @@ class _FakeRegistry:
     def retired_list(self):
         return self._retired
 
+    async def refresh(self, *, force: bool = False) -> None:
+        """Service force-refreshes after every mutation; no-op for the fake."""
+        return None
+
     def candidate_model(self):
         if self._candidate_dict is None:
             return None
