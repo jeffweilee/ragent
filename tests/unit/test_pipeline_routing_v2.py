@@ -82,5 +82,22 @@ def test_pptx_routes_to_pptx_ast_splitter() -> None:
 
 def test_unknown_mime_raises_pipeline_unroutable() -> None:
     with pytest.raises(IngestStepError) as exc:
-        _MimeAwareSplitter().run([Document(content="x", meta={"mime_type": "application/pdf"})])
+        _MimeAwareSplitter().run([Document(content="x", meta={"mime_type": "image/png"})])
     assert exc.value.error_code == "PIPELINE_UNROUTABLE"
+
+
+def test_pdf_routes_to_pdf_ast_splitter() -> None:
+    from fpdf import FPDF
+
+    pdf = FPDF()
+    pdf.set_auto_page_break(False)
+    pdf.add_page()
+    pdf.set_font("Helvetica", size=12)
+    pdf.cell(0, 10, text="PDF route test")
+    data = bytes(pdf.output())
+
+    out = _MimeAwareSplitter().run(
+        [Document(content=None, meta={"mime_type": "application/pdf", "raw_bytes": data})]
+    )["documents"]
+    assert len(out) == 1
+    assert "PDF route test" in out[0].content

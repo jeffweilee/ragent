@@ -16,7 +16,6 @@ from typing import Any
 
 import structlog
 
-from ragent.repositories.document_repository import LockNotAvailable
 from ragent.schemas.ingest import (
     SOURCE_URL_MAX,
     FileIngestRequest,
@@ -28,7 +27,7 @@ from ragent.utility.id_gen import new_id
 
 logger = structlog.get_logger(__name__)
 
-_MAX_INLINE_BYTES = int(os.environ.get("INGEST_INLINE_MAX_BYTES", "52428800"))
+_MAX_INLINE_BYTES = int(os.environ.get("INGEST_INLINE_MAX_BYTES", "10485760"))
 _MAX_FILE_BYTES = int(os.environ.get("INGEST_FILE_MAX_BYTES", "52428800"))
 _LIST_MAX = int(os.environ.get("INGEST_LIST_MAX_LIMIT", "100"))
 
@@ -43,6 +42,10 @@ class FileTooLarge(Exception):
 
 class DocumentNotFound(Exception):
     pass
+
+
+class DocumentNotRerunnable(Exception):
+    """Rerun requested on a document whose status is READY or DELETING."""
 
 
 class UnknownMinioSiteError(Exception):
@@ -179,10 +182,19 @@ class IngestService:
     async def get(self, document_id: str) -> Any | None:
         return await self._repo.get(document_id)
 
+    async def rerun(self, document_id: str) -> None:
+        """Manually re-dispatch the ingest pipeline for a non-READY document."""
+        outcome = await self._repo.mark_for_rerun(document_id)
+        if outcome == "not_found":
+            raise DocumentNotFound(document_id)
+        if outcome == "not_rerunnable":
+            raise DocumentNotRerunnable(document_id)
+        await self._broker.enqueue("ingest.pipeline", document_id=document_id)
+        logger.info("ingest.rerun_dispatched", document_id=document_id)
+
     async def delete(self, document_id: str) -> None:
-        try:
-            doc = await self._repo.claim_for_deletion(document_id)
-        except LockNotAvailable:
+        doc = await self._repo.claim_for_deletion(document_id)
+        if doc is None:
             return
 
         # Cascade plugin cleanup (ES chunks, etc.) before the DB row is

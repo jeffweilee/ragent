@@ -3,7 +3,7 @@
 import datetime
 from unittest.mock import AsyncMock, MagicMock
 
-from ragent.repositories.document_repository import DocumentRow, LockNotAvailable
+from ragent.repositories.document_repository import DocumentRow
 from ragent.services.ingest_service import IngestService
 
 
@@ -29,11 +29,11 @@ def _make_doc(**kwargs):
     return DocumentRow(**base)
 
 
-def _make_service(doc=None, lock_raises=False):
+def _make_service(doc=None, not_claimable=False):
     repo = AsyncMock()
     doc = doc or _make_doc()
-    if lock_raises:
-        repo.claim_for_deletion.side_effect = LockNotAvailable("DOCID001")
+    if not_claimable:
+        repo.claim_for_deletion.return_value = None
     else:
         repo.claim_for_deletion.return_value = doc
 
@@ -71,9 +71,13 @@ async def test_delete_ready_doc_calls_cascade_in_order():
 
 
 async def test_delete_idempotent_on_missing_doc():
-    """Re-DELETE of already-deleted document returns without error (S14)."""
+    """Re-DELETE of already-deleted/in-progress document returns without error (S14).
+
+    claim_for_deletion returns None when the WHERE clause matches no row
+    (already DELETING, or row missing).
+    """
     repo = AsyncMock()
-    repo.claim_for_deletion.side_effect = LockNotAvailable("NONEXISTENT")
+    repo.claim_for_deletion.return_value = None
     registry = MagicMock()
     registry.fan_out_delete = AsyncMock(return_value=[])
     svc = IngestService(repo=repo, storage=MagicMock(), broker=registry, registry=registry)

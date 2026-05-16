@@ -111,6 +111,16 @@ def test_upload_missing_file_returns_422():
     assert resp.status_code == 422
 
 
+def test_upload_max_bytes_default_is_10mb():
+    """_MAX_UPLOAD_BYTES default must be 10 MB per spec §4.6 (INGEST_INLINE_MAX_BYTES)."""
+    import ragent.routers.admin_ingest as mod
+
+    assert mod._MAX_UPLOAD_BYTES == 10_485_760, (
+        f"Expected 10 MB (10485760), got {mod._MAX_UPLOAD_BYTES} — "
+        "update the os.environ.get default in admin_ingest.py"
+    )
+
+
 def test_upload_file_too_large_via_size_attr_returns_413(monkeypatch):
     """Early rejection via file.size avoids reading the payload into memory."""
     import ragent.routers.admin_ingest as mod

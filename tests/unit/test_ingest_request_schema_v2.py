@@ -126,6 +126,7 @@ def test_ingest_mime_enum_values():
     assert IngestMime.TEXT_PLAIN.value == "text/plain"
     assert IngestMime.TEXT_MARKDOWN.value == "text/markdown"
     assert IngestMime.TEXT_HTML.value == "text/html"
+    assert IngestMime.PDF.value == "application/pdf"
     # CSV is intentionally NOT in v2 enum
     assert "text/csv" not in {m.value for m in IngestMime}
 
@@ -220,3 +221,33 @@ def test_full_pptx_mime_mixed_case_normalises():
     mixed = "Application/Vnd.Openxmlformats-Officedocument.Presentationml.Presentation"
     req = _adapter().validate_python({**_FILE_PPTX_BASE, "mime_type": mixed})
     assert req.mime_type == IngestMime.PPTX
+
+
+# ---------------------------------------------------------------------------
+# PDF MIME type
+# ---------------------------------------------------------------------------
+
+_FILE_PDF_BASE = {
+    **_FILE_PPTX_BASE,
+    "source_id": "DOC-5",
+    "mime_type": "application/pdf",
+    "object_key": "report.pdf",
+}
+
+
+def test_pdf_alias_normalises_to_full_mime():
+    req = _adapter().validate_python({**_FILE_PDF_BASE, "mime_type": "pdf"})
+    assert req.mime_type == IngestMime.PDF
+
+
+def test_file_pdf_mime_accepted():
+    req = _adapter().validate_python(_FILE_PDF_BASE)
+    assert isinstance(req, FileIngestRequest)
+    assert req.mime_type == IngestMime.PDF
+
+
+def test_inline_pdf_mime_rejected():
+    bad = {**_INLINE_BASE, "mime_type": "application/pdf"}
+    with pytest.raises(ValidationError) as exc_info:
+        _adapter().validate_python(bad)
+    assert "binary" in str(exc_info.value).lower()

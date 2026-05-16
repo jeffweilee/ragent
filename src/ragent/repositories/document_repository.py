@@ -13,10 +13,10 @@ from __future__ import annotations
 import asyncio
 import datetime
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
 import structlog
-from sqlalchemy import text
+from sqlalchemy import bindparam, text
 from sqlalchemy.exc import OperationalError
 
 from ragent.utility.state_machine import IllegalStateTransition, assert_transition
@@ -28,10 +28,6 @@ _MARIADB_DEADLOCK = 1213
 
 def _is_deadlock(exc: OperationalError) -> bool:
     return getattr(getattr(exc, "orig", None), "args", (None,))[0] == _MARIADB_DEADLOCK
-
-
-class LockNotAvailable(Exception):
-    """Raised when FOR UPDATE NOWAIT finds a contended row (R7, S28)."""
 
 
 @dataclass
@@ -178,40 +174,122 @@ class DocumentRepository:
     # Locking
     # ------------------------------------------------------------------
 
-    async def _claim(self, document_id: str, to_status: str, extra_set: str = "") -> DocumentRow:
-        """Single-tx SELECT FOR UPDATE NOWAIT + UPDATE.
+    async def _atomic_claim(
+        self,
+        document_id: str,
+        to_status: str,
+        accept_from: tuple[str, ...],
+        bump_attempt: bool = False,
+    ) -> DocumentRow | None:
+        """Pre-state SELECT + atomic conditional UPDATE.
 
-        Holds the row lock across both statements so a concurrent caller cannot
-        observe the pre-transition status after we've decided to advance it (S28).
+        Reads the row, then runs ``UPDATE … WHERE status IN (:accept_from)``.
+        Returns the **pre-state** ``DocumentRow`` on a successful transition
+        so callers can branch on the prior status (e.g. delete-cascade
+        chooses MinIO cleanup based on whether the doc was UPLOADED/PENDING).
+        Returns ``None`` when the row is missing, the prior status isn't in
+        ``accept_from``, or a concurrent writer transitioned the row out of
+        the accept-set between our SELECT and UPDATE (rowcount=0). InnoDB's
+        per-statement row lock on the UPDATE serialises concurrent claimers.
+        """
+        extra_set = ", attempt=attempt+1" if bump_attempt else ""
+        update_stmt = text(
+            f"UPDATE documents SET status=:to_status{extra_set},"
+            " updated_at=NOW(6) WHERE document_id=:id"
+            " AND status IN :accept_from"
+        ).bindparams(bindparam("accept_from", expanding=True))
+        async with self._engine.begin() as conn:
+            pre = (
+                (
+                    await conn.execute(
+                        text("SELECT * FROM documents WHERE document_id = :id"),
+                        {"id": document_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            if pre is None or pre["status"] not in accept_from:
+                return None
+            update_result = await conn.execute(
+                update_stmt,
+                {
+                    "id": document_id,
+                    "to_status": to_status,
+                    "accept_from": list(accept_from),
+                },
+            )
+            if update_result.rowcount == 0:
+                return None
+            self._log_transition(document_id, pre["status"], to_status)
+            return DocumentRow.from_mapping(pre)
+
+    async def claim_for_processing(self, document_id: str) -> DocumentRow | None:
+        """Claim the row for ingest processing.
+
+        Accepts UPLOADED (organic POST→worker hand-off) or PENDING (reconciler
+        redispatch / manual rerun). Returns the pre-state row (``status`` is
+        the prior value, ``attempt`` is pre-bump) or ``None`` if the row is
+        terminal (READY/FAILED/DELETING) or missing.
+        """
+        return await self._atomic_claim(
+            document_id,
+            to_status="PENDING",
+            accept_from=("UPLOADED", "PENDING"),
+            bump_attempt=True,
+        )
+
+    async def claim_for_deletion(self, document_id: str) -> DocumentRow | None:
+        """Claim the row for deletion.
+
+        Returns the pre-state row (``status`` reflects the prior value so the
+        cascade can branch on UPLOADED/PENDING for MinIO cleanup) or ``None``
+        if already DELETING or missing.
+        """
+        return await self._atomic_claim(
+            document_id,
+            to_status="DELETING",
+            accept_from=("UPLOADED", "PENDING", "READY", "FAILED"),
+        )
+
+    async def mark_for_rerun(
+        self, document_id: str
+    ) -> Literal["ok", "not_rerunnable", "not_found"]:
+        """Transition any non-READY/non-DELETING row back to PENDING for manual rerun.
+
+        Returns ``"ok"`` on success, ``"not_rerunnable"`` if the row exists
+        but is in a terminal/in-flight-delete state (READY or DELETING), and
+        ``"not_found"`` if no row matches ``document_id``. Clears
+        ``error_code``/``error_reason`` and refreshes ``updated_at`` so the
+        reconciler's stale-sweep doesn't immediately race the manual dispatch.
+        Resets ``attempt`` to 0 so an exhausted FAILED row (the primary use
+        case for manual rerun) isn't immediately swept back to FAILED by the
+        reconciler's ``_mark_failed`` budget check before the worker picks up
+        — the operator's intent on /rerun is "start a fresh attempt budget".
         """
         async with self._engine.begin() as conn:
-            try:
-                result = await conn.execute(
-                    text("SELECT * FROM documents WHERE document_id = :id FOR UPDATE NOWAIT"),
-                    {"id": document_id},
-                )
-            except OperationalError as exc:
-                raise LockNotAvailable(document_id) from exc
-            row = result.mappings().first()
-            if row is None:
-                raise LockNotAvailable(document_id)
-            doc = DocumentRow.from_mapping(row)
-            assert_transition(doc.status, to_status)
-            await conn.execute(
+            update_result = await conn.execute(
                 text(
-                    f"UPDATE documents SET status=:to_status{extra_set},"
-                    " updated_at=NOW(6) WHERE document_id=:id"
+                    "UPDATE documents SET status='PENDING', attempt=0,"
+                    " updated_at=NOW(6), error_code=NULL, error_reason=NULL"
+                    " WHERE document_id=:id AND status IN ('UPLOADED','PENDING','FAILED')"
                 ),
-                {"id": document_id, "to_status": to_status},
+                {"id": document_id},
             )
-            self._log_transition(document_id, doc.status, to_status)
-            return doc
-
-    async def claim_for_processing(self, document_id: str) -> DocumentRow:
-        return await self._claim(document_id, "PENDING", extra_set=", attempt=attempt+1")
-
-    async def claim_for_deletion(self, document_id: str) -> DocumentRow:
-        return await self._claim(document_id, "DELETING")
+            if update_result.rowcount == 1:
+                self._log_transition(document_id, "<rerun>", "PENDING")
+                return "ok"
+            exists = (
+                (
+                    await conn.execute(
+                        text("SELECT 1 FROM documents WHERE document_id=:id"),
+                        {"id": document_id},
+                    )
+                )
+                .mappings()
+                .first()
+            )
+            return "not_rerunnable" if exists else "not_found"
 
     # ------------------------------------------------------------------
     # Status mutations

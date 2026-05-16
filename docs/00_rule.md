@@ -70,6 +70,7 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
     - **Constraint**: Nested `for` loops and `if-else` statements **must not** exceed 2 levels.
     - **Constraint**: A single method **must not** exceed 30 lines of code.
     - **Constraint**: Utility methods **must** be extracted to `utility.py` to keep the business logic in `service.py` clean.
+    - **Constraint**: Two-branch method dispatch over a known-finite set MUST use a typed `Callable` parameter, not `str + getattr(obj, str)`. `getattr(obj, str)` is reserved for user-supplied dynamic attribute names (config-driven field names) only.
 
 - **Clear Layered Responsibilities**
     - **Presentation Layer (Router Layer)**:
@@ -107,6 +108,7 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
     - **Prohibition**: Do **not** hold a single long-lived `Connection` (or `AsyncConnection`) at module / app-singleton scope and share it across requests, tasks, or threads.
     - **Rationale**: FastAPI is natively async; the event loop interleaves requests on a single worker, and a shared SQLAlchemy `Connection` is **not** safe for concurrent statements (raises "Packet sequence error" / "command out of sync" under load). Even sync routes get dispatched to a thread pool and hit the same hazard. A pool gives each unit of work an exclusive checkout and recycles the connection on return.
     - **Boundary**: Repositories accept either an `Engine` (and check out per call) or an injected per-request `Connection` from a `Depends`-driven session factory. Composition root holds the pool, never the connection.
+    - **Resilience:** Every `create_async_engine` call MUST set `pool_pre_ping=True` (transparent reconnect when server closes idle connection past `wait_timeout`) and `pool_recycle=int_env("MARIADB_POOL_RECYCLE_SECONDS", <default below server wait_timeout>)`. Both the env var and its default must appear in spec §4.6 in the same commit as the engine wiring. Omission symptom: `OperationalError 2013 (Lost connection)` under low-traffic / long-idle conditions.
 
 ---
 
@@ -128,6 +130,14 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
     2. When reading naive datetimes from the database, you **must** manually attach the UTC timezone (`.replace(tzinfo=UTC)`).
 - **Prohibition**: Do not transmit or store any naive datetimes that lack timezone information.
 
+
+---
+
+### Environment Variable Utilities
+
+- **Rule**: Optional env vars that default to `None` (no-op / disabled) MUST use `if not raw:` (covers both `None` and `""`), never `if raw is None:`.
+  - **Rationale**: `--env-file` loaders resolve a blank assignment (e.g. `VAR=` in `.env.example`) as `""`, not as a missing key; `if raw is None:` silently parses the blank as the typed value and crashes at boot with `ValueError`.
+  - **Verification**: every `optional_*_env` utility must have a regression test asserting it returns `None` when the var is set to `""`.
 
 ---
 
@@ -272,211 +282,7 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 
 ## Third-Party API
 
-This section documents all external API request and response samples including LLM API, Embedding API, Rerank API ...
-
-#### Embedding API
-
-**Endpoint:** `EMBEDDING_API_URL` (default: `http://{embed_base_url}/text_embedding`)
-**Timeout:** 60s | **Retry:** 3x @ 1.0s backoff
-
-**Request:**
-```json
-{
-  "texts": ["text1", "text2"],
-  "model": "bge-m3",
-  "encoding-format": "float"
-}
-```
-
-
-** Response Format:**
-```json
-{
-  "returnCode": 96200,
-  "returnMessage": "success"
-  "returnData": [
-    {"index": 0, "embedding": [0.1, 0.2, ...]},
-    {"index": 1, "embedding": [0.3, 0.4, ...]}
-  ]
-}
-```
-
----
-
-#### LLM API
-
-**Endpoint:** `LLM_API_URL` (default: `http://{llm_base_url}/gpt_oss_120b/v1/chat/completions`)
-**Timeout:** 120s | **Retry:** 3x @ 2.0s backoff
-
-**Request:**
-```json
-{
-  "model": "gptoss-120b",
-  "messages": [
-     {"role": "system", "content": "system prompt"},
-     {"role": "user", "content": "user input"}
-  ],
-  "max_tokens": 4096,
-  "stream": true,
-  "temperature": 0.0
-}
-```
-
-**Response:**
-```json
-{
-  "model": "gptoss-120b",
-    "choices": [
-        {
-            "index": 0,
-            "message": {
-                "role": "assistant",
-                "content": "Under a moonlit sky, the silver‑mane unicorn whispered a lullaby of starlight, gently guiding the sleepy forest creatures into sweet dreams.",
-                "reasoning_content": "The user wants a one-sentence bedtime story about a unicorn. Simple. Provide a single sentence. Maybe whimsical.",
-                "tool_calls": []
-            },
-            "logprobs": null,
-            "finish_reason": "stop",
-            "stop_reason": null
-}
-```
-
-#### Rerank API
-
-**Endpoint:** `REREANK_API_URL` (default: `http://{rerank_url}`)
-**Timeout:** 120s | **Retry:** 3x @ 2.0s backoff
-
-**Request:**
-```json
-{
-    "question": "What is TSMC?",
-    "documents": ["PS5, or PlayStation 5, is a video ...", "TSMC stands for Taiwan Semiconductor …", "TSMC is headquartered ..."],
-    "model": "bge-reranker-base",
-    "top_k": 2
-} 
-```
-
-**Response:**
-```json
-{
-    "returnCode": 96200,
-    "returnMessage": "success",
-    "returnData": [
-        {
-            "score": 0.9999051094055176,
-            "index": 1
-        },
-        {
-            "score": 0.6183387041091919,
-            "index": 2
-        }
-    ]
-}
-```
-
----
-
-#### LLM & Embedding & Re-rank Auth API (Token Exchange)
-
-**Endpoint:** `AI_API_AUTH_URL` (default: `http://{auth-service-url}/auth/api/accesstoken`)
-**Timeout:** `AI_API_AUTH_TIMEOUT` (default: 10s) | **Retry:** 3x @ 1.0s backoff
-
-Exchanges J1 tokens for J2 tokens. Supports two modes:
-- **Local**: Uses configured J1 token from `AI_LLM_API_J1_TOKEN` or `AI_EMBEDDING_API_J1_TOKEN` or `AI_RERANK_API_J1_TOKEN`
-- **Kubernetes**: Uses service account token from `/var/run/secrets/kubernetes.io/serviceaccount/token` when `AI_USE_K8S_SERVICE_ACCOUNT_TOKEN=true`
-
-**Request:**
-```json
-{
-  "key": "j1-token-value"
-}
-```
-
-**Response:**
-```json
-{
-  "token": "j2-token-value",
-  "expiresAt": "2026-01-07T13:20:36Z"
-}
-```
-
-The `TokenManager` caches J2 tokens and refreshes them 5 minutes before expiration.
-
----
-
----
-
-#### HR API
-
-**Endpoint:** `HR_API_URL` (default: `http://hr-service:8080/v3/employees`)
-**Timeout:** `HR_API_TIMEOUT` (default: 10s) | **Retry:** 3x @ 0.5s backoff
-**Auth:** `Authorization` header with `HR_API_TOKEN` value
-
-**Request:**
-```
-GET {HR_API_URL}/{employee_key}
-Authorization: {HR_API_TOKEN}
-```
-
-**Response (200 OK):**
-```json
-{
-  "employee_id": "EMP123",
-  "employee_name": "张三",
-  "employee_name_en": "Zhang San",
-  "org_code": "ORG001"
-}
-```
-
-**Response (404 Not Found):** Employee not found (valid business response)
-
----
-
-#### OpenFGA API
-
-**Endpoint:** `OPENFGA_API_URL` (default: `http://openfga:8081`)
-**Timeout:** 10s | **Retry:** 3x @ 0.5s backoff
-**Auth:** `gam-key` header with `OPENFGA_API_TOKEN` value
-
-**List Resources Request:**
-```
-POST {OPENFGA_API_URL}/list_resource
-gam-key: {OPENFGA_API_TOKEN}
-```
-```json
-{
-  "userId": "employee_id_123",
-  "relation": "can_view",
-  "resourceType": "kms_page"
-}
-```
-
-**List Resources Response:**
-```json
-["doc-1", "doc-2", "doc-3"]
-```
-
-**Check Permission Request:**
-```
-POST {OPENFGA_API_URL}/check
-```
-```json
-{
-  "userId": "employee_id_123",
-  "relation": "can_view",
-  "resourceType": "kms_page",
-  "resourceId": "doc-1"
-}
-```
-
-**Check Permission Response:**
-```json
-{
-  "allowed": true
-}
-```
-
----
+> **Moved to [`docs/00_rule_third_party_api.md`](00_rule_third_party_api.md)** — same content, same `§Third-Party API` anchor. All journal rules pinning `rule.md §Third-Party API` JSON samples remain valid (anchor preserved verbatim in the new file).
 
 # Command
 
@@ -525,12 +331,7 @@ uv run bandit -r src/ --severity-level high --confidence-level high
 - Committing with only unit tests green (docker tests skipped) is a process violation; the CI failure that follows is the direct consequence.
 - **Test tier separation**: `make test-gate` (unit + integration) gates every commit. `make test` (full suite, includes `tests/e2e`) runs as a release step or on a scheduled CI job — never as a per-commit gate. E2e tests require a separately scheduled CI job whose path is cited in the workflow file; `--ignore=tests/e2e` in main CI is only acceptable when that companion job exists.
 
-**Agent quality-gate honesty rules (added 2026-05-09 after a same-day double violation, see `docs/00_journal.md` Process):**
-- `/simplify` and `/review` are **not user-gated**. TDD workflow steps 7 and 8 (CLAUDE.md) require the agent to invoke both skills via the Skill tool on every cycle that touches `src/`, `tests/`, `pyproject.toml`, `docs/00_spec.md`, or `docs/00_plan.md`. Phrasing them as "待你決定 / optional / up to you" is a process violation.
-- `.claude/.pre_commit_approved` is **not a self-attestation token**. It MUST be a JSON object `{"diff_sha": "<sha256 of git diff --cached output>", "ts": <epoch>, "by": "<simplify|review>"}` written by `bash .claude/hooks/stamp_pre_commit_approved.sh <skill-name>` only at the tail of a `/simplify` or `/review` skill run. Manual `date > .claude/.pre_commit_approved` by the agent is forbidden — the pre-commit gate verifies `diff_sha` matches the current staged diff and rejects mismatch.
-- Adding new staged changes after stamping invalidates the marker (sha changes). Re-run `/simplify` and `/review` against the new diff before commit.
-
-**Stamp-script invocation contract (added 2026-05-09 after Process row "Mandatory-step honesty (recurrence)"):**
-- `bash .claude/hooks/stamp_pre_commit_approved.sh <simplify|review>` refuses to run unless the env var `RAGENT_SKILL_INVOCATION_TOKEN` is set (any non-empty string; value is informational). Concretely: invoke as `RAGENT_SKILL_INVOCATION_TOKEN=1 bash .claude/hooks/stamp_pre_commit_approved.sh review` from the **last action of the corresponding skill body**. Setting the env var is an explicit declaration of intent — the audit log records every invocation.
-- The script appends an immutable JSON-line entry to `.claude/.stamp_audit.log` for every invocation: `{"ts":<epoch>,"by":"<skill>","diff_sha":"<sha>"}`. The pre-commit gate cross-checks that BOTH a `"by":"simplify"` AND a `"by":"review"` entry exist for the current `diff_sha`, each with `ts` inside the same 45-minute freshness window applied to the marker. A single skill stamping twice, one skill being skipped, or stale entries from a long-ago review of the same diff all fail the cross-check — the marker file is last-write-wins, but the append-only audit log is the actual unforgeability layer.
-- The stale `.claude/hooks/stamp_approval.sh` (which wrote a plain `date` string) has been removed; the pre-commit-approved settings allowlist entry has been removed too. Setting `RAGENT_SKILL_INVOCATION_TOKEN` outside a skill body to call the stamp script is a process violation per the rule above — there is no sanctioned shell-callable bypass.
+**Quality-gate honesty (see `docs/00_journal.md` Process for details):**
+- `/simplify` and `/review` are mandatory, not user-gated (CLAUDE.md steps 7–8). Every cycle touching `src/`, `tests/`, `pyproject.toml`, or docs must invoke both via the Skill tool before commit.
+- `.claude/.pre_commit_approved` is written only by `stamp_pre_commit_approved.sh <skill>` at the tail of a skill run — never by manual `date >`. The gate verifies `diff_sha` match; re-staging after stamping invalidates the marker.
+- `stamp_pre_commit_approved.sh` requires `RAGENT_SKILL_INVOCATION_TOKEN` to be set and appends to `.claude/.stamp_audit.log`. The gate cross-checks that BOTH `simplify` AND `review` entries exist for the current diff_sha within the 45-minute freshness window — a single skill running twice does not satisfy the gate.

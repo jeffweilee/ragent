@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from ragent.utility.env import bool_env, float_env, int_env, optional_float_env, require
+from ragent.utility.env import bool_env, float_env, int_env, optional_float_env, require, str_env
 
 
 def test_require_returns_value(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -70,3 +70,12 @@ def test_optional_float_env_exits_on_invalid(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setenv("OPT_F", "not-a-float")
     with pytest.raises(SystemExit):
         optional_float_env("OPT_F")
+
+
+def test_str_env_default_and_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("S", raising=False)
+    assert str_env("S", "fallback") == "fallback"
+    monkeypatch.setenv("S", "override")
+    assert str_env("S", "fallback") == "override"
+    monkeypatch.setenv("S", "")
+    assert str_env("S", "fallback") == ""

@@ -119,3 +119,20 @@ async def test_worker_binds_doc_mime_type_to_structlog_context():
         await worker_mod.ingest_pipeline_task("DOC-MIME-1")
 
     mock_bind.assert_called_once_with(document_id="DOC-MIME-1", mime_type=IngestMime.PPTX)
+
+
+async def test_worker_claim_returns_none_skips_pipeline():
+    """claim_for_processing → None (row terminal or missing) → log + return, no pipeline run."""
+    from ragent.workers import ingest as worker_mod
+
+    container = MagicMock()
+    container.doc_repo = AsyncMock()
+    container.doc_repo.claim_for_processing.return_value = None
+    container.minio_registry = MagicMock()
+    container.ingest_pipeline = MagicMock()
+
+    with patch("ragent.bootstrap.composition.get_container", return_value=container):
+        await worker_mod.ingest_pipeline_task("DOC-GONE")
+
+    container.minio_registry.head_object.assert_not_called()
+    container.ingest_pipeline.run.assert_not_called()

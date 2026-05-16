@@ -137,6 +137,20 @@ async def test_inline_too_large_raises():
         )
 
 
+def test_inline_max_bytes_default_is_10mb():
+    """_MAX_INLINE_BYTES hard-coded default must be 10 MB per spec §4.6.
+
+    Operators who omit INGEST_INLINE_MAX_BYTES rely on this fallback; wrong
+    default (50 MB) silently accepts payloads 5× the documented cap.
+    """
+    import ragent.services.ingest_service as mod
+
+    assert mod._MAX_INLINE_BYTES == 10_485_760, (
+        f"Expected 10 MB (10485760), got {mod._MAX_INLINE_BYTES} — "
+        "update the os.environ.get default in ingest_service.py"
+    )
+
+
 async def test_inline_persists_source_url_and_workspace():
     svc, repo, _, _ = _service()
     await svc.create(

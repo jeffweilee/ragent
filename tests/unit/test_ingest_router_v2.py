@@ -300,3 +300,39 @@ def test_get_document_response_includes_source_meta():
     resp = client.get("/ingest/v1/ID1", headers={"X-User-Id": "alice"})
     assert resp.status_code == 200
     assert resp.json()["source_meta"] == "engineering"
+
+
+# ---------------------------------------------------------------------------
+# POST /ingest/v1/{document_id}/rerun
+# ---------------------------------------------------------------------------
+
+
+def test_rerun_returns_202_with_document_id():
+    svc = AsyncMock()
+    svc.rerun.return_value = None
+    client, _ = _make_client(svc)
+    resp = client.post("/ingest/v1/DOC123/rerun", headers={"X-User-Id": "alice"})
+    assert resp.status_code == 202
+    assert resp.json()["document_id"] == "DOC123"
+
+
+def test_rerun_returns_404_when_not_found():
+    from ragent.services.ingest_service import DocumentNotFound
+
+    svc = AsyncMock()
+    svc.rerun.side_effect = DocumentNotFound("DOC123")
+    client, _ = _make_client(svc)
+    resp = client.post("/ingest/v1/DOC123/rerun", headers={"X-User-Id": "alice"})
+    assert resp.status_code == 404
+    assert resp.json()["error_code"] == "INGEST_NOT_FOUND"
+
+
+def test_rerun_returns_409_when_not_rerunnable():
+    from ragent.services.ingest_service import DocumentNotRerunnable
+
+    svc = AsyncMock()
+    svc.rerun.side_effect = DocumentNotRerunnable("DOC123")
+    client, _ = _make_client(svc)
+    resp = client.post("/ingest/v1/DOC123/rerun", headers={"X-User-Id": "alice"})
+    assert resp.status_code == 409
+    assert resp.json()["error_code"] == "INGEST_NOT_RERUNNABLE"
