@@ -59,8 +59,7 @@ def upgrade() -> None:
     # the JSON column accepts any string the JSON_VALID constraint approves,
     # so we pass the JSON text directly.
     insert = text(
-        "INSERT IGNORE INTO system_settings (setting_key, setting_value) "
-        "VALUES (:key, :value)"
+        "INSERT IGNORE INTO system_settings (setting_key, setting_value) VALUES (:key, :value)"
     )
     for key, value in _SEED_ROWS:
         conn.execute(insert, {"key": key, "value": json.dumps(value)})
