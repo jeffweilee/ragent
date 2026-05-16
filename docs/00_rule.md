@@ -254,6 +254,26 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 ---
 
 
+### TTL-Gated Cache Management
+
+- **Rule: Audit all callers before adding TTL gating to a previously-unconditional fetch.** Converting `await fetch()` to `await fetch(force=False)` (TTL-cached) is a contract change for every reader that depends on freshness. Mutating operations that are immediately followed by a stale read MUST call `fetch(force=True)` (or the equivalent), OR the mutation path must invalidate the cache.
+  - **Action**: document the constraint at the cache class: `# Writers must invalidate; read-after-write callers in the same process must force=True`.
+  - **Verification**: write an integration test that exercises `mutation → immediate read` in the **same process** (not just cross-process eventual-consistency paths) — same-process stale reads cannot be caught otherwise.
+
+- **Rule: TTL-gated caches MUST expose `last_refresh_at` (or an equivalent staleness signal).** Operators and `/readyz` probes must be able to detect a cache that has gone cold (e.g. background-refresh failure); silent staleness is worse than a loud cache miss.
+
+---
+
+
+### Composition Root: Env-to-Client Wiring & Seed Defaults
+
+- **Rule: Every env-var → constructor-arg translation in the composition root must have at least one e2e subprocess test.** Unit tests that mock the env var, and integration tests that build the client directly, both bypass `composition.py`. Only a subprocess test that boots the real binary end-to-end catches "env set correctly, seed maps it wrong, client gets an empty URL" bugs.
+
+- **Rule: Seed rows that leave a field empty by default MUST have an explicit fallback in consuming code, a unit test asserting the fallback fires, and a spec §4.6 entry describing the fallback.** The seed-default contract belongs in the spec near the env var it falls back to, not only in code comments. Composition-root rewrites must not silently delete the fallback `or`-clause.
+
+---
+
+
 ### OpenTelemetry: Initialize Once, Re-init After Fork
 
 - **Rule**: The global `TracerProvider` is set **exactly once per OS process**. Do not replace it at runtime; do not call `set_tracer_provider` from request paths, hot-reload paths, or library code.

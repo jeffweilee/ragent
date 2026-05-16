@@ -226,7 +226,7 @@ Request schema is shared by both endpoints. Only `messages` is required.
   "provider": "openai",
   "model": "gptoss-120b",
   "temperature": 0.7,
-  "max_tokens": 4096,
+  "maxTokens": 4096,
   "source_app": "confluence",
   "source_meta": "engineering",
   "top_k": 20,
