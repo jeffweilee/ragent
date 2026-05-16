@@ -98,9 +98,7 @@ def _resolve_env_refs(value: str, owner: str) -> str:
         var = match.group(1)
         env_value = os.environ.get(var)
         if env_value is None:
-            raise ValueError(
-                f"{owner}: env var {var!r} referenced in tools.yaml but not set"
-            )
+            raise ValueError(f"{owner}: env var {var!r} referenced in tools.yaml but not set")
         return env_value
 
     return _ENV_REF.sub(sub, value)
@@ -141,9 +139,7 @@ def _parse_tool(raw: dict[str, Any]) -> _ToolSpec:
         )
 
     params = tuple(_parse_param(p) for p in raw.get("parameters") or [])
-    header_arg_names = {
-        p.name.replace("_", "-").lower() for p in params if p.location == "header"
-    }
+    header_arg_names = {p.name.replace("_", "-").lower() for p in params if p.location == "header"}
     config_header_names = {h.lower() for h in static_headers} | {
         dst.lower() for dst in forward_headers.values()
     }

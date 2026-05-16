@@ -74,9 +74,7 @@ async def test_static_headers_sent_on_each_request():
     assert seen["headers"]["authorization"] == "Bearer literal-token"
 
 
-def test_static_headers_resolve_env_at_load_time(
-    tmp_path, monkeypatch: pytest.MonkeyPatch
-):
+def test_static_headers_resolve_env_at_load_time(tmp_path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("API_B_TOKEN", "real-secret")
     yml = tmp_path / "tools.yaml"
     yml.write_text(
