@@ -25,10 +25,13 @@ def _strip_comments(fragment: str) -> str:
 
 
 def upgrade() -> None:
+    # Use exec_driver_sql so SQLAlchemy does not try to interpret `:1024` etc.
+    # inside the seed-row JSON literals as bind parameters.
+    conn = op.get_bind()
     for raw in _SQL.split(";"):
         stmt = _strip_comments(raw)
         if stmt:
-            op.execute(stmt)
+            conn.exec_driver_sql(stmt)
 
 
 def downgrade() -> None:

@@ -2,11 +2,11 @@
 --
 -- Single-table backing store for runtime-mutable system settings that the
 -- App reads via TTL-cached ActiveModelRegistry. Four embedding-lifecycle
--- rows are seeded; future settings (rate-limit overrides, feature flags)
+-- rows are seeded. Future settings (rate-limit overrides, feature flags)
 -- live alongside in the same table without further migrations.
 --
--- Surrogate id PK (00_rule.md §Database Practices); business key is
--- (setting_key) and is UNIQUE-constrained so application code cannot
+-- Surrogate id PK per 00_rule.md Database Practices. Business key is
+-- setting_key and is UNIQUE-constrained so application code cannot
 -- create duplicates by accident.
 
 CREATE TABLE IF NOT EXISTS system_settings (
@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS system_settings (
 -- the migration on an upgraded cluster idempotent (matches the boot
 -- auto-init contract — never mutate existing data).
 INSERT IGNORE INTO system_settings (setting_key, setting_value) VALUES
-  ('embedding.stable',    JSON_OBJECT('name','bge-m3','dim',1024,'api_url','','model_arg','bge-m3','field','embedding_bgem3_1024')),
-  ('embedding.candidate', CAST('null' AS JSON)),
-  ('embedding.read',      JSON_QUOTE('stable')),
-  ('embedding.retired',   JSON_ARRAY());
+  ('embedding.stable',    '{"name":"bge-m3","dim":1024,"api_url":"","model_arg":"bge-m3","field":"embedding_bgem3_1024"}'),
+  ('embedding.candidate', 'null'),
+  ('embedding.read',      '"stable"'),
+  ('embedding.retired',   '[]');
