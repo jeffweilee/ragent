@@ -916,6 +916,49 @@ No physical FK. ORM-level cascade only.
 - `new_id()` → UUIDv7 → Crockford Base32 → 26 chars (lexicographically sortable).
 - `utcnow()` → tz-aware UTC. `to_iso()` → ISO 8601 `...Z`. `from_db(naive)` → attach UTC.
 
+### 5.4 Elasticsearch `feedback_v1`
+
+> **Source of truth (B26 pattern):** `resources/es/feedback_v1.json` — settings + mappings, checked into git. Bootstrap (§6.1) reads this file and `PUT /feedback_v1` if the index does not exist. Mirrors the `chunks_v1` pattern (§5.2): ES holds text + vector, MariaDB holds meta only.
+
+```json
+{
+  "settings": {
+    "index": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0,
+      "analysis": {
+        "analyzer": {
+          "icu_text": { "type": "custom", "tokenizer": "icu_tokenizer",
+                        "filter": ["icu_folding", "lowercase"] }
+        }
+      }
+    }
+  },
+  "mappings": {
+    "properties": {
+      "request_id":      { "type": "keyword" },
+      "query_text":      { "type": "text",  "analyzer": "icu_text" },
+      "query_embedding": { "type": "dense_vector", "dims": 1024,
+                           "index": true, "similarity": "cosine",
+                           "index_options": { "type": "flat" } },
+      "source_id":       { "type": "keyword" },
+      "source_app":      { "type": "keyword" },
+      "source_meta":     { "type": "keyword", "ignore_above": 1024 },
+      "vote":            { "type": "byte" },
+      "reason":          { "type": "keyword" },
+      "user_id_hash":    { "type": "keyword" },
+      "ts":              { "type": "date" }
+    }
+  }
+}
+```
+
+**Indexing semantics (B50/B51):**
+- `_id` = `sha256(user_id|request_id|source_id)` so re-votes overwrite (mirrors MariaDB `uq_user_req_src`).
+- `query_embedding` produced at feedback-write time via `EmbeddingClient.embed([query_text], query=True)` — same model used by `/chat` retrieval so kNN similarity is comparable.
+- `user_id_hash = sha256(user_id).hexdigest()` — defence-in-depth for ES dumps; plaintext `user_id` lives only in MariaDB (`feedback.user_id`).
+- Test override (B42) at `tests/resources/es/feedback_v1.json` omits the ICU analyzer, identical otherwise.
+
 ---
 
 ## 6. Standards
