@@ -828,6 +828,22 @@ CREATE TABLE documents (
 -- create_user = audit only (NOT an authz field); idx_create_user_document supports "list my uploads" queries.
 
 -- chunks table dropped in migration 003_drop_chunks.sql (v2). Chunks live in ES chunks_v1 only.
+
+CREATE TABLE feedback (
+  feedback_id     CHAR(26)     PRIMARY KEY,             -- new_id() (§5.3)
+  request_id      CHAR(26)     NOT NULL,                -- echoed from /chat response
+  user_id         VARCHAR(64)  NOT NULL,                -- X-User-Id header at write time
+  source_id       VARCHAR(128) NOT NULL,                -- voted source (must be in shown_source_ids)
+  vote            TINYINT      NOT NULL,                -- +1 like / -1 dislike
+  reason          VARCHAR(32)  NULL,                    -- B52 enum (6 values) or NULL
+  position_shown  SMALLINT     NULL,                    -- for future IPS (B53 item 1) — collected, unused in P1
+  created_at      DATETIME(6)  NOT NULL,
+  updated_at      DATETIME(6)  NOT NULL,
+  UNIQUE KEY uq_user_req_src (user_id, request_id, source_id),
+  CONSTRAINT ck_vote_unit CHECK (vote IN (-1, 1))
+);
+-- Append-only event log. ES `feedback_v1` (§5.4) is the derived serving view (B50/B51).
+-- No content/text — query_text lives only in `feedback_v1` per the "text in ES, meta in MariaDB" rule.
 ```
 
 No physical FK. ORM-level cascade only.
