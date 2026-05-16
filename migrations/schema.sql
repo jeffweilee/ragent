@@ -36,3 +36,15 @@ CREATE TABLE IF NOT EXISTS documents (
 
 -- v1 `chunks` table dropped in 003_drop_chunks.sql.
 -- v2 stores chunks exclusively in ES (`chunks_v1` index).
+
+-- 009_system_settings.sql: generic key/JSON settings store (B50).
+-- Backs the embedding-model lifecycle (`embedding.stable`/`candidate`/`read`/`retired`)
+-- and any future runtime-mutable settings without per-row schema migrations.
+CREATE TABLE IF NOT EXISTS system_settings (
+  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  setting_key   VARCHAR(64) NOT NULL,
+  setting_value JSON NOT NULL,
+  updated_at    TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_setting_key (setting_key)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
