@@ -35,10 +35,15 @@ def check_yaml(path: str | Path) -> tuple[list[str], int]:
     errors: list[str] = []
 
     if not defaults.get("base_url"):
-        relative = [t.name for t in tools if not _is_absolute_url(t.path)]
+        relative = [
+            t.name
+            for t in tools
+            if not t.base_url and not _is_absolute_url(t.path)
+        ]
         if relative:
             errors.append(
-                f"missing 'base_url' in defaults but tools have relative paths: {relative}"
+                f"missing 'base_url' in defaults but tools have relative paths "
+                f"with no per-tool override: {relative}"
             )
 
     for tool in tools:

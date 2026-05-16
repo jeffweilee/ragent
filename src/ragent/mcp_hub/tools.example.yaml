@@ -72,3 +72,24 @@ tools:
         location: body
         required: false
         description: Arbitrary key/value annotations attached to the order.
+
+  # Heterogeneous upstream: different domain, its own auth, and propagates the
+  # caller's identity from the MCP client through to the upstream API.
+  #
+  # `static_headers` values support `${ENV_VAR}` substitution resolved at
+  # startup (the example below uses a literal so the bundled doctor stays
+  # green; replace with `"Bearer ${IDENTITY_API_TOKEN}"` in real configs).
+  #
+  # `forward_headers` maps incoming-header-name -> outgoing-header-name. The
+  # ASGI middleware in server.py publishes each MCP request's headers into a
+  # ContextVar; the tool closure reads them and forwards per this mapping.
+  - name: get_profile
+    description: Fetch the caller's profile from the identity service.
+    base_url: https://identity.example.com
+    method: GET
+    path: /me
+    static_headers:
+      Authorization: "Bearer example-token"
+    forward_headers:
+      X-User-Id: X-User-Id
+      X-Trace-Id: X-Request-Id

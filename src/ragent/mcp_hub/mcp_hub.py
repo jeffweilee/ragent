@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import inspect
 import json
-from dataclasses import dataclass
+import os
+import re
+from contextvars import ContextVar
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, get_args
 
@@ -18,6 +21,11 @@ import httpx
 import yaml
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+
+_INCOMING_HEADERS: ContextVar[dict[str, str] | None] = ContextVar(
+    "mcp_hub_incoming_headers", default=None
+)
+_ENV_REF = re.compile(r"\$\{([A-Z_][A-Z0-9_]*)\}")
 
 _TYPE_MAP: dict[str, type] = {
     "string": str,
@@ -59,6 +67,10 @@ class _ToolSpec:
     method: str
     path: str
     params: tuple[_ParamSpec, ...]
+    base_url: str | None = None
+    static_headers: dict[str, str] = field(default_factory=dict)
+    # incoming-header-name (lowercased) -> outgoing-header-name (as-sent)
+    forward_headers: dict[str, str] = field(default_factory=dict)
 
 
 def _parse_param(raw: dict[str, Any]) -> _ParamSpec:
@@ -81,14 +93,76 @@ def _parse_param(raw: dict[str, Any]) -> _ParamSpec:
     )
 
 
+def _resolve_env_refs(value: str, owner: str) -> str:
+    def sub(match: re.Match[str]) -> str:
+        var = match.group(1)
+        env_value = os.environ.get(var)
+        if env_value is None:
+            raise ValueError(
+                f"{owner}: env var {var!r} referenced in tools.yaml but not set"
+            )
+        return env_value
+
+    return _ENV_REF.sub(sub, value)
+
+
+def _parse_headers(raw: Any, owner: str, resolve_env: bool) -> dict[str, str]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"{owner}: headers must be a mapping, got {type(raw).__name__}")
+    out: dict[str, str] = {}
+    for k, v in raw.items():
+        text = str(v)
+        out[str(k)] = _resolve_env_refs(text, owner) if resolve_env else text
+    return out
+
+
 def _parse_tool(raw: dict[str, Any]) -> _ToolSpec:
     method = str(raw["method"]).upper()
+    name = raw["name"]
+    static_headers = _parse_headers(
+        raw.get("static_headers"), owner=f"tool {name!r} static_headers", resolve_env=True
+    )
+    forward_raw = raw.get("forward_headers") or {}
+    if not isinstance(forward_raw, dict):
+        raise ValueError(f"tool {name!r}: forward_headers must be a mapping")
+    # Source keys are lowercased to match ASGI-canonical incoming header names;
+    # destination values keep their declared casing (sent as-is to upstream).
+    forward_headers = {str(src).lower(): str(dst) for src, dst in forward_raw.items()}
+
+    overlap = {h.lower() for h in static_headers}.intersection(
+        {dst.lower() for dst in forward_headers.values()}
+    )
+    if overlap:
+        raise ValueError(
+            f"tool {name!r}: header(s) {sorted(overlap)} declared in both "
+            f"static_headers and forward_headers"
+        )
+
+    params = tuple(_parse_param(p) for p in raw.get("parameters") or [])
+    header_arg_names = {
+        p.name.replace("_", "-").lower() for p in params if p.location == "header"
+    }
+    config_header_names = {h.lower() for h in static_headers} | {
+        dst.lower() for dst in forward_headers.values()
+    }
+    collisions = header_arg_names & config_header_names
+    if collisions:
+        raise ValueError(
+            f"tool {name!r}: header parameter(s) {sorted(collisions)} collide with "
+            f"static_headers/forward_headers (would silently fight at request time)"
+        )
+
     return _ToolSpec(
-        name=raw["name"],
+        name=name,
         description=raw.get("description", ""),
         method=method,
         path=raw["path"],
-        params=tuple(_parse_param(p) for p in raw.get("parameters") or []),
+        params=params,
+        base_url=raw.get("base_url"),
+        static_headers=static_headers,
+        forward_headers=forward_headers,
     )
 
 
@@ -183,12 +257,17 @@ def _make_tool_callable(
 ) -> Any:
     locations = {p.name: p.location for p in spec.params}
     accepts_body = spec.method in _BODY_METHODS
-    url_base = base_url.rstrip("/")
+    effective_base = (spec.base_url or base_url).rstrip("/")
 
     async def _call(**kwargs: Any) -> dict[str, Any]:
         path_args: dict[str, Any] = {}
         query: dict[str, Any] = {}
-        headers: dict[str, str] = {}
+        headers: dict[str, str] = dict(spec.static_headers)
+        incoming = _INCOMING_HEADERS.get() or {}
+        for src_lower, dst in spec.forward_headers.items():
+            val = incoming.get(src_lower)
+            if val is not None:
+                headers[dst] = val
         body: dict[str, Any] = {}
 
         for name, value in kwargs.items():
@@ -206,7 +285,11 @@ def _make_tool_callable(
             elif loc == "body" and value is not None:
                 body[name] = value
 
-        url = url_base + spec.path.format(**path_args)
+        rendered = spec.path.format(**path_args)
+        if rendered.startswith(("http://", "https://")):
+            url = rendered
+        else:
+            url = effective_base + rendered
         request_kwargs: dict[str, Any] = {}
         if query:
             request_kwargs["params"] = query

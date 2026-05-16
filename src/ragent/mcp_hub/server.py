@@ -15,10 +15,30 @@ from __future__ import annotations
 
 import os
 from contextlib import asynccontextmanager
+from typing import Any
 
 import uvicorn
 
-from .mcp_hub import build_hub
+from .mcp_hub import _INCOMING_HEADERS, build_hub
+
+
+class HeaderForwardMiddleware:
+    """ASGI middleware that publishes each request's headers into a ContextVar
+    so per-tool `forward_headers` can read them (e.g. X-User-Id pass-through)."""
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: dict, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+        token = _INCOMING_HEADERS.set(headers)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            _INCOMING_HEADERS.reset(token)
 
 
 def main() -> None:
@@ -41,7 +61,7 @@ def main() -> None:
             await client.aclose()
 
     app = hub.http_app(path=path, lifespan=lifespan)
-    uvicorn.run(app, host=host, port=port)
+    uvicorn.run(HeaderForwardMiddleware(app), host=host, port=port)
 
 
 if __name__ == "__main__":

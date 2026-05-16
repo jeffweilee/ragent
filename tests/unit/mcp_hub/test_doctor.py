@@ -148,6 +148,21 @@ def test_missing_base_url_with_relative_path_flagged(tmp_path: Path):
     assert any("base_url" in e for e in errors)
 
 
+def test_missing_default_base_url_with_per_tool_override_is_ok(tmp_path: Path):
+    yml = _write(
+        tmp_path / "tools.yaml",
+        """
+        tools:
+          - name: scoped
+            base_url: https://api-b.example.com
+            method: GET
+            path: /me
+        """,
+    )
+    errors, _ = check_yaml(yml)
+    assert errors == []
+
+
 def test_missing_base_url_with_absolute_path_is_ok(tmp_path: Path):
     """Absolute tool paths don't need a base_url."""
     yml = _write(
