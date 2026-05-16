@@ -222,16 +222,19 @@ class EmbeddingLifecycleService:
 
     async def _do_commit(self) -> dict:
         next_state(self._registry.derived_state(), "commit")
-        stable_dict = self._registry.stable_dict
-        candidate_dict = self._registry.candidate_dict
-        if stable_dict is None or candidate_dict is None:
+        # `expect` snapshots come from the *live* settings (which include
+        # transient fields like `promoted_at`), not from the registry's
+        # projected EmbeddingModelConfig view (5 keys only).
+        live_stable = await self._repo.get("embedding.stable")
+        live_candidate = await self._repo.get("embedding.candidate")
+        if live_stable is None or live_candidate is None:
             raise RuntimeError("commit requires both stable and candidate populated")
 
         retired = list(self._registry.retired_list)
-        retired.append(_retired_entry(stable_dict))
+        retired.append(_retired_entry(live_stable))
 
         new_stable = {
-            k: candidate_dict[k] for k in ("name", "dim", "api_url", "model_arg", "field")
+            k: live_candidate[k] for k in ("name", "dim", "api_url", "model_arg", "field")
         }
         await self._repo.transition(
             {
@@ -242,8 +245,8 @@ class EmbeddingLifecycleService:
             },
             expect={
                 "embedding.read": "candidate",
-                "embedding.stable": stable_dict,
-                "embedding.candidate": candidate_dict,
+                "embedding.stable": live_stable,
+                "embedding.candidate": live_candidate,
             },
         )
         return {"state": "IDLE", "stable": new_stable, "committed_at": _iso_now()}
@@ -264,14 +267,14 @@ class EmbeddingLifecycleService:
 
     async def _do_abort(self) -> dict:
         next_state(self._registry.derived_state(), "abort")
-        candidate_dict = self._registry.candidate_dict
-        if candidate_dict is None:
+        live_candidate = await self._repo.get("embedding.candidate")
+        if live_candidate is None:
             raise RuntimeError("abort requires candidate populated")
 
         retired = list(self._registry.retired_list)
-        retired.append(_retired_entry(candidate_dict))
+        retired.append(_retired_entry(live_candidate))
         await self._repo.transition(
             {"embedding.candidate": None, "embedding.retired": retired},
-            expect={"embedding.candidate": candidate_dict, "embedding.read": "stable"},
+            expect={"embedding.candidate": live_candidate, "embedding.read": "stable"},
         )
-        return {"state": "IDLE", "aborted": candidate_dict["name"], "aborted_at": _iso_now()}
+        return {"state": "IDLE", "aborted": live_candidate["name"], "aborted_at": _iso_now()}

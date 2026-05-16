@@ -311,7 +311,14 @@ async def test_commit_from_cutover_promotes_candidate_to_stable() -> None:
     from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
 
     repo = AsyncMock()
-    reg = _FakeRegistry(state="CUTOVER", candidate=_bgem3v2_with_promoted_at())
+    cand_live = _bgem3v2_with_promoted_at()
+    stable_live = _bgem3()
+
+    async def _get(key):
+        return {"embedding.stable": stable_live, "embedding.candidate": cand_live}.get(key)
+
+    repo.get.side_effect = _get
+    reg = _FakeRegistry(state="CUTOVER", candidate=cand_live)
     svc = EmbeddingLifecycleService(
         repo, AsyncMock(), index_name="chunks_v1", registry=reg, cache_ttl_seconds=10
     )
@@ -334,7 +341,13 @@ async def test_abort_from_candidate_retires_candidate() -> None:
     from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
 
     repo = AsyncMock()
-    reg = _FakeRegistry(state="CANDIDATE", candidate=_bgem3v2_with_promoted_at())
+    cand_live = _bgem3v2_with_promoted_at()
+
+    async def _get(key):
+        return {"embedding.candidate": cand_live}.get(key)
+
+    repo.get.side_effect = _get
+    reg = _FakeRegistry(state="CANDIDATE", candidate=cand_live)
     svc = EmbeddingLifecycleService(
         repo, AsyncMock(), index_name="chunks_v1", registry=reg, cache_ttl_seconds=10
     )
