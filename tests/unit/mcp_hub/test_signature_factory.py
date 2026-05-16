@@ -135,7 +135,7 @@ async def test_request_dispatch_routes_params_by_location():
     fn = _make_tool_callable(spec, client, "https://api.example.com")
 
     result = await fn(user_id=7, sku="ABC", quantity=3, x_tenant="t1", dry_run=True)
-    assert result == {"status": 200, "data": {"ok": True}}
+    assert result == {"ok": True, "status": 200, "data": {"ok": True}}
     assert seen["method"] == "POST"
     assert seen["url"] == "https://api.example.com/users/7/orders?dry_run=true"
     assert seen["headers"]["x-tenant"] == "t1"

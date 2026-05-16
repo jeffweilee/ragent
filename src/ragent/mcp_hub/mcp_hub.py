@@ -9,6 +9,7 @@ the tool list is discovered at startup.
 from __future__ import annotations
 
 import inspect
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal, get_args
@@ -16,6 +17,7 @@ from typing import Any, Literal, get_args
 import httpx
 import yaml
 from fastmcp import FastMCP
+from fastmcp.exceptions import ToolError
 
 _TYPE_MAP: dict[str, type] = {
     "string": str,
@@ -30,6 +32,14 @@ Location = Literal["path", "query", "body", "header"]
 _VALID_LOCATIONS: frozenset[str] = frozenset(get_args(Location))
 _BODY_METHODS = frozenset({"POST", "PUT", "PATCH"})
 _MISSING: Any = inspect.Parameter.empty
+
+_UPSTREAM_BODY_MAX_BYTES = 4096
+_REQUEST_ID_HEADERS = ("x-request-id", "x-correlation-id", "request-id")
+
+_ERR_UPSTREAM_4XX = "upstream_4xx"
+_ERR_UPSTREAM_5XX = "upstream_5xx"
+_ERR_TIMEOUT = "timeout"
+_ERR_CONNECT = "connect_error"
 
 
 @dataclass(frozen=True)
@@ -112,6 +122,60 @@ def _build_signature(spec: _ToolSpec) -> inspect.Signature:
     return inspect.Signature(parameters=parameters, return_annotation=dict)
 
 
+def _extract_request_id(headers: httpx.Headers) -> str | None:
+    for h in _REQUEST_ID_HEADERS:
+        value = headers.get(h)
+        if value:
+            return value
+    return None
+
+
+def _base_upstream_error(resp: httpx.Response, error_type: str) -> dict[str, Any]:
+    err: dict[str, Any] = {"type": error_type, "status": resp.status_code}
+    req_id = _extract_request_id(resp.headers)
+    if req_id:
+        err["upstream_request_id"] = req_id
+    return err
+
+
+def _attach_body(err: dict[str, Any], body: str, raw_len: int) -> None:
+    if raw_len > _UPSTREAM_BODY_MAX_BYTES:
+        err["upstream_body"] = body[:_UPSTREAM_BODY_MAX_BYTES]
+        err["truncated"] = True
+    else:
+        err["upstream_body"] = body
+
+
+def _build_4xx_error(resp: httpx.Response) -> dict[str, Any]:
+    err = _base_upstream_error(resp, _ERR_UPSTREAM_4XX)
+    ctype = resp.headers.get("content-type", "")
+
+    if "application/json" in ctype or "application/problem+json" in ctype:
+        try:
+            body = resp.json()
+        except ValueError:
+            body = None
+        if body is not None:
+            # Skip serialization on the common small-body path; the parsed
+            # body's len-bound is resp.content size (JSON never expands on
+            # re-serialization without whitespace).
+            if len(resp.content) <= _UPSTREAM_BODY_MAX_BYTES:
+                err["upstream_body"] = body
+            else:
+                serialized = json.dumps(body)
+                _attach_body(err, serialized, len(serialized))
+            return err
+
+    if ctype.startswith("text/plain"):
+        text = resp.text
+        _attach_body(err, text, len(text))
+        return err
+
+    err["upstream_body_omitted"] = True
+    err["upstream_content_type"] = ctype
+    return err
+
+
 def _make_tool_callable(
     spec: _ToolSpec,
     client: httpx.AsyncClient,
@@ -151,11 +215,28 @@ def _make_tool_callable(
         if accepts_body and body:
             request_kwargs["json"] = body
 
-        resp = await client.request(spec.method, url, **request_kwargs)
-        resp.raise_for_status()
+        try:
+            resp = await client.request(spec.method, url, **request_kwargs)
+        except httpx.TimeoutException as exc:
+            raise ToolError(json.dumps({"type": _ERR_TIMEOUT, "message": str(exc)})) from exc
+        except httpx.ConnectError as exc:
+            raise ToolError(
+                json.dumps({"type": _ERR_CONNECT, "message": str(exc)})
+            ) from exc
+
+        if resp.status_code >= 500:
+            raise ToolError(json.dumps(_base_upstream_error(resp, _ERR_UPSTREAM_5XX)))
+
+        if resp.status_code >= 400:
+            return {
+                "ok": False,
+                "status": resp.status_code,
+                "error": _build_4xx_error(resp),
+            }
+
         ctype = resp.headers.get("content-type", "")
         payload: Any = resp.json() if "application/json" in ctype else resp.text
-        return {"status": resp.status_code, "data": payload}
+        return {"ok": True, "status": resp.status_code, "data": payload}
 
     sig = _build_signature(spec)
     _call.__signature__ = sig  # type: ignore[attr-defined]
