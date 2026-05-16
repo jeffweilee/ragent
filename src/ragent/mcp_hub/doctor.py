@@ -26,23 +26,23 @@ def _is_absolute_url(path: str) -> bool:
 
 
 def check_yaml(path: str | Path) -> tuple[list[str], int]:
-    """Return (validation errors, tool count). Empty list of errors means OK."""
+    """Return (validation errors, tool count). Empty list of errors means OK.
+
+    Uses non-strict loading so EVERY problem surfaces in one CI run instead
+    of first-error-abort (which we kept getting bitten by during T-MH.6).
+    """
     try:
-        defaults, tools = load_tools_yaml(path)
-    except (OSError, ValueError) as exc:
+        result = load_tools_yaml(path, strict=False)
+    except FileNotFoundError as exc:
         return [f"failed to load {path}: {exc}"], 0
 
-    errors: list[str] = []
+    errors: list[str] = [f"{f.source}: {f.reason}" for f in result.failures]
 
-    if not defaults.get("base_url"):
-        relative = [t.name for t in tools if not t.base_url and not _is_absolute_url(t.path)]
-        if relative:
+    for tool in result.tools:
+        if not tool.base_url and not _is_absolute_url(tool.path):
             errors.append(
-                f"missing 'base_url' in defaults but tools have relative paths "
-                f"with no per-tool override: {relative}"
+                f"{tool.name}: relative path {tool.path!r} with no base_url (system or per-tool)"
             )
-
-    for tool in tools:
         placeholders = _path_placeholders(tool.path)
         path_params = {p.name for p in tool.params if p.location == "path"}
 
@@ -66,7 +66,7 @@ def check_yaml(path: str | Path) -> tuple[list[str], int]:
                 f"{tool.method} (only POST/PUT/PATCH accept a body)"
             )
 
-    return errors, len(tools)
+    return errors, len(result.tools)
 
 
 def main(argv: list[str] | None = None) -> int:

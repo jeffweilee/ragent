@@ -58,16 +58,26 @@ def main() -> None:
         raise SystemExit(f"MCP_HUB_PORT must be an integer, got {exc.args[0]!r}") from exc
     path = os.environ.get("MCP_HUB_PATH", "/mcp")
 
-    hub, client = build_hub(yaml_path, name=name)
+    bundle = build_hub(yaml_path, name=name)
+    print(
+        f"mcp_hub.ready  systems={sorted(bundle.clients)}  "
+        f"tools={len(bundle.clients)}-system  failures={len(bundle.failures)}"
+    )
+    for fail in bundle.failures:
+        print(f"mcp_hub.load_failure  source={fail.source!r}  reason={fail.reason!r}")
 
     @asynccontextmanager
     async def lifespan(_app):
         try:
             yield
         finally:
-            await client.aclose()
+            for system, client in bundle.clients.items():
+                try:
+                    await client.aclose()
+                except Exception as exc:  # noqa: BLE001 — one bad client must not leak others
+                    print(f"mcp_hub.shutdown_error  system={system!r}  err={exc!r}")
 
-    app = hub.http_app(path=path, lifespan=lifespan)
+    app = bundle.hub.http_app(path=path, lifespan=lifespan)
     uvicorn.run(HeaderForwardMiddleware(app), host=host, port=port)
 
 

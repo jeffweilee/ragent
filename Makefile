@@ -6,7 +6,7 @@ bootstrap:
 check: format lint mcp-hub-doctor test
 
 mcp-hub-doctor:
-	uv run python -m ragent.mcp_hub.doctor src/ragent/mcp_hub/tools.example.yaml
+	uv run python -m ragent.mcp_hub.doctor src/ragent/mcp_hub/tools.example.d
 
 format:
 	uv run ruff format .

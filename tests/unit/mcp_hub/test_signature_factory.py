@@ -87,9 +87,10 @@ def test_load_yaml_round_trip(tmp_path: Path):
             """
         ).strip()
     )
-    defaults, tools = load_tools_yaml(yml)
-    assert defaults["base_url"] == "https://api.example.com"
-    assert [t.name for t in tools] == ["ping"]
+    result = load_tools_yaml(yml)
+    assert "tools" in result.systems
+    assert result.systems["tools"].base_url == "https://api.example.com"
+    assert [t.name for t in result.tools] == ["tools.ping"]
 
 
 @pytest.mark.asyncio
@@ -165,7 +166,8 @@ async def test_build_hub_registers_every_yaml_entry(tmp_path: Path):
             """
         ).strip()
     )
-    hub, client = build_hub(yml, name="test-hub")
-    tools = await hub.list_tools()
-    assert {t.name for t in tools} == {"a", "b"}
-    await client.aclose()
+    bundle = build_hub(yml, name="test-hub")
+    tools = await bundle.hub.list_tools()
+    assert {t.name for t in tools} == {"tools.a", "tools.b"}
+    for client in bundle.clients.values():
+        await client.aclose()

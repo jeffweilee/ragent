@@ -86,7 +86,7 @@ def test_static_headers_no_longer_resolve_env_refs(tmp_path):
         "    static_headers:\n"
         "      X-API-Version: '${UNRESOLVED}'\n"
     )
-    _, tools = load_tools_yaml(yml)
+    tools = load_tools_yaml(yml).tools
     assert tools[0].static_headers["X-API-Version"] == "${UNRESOLVED}"
 
 

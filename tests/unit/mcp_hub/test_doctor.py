@@ -39,7 +39,7 @@ def test_valid_yaml_returns_no_errors(tmp_path: Path):
 def test_missing_file_is_reported(tmp_path: Path):
     errors, _ = check_yaml(tmp_path / "nope.yaml")
     assert len(errors) == 1
-    assert "failed to load" in errors[0]
+    assert "does not exist" in errors[0]
 
 
 def test_duplicate_tool_names_flagged(tmp_path: Path):
