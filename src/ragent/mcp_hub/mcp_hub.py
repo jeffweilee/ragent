@@ -220,9 +220,7 @@ def _make_tool_callable(
         except httpx.TimeoutException as exc:
             raise ToolError(json.dumps({"type": _ERR_TIMEOUT, "message": str(exc)})) from exc
         except httpx.ConnectError as exc:
-            raise ToolError(
-                json.dumps({"type": _ERR_CONNECT, "message": str(exc)})
-            ) from exc
+            raise ToolError(json.dumps({"type": _ERR_CONNECT, "message": str(exc)})) from exc
 
         if resp.status_code >= 500:
             raise ToolError(json.dumps(_base_upstream_error(resp, _ERR_UPSTREAM_5XX)))

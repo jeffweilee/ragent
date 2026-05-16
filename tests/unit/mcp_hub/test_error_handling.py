@@ -127,9 +127,7 @@ async def test_5xx_raises_tool_error_without_body():
 @pytest.mark.asyncio
 async def test_5xx_passes_through_request_id():
     def handler(_req: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            503, json={"any": "secret"}, headers={"X-Request-Id": "abc-123"}
-        )
+        return httpx.Response(503, json={"any": "secret"}, headers={"X-Request-Id": "abc-123"})
 
     fn = _make_tool_callable(_get_spec(), _client(handler), "https://api.example.com")
     with pytest.raises(ToolError) as ex:
