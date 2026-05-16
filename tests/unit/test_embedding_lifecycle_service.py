@@ -57,6 +57,14 @@ class _FakeRegistry:
         return self._candidate_dict
 
     @property
+    def stable_raw(self):
+        return self._stable_dict
+
+    @property
+    def candidate_raw(self):
+        return self._candidate_dict
+
+    @property
     def retired_list(self):
         return self._retired
 
@@ -273,6 +281,41 @@ async def test_cutover_blocked_by_hard_gate_failure() -> None:
     with pytest.raises(CutoverPreflightFailed) as exc_info:
         await svc.cutover()
     assert exc_info.value.report["pass"] is False
+
+
+async def test_cutover_warmup_gate_reads_promoted_at_from_registry_raw() -> None:
+    """Regression: the warmup gate compares now-vs-promoted_at. If the
+    service reads from the projected `candidate_dict` (which drops
+    `promoted_at`), elapsed is always 0 and the gate is permanently
+    broken. Pin that the path goes through `candidate_raw`."""
+    from ragent.services.embedding_lifecycle_service import (
+        CutoverPreflightFailed,
+        EmbeddingLifecycleService,
+    )
+
+    # promoted_at is OLDER than 2 × cache_ttl → warmup gate must PASS;
+    # then we'll force coverage to fail to verify the gate ran and
+    # picked up the real timestamp (not utcnow).
+    es = AsyncMock()
+    es.indices.get_mapping.return_value = {
+        "chunks_v1": {
+            "mappings": {
+                "properties": {"embedding_bgem3v2_768": {"type": "dense_vector", "dims": 768}}
+            }
+        }
+    }
+    es.count.side_effect = [{"count": 100}, {"count": 50}]  # 50% coverage → fail
+    reg = _FakeRegistry(state="CANDIDATE", candidate=_bgem3v2_with_promoted_at(secs_ago=600))
+    svc = EmbeddingLifecycleService(
+        AsyncMock(), es, index_name="chunks_v1", registry=reg, cache_ttl_seconds=10
+    )
+
+    with pytest.raises(CutoverPreflightFailed) as exc_info:
+        await svc.cutover()
+    gates = {g["name"]: g for g in exc_info.value.report["gates"]}
+    # warmup must pass — proves promoted_at flowed in (else elapsed≈0 and gate fails)
+    assert gates["dual_write_warmup"]["pass"] is True
+    assert gates["dual_write_warmup"]["detail"]["elapsed_seconds"] > 500
 
 
 async def test_cutover_rejected_when_state_not_candidate() -> None:

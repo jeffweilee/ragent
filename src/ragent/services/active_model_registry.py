@@ -36,6 +36,11 @@ class ActiveModelRegistry:
         self._ttl = ttl_seconds
         self._stable: EmbeddingModelConfig | None = None
         self._candidate: EmbeddingModelConfig | None = None
+        # Full raw payloads (including transient `promoted_at` etc.) — used
+        # for optimistic-lock `expect=` snapshots that must compare equal
+        # to the live JSON in `system_settings`.
+        self._stable_raw: dict | None = None
+        self._candidate_raw: dict | None = None
         self._read: str = "stable"
         self._retired: list[dict] = []
         self._ready: bool = False
@@ -57,6 +62,8 @@ class ActiveModelRegistry:
         candidate = values.get("embedding.candidate")
         self._stable = EmbeddingModelConfig.from_dict(stable) if stable else None
         self._candidate = EmbeddingModelConfig.from_dict(candidate) if candidate else None
+        self._stable_raw = stable if stable else None
+        self._candidate_raw = candidate if candidate else None
         self._read = values.get("embedding.read") or "stable"
         self._retired = values.get("embedding.retired") or []
         self._ready = True
@@ -98,6 +105,18 @@ class ActiveModelRegistry:
     @property
     def candidate_dict(self) -> dict | None:
         return self._candidate.to_dict() if self._candidate else None
+
+    @property
+    def stable_raw(self) -> dict | None:
+        """Cached full settings payload for `embedding.stable` (includes any
+        transient fields like `promoted_at` that `EmbeddingModelConfig.to_dict`
+        projects out). Used by the lifecycle service's optimistic-lock
+        `expect=` snapshot — must match the live JSON byte-for-byte."""
+        return dict(self._stable_raw) if self._stable_raw else None
+
+    @property
+    def candidate_raw(self) -> dict | None:
+        return dict(self._candidate_raw) if self._candidate_raw else None
 
     @property
     def retired_list(self) -> list[dict]:

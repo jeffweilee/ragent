@@ -14,16 +14,17 @@ Contract:
 
 from unittest.mock import MagicMock
 
-
-def _model(name: str, dim: int) -> MagicMock:
-    m = MagicMock()
-    m.name = name
-    m.dim = dim
-    m.field = f"embedding_{name.replace('-', '')}_{dim}"
-    return m
+from ragent.clients.embedding_model_config import EmbeddingModelConfig
 
 
-def _registry(read: MagicMock) -> MagicMock:
+def _model(name: str, dim: int) -> EmbeddingModelConfig:
+    """Real EmbeddingModelConfig — the `.field` formula stays in sync with
+    `_normalize` (which lowercases + strips non-alphanumeric), unlike a
+    hand-rolled `replace('-', '')` that drifts on mixed-case names."""
+    return EmbeddingModelConfig(name=name, dim=dim, api_url="http://test", model_arg=name)
+
+
+def _registry(read: EmbeddingModelConfig) -> MagicMock:
     reg = MagicMock()
     reg.read_model.return_value = read
     return reg

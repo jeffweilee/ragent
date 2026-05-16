@@ -724,12 +724,18 @@ class DocumentEmbedder:
                 "ActiveModelRegistry returned no write_models — refusing to emit unindexed chunks"
             )
         texts = [d.content or "" for d in documents]
-        # First model = stable → doc.embedding (legacy ES field).
-        # Remaining = candidate(s) → doc.meta[model.field].
-        stable_vectors = self._embed(models[0], texts)
-        extra_vectors: list[tuple[str, list[list[float]]]] = []
-        for m in models[1:]:
-            extra_vectors.append((m.field, self._embed(m, texts)))
+
+        # Embed every model's batch in parallel. The embed_callable is sync
+        # (it wraps the project's blocking httpx-based EmbeddingClient), so
+        # a thread pool — not asyncio.gather — is the right primitive. This
+        # halves CUTOVER-state ingest latency for two-model dual-write.
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=len(models)) as pool:
+            results = list(pool.map(lambda m: self._embed(m, texts), models))
+
+        stable_vectors = results[0]
+        extra_vectors = [(m.field, vecs) for m, vecs in zip(models[1:], results[1:], strict=True)]
 
         out: list[Document] = []
         for i, doc in enumerate(documents):

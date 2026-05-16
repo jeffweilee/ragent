@@ -209,11 +209,10 @@ def build_container() -> Container:
             )
         return _embed_cache[key]
 
-    def _embed_ingest(model: EmbeddingModelConfig, texts: list[str]) -> list[list[float]]:
-        return _client_for(model).embed(texts, query=False)
+    from functools import partial
 
-    def _embed_query(model: EmbeddingModelConfig, texts: list[str]) -> list[list[float]]:
-        return _client_for(model).embed(texts, query=True)
+    def _embed(model: EmbeddingModelConfig, texts: list[str], *, query: bool) -> list[list[float]]:
+        return _client_for(model).embed(texts, query=query)
 
     retrieval_pipeline = build_retrieval_pipeline(
         document_store=document_store,
@@ -221,11 +220,14 @@ def build_container() -> Container:
         join_mode=join_mode,
         rerank_client=rerank_client,
         registry=embedding_registry,
-        embed_query_callable=_embed_query,
+        embed_query_callable=partial(_embed, query=True),
     )
 
     ingest_pipeline = build_ingest_pipeline(
-        embedder=DocumentEmbedder(registry=embedding_registry, embed_callable=_embed_ingest),
+        embedder=DocumentEmbedder(
+            registry=embedding_registry,
+            embed_callable=partial(_embed, query=False),
+        ),
         document_store=document_store,
     )
 

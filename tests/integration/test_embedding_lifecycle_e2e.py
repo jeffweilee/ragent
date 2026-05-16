@@ -22,8 +22,6 @@ root (T-EM.21).
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -41,13 +39,10 @@ def lifecycle_dsn():
     isolated from the shared session-scoped DB (other tests may have
     already applied ALTERs that alembic upgrade would conflict with —
     same approach as `test_schema_drift.py`)."""
-    import os
-
-    from alembic import command
-    from alembic.config import Config
     from testcontainers.mysql import MySqlContainer
 
     from tc_utils import tc_image
+    from tests.integration._alembic_utils import apply_alembic_head
 
     with MySqlContainer(
         image=tc_image("mariadb:10.6"),
@@ -59,18 +54,7 @@ def lifecycle_dsn():
         port = c.get_exposed_port(3306)
         sync_dsn = f"mysql+pymysql://u:p@{host}:{port}/lifecycle?charset=utf8mb4"
         async_dsn = f"mysql+aiomysql://u:p@{host}:{port}/lifecycle?charset=utf8mb4"
-
-        cfg = Config(str(Path(__file__).parents[2] / "alembic.ini"))
-        old = os.environ.get("MARIADB_DSN")
-        os.environ["MARIADB_DSN"] = sync_dsn
-        try:
-            command.upgrade(cfg, "head")
-        finally:
-            if old is None:
-                os.environ.pop("MARIADB_DSN", None)
-            else:
-                os.environ["MARIADB_DSN"] = old
-
+        apply_alembic_head(sync_dsn)
         yield async_dsn
 
 
@@ -131,13 +115,16 @@ async def lifecycle_setup(lifecycle_engine, chunks_index):
 
     es, index = chunks_index
 
-    # Reset settings to IDLE state for each test (the migration seeds
-    # candidate=null / read=stable already, but the previous test might
-    # have transitioned to CUTOVER).
+    # Reset settings to IDLE for each test (a prior test may have left the
+    # store in CUTOVER). One atomic transition is cheaper than three sets.
     settings = SystemSettingsRepository(engine=lifecycle_engine)
-    await settings.set("embedding.candidate", None)
-    await settings.set("embedding.read", "stable")
-    await settings.set("embedding.retired", [])
+    await settings.transition(
+        {
+            "embedding.candidate": None,
+            "embedding.read": "stable",
+            "embedding.retired": [],
+        }
+    )
 
     registry = ActiveModelRegistry(settings_repo=settings, ttl_seconds=1)
     await registry.refresh()

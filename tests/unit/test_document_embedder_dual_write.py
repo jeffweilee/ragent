@@ -17,17 +17,17 @@ from unittest.mock import MagicMock
 
 from haystack.dataclasses import Document
 
-
-def _model(name: str, dim: int) -> MagicMock:
-    """Stand-in for EmbeddingModelConfig with a `.field` property."""
-    m = MagicMock()
-    m.name = name
-    m.dim = dim
-    m.field = f"embedding_{name.replace('-', '')}_{dim}"
-    return m
+from ragent.clients.embedding_model_config import EmbeddingModelConfig
 
 
-def _registry(*models) -> MagicMock:
+def _model(name: str, dim: int) -> EmbeddingModelConfig:
+    """Build a real EmbeddingModelConfig — keeps the `.field` formula in
+    sync with `_normalize` instead of reimplementing it as `replace('-','')`,
+    which silently diverges on mixed-case names (e.g. `BGE-M3-v2`)."""
+    return EmbeddingModelConfig(name=name, dim=dim, api_url="http://test", model_arg=name)
+
+
+def _registry(*models: EmbeddingModelConfig) -> MagicMock:
     reg = MagicMock()
     reg.write_models.return_value = list(models)
     return reg
