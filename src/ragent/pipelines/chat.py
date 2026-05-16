@@ -92,13 +92,107 @@ _HAYSTACK_JOIN_MODE = {"rrf": "reciprocal_rank_fusion", "concatenate": "concaten
 
 @component
 class _QueryEmbedder:
-    def __init__(self, embedder: Any) -> None:
-        self._embedder = embedder
+    """Embed the query for kNN retrieval.
 
-    @component.output_types(query=str, query_embedding=list[float])
+    Two construction modes (back-compat during the B50 rollout):
+
+    - **Legacy single-model**: ``_QueryEmbedder(embedder)`` calls
+      ``embedder.embed([q], query=True)`` and emits ``{query, query_embedding}``.
+      Kept for the existing pre-T-EM integration tests.
+
+    - **Registry mode**: ``_QueryEmbedder(registry=, embed_callable=)`` calls
+      ``registry.read_model()`` per request, embeds with that one model via
+      ``embed_callable(model, texts)``, and emits the matching ES field name
+      as ``embedding_field`` so a downstream dynamic-field retriever can
+      target the right ``embedding_<m>_<d>`` dense_vector instead of the
+      legacy hardcoded ``embedding`` field. The fresh ``read_model()``
+      lookup on every run is intentional — a cutover (settings flip) takes
+      effect on the next query without restarting the App.
+    """
+
+    def __init__(
+        self,
+        embedder: Any = None,
+        *,
+        registry: Any = None,
+        embed_callable: Any = None,
+    ) -> None:
+        if registry is not None:
+            if embed_callable is None:
+                raise ValueError("registry mode requires embed_callable")
+            self._mode = "registry"
+            self._registry = registry
+            self._embed = embed_callable
+            self._embedder = None
+        else:
+            self._mode = "legacy"
+            self._embedder = embedder
+            self._registry = None
+            self._embed = None
+
+    @component.output_types(query=str, query_embedding=list[float], embedding_field=str)
     def run(self, query: str) -> dict:
-        embedding = self._embedder.embed([query], query=True)[0]
-        return {"query": query, "query_embedding": embedding}
+        if self._mode == "legacy":
+            embedding = self._embedder.embed([query], query=True)[0]
+            return {"query": query, "query_embedding": embedding}
+        model = self._registry.read_model()
+        embedding = self._embed(model, [query])[0]
+        return {
+            "query": query,
+            "query_embedding": embedding,
+            "embedding_field": model.field,
+        }
+
+
+@component
+class _DynamicFieldEmbeddingRetriever:
+    """ES kNN retriever that targets a runtime-provided dense_vector field.
+
+    Replaces ``ElasticsearchEmbeddingRetriever`` when the embedding field
+    name is determined per-query by the ``ActiveModelRegistry`` (B50).
+    Without it, the upstream `_QueryEmbedder`'s `embedding_field` output
+    would have no consumer and the kNN query would still hit the legacy
+    hardcoded ``embedding`` field.
+
+    Reaches into ``document_store._search_documents(**body)`` to bypass the
+    haystack-elasticsearch retriever's hardcoded ``"field": "embedding"``.
+    The store's public API does not expose a per-call field override yet.
+    """
+
+    def __init__(
+        self,
+        document_store: Any,
+        top_k: int = DEFAULT_TOP_K,
+        num_candidates: int | None = None,
+    ) -> None:
+        self._store = document_store
+        self._top_k = top_k
+        self._num_candidates = num_candidates
+
+    @component.output_types(documents=list[Document])
+    def run(
+        self,
+        query_embedding: list[float],
+        embedding_field: str = "embedding",
+        filters: dict | None = None,
+        top_k: int | None = None,
+    ) -> dict:
+        if not query_embedding:
+            raise ValueError("query_embedding must be a non-empty list of floats")
+        k = top_k if top_k is not None else self._top_k
+        num_candidates = self._num_candidates or k * 10
+        body: dict[str, Any] = {
+            "knn": {
+                "field": embedding_field,
+                "query_vector": query_embedding,
+                "k": k,
+                "num_candidates": num_candidates,
+            },
+        }
+        if filters:
+            body["knn"]["filter"] = filters
+        docs = self._store._search_documents(**body)
+        return {"documents": docs}
 
 
 @component

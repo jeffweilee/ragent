@@ -28,10 +28,17 @@ class Reconciler:
         repo: Any,
         broker: Any,
         registry: Any = None,
+        *,
+        settings_repo: Any = None,
+        es_client: Any = None,
+        chunks_index: str = "chunks_v1",
     ) -> None:
         self._repo = repo
         self._broker = broker
         self._registry = registry
+        self._settings_repo = settings_repo
+        self._es_client = es_client
+        self._chunks_index = chunks_index
 
     def run(self) -> None:
         asyncio.run(self._run_async())
@@ -44,6 +51,7 @@ class Reconciler:
         await self._redispatch_uploaded()
         await self._resume_deleting()
         await self._repair_multi_ready()
+        await self._sweep_retired_embedding_fields()
         reconciler_tick_total.inc()
         logger.info("reconciler.tick")
 
@@ -125,6 +133,60 @@ class Reconciler:
                 logger.info("reconciler.delete_resumed", document_id=doc.document_id)
             except Exception:
                 logger.exception("reconciler.delete_resume_error", document_id=doc.document_id)
+
+    async def _sweep_retired_embedding_fields(self) -> None:
+        """B50 §9 — clear embedding fields marked retired by /commit or /abort.
+
+        ES disallows dropping a field from a mapping; we can only remove its
+        *values*. For each ``embedding.retired`` entry with
+        ``cleanup_done=false``, fire one ``_update_by_query`` that runs a
+        Painless script removing the field, then mark the entry done via
+        an optimistic-locked transition. A failed entry stays pending and
+        is retried on the next tick — entries are independent.
+        """
+        if self._settings_repo is None or self._es_client is None:
+            return
+        try:
+            retired = await self._settings_repo.get("embedding.retired") or []
+        except Exception:
+            logger.exception("reconciler.retired_sweep.read_error")
+            return
+        if not retired:
+            return
+        pending = [e for e in retired if not e.get("cleanup_done")]
+        if not pending:
+            return
+
+        # Snapshot for the optimistic lock; mutate a local copy and only
+        # commit fields we successfully swept.
+        import copy
+
+        original = copy.deepcopy(retired)
+        for entry in pending:
+            field = entry["field"]
+            try:
+                await self._es_client.update_by_query(
+                    index=self._chunks_index,
+                    body={
+                        "script": {"source": f"ctx._source.remove('{field}')"},
+                        "query": {"exists": {"field": field}},
+                    },
+                    conflicts="proceed",
+                    slices="auto",
+                )
+                entry["cleanup_done"] = True
+                logger.info("reconciler.retired_field_cleared", field=field)
+            except Exception:
+                logger.exception("reconciler.retired_sweep.es_error", field=field)
+                # leave cleanup_done=false; next tick retries.
+
+        try:
+            await self._settings_repo.transition(
+                {"embedding.retired": retired},
+                expect={"embedding.retired": original},
+            )
+        except Exception:
+            logger.exception("reconciler.retired_sweep.transition_error")
 
     async def _repair_multi_ready(self) -> None:
         groups = await self._repo.find_multi_ready_groups()
