@@ -102,8 +102,9 @@ def build_container() -> Container:
             else None
         )
 
+    _bootstrap_embed_url = _require("EMBEDDING_API_URL")
     embedding_client = EmbeddingClient(
-        api_url=_require("EMBEDDING_API_URL"),
+        api_url=_bootstrap_embed_url,
         http=http,
         get_token=embedding_tm.get_token,
     )
@@ -199,10 +200,17 @@ def build_container() -> Container:
     _embed_cache: dict[tuple[str, str], EmbeddingClient] = {}
 
     def _client_for(model: EmbeddingModelConfig) -> EmbeddingClient:
-        key = (model.api_url, model.model_arg)
+        # Empty `api_url` in the seed row means "use the operator-provided
+        # bootstrap env var". This is the common case for a fresh install:
+        # the seed (migrations/009 / schema.sql) ships with `api_url=""`
+        # and the operator sets `EMBEDDING_API_URL=...` in their .env.
+        # Once they `/promote` a candidate they supply an explicit api_url,
+        # which then takes precedence.
+        url = model.api_url or _bootstrap_embed_url
+        key = (url, model.model_arg)
         if key not in _embed_cache:
             _embed_cache[key] = EmbeddingClient(
-                api_url=model.api_url,
+                api_url=url,
                 http=http,
                 get_token=embedding_tm.get_token,
                 model=model.model_arg,
