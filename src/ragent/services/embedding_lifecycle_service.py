@@ -22,14 +22,13 @@ on entry and `embedding.lifecycle.<action>.{completed,failed}` on exit, per
 
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Any
 
 import structlog
 
 from ragent.clients.embedding_model_config import EmbeddingModelConfig
 from ragent.services.cutover_preflight import preflight as _preflight
-from ragent.utility.datetime import to_iso, utcnow
+from ragent.utility.datetime import from_iso, to_iso, utcnow
 from ragent.utility.embedding_lifecycle import next_state
 
 logger = structlog.get_logger(__name__)
@@ -113,9 +112,13 @@ class EmbeddingLifecycleService:
 
         mapping = await self._es.indices.get_mapping(index=self._index)
         props = mapping[self._index]["mappings"].get("properties", {})
-        if cfg.field in props:
+        existing = props.get(cfg.field)
+        if existing is not None and existing.get("dims") != cfg.dim:
+            # Different-dim collision is a hard error; same-dim is the
+            # retry-safe path (put_mapping is idempotent below).
             raise EmbeddingFieldCollision(
-                f"field {cfg.field} already present in mapping (likely retired-but-not-cleaned)"
+                f"field {cfg.field} already mapped with dim {existing.get('dims')}, "
+                f"requested {cfg.dim}"
             )
 
         await self._es.indices.put_mapping(
@@ -127,6 +130,8 @@ class EmbeddingLifecycleService:
                         "dims": cfg.dim,
                         "index": True,
                         "similarity": "cosine",
+                        # Match `resources/es/chunks_v1.json` (B26 P1 choice).
+                        "index_options": {"type": "flat"},
                     }
                 }
             },
@@ -134,7 +139,12 @@ class EmbeddingLifecycleService:
 
         promoted_at = _iso_now()
         candidate_payload = {**cfg.to_dict(), "promoted_at": promoted_at}
-        await self._repo.transition({"embedding.candidate": candidate_payload})
+        # Optimistic lock: only proceed if no other admin call slipped a
+        # candidate in between our state check and our write.
+        await self._repo.transition(
+            {"embedding.candidate": candidate_payload},
+            expect={"embedding.candidate": None},
+        )
         return {"state": "CANDIDATE", "candidate": candidate_payload, "promoted_at": promoted_at}
 
     # ------------------------------------------------------------------
@@ -155,7 +165,7 @@ class EmbeddingLifecycleService:
         next_state(self._registry.derived_state(), "cutover")
         candidate_dict = self._registry.candidate_dict or {}
         promoted_at_iso = candidate_dict.get("promoted_at")
-        promoted_at = datetime.fromisoformat(promoted_at_iso) if promoted_at_iso else utcnow()
+        promoted_at = from_iso(promoted_at_iso) if promoted_at_iso else utcnow()
 
         report = await _preflight(
             registry=self._registry,
@@ -167,7 +177,10 @@ class EmbeddingLifecycleService:
         if not report["pass"] and not force:
             raise CutoverPreflightFailed(report)
 
-        await self._repo.transition({"embedding.read": "candidate"})
+        await self._repo.transition(
+            {"embedding.read": "candidate"},
+            expect={"embedding.read": "stable"},
+        )
         return {
             "state": "CUTOVER",
             "read": "candidate",
@@ -183,7 +196,10 @@ class EmbeddingLifecycleService:
         logger.info("embedding.lifecycle.rollback.started")
         try:
             next_state(self._registry.derived_state(), "rollback")
-            await self._repo.transition({"embedding.read": "stable"})
+            await self._repo.transition(
+                {"embedding.read": "stable"},
+                expect={"embedding.read": "candidate"},
+            )
         except Exception as exc:
             _log_failure("rollback", exc)
             raise
@@ -223,7 +239,12 @@ class EmbeddingLifecycleService:
                 "embedding.candidate": None,
                 "embedding.read": "stable",
                 "embedding.retired": retired,
-            }
+            },
+            expect={
+                "embedding.read": "candidate",
+                "embedding.stable": stable_dict,
+                "embedding.candidate": candidate_dict,
+            },
         )
         return {"state": "IDLE", "stable": new_stable, "committed_at": _iso_now()}
 
@@ -249,5 +270,8 @@ class EmbeddingLifecycleService:
 
         retired = list(self._registry.retired_list)
         retired.append(_retired_entry(candidate_dict))
-        await self._repo.transition({"embedding.candidate": None, "embedding.retired": retired})
+        await self._repo.transition(
+            {"embedding.candidate": None, "embedding.retired": retired},
+            expect={"embedding.candidate": candidate_dict, "embedding.read": "stable"},
+        )
         return {"state": "IDLE", "aborted": candidate_dict["name"], "aborted_at": _iso_now()}

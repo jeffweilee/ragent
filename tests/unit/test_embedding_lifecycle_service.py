@@ -127,18 +127,18 @@ async def test_promote_rejected_when_state_not_idle() -> None:
         await svc.promote(name="x", dim=512, api_url="u", model_arg="x")
 
 
-async def test_promote_rejects_field_name_collision() -> None:
+async def test_promote_rejects_field_collision_when_dim_differs() -> None:
     from ragent.services.embedding_lifecycle_service import (
         EmbeddingFieldCollision,
         EmbeddingLifecycleService,
     )
 
     es = AsyncMock()
-    # field already present (e.g. retired-but-cleanup-not-done).
+    # Field already present with a DIFFERENT dim — real collision.
     es.indices.get_mapping.return_value = {
         "chunks_v1": {
             "mappings": {
-                "properties": {"embedding_bgem3v2_768": {"type": "dense_vector", "dims": 768}}
+                "properties": {"embedding_bgem3v2_768": {"type": "dense_vector", "dims": 1024}}
             }
         }
     }
@@ -149,6 +149,72 @@ async def test_promote_rejects_field_name_collision() -> None:
 
     with pytest.raises(EmbeddingFieldCollision):
         await svc.promote(name="bge-m3-v2", dim=768, api_url="http://e2", model_arg="bge-m3-v2")
+
+
+async def test_promote_idempotent_when_field_exists_with_same_dim() -> None:
+    """Retry-safe path: if a previous attempt PUT the mapping but failed at the
+    settings transition, the operator can re-issue promote and we accept the
+    pre-existing field as ours (same dim → idempotent)."""
+    from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
+
+    repo = AsyncMock()
+    es = AsyncMock()
+    es.indices.get_mapping.return_value = {
+        "chunks_v1": {
+            "mappings": {
+                "properties": {"embedding_bgem3v2_768": {"type": "dense_vector", "dims": 768}}
+            }
+        }
+    }
+    reg = _FakeRegistry(state="IDLE")
+    svc = EmbeddingLifecycleService(
+        repo, es, index_name="chunks_v1", registry=reg, cache_ttl_seconds=10
+    )
+
+    result = await svc.promote(
+        name="bge-m3-v2", dim=768, api_url="http://e2", model_arg="bge-m3-v2"
+    )
+
+    assert result["state"] == "CANDIDATE"
+    repo.transition.assert_awaited_once()
+
+
+async def test_promote_put_mapping_uses_flat_index_options() -> None:
+    """B26 — Phase-1 mapping uses index_options.type=flat. Match it."""
+    from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
+
+    es = AsyncMock()
+    es.indices.get_mapping.return_value = {"chunks_v1": {"mappings": {"properties": {}}}}
+    reg = _FakeRegistry(state="IDLE")
+    svc = EmbeddingLifecycleService(
+        AsyncMock(), es, index_name="chunks_v1", registry=reg, cache_ttl_seconds=10
+    )
+
+    await svc.promote(name="bge-m3-v2", dim=768, api_url="http://e2", model_arg="bge-m3-v2")
+
+    body = es.indices.put_mapping.call_args.kwargs["body"]
+    field_def = body["properties"]["embedding_bgem3v2_768"]
+    assert field_def["index_options"] == {"type": "flat"}
+
+
+async def test_promote_passes_optimistic_lock_expect_candidate_null() -> None:
+    """Promote must abort if another admin slipped a candidate in concurrently."""
+    from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
+
+    repo = AsyncMock()
+    es = AsyncMock()
+    es.indices.get_mapping.return_value = {"chunks_v1": {"mappings": {"properties": {}}}}
+    reg = _FakeRegistry(state="IDLE")
+    svc = EmbeddingLifecycleService(
+        repo, es, index_name="chunks_v1", registry=reg, cache_ttl_seconds=10
+    )
+
+    await svc.promote(name="bge-m3-v2", dim=768, api_url="http://e2", model_arg="bge-m3-v2")
+
+    expect = repo.transition.call_args.kwargs.get("expect") or repo.transition.call_args[1].get(
+        "expect"
+    )
+    assert expect == {"embedding.candidate": None}
 
 
 # ---------------------------------------------------------------------------

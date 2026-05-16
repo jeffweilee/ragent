@@ -14,6 +14,8 @@ Contract:
 
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 
 def _mock_engine(first_row=None, rowcount=1):
     result = MagicMock()
@@ -132,3 +134,76 @@ async def test_transition_writes_multiple_keys_in_one_transaction() -> None:
     # One `begin()` context = one transaction; multiple execute calls inside it.
     assert engine.begin.call_count == 1
     assert conn.execute.await_count == 2
+
+
+def _mock_engine_with_select_for_update(select_rows: list[dict]):
+    """Build a mock engine whose first execute returns `select_rows` for the
+    SELECT FOR UPDATE preflight; subsequent executes are no-op upserts."""
+    select_result = MagicMock()
+    select_result.mappings.return_value.all.return_value = select_rows
+    upsert_result = MagicMock()
+    upsert_result.rowcount = 1
+
+    conn = AsyncMock()
+    conn.execute = AsyncMock(
+        side_effect=[select_result, upsert_result, upsert_result, upsert_result]
+    )
+
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=conn)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+
+    engine = MagicMock()
+    engine.begin = MagicMock(return_value=ctx)
+    return engine, conn
+
+
+async def test_transition_with_expect_passes_when_live_matches() -> None:
+    from ragent.repositories.system_settings_repository import SystemSettingsRepository
+
+    engine, conn = _mock_engine_with_select_for_update(
+        [{"setting_key": "embedding.read", "setting_value": '"stable"'}]
+    )
+    repo = SystemSettingsRepository(engine)
+
+    await repo.transition(
+        {"embedding.read": "candidate"},
+        expect={"embedding.read": "stable"},
+    )
+
+    # SELECT FOR UPDATE + 1 upsert = 2 execute calls.
+    assert conn.execute.await_count == 2
+
+
+async def test_transition_with_expect_raises_when_live_drifted() -> None:
+    """Concurrent admin actions racing — second writer's snapshot is stale."""
+    from ragent.repositories.system_settings_repository import (
+        OptimisticLockMismatch,
+        SystemSettingsRepository,
+    )
+
+    engine, conn = _mock_engine_with_select_for_update(
+        [{"setting_key": "embedding.read", "setting_value": '"candidate"'}]  # already flipped
+    )
+    repo = SystemSettingsRepository(engine)
+
+    with pytest.raises(OptimisticLockMismatch):
+        await repo.transition(
+            {"embedding.read": "candidate"},
+            expect={"embedding.read": "stable"},  # stale snapshot
+        )
+
+    # Only the SELECT FOR UPDATE fired; no upsert because we raised.
+    assert conn.execute.await_count == 1
+
+
+async def test_transition_without_expect_skips_select_for_update() -> None:
+    """Back-compat: expect=None preserves the original behaviour."""
+    from ragent.repositories.system_settings_repository import SystemSettingsRepository
+
+    engine, conn = _mock_engine()
+    repo = SystemSettingsRepository(engine)
+
+    await repo.transition({"embedding.read": "stable"})
+
+    assert conn.execute.await_count == 1  # one upsert, no SELECT
