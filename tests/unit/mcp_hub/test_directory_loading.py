@@ -148,3 +148,45 @@ def test_empty_directory_returns_no_tools(tmp_path: Path):
     d.mkdir()
     tools = load_tools_yaml(d).tools
     assert tools == []
+
+
+def _bundled_dir() -> Path:
+    """Resolve tools.example.d via the package, not by walking up the test
+    file — survives test relocation and works under editable install."""
+    from importlib.resources import files
+
+    return Path(str(files("ragent.mcp_hub") / "tools.example.d"))
+
+
+def test_bundled_ragent_yaml_exposes_retrieve_tool():
+    result = load_tools_yaml(_bundled_dir())
+    by_name = {t.name: t for t in result.tools}
+    assert "ragent.retrieve" in by_name
+
+    tool = by_name["ragent.retrieve"]
+    assert tool.method == "POST"
+    assert tool.path == "/retrieve/v1"
+    # X-User-Id flows from the MCP client through to the upstream retrieve
+    # handler (which reads it as a FastAPI Header(alias="X-User-Id")).
+    assert tool.forward_headers.get("X-User-Id") == "{x-user-id}"
+
+
+def test_ragent_retrieve_yaml_matches_RetrieveRequest_contract():
+    """Pin the yaml parameter set against the live pydantic model. If the
+    router adds/removes/renames a field, this test fails — the LLM gets a
+    correct schema or we know about it before deploy."""
+    from ragent.routers.retrieve import RetrieveRequest
+
+    result = load_tools_yaml(_bundled_dir())
+    tool = next(t for t in result.tools if t.name == "ragent.retrieve")
+
+    yaml_params = {p.name for p in tool.params}
+    pydantic_fields = set(RetrieveRequest.model_fields)
+    assert yaml_params == pydantic_fields, (
+        f"drift: yaml has {yaml_params - pydantic_fields}, "
+        f"model has {pydantic_fields - yaml_params}"
+    )
+
+    required_yaml = {p.name for p in tool.params if p.required}
+    required_pydantic = {n for n, f in RetrieveRequest.model_fields.items() if f.is_required()}
+    assert required_yaml == required_pydantic
