@@ -17,9 +17,12 @@ import os
 from contextlib import asynccontextmanager
 from typing import Any
 
+import structlog
 import uvicorn
 
 from .mcp_hub import _INCOMING_HEADERS, build_hub
+
+logger = structlog.get_logger(__name__)
 
 
 class HeaderForwardMiddleware:
@@ -59,12 +62,6 @@ def main() -> None:
     path = os.environ.get("MCP_HUB_PATH", "/mcp")
 
     bundle = build_hub(yaml_path, name=name)
-    print(
-        f"mcp_hub.ready  systems={sorted(bundle.clients)}  "
-        f"tools={len(bundle.clients)}-system  failures={len(bundle.failures)}"
-    )
-    for fail in bundle.failures:
-        print(f"mcp_hub.load_failure  source={fail.source!r}  reason={fail.reason!r}")
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -74,8 +71,8 @@ def main() -> None:
             for system, client in bundle.clients.items():
                 try:
                     await client.aclose()
-                except Exception as exc:  # noqa: BLE001 — one bad client must not leak others
-                    print(f"mcp_hub.shutdown_error  system={system!r}  err={exc!r}")
+                except Exception:  # noqa: BLE001 — one bad client must not leak others
+                    logger.error("mcp_hub.shutdown_error", system=system, exc_info=True)
 
     app = bundle.hub.http_app(path=path, lifespan=lifespan)
     uvicorn.run(HeaderForwardMiddleware(app), host=host, port=port)

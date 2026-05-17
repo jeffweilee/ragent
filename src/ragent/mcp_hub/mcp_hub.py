@@ -12,15 +12,19 @@ import dataclasses
 import inspect
 import json
 import re
+import time
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Literal, get_args
 
 import httpx
+import structlog
 import yaml
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+
+logger = structlog.get_logger(__name__)
 
 _INCOMING_HEADERS: ContextVar[dict[str, str] | None] = ContextVar(
     "mcp_hub_incoming_headers", default=None
@@ -457,17 +461,50 @@ def _make_tool_callable(
         if spec.timeout is not None:
             request_kwargs["timeout"] = spec.timeout
 
+        request_id = incoming.get("x-request-id")
+        log_ctx = {"tool": spec.name, "system": spec.system, "request_id": request_id}
+        start = time.perf_counter()
+
         try:
             resp = await client.request(spec.method, url, **request_kwargs)
         except httpx.TimeoutException as exc:
+            logger.error(
+                "mcp_hub.timeout",
+                latency_ms=int((time.perf_counter() - start) * 1000),
+                configured_timeout=spec.timeout,
+                **log_ctx,
+            )
             raise ToolError(json.dumps({"type": _ERR_TIMEOUT, "message": str(exc)})) from exc
         except httpx.ConnectError as exc:
+            logger.error(
+                "mcp_hub.connect_error",
+                latency_ms=int((time.perf_counter() - start) * 1000),
+                error_class=type(exc).__name__,
+                **log_ctx,
+            )
             raise ToolError(json.dumps({"type": _ERR_CONNECT, "message": str(exc)})) from exc
 
+        latency_ms = int((time.perf_counter() - start) * 1000)
+        upstream_request_id = _extract_request_id(resp.headers)
+
         if resp.status_code >= 500:
+            logger.error(
+                "mcp_hub.upstream_5xx",
+                status=resp.status_code,
+                latency_ms=latency_ms,
+                upstream_request_id=upstream_request_id,
+                **log_ctx,
+            )
             raise ToolError(json.dumps(_base_upstream_error(resp, _ERR_UPSTREAM_5XX)))
 
         if resp.status_code >= 400:
+            logger.warning(
+                "mcp_hub.upstream_4xx",
+                status=resp.status_code,
+                latency_ms=latency_ms,
+                upstream_request_id=upstream_request_id,
+                **log_ctx,
+            )
             return {
                 "ok": False,
                 "status": resp.status_code,
@@ -482,6 +519,12 @@ def _make_tool_callable(
                 payload = resp.text
         else:
             payload = resp.text
+        logger.info(
+            "mcp_hub.tool_call.success",
+            status=resp.status_code,
+            latency_ms=latency_ms,
+            **log_ctx,
+        )
         return {"ok": True, "status": resp.status_code, "data": payload}
 
     sig = _build_signature(spec)
@@ -510,7 +553,11 @@ def build_hub(yaml_path: str | Path, *, name: str = "ragent-mcp-hub") -> HubBund
     result = load_tools_yaml(yaml_path, strict=False)
     clients = {name: spec.make_client() for name, spec in result.systems.items()}
 
+    for failure in result.failures:
+        logger.warning("mcp_hub.load_failure", source=failure.source, reason=failure.reason)
+
     mcp: FastMCP = FastMCP(name)
+    registered = 0
     for spec in result.tools:
         client = clients.get(spec.system)
         if client is None:
@@ -524,7 +571,24 @@ def build_hub(yaml_path: str | Path, *, name: str = "ragent-mcp-hub") -> HubBund
         try:
             fn = _make_tool_callable(spec, client)
             mcp.add_tool(fn)
+            registered += 1
         except Exception as exc:  # noqa: BLE001 — must isolate any registration failure
             result.failures.append(LoadFailure(source=spec.name, reason=f"add_tool: {exc}"))
+            logger.warning("mcp_hub.load_failure", source=spec.name, reason=f"add_tool: {exc}")
+
+    for sys_name, sys_spec in result.systems.items():
+        logger.info(
+            "mcp_hub.system_configured",
+            system=sys_name,
+            base_url=sys_spec.base_url,
+            timeout=sys_spec.timeout,
+            max_connections=sys_spec.max_connections,
+        )
+    logger.info(
+        "mcp_hub.ready",
+        systems=sorted(result.systems),
+        tool_count=registered,
+        failure_count=len(result.failures),
+    )
 
     return HubBundle(hub=mcp, clients=clients, failures=result.failures)
