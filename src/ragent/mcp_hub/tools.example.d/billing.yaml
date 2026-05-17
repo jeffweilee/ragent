@@ -1,0 +1,44 @@
+# system "billing" — independent client (timeout=60s, pool=20). The billing
+# API is slow, so this system gets its own pool — slow billing requests will
+# not starve identity's pool.
+#
+# Note same raw tool name `get_profile` exists in identity.yaml — that's OK,
+# they end up namespaced as identity.get_profile and billing.get_profile.
+
+defaults:
+  base_url: https://billing.internal.example.com
+  timeout: 60.0
+  max_connections: 20
+  headers:
+    Accept: application/json
+
+tools:
+  - name: get_profile
+    description: Fetch the customer's billing profile.
+    method: GET
+    path: /v1/customers/{customer_id}
+    forward_headers:
+      Authorization: "Bearer {x-jwt-token}"
+      X-Tenant-Id: "{x-tenant-id}"
+    parameters:
+      - name: customer_id
+        type: string
+        location: path
+        required: true
+
+  - name: list_charges
+    description: List recent charges for a customer.
+    method: GET
+    path: /v1/customers/{customer_id}/charges
+    forward_headers:
+      Authorization: "Bearer {x-jwt-token}"
+    parameters:
+      - name: customer_id
+        type: string
+        location: path
+        required: true
+      - name: limit
+        type: integer
+        location: query
+        required: false
+        default: 20

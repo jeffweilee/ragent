@@ -1,0 +1,43 @@
+# system "identity" — derived from filename stem (identity.yaml -> "identity").
+# All tools below are exposed as `identity.<name>` to MCP clients.
+#
+# This system has its own httpx.AsyncClient: timeout=10s, pool=50 connections.
+# Independent from other systems' clients — billing being slow won't block here.
+
+defaults:
+  base_url: https://identity.internal.example.com
+  timeout: 10.0
+  max_connections: 50
+  headers:
+    Accept: application/json
+    User-Agent: ragent-mcp-hub/0.2
+
+tools:
+  - name: get_profile
+    description: Fetch a user's identity profile.
+    method: GET
+    path: /v1/users/{user_id}
+    parameters:
+      - name: user_id
+        type: string
+        location: path
+        required: true
+
+  # Identity flows from the MCP client per-request. The Hub does NOT hold
+  # tokens in env or yaml — the client (Haystack/Claude/etc.) sets
+  # X-JWT-Token and X-User-Id on its HTTP transport.
+  - name: list_sessions
+    description: List active sessions for the calling user.
+    method: GET
+    path: /v1/sessions
+    timeout: 30.0
+    forward_headers:
+      Authorization: "Bearer {x-jwt-token}"
+      X-User-Id: "{x-user-id}"
+      X-Request-Id: "{x-trace-id}"
+    parameters:
+      - name: active_only
+        type: boolean
+        location: query
+        required: false
+        default: true

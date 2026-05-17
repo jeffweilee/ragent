@@ -1,0 +1,60 @@
+# system "ragent" — exposes the project's own POST /retrieve/v1 (spec §3.4.4)
+# as an MCP tool, qualified as `ragent.retrieve`.
+#
+# base_url points at the local API process (port 8000 per CLAUDE.md
+# "Common Commands"). Override per environment by replacing this file in
+# the deployed tools.d directory (each env ships its own ConfigMap).
+
+system: ragent
+
+defaults:
+  base_url: http://localhost:8000
+  timeout: 30.0
+  max_connections: 50
+  headers:
+    Accept: application/json
+
+tools:
+  - name: retrieve
+    description: |
+      Retrieve top-k document chunks for a natural-language query from the
+      RAG knowledge base. Returns excerpts ranked by combined vector + BM25
+      score (optionally reranked). Use this whenever the user asks a question
+      whose answer may be in the ingested knowledge corpus.
+    method: POST
+    path: /retrieve/v1
+    forward_headers:
+      X-User-Id: "{x-user-id}"
+    parameters:
+      - name: query
+        type: string
+        location: body
+        required: true
+        description: Natural-language search query.
+      - name: source_app
+        type: string
+        location: body
+        required: false
+        description: Optional filter restricting results to a single source app.
+      - name: source_meta
+        type: string
+        location: body
+        required: false
+        description: Optional filter restricting results to a single source-meta tag.
+      - name: top_k
+        type: integer
+        location: body
+        required: false
+        default: 20
+        description: Maximum chunks to return (1-200).
+      - name: min_score
+        type: number
+        location: body
+        required: false
+        description: Drop chunks whose score is below this threshold.
+      - name: dedupe
+        type: boolean
+        location: body
+        required: false
+        default: false
+        description: If true, collapse multiple chunks from the same source document.
