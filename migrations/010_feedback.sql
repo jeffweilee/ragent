@@ -1,10 +1,10 @@
--- 009_feedback.sql — feedback events for the per-source ranking signal (T-FB.3, B50/B51).
+-- 010_feedback.sql — feedback events for the per-source ranking signal (T-FB.3, B54/B55).
 --
 -- Append-only event log of user feedback on chat sources. MariaDB stores
 -- meta only — never the chat query text, never the answer text. The ES
 -- `feedback_v1` index (T-FB.5) holds the query embedding + reason for the
 -- kNN-based feedback retriever; this table is the source of truth and the
--- replay source for ES recovery (B51, B53 item 7).
+-- replay source for ES recovery (B55, B57 item 7).
 --
 -- Document identity is `(source_app, source_id)` per B11/B35/B39/B41 — both
 -- are required to disambiguate the same client-supplied source_id across
@@ -15,7 +15,7 @@
 -- IDs follow §5.3: `feedback_id` is a CHAR(26) UUIDv7→Crockford Base32 via
 -- `new_id()`; `request_id` is the same shape emitted by /chat.
 --
--- No secondary indexes in P1 — per B53 review, only the uniqueness index
+-- No secondary indexes in P1 — per B57 review, only the uniqueness index
 -- is needed until a concrete query path requires aggregation (analytics /
 -- replay job paths come in P2 and will introduce their own indexes then).
 

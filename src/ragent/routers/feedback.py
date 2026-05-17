@@ -1,4 +1,4 @@
-"""POST /feedback/v1 — closed-loop feedback ingest (T-FB.6, B51).
+"""POST /feedback/v1 — closed-loop feedback ingest (T-FB.6, B55).
 
 Verifies the HMAC-signed snapshot token from the original /chat response,
 checks that the request quadruple ``(user_id, request_id, (source_app, source_id))``
@@ -157,7 +157,7 @@ def create_feedback_router(
             embeddings = await run_in_threadpool(embedding_client.embed, [body.query_text], True)
             query_embedding = embeddings[0]
 
-            # MariaDB first — source of truth (B51).
+            # MariaDB first — source of truth (B55).
             await feedback_repository.upsert(
                 request_id=body.request_id,
                 user_id=user_id,

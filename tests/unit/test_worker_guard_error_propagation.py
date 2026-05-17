@@ -47,6 +47,7 @@ def _container_that_raises(doc: MagicMock, exc: Exception) -> MagicMock:
     container.registry = MagicMock()
     container.registry.fan_out = AsyncMock()
     container.unprotect_client = None
+    container.embedding_registry.refresh = AsyncMock()
     return container
 
 

@@ -37,7 +37,7 @@ def _maybe_mint_feedback_envelope(
     user_id: str | None,
     sources: list[dict] | None,
 ) -> dict:
-    """Return {request_id, feedback_token} when HMAC is configured, else {} (B51).
+    """Return {request_id, feedback_token} when HMAC is configured, else {} (B55).
 
     The token binds ``(source_app, source_id)`` **pairs** (B11/B35 identity)
     so feedback against a forged ``source_app`` for a known ``source_id`` is

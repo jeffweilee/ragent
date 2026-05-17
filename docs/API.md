@@ -362,7 +362,7 @@ Each chunk stored in ES is the raw text segment produced by the indexing pipelin
 
 ## Feedback
 
-### `POST /feedback/v1` — Record a vote against a chat source (T-FB.6, B50/B51)
+### `POST /feedback/v1` — Record a vote against a chat source (T-FB.6, B54/B55)
 
 Closes the feedback loop: the client echoes back the HMAC-signed token from a prior `/chat` response and reports a like / dislike (with optional reason) against one of the source documents shown. Default disabled (`CHAT_FEEDBACK_ENABLED=false`); when enabled, the feedback drives the `_FeedbackMemoryRetriever` (a 3rd RRF input) so future chats with semantically-similar queries surface liked sources.
 
@@ -392,7 +392,7 @@ Closes the feedback loop: the client echoes back the HMAC-signed token from a pr
 - `query_text`, `shown_sources`: re-supplied; HMAC binds `sha256(json([[source_app, source_id], …]))` so the server detects tampering. Document identity is the `(source_app, source_id)` pair.
 - Voted `(source_app, source_id)` ∈ `shown_sources` (server-enforced).
 - `vote` ∈ {+1, -1}.
-- `reason` (optional): closed enum (B52) — `irrelevant | hallucinated | outdated | incomplete | wrong_citation | other`.
+- `reason` (optional): closed enum (B56) — `irrelevant | hallucinated | outdated | incomplete | wrong_citation | other`.
 - `position_shown` (optional): 0-based rank in the original `sources[]` (collected for future IPS; ignored in P1).
 - If `X-User-Id` is sent it MUST equal the `user_id` signed into the token; mismatch is rejected (cross-user token reuse).
 
@@ -468,3 +468,26 @@ to the standard catalog (`MCP_PARSE_ERROR`, `MCP_INVALID_REQUEST`,
 `MCP_METHOD_NOT_FOUND`, `MCP_TOOL_NOT_FOUND`, `MCP_TOOL_INPUT_INVALID`,
 `MCP_TOOL_EXECUTION_FAILED`). Transport-layer failures (e.g. auth 401)
 still come through as `application/problem+json`, not as JSON-RPC errors.
+
+## Embedding Model Lifecycle (admin)
+
+`POST /embedding/v1/{promote,cutover,rollback,commit,abort}` plus
+`GET /embedding/v1/state` and `GET /embedding/v1/cutover/preflight`
+drive a zero-downtime embedding-model swap (B50). Full design:
+`docs/team/2026_05_15_embedding_model_lifecycle.md`. State machine:
+`IDLE → promote → CANDIDATE → cutover → CUTOVER → {commit|rollback}`;
+`CANDIDATE → abort → IDLE`.
+
+| Endpoint | Purpose | Success status | Failure → problem+json |
+|---|---|---|---|
+| `POST /embedding/v1/promote` body `{name,dim,api_url,model_arg}` | Open migration; PUT ES mapping + enable dual-write | 200 with `{state:"CANDIDATE", candidate, promoted_at}` | 409 `EMBEDDING_LIFECYCLE_INVALID_STATE`; 422 `EMBEDDING_INVALID_CONFIG`; 422 `EMBEDDING_FIELD_NAME_COLLISION` |
+| `POST /embedding/v1/cutover` body `{force?: bool}` | Switch reads to candidate (subject to preflight) | 200 with `{state:"CUTOVER", read, cutover_at, preflight}` | 409 `EMBEDDING_LIFECYCLE_INVALID_STATE`; 409 `EMBEDDING_CUTOVER_PREFLIGHT_FAILED` (body carries `preflight` report) |
+| `POST /embedding/v1/rollback` | Revert reads to stable; dual-write stays open | 200 with `{state:"CANDIDATE", read:"stable", rolled_back_at}` | 409 `EMBEDDING_LIFECYCLE_INVALID_STATE` |
+| `POST /embedding/v1/commit` | Promote candidate to stable; retire old field | 200 with `{state:"IDLE", stable, committed_at}` | 409 `EMBEDDING_LIFECYCLE_INVALID_STATE` |
+| `POST /embedding/v1/abort` | Drop candidate (must rollback first if in CUTOVER) | 200 with `{state:"IDLE", aborted, aborted_at}` | 409 `EMBEDDING_LIFECYCLE_INVALID_STATE` |
+| `GET /embedding/v1/state` | Snapshot of stable / candidate / read / retired | 200 with snapshot dict | 503 `EMBEDDING_REGISTRY_NOT_READY` when first refresh has not completed |
+| `GET /embedding/v1/cutover/preflight` | Run hard/soft gates without taking action | 200 with `{pass, gates}` | — |
+
+Cutover hard gates: `state_is_candidate`, `field_dim_matches`,
+`candidate_coverage` (≥ 99%), `dual_write_warmup` (≥ 2 × cache TTL).
+See design doc §6 for full semantics.

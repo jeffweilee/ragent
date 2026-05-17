@@ -23,6 +23,7 @@ from ragent.bootstrap.telemetry import setup_tracing
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
 from ragent.middleware.logging import RequestLoggingMiddleware
+from ragent.routers.admin_embedding import create_router as create_admin_embedding_router
 from ragent.routers.admin_ingest import create_router as create_upload_ingest_router
 from ragent.routers.chat import create_chat_router
 from ragent.routers.feedback import create_feedback_router
@@ -219,6 +220,11 @@ def create_app() -> FastAPI:
         await taskiq_broker.startup()
         init_schema()
         await _check_infra_ready(container, taskiq_broker)
+        # B50 T-EM.21: warm the embedding-model registry so the first
+        # ingest/chat after boot doesn't raise ActiveModelRegistryNotReady.
+        # Refresh failures degrade to stale-warning per the registry's
+        # contract — they don't abort boot.
+        await container.embedding_registry.refresh()
         logger.info("api.startup.infra_ready", db=True, es=True, broker=True)
         try:
             yield
@@ -281,6 +287,12 @@ def create_app() -> FastAPI:
             )
         )
     app.include_router(create_mcp_router(retrieval_pipeline=container.retrieval_pipeline))
+    app.include_router(
+        create_admin_embedding_router(
+            service=container.embedding_lifecycle_service,
+            snapshot_provider=container.embedding_registry.snapshot,
+        )
+    )
     app.include_router(create_health_router(probes=_build_probes(container)))
     setup_metrics(app)
     _register_document_stats_collector()

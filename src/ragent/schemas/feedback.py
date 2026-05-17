@@ -1,4 +1,4 @@
-"""Pydantic request schema for `POST /feedback/v1` (T-FB.6, B52)."""
+"""Pydantic request schema for `POST /feedback/v1` (T-FB.6, B56)."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ _ALLOWED_VOTES: Final[frozenset[int]] = frozenset({VOTE_LIKE, VOTE_DISLIKE})
 
 
 class FeedbackReason(StrEnum):
-    """B52 — frozen Day 1; new values require a new B-row."""
+    """B56 — frozen Day 1; new values require a new B-row."""
 
     IRRELEVANT = "irrelevant"
     HALLUCINATED = "hallucinated"

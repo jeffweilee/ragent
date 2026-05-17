@@ -71,6 +71,10 @@ def make_ingest_container(
         container.ingest_pipeline.run.return_value = {"writer": {"documents_written": []}}
     container.registry = AsyncMock()
     container.unprotect_client = unprotect_client
+    # ingest_pipeline_task awaits container.embedding_registry.refresh()
+    # to pick up cutover/rollback without restart (B50 T-EM.21).
+    container.embedding_registry = MagicMock()
+    container.embedding_registry.refresh = AsyncMock()
     return container
 
 

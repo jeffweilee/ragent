@@ -1,4 +1,4 @@
-"""HMAC-signed snapshot token for `POST /feedback/v1` (B51, T-FB.1).
+"""HMAC-signed snapshot token for `POST /feedback/v1` (B55, T-FB.1).
 
 Format: ``<payload_base64url_nopad>.<hmac_sha256_hex>``.
 
@@ -45,7 +45,7 @@ def _canonical(payload: dict) -> bytes:
 
 def compute_sources_hash(source_refs: list[tuple[str, str]]) -> str:
     """SHA-256 over the ordered list of ``(source_app, source_id)`` pairs — bound
-    into the HMAC payload's ``sources_hash`` field (B51).
+    into the HMAC payload's ``sources_hash`` field (B55).
 
     Document identity is the **pair** ``(source_app, source_id)`` per B11/B35;
     binding ``source_id`` alone would let a client forge the ``source_app``

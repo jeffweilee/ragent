@@ -44,6 +44,34 @@ def test_embed_post_shape():
     assert body["encoding-format"] == "float"
 
 
+def test_embed_post_uses_configured_model_when_provided() -> None:
+    """T-EM.21: `model` constructor arg overrides the bge-m3 default so the
+    same client class can serve candidate-model embed calls during B50
+    migrations."""
+    http = _mock_http([[0.1]])
+    client = EmbeddingClient(
+        api_url="https://embed-v2.example.com",
+        http=http,
+        get_token=lambda: "tok",
+        model="bge-m3-v2",
+    )
+    client.embed(["text"])
+    body = http.post.call_args[1]["json"]
+    assert body["model"] == "bge-m3-v2"
+
+
+def test_embed_post_model_defaults_to_bge_m3_when_omitted() -> None:
+    """Back-compat: existing call sites that don't pass `model` keep the
+    historical bge-m3 default. Pinned so a future EmbeddingClient
+    refactor cannot silently switch the implicit model."""
+    http = _mock_http([[0.1]])
+    client = EmbeddingClient(
+        api_url="https://embed.example.com", http=http, get_token=lambda: "tok"
+    )
+    client.embed(["text"])
+    assert http.post.call_args[1]["json"]["model"] == "bge-m3"
+
+
 def test_embed_uses_raw_token_no_bearer():
     http = _mock_http([[0.1]])
     client = EmbeddingClient(

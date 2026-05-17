@@ -1,4 +1,4 @@
-"""T-FB.3 / T-FB.4 — FeedbackRepository: append-only `feedback` events (B50/B51).
+"""T-FB.3 / T-FB.4 — FeedbackRepository: append-only `feedback` events (B54/B55).
 
 MariaDB is the source of truth for user feedback. The ES `feedback_v1`
 serving view (T-FB.5) is derived from these rows and recoverable from them
@@ -53,7 +53,7 @@ class FeedbackRepository:
     ) -> str:
         """Insert a feedback row or overwrite the prior vote for the same quadruple.
 
-        Idempotent on ``(user_id, request_id, source_app, source_id)`` (B51).
+        Idempotent on ``(user_id, request_id, source_app, source_id)`` (B55).
         Document identity is the ``(source_app, source_id)`` pair per
         B11/B35/B39/B41 — both are required to distinguish the same client
         ``source_id`` across different upstream apps. Returns the new

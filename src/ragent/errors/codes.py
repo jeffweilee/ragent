@@ -63,10 +63,20 @@ class HttpErrorCode(StrEnum):
     # Chat (429).
     CHAT_RATE_LIMITED = "CHAT_RATE_LIMITED"
 
-    # Feedback router (§3.4.5, T-FB.6, B51/B52).
+    # Embedding-model lifecycle (B50, main). 409 on state-machine rejection;
+    # 409 on cutover preflight failure; 422 on invalid promote payload;
+    # 422 on field-name collision with a still-mapped retired field.
+    EMBEDDING_LIFECYCLE_INVALID_STATE = "EMBEDDING_LIFECYCLE_INVALID_STATE"
+    EMBEDDING_CUTOVER_PREFLIGHT_FAILED = "EMBEDDING_CUTOVER_PREFLIGHT_FAILED"
+    EMBEDDING_INVALID_CONFIG = "EMBEDDING_INVALID_CONFIG"
+    EMBEDDING_FIELD_NAME_COLLISION = "EMBEDDING_FIELD_NAME_COLLISION"
+    EMBEDDING_REGISTRY_NOT_READY = "EMBEDDING_REGISTRY_NOT_READY"  # 503
+
+    # Feedback router (§3.4.5, T-FB.6, B54/B55/B56 — renumbered from B50/B51/B52
+    # after collision with main's B50 embedding-lifecycle decision).
     FEEDBACK_TOKEN_INVALID = "FEEDBACK_TOKEN_INVALID"  # 401 — HMAC mismatch / malformed
     FEEDBACK_TOKEN_EXPIRED = "FEEDBACK_TOKEN_EXPIRED"  # 410 — ts past 7-day TTL
-    FEEDBACK_SOURCE_INVALID = "FEEDBACK_SOURCE_INVALID"  # 422 — source_id ∉ shown_source_ids
+    FEEDBACK_SOURCE_INVALID = "FEEDBACK_SOURCE_INVALID"  # 422 — source pair ∉ shown_sources
     FEEDBACK_VALIDATION = "FEEDBACK_VALIDATION"  # 422 — schema / reason enum / vote bounds
 
     # MCP JSON-RPC 2.0 server (§3.8, B47). Surfaces as `data.error_code`

@@ -47,3 +47,25 @@ def test_utcnow_is_recent() -> None:
     now = utcnow()
     delta = (datetime.now(UTC) - now).total_seconds()
     assert abs(delta) < 1
+
+
+def test_from_iso_handles_z_suffix() -> None:
+    from ragent.utility.datetime import from_iso, to_iso, utcnow
+
+    s = to_iso(utcnow())  # ends in "Z"
+    parsed = from_iso(s)
+    assert parsed.tzinfo == UTC
+
+
+def test_from_iso_handles_offset_suffix() -> None:
+    from ragent.utility.datetime import from_iso
+
+    parsed = from_iso("2026-05-15T12:34:56.789+00:00")
+    assert parsed.tzinfo == UTC
+
+
+def test_from_iso_attaches_utc_to_naive() -> None:
+    from ragent.utility.datetime import from_iso
+
+    parsed = from_iso("2026-05-15T12:34:56.789")
+    assert parsed.tzinfo == UTC
