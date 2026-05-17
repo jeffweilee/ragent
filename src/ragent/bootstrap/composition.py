@@ -33,6 +33,9 @@ class Container:
     http: Any  # shared httpx.Client for embedding/LLM/rerank; closed at shutdown
     auth_http: Any  # httpx.Client for token exchange (10s timeout); closed at shutdown
     unprotect_client: Any  # UnprotectClient | None — optional pre-pipeline file unprotection
+    feedback_repository: Any  # FeedbackRepository | None (B50/B51, T-FB.8)
+    feedback_hmac_secret: str | None  # None when CHAT_FEEDBACK_ENABLED=false
+    feedback_enabled: bool
 
 
 def build_container() -> Container:
@@ -178,6 +181,15 @@ def build_container() -> Container:
         document_store=document_store,
     )
 
+    feedback_enabled = _bool_env("CHAT_FEEDBACK_ENABLED", False)
+    feedback_hmac_secret: str | None = None
+    feedback_repository = None
+    if feedback_enabled:
+        from ragent.repositories.feedback_repository import FeedbackRepository
+
+        feedback_repository = FeedbackRepository(engine)
+        feedback_hmac_secret = _require("FEEDBACK_HMAC_SECRET")
+
     unprotect_client = None
     if _bool_env("UNPROTECT_ENABLED", False):
         from ragent.clients.unprotect import UnprotectClient
@@ -208,6 +220,9 @@ def build_container() -> Container:
         http=http,
         auth_http=auth_http,
         unprotect_client=unprotect_client,
+        feedback_repository=feedback_repository,
+        feedback_hmac_secret=feedback_hmac_secret,
+        feedback_enabled=feedback_enabled,
     )
 
 

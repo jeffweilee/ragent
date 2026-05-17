@@ -25,9 +25,5 @@ def test_chunks_v1_resource_matches_spec() -> None:
 
 def test_feedback_v1_resource_matches_spec() -> None:
     spec_json = _extract_spec_json("### 5.4 Elasticsearch `feedback_v1`")
-    resource_json = json.loads(
-        (RES_DIR / "feedback_v1.json").read_text(encoding="utf-8")
-    )
-    assert resource_json == spec_json, (
-        "resources/es/feedback_v1.json has drifted from spec §5.4."
-    )
+    resource_json = json.loads((RES_DIR / "feedback_v1.json").read_text(encoding="utf-8"))
+    assert resource_json == spec_json, "resources/es/feedback_v1.json has drifted from spec §5.4."

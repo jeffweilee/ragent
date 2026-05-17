@@ -308,6 +308,16 @@ class _FeedbackMemoryRetriever:
             "_source": ["source_app", "source_id", "vote", "ts"],
         }
         hits = self._es.search(index=self._feedback_index, body=knn_body)["hits"]["hits"]
+        if not hits:
+            # Cold-start / unrelated query — operators want to see the rate
+            # so they know whether feedback boost ever fires.  No content,
+            # only the bool filter shape and zero count (no embedding logged).
+            _logger.debug(
+                "feedback.retriever.empty_knn",
+                source_app_filter=bool(filters and filters.get("source_app")),
+                source_meta_filter=bool(filters and filters.get("source_meta")),
+            )
+            return {"documents": []}
 
         # 2. Aggregate per (source_app, source_id)
         agg: dict[tuple[str, str], dict] = {}
@@ -338,6 +348,12 @@ class _FeedbackMemoryRetriever:
         scored.sort(key=lambda kv: kv[1], reverse=True)
         scored = scored[: self._top_k]
         if not scored:
+            _logger.info(
+                "feedback.retriever.below_min_votes",
+                hit_count=len(hits),
+                source_count=len(agg),
+                min_votes=self._min_votes,
+            )
             return {"documents": []}
 
         # 5. MariaDB: pair → current READY document_id
@@ -345,6 +361,13 @@ class _FeedbackMemoryRetriever:
         doc_id_map = anyio.from_thread.run(self._repo.get_document_ids_by_source, pairs)
         scored_by_doc = {doc_id_map[k]: s for k, s in scored if k in doc_id_map}
         if not scored_by_doc:
+            # All scored sources lacked a READY row (B36 alignment): possible
+            # after recent supersede or full DELETE. Surface for ops.
+            _logger.info(
+                "feedback.retriever.hydration_miss",
+                scored_count=len(scored),
+                resolved_count=0,
+            )
             return {"documents": []}
 
         # 6. Single ES terms query on chunks_v1
@@ -375,6 +398,14 @@ class _FeedbackMemoryRetriever:
                     score=scored_by_doc[doc_id],
                 )
             )
+        _logger.info(
+            "feedback.retriever.scored",
+            hit_count=len(hits),
+            source_count=len(agg),
+            scored_count=len(scored),
+            resolved_count=len(scored_by_doc),
+            chunk_count=len(result),
+        )
         return {"documents": result}
 
 

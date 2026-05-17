@@ -113,9 +113,7 @@ def create_feedback_router(
             )
 
             # ES second — failure is logged + counted, request still 204.
-            es_id = sha256(
-                f"{user_id}|{body.request_id}|{body.source_id}".encode()
-            ).hexdigest()
+            es_id = sha256(f"{user_id}|{body.request_id}|{body.source_id}".encode()).hexdigest()
             es_doc = {
                 "request_id": body.request_id,
                 "query_text": body.query_text,
