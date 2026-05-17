@@ -166,6 +166,15 @@ def record_ingest_rejection(reason: str) -> None:
     _ingest_rejected_total.labels(reason=reason).inc()
 
 
+# Feedback dual-write ES leg failure (T-FB.6, B51).  Counter only — no labels —
+# because /feedback/v1 itself returns 204 on the MariaDB-leg success path
+# regardless of ES outcome; this lets an offline replay job target the gap.
+feedback_es_write_failed_total = Counter(
+    "ragent_feedback_es_write_failed_total",
+    "POST /feedback/v1: MariaDB write succeeded but ES feedback_v1 index write failed (B51).",
+)
+
+
 DocumentStatsRow = tuple[str, str | None, str | None, int]
 """(status, source_app, mime_type, count)."""
 

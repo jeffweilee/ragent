@@ -26,6 +26,7 @@ from ragent.middleware.logging import RequestLoggingMiddleware
 from ragent.routers.admin_embedding import create_router as create_admin_embedding_router
 from ragent.routers.admin_ingest import create_router as create_upload_ingest_router
 from ragent.routers.chat import create_chat_router
+from ragent.routers.feedback import create_feedback_router
 from ragent.routers.health import create_health_router
 from ragent.routers.ingest import create_router as create_ingest_router
 from ragent.routers.mcp import create_mcp_router
@@ -272,9 +273,19 @@ def create_app() -> FastAPI:
             rate_limiter=container.rate_limiter,
             rate_limit=container.rate_limit,
             rate_limit_window=container.rate_limit_window,
+            feedback_hmac_secret=container.feedback_hmac_secret,
         )
     )
     app.include_router(create_retrieve_router(retrieval_pipeline=container.retrieval_pipeline))
+    if container.feedback_hmac_secret is not None:
+        app.include_router(
+            create_feedback_router(
+                feedback_repository=container.feedback_repository,
+                embedding_client=container.embedding_client,
+                es_client=container.es_client,
+                hmac_secret=container.feedback_hmac_secret,
+            )
+        )
     app.include_router(create_mcp_router(retrieval_pipeline=container.retrieval_pipeline))
     app.include_router(
         create_admin_embedding_router(

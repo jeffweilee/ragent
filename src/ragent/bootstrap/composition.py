@@ -38,6 +38,9 @@ class Container:
     embedding_registry: Any  # ActiveModelRegistry — refresh() in lifespan startup
     embedding_lifecycle_service: Any  # EmbeddingLifecycleService — admin router backend
     chunks_index_name: str  # ES index for the chat retrieval / dual-write
+    # B54/B55 T-FB.8 — feedback retrieval signal (renumbered from B50/B51)
+    feedback_repository: Any  # FeedbackRepository | None
+    feedback_hmac_secret: str | None  # None when CHAT_FEEDBACK_ENABLED=false
 
 
 def build_container() -> Container:
@@ -222,6 +225,30 @@ def build_container() -> Container:
     def _embed(model: EmbeddingModelConfig, texts: list[str], *, query: bool) -> list[list[float]]:
         return _client_for(model).embed(texts, query=query)
 
+    # B54/B55 T-FB.8 — Feedback retrieval signal (renumbered from B50/B51 after
+    # collision with embedding-lifecycle B50). Ships dark; CHAT_FEEDBACK_ENABLED
+    # gates both the /feedback router registration (bootstrap/app.py) and the
+    # 3rd RRF retriever wired below.
+    feedback_enabled = _bool_env("CHAT_FEEDBACK_ENABLED", False)
+    feedback_hmac_secret: str | None = None
+    feedback_repository = None
+    feedback_retriever = None
+    feedback_weight = 0.5
+    if feedback_enabled:
+        from ragent.pipelines.chat import _FeedbackMemoryRetriever
+        from ragent.repositories.feedback_repository import FeedbackRepository
+
+        feedback_repository = FeedbackRepository(engine)
+        feedback_hmac_secret = _require("FEEDBACK_HMAC_SECRET")
+        feedback_weight = _float_env("CHAT_FEEDBACK_RRF_WEIGHT", 0.5)
+        feedback_retriever = _FeedbackMemoryRetriever(
+            es_client=es_client,
+            doc_repo=doc_repo,
+            min_votes=_int_env("CHAT_FEEDBACK_MIN_VOTES", 3),
+            half_life_days=_int_env("CHAT_FEEDBACK_HALF_LIFE_DAYS", 14),
+            request_timeout=_float_env("ES_QUERY_TIMEOUT_SECONDS", 10.0),
+        )
+
     retrieval_pipeline = build_retrieval_pipeline(
         document_store=document_store,
         doc_repo=doc_repo,
@@ -229,6 +256,8 @@ def build_container() -> Container:
         rerank_client=rerank_client,
         registry=embedding_registry,
         embed_query_callable=partial(_embed, query=True),
+        feedback_retriever=feedback_retriever,
+        feedback_weight=feedback_weight,
     )
 
     ingest_pipeline = build_ingest_pipeline(
@@ -273,6 +302,8 @@ def build_container() -> Container:
         embedding_registry=embedding_registry,
         embedding_lifecycle_service=embedding_lifecycle_service,
         chunks_index_name=chunks_index_name,
+        feedback_repository=feedback_repository,
+        feedback_hmac_secret=feedback_hmac_secret,
     )
 
 

@@ -178,7 +178,13 @@ class ExtractorPlugin(Protocol):
 ### 3.4 Chat Pipeline
 
 ```
-QueryEmbedder → {ESVectorRetriever (kNN on `embedding`, optional filter) ∥ ESBM25Retriever (multi_match on `["text", "title^2"]`, optional filter)} → DocumentJoiner(RRF) → SourceHydrator(JOIN documents) → LLMClient.{chat | stream}
+QueryEmbedder → {ESVectorRetriever (kNN on `embedding`, optional filter)
+                 ∥ ESBM25Retriever (multi_match on `["text", "title^2"]`, optional filter)
+                 ∥ FeedbackMemoryRetriever (kNN on `feedback_v1.query_embedding`, optional;
+                                            present iff CHAT_FEEDBACK_ENABLED + CHAT_JOIN_MODE=rrf, B54)}
+              → DocumentJoiner(RRF, weights=[1, 1, CHAT_FEEDBACK_RRF_WEIGHT])
+              → SourceHydrator(JOIN documents)
+              → LLMClient.{chat | stream}
 ```
 
 Title participates in **both** retrieval surfaces (B15): semantic (baked into every chunk's `embedding` at ingest via `embed(f"{title}\n\n{text}")`) and lexical (BM25 boosted 2× via `multi_match`). No separate title-only retriever, no extra ES field beyond `title`.
@@ -222,11 +228,11 @@ Title participates in **both** retrieval surfaces (B15): semantic (baked into ev
 
 ```json
 {
-  "content":  "COMPLETE_MARKDOWN_RESPONSE",
-  "usage":    {"promptTokens": 0, "completionTokens": 0, "totalTokens": 0},
-  "model":    "gptoss-120b",
-  "provider": "openai",
-  "sources":  [
+  "content":        "COMPLETE_MARKDOWN_RESPONSE",
+  "usage":          {"promptTokens": 0, "completionTokens": 0, "totalTokens": 0},
+  "model":          "gptoss-120b",
+  "provider":       "openai",
+  "sources":        [
     {
       "document_id":  "01J9...",
       "source_app":   "confluence",
@@ -239,13 +245,16 @@ Title participates in **both** retrieval surfaces (B15): semantic (baked into ev
       "excerpt":      "...chunk text snippet...",
       "score":        0.87
     }
-  ]
+  ],
+  "request_id":     "01J9...",
+  "feedback_token": "<base64url>.<hmac_hex>"
 }
 ```
 
 - `sources` is `null` when empty; otherwise all fields are populated. `type` is always `"knowledge"` in P1 (reserved enum).
 - `sources[].source_title/url/mime_type` from `documents`; `score` is RRF retrieval score; `excerpt` is truncated to `EXCERPT_MAX_CHARS` (default 512) in router (B23) — LLM receives full text untruncated.
 - `usage` from `LLMClient` (non-streaming only; streaming `done` event omits `usage` — P1 limitation).
+- `request_id` + `feedback_token` are present **only when `CHAT_FEEDBACK_ENABLED=true` AND the request carried `X-User-Id`** (B55, T-FB.10). Both omitted otherwise — clients should treat them as optional and skip the `/feedback/v1` UI when absent.
 
 #### 3.4.3 Streaming wire format (`/chat/stream` only)
 
@@ -330,6 +339,65 @@ Runs the full retrieval pipeline (embed → kNN + BM25 → RRF join → source h
 - **S36 CJK BM25 via icu_tokenizer (B26)** — Given a document body containing `"產品規格"` (no whitespace) indexed under the `icu_text` analyzer, When a chat query for `"產品規格"` runs against `chunks_v1`, Then the BM25 retriever returns the chunk; the same query against a `standard`-analyzed control index does not. Proves the analyzer choice (B26) is functionally required for CJK retrieval.
 - **S37 chat rate-limit per user (B31)** — Given `CHAT_RATE_LIMIT_PER_MINUTE=N` and a single `X-User-Id`, When the same caller issues N+1 `POST /chat` (or `/chat/stream`) requests within the window, Then the first N succeed and the (N+1)th returns 429 `application/problem+json` with `error_code=CHAT_RATE_LIMITED` and a `Retry-After` header equal to seconds until window reset. A different `X-User-Id` gets an independent budget; ingest, MCP, and health endpoints are unaffected. After the window expires the counter resets.
 - ~~**S8**~~ — Superseded by S58–S67 (§3.8) in P2.5; the `POST /mcp/v1/tools/rag` 501 stub was removed.
+
+---
+
+#### 3.4.5 `POST /feedback/v1` — User feedback on chat sources (B54/B55/B56, T-FB.6)
+
+Closes the feedback loop: client echoes back the HMAC-signed token from a prior `/chat` response and reports a vote against one of the shown sources. Dual-writes MariaDB `feedback` (§5.1) and ES `feedback_v1` (§5.4); next `/chat` consults the ES index via `_FeedbackMemoryRetriever` (B54) when `CHAT_FEEDBACK_ENABLED=true`.
+
+**Request schema:**
+
+```json
+{
+  "request_id":     "01J9...",
+  "feedback_token": "<base64url>.<hmac_hex>",
+  "query_text":     "what are our Q3 OKRs?",
+  "shown_sources":  [
+    {"source_app": "confluence", "source_id": "DOC-A"},
+    {"source_app": "confluence", "source_id": "DOC-B"},
+    {"source_app": "drive",      "source_id": "DOC-C"}
+  ],
+  "source_app":     "confluence",
+  "source_id":      "DOC-A",
+  "vote":           1,
+  "reason":         "irrelevant",
+  "position_shown": 0
+}
+```
+
+- `request_id`, `feedback_token`: from the `/chat` response (§3.4.2). Token TTL = 7 days. The token's signed `request_id` and `user_id` are **authoritative**; the body's `request_id` must equal the signed value, and (if `X-User-Id` is present) it must equal the token's `user_id`. Mismatch → 401 `FEEDBACK_TOKEN_INVALID`.
+- `query_text`, `shown_sources`: re-supplied by client; HMAC over `sources_hash = sha256(json([[source_app, source_id], …]))` binds the **pair** list (document identity is `(source_app, source_id)` per B11/B35).
+- `(source_app, source_id)` of the voted source ∈ `shown_sources` (server-enforced).
+- `vote` ∈ {+1, -1}.
+- `reason` ∈ {`irrelevant`, `hallucinated`, `outdated`, `incomplete`, `wrong_citation`, `other`} (B56, frozen) or omitted.
+- `position_shown`: 0-based index of the voted source in the original `/chat sources[]` (recorded for future IPS; B57 item 1, unused in P1).
+
+**Response:** `204 No Content` on success; `application/problem+json` on error per §4.1.1.
+
+**Errors:**
+- `401 FEEDBACK_TOKEN_INVALID` — HMAC mismatch, malformed token, `request_id` mismatch with signed value, `X-User-Id` mismatch with signed `user_id`, or `shown_sources` doesn't match the signed `sources_hash`.
+- `410 FEEDBACK_TOKEN_EXPIRED` — token `ts` outside the 7-day window.
+- `422 FEEDBACK_SOURCE_INVALID` — voted `(source_app, source_id)` pair not in `shown_sources`.
+- `422 FEEDBACK_VALIDATION` — schema violations (vote ∉ {±1}, reason outside enum, missing required field).
+
+**Dual-write semantics (B55):**
+1. MariaDB `feedback` UPSERT keyed on `(user_id, request_id, source_app, source_id)` — idempotent; second vote overwrites.
+2. ES `feedback_v1` index with `_id = sha256(user_id|request_id|source_app|source_id)` — same idempotency. Re-embeds `query_text` once per call via `EmbeddingClient.embed([query_text], query=True)`. ES doc carries `source_app` (`_FeedbackMemoryRetriever` aggregates by the pair).
+3. ES leg failure logs `event=feedback.es_write_failed` and increments `ragent_feedback_es_write_failed_total`; the request still returns 204 because MariaDB is the truth.
+
+**BDD:**
+- **S42 happy** — Valid token + valid shape → 204; MariaDB row exists; ES doc indexed with `source_app` field present.
+- **S43 tampered token** — Single byte flip → 401 `FEEDBACK_TOKEN_INVALID`.
+- **S44 expired token** — `ts` > 7 days ago → 410 `FEEDBACK_TOKEN_EXPIRED`.
+- **S45 sources_hash mismatch** — Client supplies different `shown_sources` than at sign time → 401 `FEEDBACK_TOKEN_INVALID`.
+- **S46 source not shown** — Voted `(source_app, source_id)` pair not in `shown_sources` → 422 `FEEDBACK_SOURCE_INVALID`.
+- **S47 reason enum** — Reason outside B56 frozen set → 422.
+- **S48 idempotent re-vote** — Same `(user_id, request_id, source_app, source_id)` posted twice → both return 204, single MariaDB row with `updated_at` advanced.
+- **S49 ES fail-open** — ES write raises → 204 + `ragent_feedback_es_write_failed_total += 1`.
+- **S50 request_id replay rejected** — Body `request_id` differs from signed payload `request_id` → 401 `FEEDBACK_TOKEN_INVALID`; no MariaDB/ES write.
+- **S51 cross-user reuse rejected** — `X-User-Id` differs from signed `user_id` → 401 `FEEDBACK_TOKEN_INVALID`; no write.
+- **S52 chat filter scope honoured** — `/chat` with `source_app=confluence` AND `CHAT_FEEDBACK_ENABLED=true` → `_FeedbackMemoryRetriever`'s kNN filter contains `term: {source_app: confluence}` (no boosting from other-app likes leaks into the response).
 
 ---
 
@@ -538,6 +606,7 @@ App-level errors (-32000..-32099) carry `data.error_code` matching the existing 
 | POST   | `/retrieve/v1`             | `X-User-Id` | §3.4.4 schema (`query` required; rest default) | `200 { chunks[] }` per §3.4.4 |
 | POST   | `/chat/v1`                 | `X-User-Id` | §3.4.1 schema (`messages` required; rest default) | `200 application/json` per §3.4.2 |
 | POST   | `/chat/v1/stream`          | `X-User-Id` | §3.4.1 schema | `text/event-stream` per §3.4.3 (`data: {type:delta\|done\|error}`) |
+| POST   | `/feedback/v1`             | `X-User-Id` | §3.4.5 schema | `204` on success; `401`/`410`/`422` `application/problem+json` per §3.4.5. |
 | POST   | `/mcp/v1`               | `X-User-Id` (P1) / `Authorization: Bearer` (P2) | JSON-RPC 2.0 envelope per §3.8 | `200` with JSON-RPC response envelope; `204` for `notifications/*`. Auth failure (401) returns `application/problem+json` per §3.8.1 (transport-layer). |
 | GET    | `/livez`                | none        | — | `200 {"status":"ok"}` — process up; no dependency probes |
 | GET    | `/readyz`               | none        | — | `200` if all dep probes pass; else `503 application/problem+json` listing failed deps. Probes: **MariaDB** (`SELECT 1`), **ES** (`GET /_cluster/health` + `analysis-icu` plugin loaded + every `resources/es/*.json` index exists; B26, I5), **Redis broker & rate-limiter** (`PING` against active topology per `REDIS_MODE`; B27), **MinIO** (`ListBuckets`). Each probe ≤ 2 s. |
@@ -586,6 +655,10 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 | `CHAT_PROVIDER_UNSUPPORTED`          | 422         | `provider` outside `{"openai"}` allow-list (B22) | Schema T3.3 |
 | `CHAT_FILTER_INVALID`                | 422         | `source_app` empty / > 64 chars, or `source_meta` empty / > 1024 chars (B29 → B35) | Schema T3.3 |
 | `CHAT_RATE_LIMITED`                  | 429 + `Retry-After` | Per-user fixed-window quota exceeded on `/chat/v1` or `/chat/v1/stream` (B31, S37) | Router-level Depends T3.16 |
+| `FEEDBACK_TOKEN_INVALID`             | 401         | HMAC mismatch, malformed token, or `shown_source_ids` doesn't match the signed `sources_hash` (T-FB.6, B55) | Router (feedback) |
+| `FEEDBACK_TOKEN_EXPIRED`             | 410         | Token `ts` outside the 7-day window (T-FB.6, B55) | Router (feedback) |
+| `FEEDBACK_SOURCE_INVALID`            | 422         | `source_id ∉ shown_source_ids` (T-FB.6) | Router (feedback) |
+| `FEEDBACK_VALIDATION`                | 422         | Schema violations: vote ∉ {±1}, reason outside B56 enum, missing required field | Schema (feedback) |
 | `CHAT_LLM_ERROR`                     | 502 / SSE-error | Pre-stream LLM failure (problem+json) or mid-stream LLM failure (`data: {type:error}`, B6) | Router T3.10/T3.12 |
 | `CHAT_RETRIEVER_ERROR`               | 502 / SSE-error | ES vector / BM25 retriever failure | Router T3.10/T3.12 |
 | `MCP_PARSE_ERROR`                    | JSON-RPC `-32700` | Request body is not valid JSON (S64) | Router P2.5 |
@@ -762,6 +835,11 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `CHAT_RATE_LIMIT_PER_MINUTE`          | `30`             | Per-user request cap on `/chat/v1` + `/chat/v1/stream` within the rate-limit window (B31). Excess returns 429 `CHAT_RATE_LIMITED`. |
 | `CHAT_RATE_LIMIT_WINDOW_SECONDS`      | `60`             | Fixed-window length for `CHAT_RATE_LIMIT_PER_MINUTE` (B31). |
 | `MCP_REQUEST_MAX_BYTES`               | `262144` (256 KiB) | Defence-in-depth cap on `POST /mcp/v1` request bodies; over-limit returns HTTP 413 `application/problem+json` (§3.8.1). |
+| `CHAT_FEEDBACK_ENABLED`               | `false`          | Master switch for the feedback retrieval signal (B54). `true` enables `POST /feedback/v1`, the `_FeedbackMemoryRetriever` 3rd RRF input, and requires `FEEDBACK_HMAC_SECRET`. Default off — ship dark, observe write volume first (B57). |
+| `CHAT_FEEDBACK_RRF_WEIGHT`            | `0.5`            | Weight on the feedback retriever's contribution in `DocumentJoiner(weights=[1.0, 1.0, this])` (B54). Cap < 1.0 to prevent popularity-loop dominance. |
+| `CHAT_FEEDBACK_MIN_VOTES`             | `3`              | `(likes + dislikes)` threshold below which a (source_app, source_id) is dropped from the retriever (B54). Defeats single-user signal poisoning. |
+| `CHAT_FEEDBACK_HALF_LIFE_DAYS`        | `14`             | Score decay half-life applied to the per-source Wilson score: `score × 0.5 ** (age_days / this)` (B54). |
+| `FEEDBACK_HMAC_SECRET`                | *(required when `CHAT_FEEDBACK_ENABLED=true`)* | HMAC key for signing `/chat` response tokens and verifying `POST /feedback/v1` payloads (B55). Boot fails when feedback is enabled but the secret is unset. |
 | `PDF_OCR_LANGUAGES`                   | `eng+chi_sim+chi_tra+jpn+deu` | Tesseract language pack list (plus-separated) used by `_PdfASTSplitter` when OCR-ing image-bearing pages. Install matching `tesseract-ocr-<lang>` packages if non-default languages are added. |
 
 > **MCP protocol pins are NOT env-driven** — `protocolVersion` (`2024-11-05`) and `serverInfo.name` (`ragent`) are **pinned in spec §3.8.1 / B47** and live as module-level constants in `src/ragent/routers/mcp.py`. Operators flipping the protocol version would silently break the contract; the pin is intentional. The only MCP env knob is the body cap above.
@@ -830,6 +908,23 @@ CREATE TABLE documents (
 -- create_user = audit only (NOT an authz field); idx_create_user_document supports "list my uploads" queries.
 
 -- chunks table dropped in migration 003_drop_chunks.sql (v2). Chunks live in ES chunks_v1 only.
+
+CREATE TABLE feedback (
+  feedback_id     CHAR(26)     PRIMARY KEY,             -- new_id() (§5.3)
+  request_id      CHAR(26)     NOT NULL,                -- echoed from /chat response
+  user_id         VARCHAR(64)  NOT NULL,                -- X-User-Id at /chat time (signed into token)
+  source_app      VARCHAR(64)  NOT NULL,                -- voted-source namespace (paired with source_id, B11/B35)
+  source_id       VARCHAR(128) NOT NULL,                -- voted source (must be in shown_sources)
+  vote            TINYINT      NOT NULL,                -- +1 like / -1 dislike
+  reason          VARCHAR(32)  NULL,                    -- B56 enum (6 values) or NULL
+  position_shown  SMALLINT     NULL,                    -- for future IPS (B57 item 1) — collected, unused in P1
+  created_at      DATETIME(6)  NOT NULL,
+  updated_at      DATETIME(6)  NOT NULL,
+  UNIQUE KEY uq_user_req_app_src (user_id, request_id, source_app, source_id),
+  CONSTRAINT ck_vote_unit CHECK (vote IN (-1, 1))
+);
+-- Append-only event log. ES `feedback_v1` (§5.4) is the derived serving view (B54/B55).
+-- No content/text — query_text lives only in `feedback_v1` per the "text in ES, meta in MariaDB" rule.
 ```
 
 No physical FK. ORM-level cascade only.
@@ -901,6 +996,49 @@ No physical FK. ORM-level cascade only.
 
 - `new_id()` → UUIDv7 → Crockford Base32 → 26 chars (lexicographically sortable).
 - `utcnow()` → tz-aware UTC. `to_iso()` → ISO 8601 `...Z`. `from_db(naive)` → attach UTC.
+
+### 5.4 Elasticsearch `feedback_v1`
+
+> **Source of truth (B26 pattern):** `resources/es/feedback_v1.json` — settings + mappings, checked into git. Bootstrap (§6.1) reads this file and `PUT /feedback_v1` if the index does not exist. Mirrors the `chunks_v1` pattern (§5.2): ES holds text + vector, MariaDB holds meta only.
+
+```json
+{
+  "settings": {
+    "index": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0,
+      "analysis": {
+        "analyzer": {
+          "icu_text": { "type": "custom", "tokenizer": "icu_tokenizer",
+                        "filter": ["icu_folding", "lowercase"] }
+        }
+      }
+    }
+  },
+  "mappings": {
+    "properties": {
+      "request_id":      { "type": "keyword" },
+      "query_text":      { "type": "text",  "analyzer": "icu_text" },
+      "query_embedding": { "type": "dense_vector", "dims": 1024,
+                           "index": true, "similarity": "cosine",
+                           "index_options": { "type": "flat" } },
+      "source_id":       { "type": "keyword" },
+      "source_app":      { "type": "keyword" },
+      "source_meta":     { "type": "keyword", "ignore_above": 1024 },
+      "vote":            { "type": "byte" },
+      "reason":          { "type": "keyword" },
+      "user_id_hash":    { "type": "keyword" },
+      "ts":              { "type": "date" }
+    }
+  }
+}
+```
+
+**Indexing semantics (B54/B55):**
+- `_id` = `sha256(user_id|request_id|source_app|source_id)` so re-votes overwrite (mirrors MariaDB `uq_user_req_app_src`).
+- `query_embedding` produced at feedback-write time via `EmbeddingClient.embed([query_text], query=True)` — same model used by `/chat` retrieval so kNN similarity is comparable.
+- `user_id_hash = sha256(user_id).hexdigest()` — defence-in-depth for ES dumps; plaintext `user_id` lives only in MariaDB (`feedback.user_id`).
+- Test override (B42) at `tests/resources/es/feedback_v1.json` omits the ICU analyzer, identical otherwise.
 
 ---
 
@@ -1042,3 +1180,7 @@ ragent/
 | **B47** | 2026-05-11 | API/MCP | P1 reserved `POST /mcp/v1/tools/rag` as a 501 stub with REST-shape `{query: str}`. P2.5 needs a real handler. Three options: (A) keep REST shape, (B) full MCP JSON-RPC 2.0 server, (C) REST core + thin MCP wrapper. | **Option B — real MCP JSON-RPC 2.0 server** at `POST /mcp/v1`, single endpoint dispatching by `method` field. Implements `initialize`, `notifications/initialized`, `tools/list`, `tools/call`, `ping` (§3.8.2). Sole tool `retrieve` wraps the existing `POST /retrieve/v1` pipeline (NOT chat — calling agent's LLM does the synthesis). Transport: streamable HTTP request/response subset (no SSE in P2.5). Protocol revision pinned to `2024-11-05`. Stateless; no `Mcp-Session-Id` session. JSON-RPC errors carry `data.error_code` matching the existing `HttpErrorCode` catalog so JSON-RPC and HTTP errors correlate. Auth (401) is transport-layer `application/problem+json`, NOT a JSON-RPC error envelope. The P1 `/mcp/v1/tools/rag` 501 endpoint is **removed**. | (A) Keep REST shape under `/mcp/` URL: misrepresents the protocol — stock MCP clients (Claude Desktop, Cursor) cannot register the server. (C) REST + MCP wrapper: two surfaces with identical behavior duplicate test matrix; YAGNI until both client types are confirmed. (D) Stateful MCP with `Mcp-Session-Id`: adds session storage requirement; not needed for a single read-only tool. (E) Wrap chat pipeline instead of retrieve: confuses MCP semantics — tools return data, the calling LLM reasons; chat already does both inside ragent. | §3.8 / §4.1 / §4.1.2 / §4.6.6 / S58–S67 / P2.5 |
 | **B49** | 2026-05-11 | SRE/QA | The §3.6 resilience claims (reconciler ≤ 10 min recovery, idempotent partial-failure handling, fail-open reranker, mid-stream error framing) ship as prose in spec but have no executable evidence beyond C1 (single worker-kill case, currently `xfail(run=False)`). Per journal 2026-05-08 E2E gate integrity rule, every spec-declared SLO needs a test in some automated gate. | **Chaos drill suite under `tests/e2e/test_chaos/test_C<N>_<scenario>.py`** — six cases C1–C6 covering worker SIGKILL, MariaDB↔ES split-brain, ES bulk 207 partial, rerank 5xx, LLM stream interrupt, MinIO transient 503 (matrix in §3.6.1). Gated by a **nightly CI lane** (not per-PR — slow + inject delays), each case asserts the same four invariants (terminal status, ES/DB consistency, OTEL spans present, `chaos_drill_outcome_total{case,outcome}` increment). C1 unblocks the existing `test_chaos_worker_kill.py` (lift `xfail(run=False)`); C2–C6 are new files. Acceptance: nightly green for ≥ 3 consecutive runs before P2.6 軌三 marked done. | (a) Per-PR gate: ~5–10 min overhead per PR + WireMock state pollution between cases. (b) Manual quarterly drills: same failure mode as the silent `pytest.skip()` problem (journal 2026-05-08) — no automated signal. (c) Single chaos test parameterised over all cases: a shared fixture failure cascades all 6 to red; per-case files isolate diagnosis. | §3.6.1 / §3.7 / P2.6 軌三 / journal 2026-05-08 E2E gate integrity |
 | **B50** | 2026-05-15 | Architecture / Ops | Future embedding-model swap needs to be a runbook-only operation (zero downtime, zero restart, painless rollback, rollback-window write safety). B33 deferred per-document routing to Phase 2 — but a swap design is needed now to remove the hardcoded `bge-m3` / 1024 in `clients/embedding.py` and `resources/es/chunks_v1.json`, and to lay forward-compatible foundations. | **Multi-vector single-index design with a five-API admin lifecycle.** ES `chunks_v1` carries multiple per-model vector fields side-by-side during migration (`embedding_<model_normalized>_<dim>`); a `system_settings` table (4 keyed rows: `embedding.stable`, `embedding.candidate`, `embedding.read`, `embedding.retired`) is the single source of truth, read by App via a TTL-cached `ActiveModelRegistry`. State machine `IDLE ⇄ CANDIDATE ⇄ CUTOVER` driven by five admin endpoints (`promote`, `cutover`, `rollback`, `commit`, `abort`) under `/embedding/v1`. Dual-write keeps every chunk's stable + candidate vector current throughout the migration so rollback is stateless even if doc updates land mid-window. Forward-compatible with B33 (the multi-vector field pattern becomes B33's per-doc routing key) and B34 (`embedding.retired` is a lightweight subset of revision-level retention). Full design in `docs/team/2026_05_15_embedding_model_lifecycle.md`. | (a) Alias-flip between two physical indexes — requires worker restart at env flip, and new docs ingested between alias flip and rollback land only in the new index, defeating the "rollback within window" claim; (b) build full B33 per-document routing today — multi-day track, blocks current branch on Phase-2 scope; (c) leave `bge-m3` hardcoded and document a Reindex+config-edit runbook — every future swap becomes a code change, not a runbook. | §3.2 / §3.4 / B33 / B34 / B35 / `docs/team/2026_05_15_embedding_model_lifecycle.md` |
+| **B54** | 2026-05-16 | Retrieval | How to introduce user feedback (like/dislike) as a ranking signal without building a model-training pipeline or bloating MariaDB with chat content? **(renumbered from B50; collision with embedding-lifecycle B50 detected at PR #80 merge)** | **Non-parametric feedback memory retriever.** A new `_FeedbackMemoryRetriever` Haystack component runs as a **3rd retriever** alongside vector + BM25, doing kNN over a new ES `feedback_v1` index of `(query_embedding, source_app, source_id, vote, reason, ts)` records. Results join via the existing `DocumentJoiner` with **weighted RRF** (`weights=[1.0, 1.0, CHAT_FEEDBACK_RRF_WEIGHT]`, default `0.5`). Feedback is **source-level only** (not chunk-level) — keyed on the `(source_app, source_id)` pair per B11/B35; aligns with B36 hydrator's `document_id` correctness gate and survives chunk re-ingest. Per-source score = `wilson_lower_bound(likes, likes+dislikes, z=1.96) × 0.5^((now-ts_max)/CHAT_FEEDBACK_HALF_LIFE_DAYS)`, gated by `(likes+dislikes) ≥ CHAT_FEEDBACK_MIN_VOTES`. Behaves as instance-based supervised learning (memory-based collaborative filtering); no training infrastructure. **Latency budget:** kNN call bounded by `ES_QUERY_TIMEOUT_SECONDS` (§4.6.7, default 10s) like the existing two retrievers. **Concurrency:** P1 runs the three retrievers sequentially (matching the current §3.4 "P1 OPEN" note — retrievers sequential, P2 AsyncPipeline parallelises); worst-case latency = sum of three ES query budgets. **Chunk lookup after Wilson scoring:** one MariaDB `(source_app, source_id) → document_id` lookup then a single ES `terms` query on `chunks_v1.document_id` (no N+1). Only active when `CHAT_JOIN_MODE=rrf` AND `CHAT_FEEDBACK_ENABLED=true`. | (a) Fine-tune embedder on feedback hard-negatives — strictly higher ROI long-term but needs training infra, A/B harness, and data accumulation; multi-week effort, defers MVP indefinitely. (b) Native ES RRF retriever with feedback as a sub-query — locks fusion into ES query DSL, breaks `CHAT_JOIN_MODE` topology dispatch (C6) and blocks future graph / reranker branch insertion at component level. (c) Per-doc `like_count` denormalised onto `chunks_v1` — query-independent popularity heuristic; cannot learn "this source is good FOR THIS QUERY TYPE"; no defence against cold-start or 1-vote noise. (d) Pairwise cross-encoder reranker training from feedback — same training-infra blocker as (a); revisit in P3. | §3.4 / §3.4.5 / §4.6.6 / §5.1 / §5.4 / T-FB.1–T-FB.12 |
+| **B55** | 2026-05-16 | Retrieval | Where to persist the `(query, shown_sources)` snapshot that feedback semantically references — eager-write a `chat_traces` row on every `/chat` call (99% dead weight given <1% feedback rate), or lazy-write only when feedback arrives? **(renumbered from B51)** | **Lazy write — no DB write on `/chat` path.** `/chat` response carries `request_id` (UUIDv7) + `feedback_token = HMAC(FEEDBACK_HMAC_SECRET, canonical_json({request_id, user_id, sources_hash, ts}))` where `sources_hash = sha256(json([[source_app, source_id], …]))` over the (source_app, source_id) **pair** list (document identity per B11/B35). `POST /feedback/v1` body echoes `{request_id, feedback_token, query_text, shown_sources: list[{source_app, source_id}], source_app, source_id, vote, reason?}`. Server verifies HMAC, asserts `body.request_id == payload["request_id"]` and (when `X-User-Id` is present) `X-User-Id == payload["user_id"]` to defeat token replay / cross-user reuse (PR #80 codex review), checks the voted pair ∈ shown, re-embeds `query_text` once per feedback event, dual-writes **MariaDB `feedback` first, then ES `feedback_v1`** (matches `documents`→`chunks_v1` ordering, B36 invariant: MariaDB is SoT). MariaDB unique key is `(user_id, request_id, source_app, source_id)`; ES `_id = sha256(user_id|request_id|source_app|source_id)`. ES write failure logs `event=feedback.es_write_failed` and increments `ragent_feedback_es_write_failed_total`; MariaDB row remains the truth and an offline replay job (P2) can re-derive `feedback_v1`. Token TTL = 7 days; past 7d → 410 `FEEDBACK_TOKEN_EXPIRED`. No `chat_traces` table needed — HMAC fully integrity-guards the client-carried snapshot. | (a) Eager-write `chat_traces` on every `/chat` — 99% rows dead weight at <1% feedback rate; MariaDB bloat without observable benefit; conflicts with project policy "text/content goes to ES, MariaDB stores meta only" (§5.1). (b) Ephemeral snapshot in Redis with TTL=24h, promoted on feedback arrival — adds Redis as load-bearing for correctness; cache eviction = silent data loss with no audit trail. (c) Trust client snapshot without HMAC — single authenticated user could poison `feedback_v1` by claiming arbitrary `shown_sources`; HMAC adds one ms of CPU and closes the gap. (d) Token without expiry — replay-attack window unbounded; 7d matches the analytical-value cutoff. (e) Two-phase commit / transactional outbox MariaDB↔ES — over-engineered for a write where ES failure is recoverable from MariaDB. (f) Bind only `source_id` (not the pair) in sources_hash — a client could forge the `source_app` for a known `source_id` (PR #80 gemini security-high). | §3.4 / §3.4.5 / §4.6.6 / §5.1 / `routers/feedback.py` / `routers/chat.py` / `utility/feedback_token.py` |
+| **B56** | 2026-05-16 | Retrieval | `POST /feedback/v1` accepts a `reason?` field; free-text comment or closed enum? Which values? **(renumbered from B52)** | **Closed enum, 6 values, frozen Day 1:** `irrelevant \| hallucinated \| outdated \| incomplete \| wrong_citation \| other`. Maps 1:1 to the four RAG failure layers (retrieval / grounding / index-freshness / coverage) plus citation and a catch-all. **New enum values require a new B-row** (append-only, never re-edit). No free-text `comment` field in MVP — `other` is the escape hatch; PII-scrubbing surface deferred until comment is actually shipped. Each reason routes to a different downstream behaviour: `irrelevant` → query-conditional down-rank (P2); `outdated` → re-ingest trigger (manual P1, automated P3); `hallucinated` / `wrong_citation` → generation-layer signals, retrieval unchanged; `incomplete` → query-expansion hint (P3); `other` → analytics only. | (a) Free-text `reason` — defeats aggregation; cannot dashboard or filter; PII-scrubbing burden from day 1. (b) Loose enum without B-row freeze — taxonomy drift breaks historical analytics joins; one enum-value rename invalidates months of training data. (c) Binary "this is bad" tag, no reason — collapses all failure modes into one signal; same low-resolution problem as no-reason dislike (forces all remediation to be "blanket model retrain"). (d) Defer reason collection to P2 — collecting structured reason from day 1 is cheap; retrofitting taxonomies onto historical raw votes is impossible. | §3.4.5 / §4.1.2 / `schemas/feedback.py` / `_FeedbackMemoryRetriever` (reason-conditional filter, P2) |
+| **B57** | 2026-05-16 | Retrieval | Which feedback-system capabilities ship in P1 MVP vs deferred? Risk of over-engineering before observing real feedback distribution. **(renumbered from B53)** | **P1 MVP ships only the closed-loop minimum:** HMAC token, `POST /feedback/v1`, dual-write, kNN retriever with Wilson + time-decay + min-votes gate, weighted RRF fusion at `CHAT_FEEDBACK_RRF_WEIGHT=0.5`, default `CHAT_FEEDBACK_ENABLED=false` (ship dark). **Deferred to P2+:** (1) Inverse Propensity Score (IPS) reweighting for position-bias debiasing — `position_shown` is recorded into MariaDB `feedback` from day 1 (zero cost) but not consumed; (2) Exploration / ε-greedy reservation of top-K slots for non-boosted candidates; (3) Reason-driven filter blacklisting (e.g. `irrelevant`-clustered sources auto-quarantined); (4) Automated `outdated` → re-ingest trigger; (5) Fine-tune embedder / reranker from accumulated `feedback` rows; (6) **Retention** — `feedback` table and `feedback_v1` index are append-only with no TTL in P1; query-side `ts > now - 90d` filter bounds retrieval-time impact but storage grows linearly with feedback events (estimated <1% chat rate ⇒ tolerable for P1 volumes); a reconciler-driven sweep keyed on retention window deferred until first P2 ops review; (7) MariaDB↔ES parity reconciler for `feedback` ↔ `feedback_v1` (analogue of B36 for chunks) — MVP relies on offline replay from MariaDB SoT to backfill ES on rare write failures. Re-evaluate each deferral after ≥ 3 months of dark-mode write-only data, or when online enable shows positive A/B lift plateau. | (a) Ship IPS from day 1 — adds click-model estimation + position-aware weighting; risk of premature complexity before observing actual position-bias magnitude; can be applied offline later from raw `feedback` table without backfill. (b) Skip Wilson, use raw `likes − α·dislikes` — small-sample noise dominates (single user voting twice swings ranking); Wilson is a one-line utility with strictly better behaviour. (c) Default `CHAT_FEEDBACK_ENABLED=true` — risks unexpected retrieval changes for current users; ship dark, observe write volume + dashboard reason distribution first. (d) Cut reason collection from MVP — schema cost is one nullable column; collecting from day 1 enables all reason-driven P2 features without backfill. | §3.4.5 / §4.6.6 / `_FeedbackMemoryRetriever` / T-FB.1–T-FB.12 / future plan rows |

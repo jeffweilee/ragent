@@ -616,3 +616,33 @@ class DocumentRepository:
         return {
             r["document_id"]: (r["source_app"], r["source_id"], r["source_title"]) for r in rows
         }
+
+    async def get_document_ids_by_source(
+        self, pairs: list[tuple[str, str]]
+    ) -> dict[tuple[str, str], str]:
+        """Map (source_app, source_id) → current READY document_id (T-FB.7).
+
+        Used by the feedback retriever to translate (source_app, source_id)
+        from `feedback_v1` (its B50 key) into the document_id key needed
+        to fetch chunks from `chunks_v1`. Returns the most recent READY row
+        per pair; pairs with no READY row are absent from the result.
+        """
+        if not pairs:
+            return {}
+        rows = await self._fetch_all(
+            text(
+                "SELECT source_app, source_id, document_id, created_at"
+                " FROM documents"
+                " WHERE (source_app, source_id) IN :pairs AND status = 'READY'"
+                " ORDER BY created_at DESC"
+            ).bindparams(bindparam("pairs", expanding=True)),
+            {"pairs": [tuple(p) for p in pairs]},
+        )
+        # Multiple READY rows for the same pair would violate B41, but be
+        # tolerant: keep the newest (rows already sorted DESC).
+        out: dict[tuple[str, str], str] = {}
+        for r in rows:
+            key = (r["source_app"], r["source_id"])
+            if key not in out:
+                out[key] = r["document_id"]
+        return out

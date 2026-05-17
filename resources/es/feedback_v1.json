@@ -1,0 +1,37 @@
+{
+  "settings": {
+    "index": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0,
+      "analysis": {
+        "analyzer": {
+          "icu_text": {
+            "type": "custom",
+            "tokenizer": "icu_tokenizer",
+            "filter": ["icu_folding", "lowercase"]
+          }
+        }
+      }
+    }
+  },
+  "mappings": {
+    "properties": {
+      "request_id":      { "type": "keyword" },
+      "query_text":      { "type": "text",       "analyzer": "icu_text" },
+      "query_embedding": {
+        "type": "dense_vector",
+        "dims": 1024,
+        "index": true,
+        "similarity": "cosine",
+        "index_options": { "type": "flat" }
+      },
+      "source_id":       { "type": "keyword" },
+      "source_app":      { "type": "keyword" },
+      "source_meta":     { "type": "keyword", "ignore_above": 1024 },
+      "vote":            { "type": "byte" },
+      "reason":          { "type": "keyword" },
+      "user_id_hash":    { "type": "keyword" },
+      "ts":              { "type": "date" }
+    }
+  }
+}

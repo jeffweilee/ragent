@@ -270,9 +270,13 @@ curl -X POST http://localhost:8000/chat/v1 \
       "excerpt": "Key results for Q3 include...",
       "score": 0.87
     }
-  ]
+  ],
+  "request_id": "01J9ABCDEFGHJKMNPQRSTVWXYZ",
+  "feedback_token": "<base64url>.<hmac_hex>"
 }
 ```
+
+> `request_id` + `feedback_token` are emitted **only when `CHAT_FEEDBACK_ENABLED=true` AND `X-User-Id` is present**. Clients echo both back to `POST /feedback/v1` to record like / dislike feedback (see the Feedback section above). Both fields are absent otherwise.
 
 ### `POST /chat/v1/stream` — Streaming chat (SSE)
 
@@ -288,8 +292,10 @@ curl -X POST http://localhost:8000/chat/v1/stream \
 data: {"type": "delta", "content": "Based"}
 data: {"type": "delta", "content": " on"}
 data: {"type": "delta", "content": " the documents..."}
-data: {"type": "done", "content": "Based on the documents...", "model": "gptoss-120b", "provider": "openai", "sources": [...]}
+data: {"type": "done", "content": "Based on the documents...", "model": "gptoss-120b", "provider": "openai", "sources": [...], "request_id": "01J9...", "feedback_token": "<base64url>.<hmac_hex>"}
 ```
+
+> The `done` event carries the same `request_id` + `feedback_token` fields as the non-streaming response (conditional on `CHAT_FEEDBACK_ENABLED` + `X-User-Id`).
 
 Error event: `{"type": "error", "error_code": "LLM_ERROR", "message": "..."}`
 
@@ -351,6 +357,76 @@ curl -X POST http://localhost:8000/retrieve/v1 \
 **How `excerpt` works:**
 
 Each chunk stored in ES is the raw text segment produced by the indexing pipeline's splitter. The `excerpt` field in the response is that chunk's text, truncated to `EXCERPT_MAX_CHARS` characters (default `512`, configurable via env var) by `_ExcerptTruncator` before it reaches the router. Truncation is a hard character cut — no semantic boundary is preserved. The same truncation applies to `sources[].excerpt` in `/chat/v1` and `/chat/v1/stream` responses.
+
+---
+
+## Feedback
+
+### `POST /feedback/v1` — Record a vote against a chat source (T-FB.6, B54/B55)
+
+Closes the feedback loop: the client echoes back the HMAC-signed token from a prior `/chat` response and reports a like / dislike (with optional reason) against one of the source documents shown. Default disabled (`CHAT_FEEDBACK_ENABLED=false`); when enabled, the feedback drives the `_FeedbackMemoryRetriever` (a 3rd RRF input) so future chats with semantically-similar queries surface liked sources.
+
+**Headers:** `X-User-Id` required.
+
+**Body:**
+
+```json
+{
+  "request_id":     "01J9...",
+  "feedback_token": "<base64url>.<hmac_hex>",
+  "query_text":     "what are our Q3 OKRs?",
+  "shown_sources":  [
+    {"source_app": "confluence", "source_id": "DOC-A"},
+    {"source_app": "confluence", "source_id": "DOC-B"},
+    {"source_app": "drive",      "source_id": "DOC-C"}
+  ],
+  "source_app":     "confluence",
+  "source_id":      "DOC-A",
+  "vote":           1,
+  "reason":         "irrelevant",
+  "position_shown": 0
+}
+```
+
+- `request_id`, `feedback_token`: from the prior `/chat/v1` response. Token TTL = 7 days. The body's `request_id` MUST equal the value signed into the token; mismatch is rejected (a single token cannot be replayed across `request_id`s).
+- `query_text`, `shown_sources`: re-supplied; HMAC binds `sha256(json([[source_app, source_id], …]))` so the server detects tampering. Document identity is the `(source_app, source_id)` pair.
+- Voted `(source_app, source_id)` ∈ `shown_sources` (server-enforced).
+- `vote` ∈ {+1, -1}.
+- `reason` (optional): closed enum (B56) — `irrelevant | hallucinated | outdated | incomplete | wrong_citation | other`.
+- `position_shown` (optional): 0-based rank in the original `sources[]` (collected for future IPS; ignored in P1).
+- If `X-User-Id` is sent it MUST equal the `user_id` signed into the token; mismatch is rejected (cross-user token reuse).
+
+**Response:** `204 No Content`.
+
+**Errors** (RFC 9457 `application/problem+json`):
+
+| Status | `error_code` | When |
+|---|---|---|
+| 401 | `FEEDBACK_TOKEN_INVALID` | HMAC mismatch, malformed token, `request_id` mismatch with signed value, `X-User-Id` mismatch with signed `user_id`, or `shown_sources` differs from the signed snapshot. |
+| 410 | `FEEDBACK_TOKEN_EXPIRED` | Token `ts` outside the 7-day window. |
+| 422 | `FEEDBACK_SOURCE_INVALID` | Voted `(source_app, source_id)` pair not in `shown_sources`. |
+| 422 | `FEEDBACK_VALIDATION` | Schema violations: `vote ∉ {±1}`, reason outside enum, missing field. Body includes `errors[]` array with per-field `{field, message}` entries. |
+
+**Dual-write semantics:** MariaDB `feedback` (truth) → ES `feedback_v1` (serving view). ES leg failure logs `event=feedback.es_write_failed` + increments `ragent_feedback_es_write_failed_total`; request still returns 204.
+
+```bash
+curl -X POST http://localhost:8000/feedback/v1 \
+  -H "X-User-Id: alice" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "request_id": "01J9...",
+    "feedback_token": "...",
+    "query_text": "what are our Q3 OKRs?",
+    "shown_sources": [
+      {"source_app": "confluence", "source_id": "DOC-A"},
+      {"source_app": "confluence", "source_id": "DOC-B"}
+    ],
+    "source_app": "confluence",
+    "source_id": "DOC-A",
+    "vote": 1,
+    "reason": "irrelevant"
+  }'
+```
 
 ---
 
