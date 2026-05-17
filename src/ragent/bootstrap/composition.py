@@ -35,7 +35,6 @@ class Container:
     unprotect_client: Any  # UnprotectClient | None — optional pre-pipeline file unprotection
     feedback_repository: Any  # FeedbackRepository | None (B50/B51, T-FB.8)
     feedback_hmac_secret: str | None  # None when CHAT_FEEDBACK_ENABLED=false
-    feedback_enabled: bool
 
 
 def build_container() -> Container:
@@ -185,6 +184,7 @@ def build_container() -> Container:
             doc_repo=doc_repo,
             min_votes=_int_env("CHAT_FEEDBACK_MIN_VOTES", 3),
             half_life_days=_int_env("CHAT_FEEDBACK_HALF_LIFE_DAYS", 14),
+            request_timeout=_float_env("ES_QUERY_TIMEOUT_SECONDS", 10.0),
         )
 
     retrieval_pipeline = build_retrieval_pipeline(
@@ -234,7 +234,6 @@ def build_container() -> Container:
         unprotect_client=unprotect_client,
         feedback_repository=feedback_repository,
         feedback_hmac_secret=feedback_hmac_secret,
-        feedback_enabled=feedback_enabled,
     )
 
 

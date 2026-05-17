@@ -399,7 +399,7 @@ Closes the feedback loop: the client echoes back the HMAC-signed token from a pr
 | 401 | `FEEDBACK_TOKEN_INVALID` | HMAC mismatch, malformed token, or `shown_source_ids` differs from the signed snapshot. |
 | 410 | `FEEDBACK_TOKEN_EXPIRED` | Token `ts` outside the 7-day window. |
 | 422 | `FEEDBACK_SOURCE_INVALID` | `source_id ∉ shown_source_ids`. |
-| 422 | `FEEDBACK_VALIDATION` | Schema violations: `vote ∉ {±1}`, reason outside enum, missing field. |
+| 422 | `FEEDBACK_VALIDATION` | Schema violations: `vote ∉ {±1}`, reason outside enum, missing field. Body includes `errors[]` array with per-field `{field, message}` entries. |
 
 **Dual-write semantics:** MariaDB `feedback` (truth) → ES `feedback_v1` (serving view). ES leg failure logs `event=feedback.es_write_failed` + increments `ragent_feedback_es_write_failed_total`; request still returns 204.
 

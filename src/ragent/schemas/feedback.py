@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 from enum import StrEnum
+from typing import Final
 
 from pydantic import BaseModel, Field, field_validator
+
+VOTE_LIKE: Final[int] = 1
+VOTE_DISLIKE: Final[int] = -1
+_ALLOWED_VOTES: Final[frozenset[int]] = frozenset({VOTE_LIKE, VOTE_DISLIKE})
 
 
 class FeedbackReason(StrEnum):
@@ -31,6 +36,6 @@ class FeedbackRequest(BaseModel):
     @field_validator("vote")
     @classmethod
     def _validate_vote(cls, v: int) -> int:
-        if v not in (-1, 1):
-            raise ValueError("vote must be +1 or -1")
+        if v not in _ALLOWED_VOTES:
+            raise ValueError(f"vote must be {VOTE_LIKE} or {VOTE_DISLIKE}")
         return v

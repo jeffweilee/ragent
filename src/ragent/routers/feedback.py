@@ -9,13 +9,16 @@ MariaDB has the row and an offline replay job (P2) can backfill ES.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from hashlib import sha256
 from typing import Annotated, Any
 
 import structlog
 from fastapi import APIRouter, Header
 from fastapi.concurrency import run_in_threadpool
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import Response
+from fastapi.routing import APIRoute
 from opentelemetry import trace
 
 from ragent.bootstrap.metrics import feedback_es_write_failed_total
@@ -27,6 +30,7 @@ from ragent.utility.feedback_token import (
     TokenExpired,
     TokenInvalid,
     TokenTampered,
+    compute_sources_hash,
     verify,
 )
 
@@ -34,11 +38,36 @@ logger = structlog.get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
 
 
-def _sources_hash(source_ids: list[str]) -> str:
-    """Mirror /chat's sources_hash: sha256 over the ordered source_id list."""
-    import json
+def _validation_problem(errors: list[dict]) -> Response:
+    """Convert Pydantic validation errors into RFC 9457 problem+json with
+    `error_code=FEEDBACK_VALIDATION` per spec §3.4.5 (T-FB.6, mirror of
+    `routers/ingest._IngestRoute`)."""
+    fields = [{"field": ".".join(str(p) for p in e["loc"]), "message": e["msg"]} for e in errors]
+    return problem(
+        422,
+        HttpErrorCode.FEEDBACK_VALIDATION,
+        "feedback request validation failed",
+        "; ".join(f"{f['field']}: {f['message']}" for f in fields),
+        errors=fields,
+    )
 
-    return sha256(json.dumps(source_ids, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+class _FeedbackRoute(APIRoute):
+    """Wrap the route handler so FastAPI's RequestValidationError becomes
+    problem+json with the spec-declared `FEEDBACK_VALIDATION` error_code,
+    rather than the default `{"detail":[...]}` shape (T-FB.6).
+    """
+
+    def get_route_handler(self) -> Callable:
+        original = super().get_route_handler()
+
+        async def handler(request: Any) -> Any:
+            try:
+                return await original(request)
+            except RequestValidationError as exc:
+                return _validation_problem(exc.errors())
+
+        return handler
 
 
 def create_feedback_router(
@@ -49,7 +78,7 @@ def create_feedback_router(
     hmac_secret: str,
     es_index: str = "feedback_v1",
 ) -> APIRouter:
-    router = APIRouter(prefix="/feedback/v1")
+    router = APIRouter(prefix="/feedback/v1", route_class=_FeedbackRoute)
 
     @router.post("", status_code=204)
     async def post_feedback(
@@ -78,7 +107,7 @@ def create_feedback_router(
                     "Token failed HMAC verification or is malformed",
                 )
 
-            if payload.get("sources_hash") != _sources_hash(body.shown_source_ids):
+            if payload.get("sources_hash") != compute_sources_hash(body.shown_source_ids):
                 return problem(
                     401,
                     HttpErrorCode.FEEDBACK_TOKEN_INVALID,

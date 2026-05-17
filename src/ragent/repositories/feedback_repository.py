@@ -14,6 +14,7 @@ from typing import Any
 
 from sqlalchemy import text
 
+from ragent.schemas.feedback import _ALLOWED_VOTES
 from ragent.utility.datetime import utcnow
 from ragent.utility.id_gen import new_id
 
@@ -56,7 +57,9 @@ class FeedbackRepository:
         the freshly minted id is returned but not persisted (caller treats
         it as opaque).
         """
-        if vote not in (-1, 1):
+        # Defence in depth — Pydantic schema (FeedbackRequest.vote) catches HTTP
+        # callers; this guard protects direct repo usage (workers, replay jobs).
+        if vote not in _ALLOWED_VOTES:
             raise ValueError(f"vote must be ±1, got {vote!r}")
         now = utcnow()
         feedback_id = new_id()

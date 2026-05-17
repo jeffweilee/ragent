@@ -114,16 +114,36 @@ def test_source_id_not_in_shown_returns_422():
     assert resp.json()["error_code"] == "FEEDBACK_SOURCE_INVALID"
 
 
-def test_invalid_reason_returns_422():
+def test_invalid_reason_returns_422_problem_json():
+    """S47 — reason outside the B52 frozen enum returns FEEDBACK_VALIDATION
+    in RFC 9457 problem+json shape (not FastAPI's default {detail: [...]})."""
     client, *_ = _make_client()
     resp = client.post("/feedback/v1", json=_body(reason="bogus_reason"))
     assert resp.status_code == 422
+    body = resp.json()
+    assert body["error_code"] == "FEEDBACK_VALIDATION"
+    assert body["status"] == 422
+    assert any("reason" in f["field"] for f in body["errors"])
 
 
-def test_invalid_vote_returns_422():
+def test_invalid_vote_returns_422_problem_json():
     client, *_ = _make_client()
     resp = client.post("/feedback/v1", json=_body(vote=0))
     assert resp.status_code == 422
+    body = resp.json()
+    assert body["error_code"] == "FEEDBACK_VALIDATION"
+    assert any("vote" in f["field"] for f in body["errors"])
+
+
+def test_missing_required_field_returns_422_problem_json():
+    """Missing top-level field also routes through FEEDBACK_VALIDATION."""
+    client, *_ = _make_client()
+    body = _body()
+    del body["feedback_token"]
+    resp = client.post("/feedback/v1", json=body)
+    assert resp.status_code == 422
+    payload = resp.json()
+    assert payload["error_code"] == "FEEDBACK_VALIDATION"
 
 
 def test_idempotent_vote_same_triple_returns_204():

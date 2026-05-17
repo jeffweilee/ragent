@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import math
 import time
-from hashlib import sha256
 from typing import Annotated, Any
 
 import structlog
@@ -19,6 +18,7 @@ from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
 from ragent.pipelines.chat import build_es_filters, doc_to_source_entry, run_retrieval
 from ragent.schemas.chat import ChatRequest, build_rag_messages
+from ragent.utility.feedback_token import compute_sources_hash
 from ragent.utility.feedback_token import sign as sign_feedback_token
 from ragent.utility.id_gen import new_id
 
@@ -32,12 +32,6 @@ def _build_sources(documents: list[Any]) -> list[dict] | None:
     return [doc_to_source_entry(d) for d in documents]
 
 
-def _sources_hash_for_token(sources: list[dict] | None) -> str:
-    """Mirror routers/feedback.py::_sources_hash so the HMAC binding matches."""
-    source_ids = [s["source_id"] for s in (sources or []) if s.get("source_id")]
-    return sha256(json.dumps(source_ids, separators=(",", ":")).encode("utf-8")).hexdigest()
-
-
 def _maybe_mint_feedback_envelope(
     hmac_secret: str | None,
     user_id: str | None,
@@ -47,11 +41,12 @@ def _maybe_mint_feedback_envelope(
     if not hmac_secret or not user_id:
         return {}
     request_id = new_id()
+    source_ids = [s["source_id"] for s in (sources or []) if s.get("source_id")]
     token = sign_feedback_token(
         {
             "request_id": request_id,
             "user_id": user_id,
-            "sources_hash": _sources_hash_for_token(sources),
+            "sources_hash": compute_sources_hash(source_ids),
             "ts": int(time.time()),
         },
         hmac_secret,

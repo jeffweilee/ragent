@@ -271,7 +271,7 @@ def create_app() -> FastAPI:
         )
     )
     app.include_router(create_retrieve_router(retrieval_pipeline=container.retrieval_pipeline))
-    if container.feedback_enabled:
+    if container.feedback_hmac_secret is not None:
         app.include_router(
             create_feedback_router(
                 feedback_repository=container.feedback_repository,

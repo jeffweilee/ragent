@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+from datetime import datetime
 from typing import Any
 
 import anyio.from_thread
@@ -16,7 +17,9 @@ from haystack_integrations.components.retrievers.elasticsearch import (
     ElasticsearchEmbeddingRetriever,
 )
 
+from ragent.utility.datetime import utcnow
 from ragent.utility.env import int_env, optional_float_env
+from ragent.utility.wilson import wilson_lower_bound
 
 _EXCERPT_MAX_CHARS = int_env("EXCERPT_MAX_CHARS", 512)
 # Upper bound on top_k — pinned by spec §3.4.4 (`POST /retrieve/v1` Pydantic
@@ -234,6 +237,19 @@ class _ExcerptTruncator:
         return {"documents": result}
 
 
+# Feedback retriever ES knobs — sized for the dedup-by-source flow:
+# kNN returns up to FEEDBACK_KNN_SIZE raw hits, which collapse into ≤ top_k
+# distinct (source_app, source_id) buckets after aggregation. num_candidates
+# is the ES HNSW recall budget per shard.
+_FEEDBACK_KNN_SIZE = 100
+_FEEDBACK_KNN_NUM_CANDIDATES = 400
+# Fan-out per source on the chunks_v1 lookup — most documents have ≤ 10 chunks
+# in the active READY revision, so top_k*10 caps the post-aggregation page.
+_FEEDBACK_CHUNK_FAN_OUT = 10
+_VOTE_LIKE = 1
+_VOTE_DISLIKE = -1
+
+
 @component
 class _FeedbackMemoryRetriever:
     """3rd RRF input: boost sources liked on semantically-similar past queries (B50).
@@ -248,7 +264,8 @@ class _FeedbackMemoryRetriever:
       6. Single ES `terms` query on ``chunks_v1.document_id`` (NOT N+1).
       7. Each chunk inherits the parent source's Wilson-decayed score.
 
-    All ES calls share the existing ``ES_QUERY_TIMEOUT_SECONDS`` budget.
+    Both ES calls pass ``request_timeout=ES_QUERY_TIMEOUT_SECONDS`` so the
+    feedback path shares the existing chat-retrieval budget.
     """
 
     # Score floor: ES cosine similarity maps cos∈[-1,1] → score=(1+cos)/2 ∈ [0,1].
@@ -265,6 +282,7 @@ class _FeedbackMemoryRetriever:
         half_life_days: int = 14,
         cosine_threshold: float = 0.7,
         lookback_days: int = 90,
+        request_timeout: float | None = None,
     ) -> None:
         self._es = es_client
         self._repo = doc_repo
@@ -275,6 +293,11 @@ class _FeedbackMemoryRetriever:
         self._half_life_days = half_life_days
         self._min_score = (1.0 + cosine_threshold) / 2.0
         self._lookback_days = lookback_days
+        # Default matches ES_QUERY_TIMEOUT_SECONDS at the call site in composition.py.
+        self._request_timeout = request_timeout
+
+    def _search_kwargs(self) -> dict:
+        return {"request_timeout": self._request_timeout} if self._request_timeout else {}
 
     @component.output_types(documents=list[Document])
     def run(
@@ -282,10 +305,6 @@ class _FeedbackMemoryRetriever:
         query_embedding: list[float],
         filters: dict | None = None,
     ) -> dict:
-        from datetime import UTC, datetime
-
-        from ragent.utility.wilson import wilson_lower_bound
-
         # 1. kNN feedback_v1
         knn_filter: list[dict] = [{"range": {"ts": {"gte": f"now-{self._lookback_days}d"}}}]
         if filters:
@@ -296,18 +315,20 @@ class _FeedbackMemoryRetriever:
             if sm:
                 knn_filter.append({"term": {"source_meta": sm}})
         knn_body = {
-            "size": 100,
+            "size": _FEEDBACK_KNN_SIZE,
             "min_score": self._min_score,
             "knn": {
                 "field": "query_embedding",
                 "query_vector": query_embedding,
-                "k": 100,
-                "num_candidates": 400,
+                "k": _FEEDBACK_KNN_SIZE,
+                "num_candidates": _FEEDBACK_KNN_NUM_CANDIDATES,
                 "filter": {"bool": {"filter": knn_filter}},
             },
             "_source": ["source_app", "source_id", "vote", "ts"],
         }
-        hits = self._es.search(index=self._feedback_index, body=knn_body)["hits"]["hits"]
+        hits = self._es.search(index=self._feedback_index, body=knn_body, **self._search_kwargs())[
+            "hits"
+        ]["hits"]
         if not hits:
             # Cold-start / unrelated query — operators want to see the rate
             # so they know whether feedback boost ever fires.  No content,
@@ -325,23 +346,26 @@ class _FeedbackMemoryRetriever:
             src = h["_source"]
             key = (src["source_app"], src["source_id"])
             bucket = agg.setdefault(key, {"likes": 0, "dislikes": 0, "ts_max": None})
-            if src["vote"] == 1:
+            if src["vote"] == _VOTE_LIKE:
                 bucket["likes"] += 1
-            elif src["vote"] == -1:
+            elif src["vote"] == _VOTE_DISLIKE:
                 bucket["dislikes"] += 1
             ts = src["ts"]
+            # ISO 8601 with fixed UTC offset is lexicographically monotonic, so
+            # string > comparison is correct without parsing every hit.
             if bucket["ts_max"] is None or ts > bucket["ts_max"]:
                 bucket["ts_max"] = ts
 
         # 3-4. Gate + score
-        now = datetime.now(UTC)
+        now = utcnow()
         scored: list[tuple[tuple[str, str], float]] = []
         for key, b in agg.items():
             total = b["likes"] + b["dislikes"]
             if total < self._min_votes:
                 continue
             wilson = wilson_lower_bound(b["likes"], total)
-            ts_max = datetime.fromisoformat(b["ts_max"].replace("Z", "+00:00"))
+            # Python 3.11+ fromisoformat handles trailing Z natively.
+            ts_max = datetime.fromisoformat(b["ts_max"])
             age_days = max(0.0, (now - ts_max).total_seconds() / 86400.0)
             decay = 0.5 ** (age_days / self._half_life_days)
             scored.append((key, wilson * decay))
@@ -372,10 +396,12 @@ class _FeedbackMemoryRetriever:
 
         # 6. Single ES terms query on chunks_v1
         terms_body = {
-            "size": self._top_k * 10,
+            "size": self._top_k * _FEEDBACK_CHUNK_FAN_OUT,
             "query": {"terms": {"document_id": list(scored_by_doc.keys())}},
         }
-        chunk_hits = self._es.search(index=self._chunks_index, body=terms_body)["hits"]["hits"]
+        chunk_hits = self._es.search(
+            index=self._chunks_index, body=terms_body, **self._search_kwargs()
+        )["hits"]["hits"]
 
         # 7. Build Document list, inherit parent score
         result: list[Document] = []
@@ -398,7 +424,10 @@ class _FeedbackMemoryRetriever:
                     score=scored_by_doc[doc_id],
                 )
             )
-        _logger.info(
+        # Per-request scoring trace — debug (chat QPS could be high). The two
+        # short-circuit branches above stay at info because they are rare and
+        # operationally meaningful (cold-start, hydration miss).
+        _logger.debug(
             "feedback.retriever.scored",
             hit_count=len(hits),
             source_count=len(agg),
