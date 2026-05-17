@@ -270,9 +270,13 @@ curl -X POST http://localhost:8000/chat/v1 \
       "excerpt": "Key results for Q3 include...",
       "score": 0.87
     }
-  ]
+  ],
+  "request_id": "01J9ABCDEFGHJKMNPQRSTVWXYZ",
+  "feedback_token": "<base64url>.<hmac_hex>"
 }
 ```
+
+> `request_id` + `feedback_token` are emitted **only when `CHAT_FEEDBACK_ENABLED=true` AND `X-User-Id` is present**. Clients echo both back to `POST /feedback/v1` to record like / dislike feedback (see the Feedback section above). Both fields are absent otherwise.
 
 ### `POST /chat/v1/stream` — Streaming chat (SSE)
 
@@ -288,8 +292,10 @@ curl -X POST http://localhost:8000/chat/v1/stream \
 data: {"type": "delta", "content": "Based"}
 data: {"type": "delta", "content": " on"}
 data: {"type": "delta", "content": " the documents..."}
-data: {"type": "done", "content": "Based on the documents...", "model": "gptoss-120b", "provider": "openai", "sources": [...]}
+data: {"type": "done", "content": "Based on the documents...", "model": "gptoss-120b", "provider": "openai", "sources": [...], "request_id": "01J9...", "feedback_token": "<base64url>.<hmac_hex>"}
 ```
+
+> The `done` event carries the same `request_id` + `feedback_token` fields as the non-streaming response (conditional on `CHAT_FEEDBACK_ENABLED` + `X-User-Id`).
 
 Error event: `{"type": "error", "error_code": "LLM_ERROR", "message": "..."}`
 

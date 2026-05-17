@@ -228,11 +228,11 @@ Title participates in **both** retrieval surfaces (B15): semantic (baked into ev
 
 ```json
 {
-  "content":  "COMPLETE_MARKDOWN_RESPONSE",
-  "usage":    {"promptTokens": 0, "completionTokens": 0, "totalTokens": 0},
-  "model":    "gptoss-120b",
-  "provider": "openai",
-  "sources":  [
+  "content":        "COMPLETE_MARKDOWN_RESPONSE",
+  "usage":          {"promptTokens": 0, "completionTokens": 0, "totalTokens": 0},
+  "model":          "gptoss-120b",
+  "provider":       "openai",
+  "sources":        [
     {
       "document_id":  "01J9...",
       "source_app":   "confluence",
@@ -245,13 +245,16 @@ Title participates in **both** retrieval surfaces (B15): semantic (baked into ev
       "excerpt":      "...chunk text snippet...",
       "score":        0.87
     }
-  ]
+  ],
+  "request_id":     "01J9...",
+  "feedback_token": "<base64url>.<hmac_hex>"
 }
 ```
 
 - `sources` is `null` when empty; otherwise all fields are populated. `type` is always `"knowledge"` in P1 (reserved enum).
 - `sources[].source_title/url/mime_type` from `documents`; `score` is RRF retrieval score; `excerpt` is truncated to `EXCERPT_MAX_CHARS` (default 512) in router (B23) — LLM receives full text untruncated.
 - `usage` from `LLMClient` (non-streaming only; streaming `done` event omits `usage` — P1 limitation).
+- `request_id` + `feedback_token` are present **only when `CHAT_FEEDBACK_ENABLED=true` AND the request carried `X-User-Id`** (B51, T-FB.10). Both omitted otherwise — clients should treat them as optional and skip the `/feedback/v1` UI when absent.
 
 #### 3.4.3 Streaming wire format (`/chat/stream` only)
 

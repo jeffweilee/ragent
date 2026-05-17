@@ -267,6 +267,7 @@ def create_app() -> FastAPI:
             rate_limiter=container.rate_limiter,
             rate_limit=container.rate_limit,
             rate_limit_window=container.rate_limit_window,
+            feedback_hmac_secret=container.feedback_hmac_secret,
         )
     )
     app.include_router(create_retrieve_router(retrieval_pipeline=container.retrieval_pipeline))

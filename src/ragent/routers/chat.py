@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import time
+from hashlib import sha256
 from typing import Annotated, Any
 
 import structlog
@@ -18,6 +19,8 @@ from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
 from ragent.pipelines.chat import build_es_filters, doc_to_source_entry, run_retrieval
 from ragent.schemas.chat import ChatRequest, build_rag_messages
+from ragent.utility.feedback_token import sign as sign_feedback_token
+from ragent.utility.id_gen import new_id
 
 logger = structlog.get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
@@ -27,6 +30,33 @@ def _build_sources(documents: list[Any]) -> list[dict] | None:
     if not documents:
         return None
     return [doc_to_source_entry(d) for d in documents]
+
+
+def _sources_hash_for_token(sources: list[dict] | None) -> str:
+    """Mirror routers/feedback.py::_sources_hash so the HMAC binding matches."""
+    source_ids = [s["source_id"] for s in (sources or []) if s.get("source_id")]
+    return sha256(json.dumps(source_ids, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
+def _maybe_mint_feedback_envelope(
+    hmac_secret: str | None,
+    user_id: str | None,
+    sources: list[dict] | None,
+) -> dict:
+    """Return {request_id, feedback_token} when HMAC is configured, else {} (B51)."""
+    if not hmac_secret or not user_id:
+        return {}
+    request_id = new_id()
+    token = sign_feedback_token(
+        {
+            "request_id": request_id,
+            "user_id": user_id,
+            "sources_hash": _sources_hash_for_token(sources),
+            "ts": int(time.time()),
+        },
+        hmac_secret,
+    )
+    return {"request_id": request_id, "feedback_token": token}
 
 
 def _run_retrieval(retrieval_pipeline: Any, req: ChatRequest) -> list[Any]:
@@ -53,6 +83,7 @@ def create_chat_router(
     rate_limiter: RateLimiter | None = None,
     rate_limit: int = 60,
     rate_limit_window: int = 60,
+    feedback_hmac_secret: str | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/chat/v1")
 
@@ -126,13 +157,15 @@ def create_chat_router(
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                 )
+            sources = _build_sources(docs)
             return JSONResponse(
                 {
                     "content": result["content"],
                     "usage": result["usage"],
                     "model": body.model,
                     "provider": body.provider,
-                    "sources": _build_sources(docs),
+                    "sources": sources,
+                    **_maybe_mint_feedback_envelope(feedback_hmac_secret, x_user_id, sources),
                 }
             )
 
@@ -190,6 +223,7 @@ def create_chat_router(
                         "model": body.model,
                         "provider": body.provider,
                         "sources": sources,
+                        **_maybe_mint_feedback_envelope(feedback_hmac_secret, x_user_id, sources),
                     }
                     yield f"data: {json.dumps(done_payload)}\n\n"
                     logger.info(
