@@ -372,23 +372,29 @@ Closes the feedback loop: the client echoes back the HMAC-signed token from a pr
 
 ```json
 {
-  "request_id":       "01J9...",
-  "feedback_token":   "<base64url>.<hmac_hex>",
-  "query_text":       "what are our Q3 OKRs?",
-  "shown_source_ids": ["DOC-A", "DOC-B", "DOC-C"],
-  "source_id":        "DOC-A",
-  "vote":             1,
-  "reason":           "irrelevant",
-  "position_shown":   0
+  "request_id":     "01J9...",
+  "feedback_token": "<base64url>.<hmac_hex>",
+  "query_text":     "what are our Q3 OKRs?",
+  "shown_sources":  [
+    {"source_app": "confluence", "source_id": "DOC-A"},
+    {"source_app": "confluence", "source_id": "DOC-B"},
+    {"source_app": "drive",      "source_id": "DOC-C"}
+  ],
+  "source_app":     "confluence",
+  "source_id":      "DOC-A",
+  "vote":           1,
+  "reason":         "irrelevant",
+  "position_shown": 0
 }
 ```
 
-- `request_id`, `feedback_token`: from the prior `/chat/v1` response. Token TTL = 7 days.
-- `query_text`, `shown_source_ids`: re-supplied; HMAC binds `sha256(json(shown_source_ids))` so the server detects tampering.
-- `source_id` ∈ `shown_source_ids` (server-enforced).
+- `request_id`, `feedback_token`: from the prior `/chat/v1` response. Token TTL = 7 days. The body's `request_id` MUST equal the value signed into the token; mismatch is rejected (a single token cannot be replayed across `request_id`s).
+- `query_text`, `shown_sources`: re-supplied; HMAC binds `sha256(json([[source_app, source_id], …]))` so the server detects tampering. Document identity is the `(source_app, source_id)` pair.
+- Voted `(source_app, source_id)` ∈ `shown_sources` (server-enforced).
 - `vote` ∈ {+1, -1}.
 - `reason` (optional): closed enum (B52) — `irrelevant | hallucinated | outdated | incomplete | wrong_citation | other`.
 - `position_shown` (optional): 0-based rank in the original `sources[]` (collected for future IPS; ignored in P1).
+- If `X-User-Id` is sent it MUST equal the `user_id` signed into the token; mismatch is rejected (cross-user token reuse).
 
 **Response:** `204 No Content`.
 
@@ -396,9 +402,9 @@ Closes the feedback loop: the client echoes back the HMAC-signed token from a pr
 
 | Status | `error_code` | When |
 |---|---|---|
-| 401 | `FEEDBACK_TOKEN_INVALID` | HMAC mismatch, malformed token, or `shown_source_ids` differs from the signed snapshot. |
+| 401 | `FEEDBACK_TOKEN_INVALID` | HMAC mismatch, malformed token, `request_id` mismatch with signed value, `X-User-Id` mismatch with signed `user_id`, or `shown_sources` differs from the signed snapshot. |
 | 410 | `FEEDBACK_TOKEN_EXPIRED` | Token `ts` outside the 7-day window. |
-| 422 | `FEEDBACK_SOURCE_INVALID` | `source_id ∉ shown_source_ids`. |
+| 422 | `FEEDBACK_SOURCE_INVALID` | Voted `(source_app, source_id)` pair not in `shown_sources`. |
 | 422 | `FEEDBACK_VALIDATION` | Schema violations: `vote ∉ {±1}`, reason outside enum, missing field. Body includes `errors[]` array with per-field `{field, message}` entries. |
 
 **Dual-write semantics:** MariaDB `feedback` (truth) → ES `feedback_v1` (serving view). ES leg failure logs `event=feedback.es_write_failed` + increments `ragent_feedback_es_write_failed_total`; request still returns 204.
@@ -411,7 +417,11 @@ curl -X POST http://localhost:8000/feedback/v1 \
     "request_id": "01J9...",
     "feedback_token": "...",
     "query_text": "what are our Q3 OKRs?",
-    "shown_source_ids": ["DOC-A","DOC-B"],
+    "shown_sources": [
+      {"source_app": "confluence", "source_id": "DOC-A"},
+      {"source_app": "confluence", "source_id": "DOC-B"}
+    ],
+    "source_app": "confluence",
     "source_id": "DOC-A",
     "vote": 1,
     "reason": "irrelevant"

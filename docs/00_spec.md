@@ -350,46 +350,54 @@ Closes the feedback loop: client echoes back the HMAC-signed token from a prior 
 
 ```json
 {
-  "request_id":       "01J9...",
-  "feedback_token":   "<base64url>.<hmac_hex>",
-  "query_text":       "what are our Q3 OKRs?",
-  "shown_source_ids": ["DOC-A", "DOC-B", "DOC-C"],
-  "source_id":        "DOC-A",
-  "vote":             1,
-  "reason":           "irrelevant",
-  "position_shown":   0
+  "request_id":     "01J9...",
+  "feedback_token": "<base64url>.<hmac_hex>",
+  "query_text":     "what are our Q3 OKRs?",
+  "shown_sources":  [
+    {"source_app": "confluence", "source_id": "DOC-A"},
+    {"source_app": "confluence", "source_id": "DOC-B"},
+    {"source_app": "drive",      "source_id": "DOC-C"}
+  ],
+  "source_app":     "confluence",
+  "source_id":      "DOC-A",
+  "vote":           1,
+  "reason":         "irrelevant",
+  "position_shown": 0
 }
 ```
 
-- `request_id`, `feedback_token`: from the `/chat` response (§3.4.2). Token TTL = 7 days.
-- `query_text`, `shown_source_ids`: re-supplied by client; HMAC over `sources_hash = sha256(json(shown_source_ids))` binds them.
-- `source_id` ∈ `shown_source_ids` (server-enforced).
+- `request_id`, `feedback_token`: from the `/chat` response (§3.4.2). Token TTL = 7 days. The token's signed `request_id` and `user_id` are **authoritative**; the body's `request_id` must equal the signed value, and (if `X-User-Id` is present) it must equal the token's `user_id`. Mismatch → 401 `FEEDBACK_TOKEN_INVALID`.
+- `query_text`, `shown_sources`: re-supplied by client; HMAC over `sources_hash = sha256(json([[source_app, source_id], …]))` binds the **pair** list (document identity is `(source_app, source_id)` per B11/B35).
+- `(source_app, source_id)` of the voted source ∈ `shown_sources` (server-enforced).
 - `vote` ∈ {+1, -1}.
 - `reason` ∈ {`irrelevant`, `hallucinated`, `outdated`, `incomplete`, `wrong_citation`, `other`} (B52, frozen) or omitted.
-- `position_shown`: 0-based index of `source_id` in the original `/chat sources[]` (recorded for future IPS; B53 item 1, unused in P1).
+- `position_shown`: 0-based index of the voted source in the original `/chat sources[]` (recorded for future IPS; B53 item 1, unused in P1).
 
 **Response:** `204 No Content` on success; `application/problem+json` on error per §4.1.1.
 
 **Errors:**
-- `401 FEEDBACK_TOKEN_INVALID` — HMAC mismatch, malformed token, or `shown_source_ids` doesn't match the signed `sources_hash`.
+- `401 FEEDBACK_TOKEN_INVALID` — HMAC mismatch, malformed token, `request_id` mismatch with signed value, `X-User-Id` mismatch with signed `user_id`, or `shown_sources` doesn't match the signed `sources_hash`.
 - `410 FEEDBACK_TOKEN_EXPIRED` — token `ts` outside the 7-day window.
-- `422 FEEDBACK_SOURCE_INVALID` — `source_id ∉ shown_source_ids`.
+- `422 FEEDBACK_SOURCE_INVALID` — voted `(source_app, source_id)` pair not in `shown_sources`.
 - `422 FEEDBACK_VALIDATION` — schema violations (vote ∉ {±1}, reason outside enum, missing required field).
 
 **Dual-write semantics (B51):**
-1. MariaDB `feedback` UPSERT keyed on `(user_id, request_id, source_id)` — idempotent; second vote overwrites.
-2. ES `feedback_v1` index with `_id = sha256(user_id|request_id|source_id)` — same idempotency. Re-embeds `query_text` once per call via `EmbeddingClient.embed([query_text], query=True)`.
+1. MariaDB `feedback` UPSERT keyed on `(user_id, request_id, source_app, source_id)` — idempotent; second vote overwrites.
+2. ES `feedback_v1` index with `_id = sha256(user_id|request_id|source_app|source_id)` — same idempotency. Re-embeds `query_text` once per call via `EmbeddingClient.embed([query_text], query=True)`. ES doc carries `source_app` (`_FeedbackMemoryRetriever` aggregates by the pair).
 3. ES leg failure logs `event=feedback.es_write_failed` and increments `ragent_feedback_es_write_failed_total`; the request still returns 204 because MariaDB is the truth.
 
 **BDD:**
-- **S42 happy** — Valid token + valid shape → 204; MariaDB row exists; ES doc indexed.
+- **S42 happy** — Valid token + valid shape → 204; MariaDB row exists; ES doc indexed with `source_app` field present.
 - **S43 tampered token** — Single byte flip → 401 `FEEDBACK_TOKEN_INVALID`.
 - **S44 expired token** — `ts` > 7 days ago → 410 `FEEDBACK_TOKEN_EXPIRED`.
-- **S45 sources_hash mismatch** — Client supplies different `shown_source_ids` than at sign time → 401 `FEEDBACK_TOKEN_INVALID`.
-- **S46 source_id not shown** — `source_id ∉ shown_source_ids` → 422 `FEEDBACK_SOURCE_INVALID`.
+- **S45 sources_hash mismatch** — Client supplies different `shown_sources` than at sign time → 401 `FEEDBACK_TOKEN_INVALID`.
+- **S46 source not shown** — Voted `(source_app, source_id)` pair not in `shown_sources` → 422 `FEEDBACK_SOURCE_INVALID`.
 - **S47 reason enum** — Reason outside B52 frozen set → 422.
-- **S48 idempotent re-vote** — Same `(user_id, request_id, source_id)` posted twice → both return 204, single MariaDB row with `updated_at` advanced.
+- **S48 idempotent re-vote** — Same `(user_id, request_id, source_app, source_id)` posted twice → both return 204, single MariaDB row with `updated_at` advanced.
 - **S49 ES fail-open** — ES write raises → 204 + `ragent_feedback_es_write_failed_total += 1`.
+- **S50 request_id replay rejected** — Body `request_id` differs from signed payload `request_id` → 401 `FEEDBACK_TOKEN_INVALID`; no MariaDB/ES write.
+- **S51 cross-user reuse rejected** — `X-User-Id` differs from signed `user_id` → 401 `FEEDBACK_TOKEN_INVALID`; no write.
+- **S52 chat filter scope honoured** — `/chat` with `source_app=confluence` AND `CHAT_FEEDBACK_ENABLED=true` → `_FeedbackMemoryRetriever`'s kNN filter contains `term: {source_app: confluence}` (no boosting from other-app likes leaks into the response).
 
 ---
 
@@ -902,14 +910,15 @@ CREATE TABLE documents (
 CREATE TABLE feedback (
   feedback_id     CHAR(26)     PRIMARY KEY,             -- new_id() (§5.3)
   request_id      CHAR(26)     NOT NULL,                -- echoed from /chat response
-  user_id         VARCHAR(64)  NOT NULL,                -- X-User-Id header at write time
-  source_id       VARCHAR(128) NOT NULL,                -- voted source (must be in shown_source_ids)
+  user_id         VARCHAR(64)  NOT NULL,                -- X-User-Id at /chat time (signed into token)
+  source_app      VARCHAR(64)  NOT NULL,                -- voted-source namespace (paired with source_id, B11/B35)
+  source_id       VARCHAR(128) NOT NULL,                -- voted source (must be in shown_sources)
   vote            TINYINT      NOT NULL,                -- +1 like / -1 dislike
   reason          VARCHAR(32)  NULL,                    -- B52 enum (6 values) or NULL
   position_shown  SMALLINT     NULL,                    -- for future IPS (B53 item 1) — collected, unused in P1
   created_at      DATETIME(6)  NOT NULL,
   updated_at      DATETIME(6)  NOT NULL,
-  UNIQUE KEY uq_user_req_src (user_id, request_id, source_id),
+  UNIQUE KEY uq_user_req_app_src (user_id, request_id, source_app, source_id),
   CONSTRAINT ck_vote_unit CHECK (vote IN (-1, 1))
 );
 -- Append-only event log. ES `feedback_v1` (§5.4) is the derived serving view (B50/B51).
@@ -1024,7 +1033,7 @@ No physical FK. ORM-level cascade only.
 ```
 
 **Indexing semantics (B50/B51):**
-- `_id` = `sha256(user_id|request_id|source_id)` so re-votes overwrite (mirrors MariaDB `uq_user_req_src`).
+- `_id` = `sha256(user_id|request_id|source_app|source_id)` so re-votes overwrite (mirrors MariaDB `uq_user_req_app_src`).
 - `query_embedding` produced at feedback-write time via `EmbeddingClient.embed([query_text], query=True)` — same model used by `/chat` retrieval so kNN similarity is comparable.
 - `user_id_hash = sha256(user_id).hexdigest()` — defence-in-depth for ES dumps; plaintext `user_id` lives only in MariaDB (`feedback.user_id`).
 - Test override (B42) at `tests/resources/es/feedback_v1.json` omits the ICU analyzer, identical otherwise.

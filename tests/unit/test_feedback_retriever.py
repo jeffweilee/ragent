@@ -209,3 +209,35 @@ def test_lookup_miss_drops_source(from_thread):
     assert out["documents"] == []
     # Only one ES call: short-circuit before chunks lookup when mapping is empty
     assert es.search.call_count == 1
+
+
+# --- T-FB review-fix: filter bridge unit ---
+
+
+def test_scope_from_haystack_filters_extracts_source_app_and_meta():
+    """PR #80 review (codex P1): run_retrieval must bridge Haystack composite
+    filters (the shape build_es_filters emits) into the flat shape the
+    feedback retriever consumes — otherwise the chat-side scope is silently
+    bypassed by the feedback boost."""
+    from ragent.pipelines.chat import _scope_from_haystack_filters
+
+    # leaf shape (single filter)
+    leaf = {"field": "source_app", "operator": "==", "value": "confluence"}
+    assert _scope_from_haystack_filters(leaf) == {"source_app": "confluence"}
+
+    # composite AND shape (both filters)
+    composite = {
+        "operator": "AND",
+        "conditions": [
+            {"field": "source_app", "operator": "==", "value": "confluence"},
+            {"field": "source_meta", "operator": "==", "value": "engineering"},
+        ],
+    }
+    assert _scope_from_haystack_filters(composite) == {
+        "source_app": "confluence",
+        "source_meta": "engineering",
+    }
+
+    # None / empty stays None
+    assert _scope_from_haystack_filters(None) is None
+    assert _scope_from_haystack_filters({}) is None

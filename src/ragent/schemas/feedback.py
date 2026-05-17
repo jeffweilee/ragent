@@ -23,11 +23,24 @@ class FeedbackReason(StrEnum):
     OTHER = "other"
 
 
+class SourceRef(BaseModel):
+    """Document identity per B11/B35/B39/B41 — both fields are required.
+
+    Used inside ``FeedbackRequest.shown_sources`` and bound into the HMAC
+    ``sources_hash`` so the client cannot rewrite the shown set under a
+    re-used token.
+    """
+
+    source_app: str = Field(..., min_length=1, max_length=64)
+    source_id: str = Field(..., min_length=1, max_length=128)
+
+
 class FeedbackRequest(BaseModel):
     request_id: str = Field(..., min_length=1, max_length=64)
     feedback_token: str = Field(..., min_length=1)
     query_text: str = Field(..., min_length=1, max_length=8192)
-    shown_source_ids: list[str] = Field(..., min_length=1, max_length=200)
+    shown_sources: list[SourceRef] = Field(..., min_length=1, max_length=200)
+    source_app: str = Field(..., min_length=1, max_length=64)
     source_id: str = Field(..., min_length=1, max_length=128)
     vote: int
     reason: FeedbackReason | None = None

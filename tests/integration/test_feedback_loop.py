@@ -4,6 +4,10 @@ Wires the real chat + feedback routers in-process with mocked clients so
 the HMAC token round-trip, source_id binding, and dual-write contracts
 all run on production code paths. ES + MariaDB are stubbed to capture
 calls; the embedder is deterministic so kNN-replay assertions are stable.
+
+Updated for the T-FB review-fix: document identity is the
+``(source_app, source_id)`` pair; request_id + user_id are bound by the
+token and enforced at /feedback time.
 """
 
 from __future__ import annotations
@@ -117,11 +121,17 @@ def _post_chat(client, user_id: str = "alice") -> dict:
     ).json()
 
 
+def _shown_from(chat_body: dict) -> list[dict]:
+    return [
+        {"source_app": s["source_app"], "source_id": s["source_id"]} for s in chat_body["sources"]
+    ]
+
+
 def test_chat_emits_token_then_feedback_round_trip_writes_both_stores(loop):
     chat_body = _post_chat(loop["client"])
     assert "request_id" in chat_body and "feedback_token" in chat_body
-    first_source_id = chat_body["sources"][0]["source_id"]
-    shown_source_ids = [s["source_id"] for s in chat_body["sources"]]
+    voted = chat_body["sources"][0]
+    shown = _shown_from(chat_body)
 
     fb_resp = loop["client"].post(
         "/feedback/v1",
@@ -129,8 +139,9 @@ def test_chat_emits_token_then_feedback_round_trip_writes_both_stores(loop):
             "request_id": chat_body["request_id"],
             "feedback_token": chat_body["feedback_token"],
             "query_text": "what are our Q3 OKRs?",
-            "shown_source_ids": shown_source_ids,
-            "source_id": first_source_id,
+            "shown_sources": shown,
+            "source_app": voted["source_app"],
+            "source_id": voted["source_id"],
             "vote": 1,
             "reason": "irrelevant",
         },
@@ -138,34 +149,33 @@ def test_chat_emits_token_then_feedback_round_trip_writes_both_stores(loop):
     )
     assert fb_resp.status_code == 204
 
-    # MariaDB upsert called with correct keys.
+    # MariaDB upsert called with correct keys including source_app.
     loop["repo"].upsert.assert_awaited_once()
     kw = loop["repo"].upsert.await_args.kwargs
     assert kw["request_id"] == chat_body["request_id"]
     assert kw["user_id"] == "alice"
-    assert kw["source_id"] == first_source_id
+    assert kw["source_app"] == voted["source_app"]
+    assert kw["source_id"] == voted["source_id"]
     assert kw["vote"] == 1
     assert kw["reason"] == "irrelevant"
 
-    # ES feedback_v1 doc has query_embedding + user_id_hash + matching source_id.
+    # ES feedback_v1 doc carries source_app + user_id_hash; user_id never leaks plaintext.
     assert len(loop["es_writes"]) == 1
     es_doc = loop["es_writes"][0]["document"]
-    assert es_doc["source_id"] == first_source_id
+    assert es_doc["source_app"] == voted["source_app"]
+    assert es_doc["source_id"] == voted["source_id"]
     assert es_doc["vote"] == 1
     assert len(es_doc["query_embedding"]) == 1024
-    # user_id must NOT leak in plaintext — only the hash should be present.
     assert "user_id" not in es_doc
     assert "user_id_hash" in es_doc and len(es_doc["user_id_hash"]) == 64
 
 
-def test_three_distinct_users_clear_min_votes_threshold(loop):
+def test_three_distinct_users_each_get_a_distinct_es_id(loop):
     """Closes the loop conceptually: 3 different users each cast +1 on the same source."""
     chat_body = _post_chat(loop["client"])
-    shown_source_ids = [s["source_id"] for s in chat_body["sources"]]
-    first_source_id = chat_body["sources"][0]["source_id"]
+    voted = chat_body["sources"][0]
 
     for u in ("alice", "bob", "carol"):
-        # Each user starts a fresh chat to get a token bound to THEIR user_id.
         cb = _post_chat(loop["client"], user_id=u)
         loop["client"].post(
             "/feedback/v1",
@@ -173,7 +183,8 @@ def test_three_distinct_users_clear_min_votes_threshold(loop):
                 "request_id": cb["request_id"],
                 "feedback_token": cb["feedback_token"],
                 "query_text": "what are our Q3 OKRs?",
-                "shown_source_ids": [s["source_id"] for s in cb["sources"]],
+                "shown_sources": _shown_from(cb),
+                "source_app": cb["sources"][0]["source_app"],
                 "source_id": cb["sources"][0]["source_id"],
                 "vote": 1,
             },
@@ -182,15 +193,20 @@ def test_three_distinct_users_clear_min_votes_threshold(loop):
 
     assert loop["repo"].upsert.await_count == 3
     assert len(loop["es_writes"]) == 3
-    # All three ES writes target the same source_id (they shared the corpus).
-    assert {w["document"]["source_id"] for w in loop["es_writes"]} == {first_source_id}
-    # Each write got a distinct ES _id (sha256 over user|request|source triple).
+    # All three ES writes target the same (source_app, source_id) pair.
+    assert {
+        (w["document"]["source_app"], w["document"]["source_id"]) for w in loop["es_writes"]
+    } == {(voted["source_app"], voted["source_id"])}
+    # Each write got a distinct ES _id (sha256 includes user|request|app|source).
     assert len({w["id"] for w in loop["es_writes"]}) == 3
-    _ = shown_source_ids  # used only for HMAC validation above
 
 
-def test_cross_user_token_replay_is_rejected(loop):
-    """alice's feedback_token cannot be used by bob — HMAC binds user_id."""
+def test_cross_user_token_relay_is_now_rejected(loop):
+    """Codex P1: token-relay (Alice's token used by Bob) must 401, not silently write under Alice.
+
+    The previous "advisory X-User-Id" behaviour was a bug — a stolen / leaked token
+    could be reused by any caller. Now X-User-Id MUST equal the signed user_id.
+    """
     chat_body = _post_chat(loop["client"], user_id="alice")
     resp = loop["client"].post(
         "/feedback/v1",
@@ -198,23 +214,40 @@ def test_cross_user_token_replay_is_rejected(loop):
             "request_id": chat_body["request_id"],
             "feedback_token": chat_body["feedback_token"],
             "query_text": "what are our Q3 OKRs?",
-            "shown_source_ids": [s["source_id"] for s in chat_body["sources"]],
+            "shown_sources": _shown_from(chat_body),
+            "source_app": chat_body["sources"][0]["source_app"],
             "source_id": chat_body["sources"][0]["source_id"],
             "vote": 1,
         },
-        headers={"X-User-Id": "bob"},  # echoed in header but feedback router
-        # trusts the payload user_id (alice).
+        headers={"X-User-Id": "bob"},
     )
-    # Token still verifies (it WAS minted for alice with valid secret) — the
-    # router writes feedback under alice's identity, not bob's. This is the
-    # documented behaviour: X-User-Id on /feedback/v1 is advisory; the HMAC
-    # payload's user_id is authoritative.
-    assert resp.status_code == 204
-    kw = loop["repo"].upsert.await_args.kwargs
-    assert kw["user_id"] == "alice"  # NOT "bob"
+    assert resp.status_code == 401
+    assert resp.json()["error_code"] == "FEEDBACK_TOKEN_INVALID"
+    loop["repo"].upsert.assert_not_called()
 
 
-def test_shown_source_ids_tamper_rejected(loop):
+def test_request_id_replay_rejected(loop):
+    """Codex P1: body request_id must equal signed payload request_id."""
+    chat_body = _post_chat(loop["client"])
+    resp = loop["client"].post(
+        "/feedback/v1",
+        json={
+            "request_id": "01ZZZZZZZZZZZZZZZZZZZZZZZZ",  # forged
+            "feedback_token": chat_body["feedback_token"],
+            "query_text": "what are our Q3 OKRs?",
+            "shown_sources": _shown_from(chat_body),
+            "source_app": chat_body["sources"][0]["source_app"],
+            "source_id": chat_body["sources"][0]["source_id"],
+            "vote": 1,
+        },
+        headers={"X-User-Id": "alice"},
+    )
+    assert resp.status_code == 401
+    assert resp.json()["error_code"] == "FEEDBACK_TOKEN_INVALID"
+    loop["repo"].upsert.assert_not_called()
+
+
+def test_shown_sources_tamper_rejected(loop):
     chat_body = _post_chat(loop["client"])
     resp = loop["client"].post(
         "/feedback/v1",
@@ -222,7 +255,11 @@ def test_shown_source_ids_tamper_rejected(loop):
             "request_id": chat_body["request_id"],
             "feedback_token": chat_body["feedback_token"],
             "query_text": "what are our Q3 OKRs?",
-            "shown_source_ids": ["DOC-FAKE-A", "DOC-FAKE-B"],  # not the original set
+            "shown_sources": [
+                {"source_app": "fake", "source_id": "DOC-FAKE-A"},
+                {"source_app": "fake", "source_id": "DOC-FAKE-B"},
+            ],
+            "source_app": "fake",
             "source_id": "DOC-FAKE-A",
             "vote": 1,
         },
@@ -230,6 +267,5 @@ def test_shown_source_ids_tamper_rejected(loop):
     )
     assert resp.status_code == 401
     assert resp.json()["error_code"] == "FEEDBACK_TOKEN_INVALID"
-    # No writes happened.
     loop["repo"].upsert.assert_not_called()
     assert loop["es_writes"] == []

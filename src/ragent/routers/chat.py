@@ -37,16 +37,25 @@ def _maybe_mint_feedback_envelope(
     user_id: str | None,
     sources: list[dict] | None,
 ) -> dict:
-    """Return {request_id, feedback_token} when HMAC is configured, else {} (B51)."""
+    """Return {request_id, feedback_token} when HMAC is configured, else {} (B51).
+
+    The token binds ``(source_app, source_id)`` **pairs** (B11/B35 identity)
+    so feedback against a forged ``source_app`` for a known ``source_id`` is
+    rejected at verify time.
+    """
     if not hmac_secret or not user_id:
         return {}
     request_id = new_id()
-    source_ids = [s["source_id"] for s in (sources or []) if s.get("source_id")]
+    source_refs = [
+        (s["source_app"], s["source_id"])
+        for s in (sources or [])
+        if s.get("source_id") and s.get("source_app")
+    ]
     token = sign_feedback_token(
         {
             "request_id": request_id,
             "user_id": user_id,
-            "sources_hash": compute_sources_hash(source_ids),
+            "sources_hash": compute_sources_hash(source_refs),
             "ts": int(time.time()),
         },
         hmac_secret,

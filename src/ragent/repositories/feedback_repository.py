@@ -21,10 +21,10 @@ from ragent.utility.id_gen import new_id
 _UPSERT_SQL = text(
     """
     INSERT INTO feedback (
-      feedback_id, request_id, user_id, source_id, vote, reason,
+      feedback_id, request_id, user_id, source_app, source_id, vote, reason,
       position_shown, created_at, updated_at
     ) VALUES (
-      :feedback_id, :request_id, :user_id, :source_id, :vote, :reason,
+      :feedback_id, :request_id, :user_id, :source_app, :source_id, :vote, :reason,
       :position_shown, :created_at, :updated_at
     )
     ON DUPLICATE KEY UPDATE
@@ -45,17 +45,21 @@ class FeedbackRepository:
         *,
         request_id: str,
         user_id: str,
+        source_app: str,
         source_id: str,
         vote: int,
         reason: str | None,
         position_shown: int | None = None,
     ) -> str:
-        """Insert a feedback row or overwrite the prior vote for the same triple.
+        """Insert a feedback row or overwrite the prior vote for the same quadruple.
 
-        Idempotent on ``(user_id, request_id, source_id)`` (B51). Returns the
-        new ``feedback_id``; on duplicate, the existing row is updated and
-        the freshly minted id is returned but not persisted (caller treats
-        it as opaque).
+        Idempotent on ``(user_id, request_id, source_app, source_id)`` (B51).
+        Document identity is the ``(source_app, source_id)`` pair per
+        B11/B35/B39/B41 — both are required to distinguish the same client
+        ``source_id`` across different upstream apps. Returns the new
+        ``feedback_id``; on duplicate, the existing row is updated and the
+        freshly minted id is returned but not persisted (caller treats it
+        as opaque).
         """
         # Defence in depth — Pydantic schema (FeedbackRequest.vote) catches HTTP
         # callers; this guard protects direct repo usage (workers, replay jobs).
@@ -70,6 +74,7 @@ class FeedbackRepository:
                     "feedback_id": feedback_id,
                     "request_id": request_id,
                     "user_id": user_id,
+                    "source_app": source_app,
                     "source_id": source_id,
                     "vote": vote,
                     "reason": reason,

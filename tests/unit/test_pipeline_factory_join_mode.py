@@ -121,6 +121,26 @@ def test_rrf_with_feedback_has_three_retrievers_and_weighted_joiner():
     assert abs(weights[2] / weights[0] - 0.5) < 1e-9
 
 
+def test_rrf_with_feedback_connects_feedback_LAST_so_weights_map_correctly():
+    """PR #80 review (gemini high): joiner inputs are positional, matched to
+    `weights` by index. Feedback MUST be connected after vector + BM25 so the
+    third weight slot (the discounted one) lands on the feedback retriever,
+    not on BM25.
+
+    Asserts the connection edges into `joiner.documents` are in the expected
+    sender order: vector → bm25 → feedback.
+    """
+    pipeline = _build_with_feedback("rrf", _make_feedback_retriever())
+    # nx MultiDiGraph: in-edges of `joiner` with the data they carry.
+    in_edges = list(pipeline.graph.in_edges("joiner", data=True))
+    senders_to_documents = [
+        src
+        for src, _, data in in_edges
+        if data.get("to_socket") and data["to_socket"].name == "documents"
+    ]
+    assert senders_to_documents == ["vector_retriever", "bm25_retriever", "feedback_retriever"]
+
+
 def test_rrf_without_feedback_has_no_third_retriever():
     pipeline = _build_with_feedback("rrf", None)
     names = set(pipeline.graph.nodes)

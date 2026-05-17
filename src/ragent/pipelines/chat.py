@@ -503,15 +503,19 @@ def build_retrieval_pipeline(
                     join_mode=_HAYSTACK_JOIN_MODE[join_mode], top_k=top_k, weights=weights
                 ),
             )
-            pipeline.connect("query_embedder.query_embedding", "feedback_retriever.query_embedding")
-            pipeline.connect("feedback_retriever.documents", "joiner.documents")
         else:
             pipeline.add_component(
                 "joiner", DocumentJoiner(join_mode=_HAYSTACK_JOIN_MODE[join_mode], top_k=top_k)
             )
         pipeline.connect("query_embedder.query_embedding", "vector_retriever.query_embedding")
+        # Connection order is the joiner's positional input order. `weights`
+        # is matched positionally, so feedback MUST be connected LAST to
+        # receive the `feedback_weight` slot (PR #80 review, gemini high).
         pipeline.connect("vector_retriever.documents", "joiner.documents")
         pipeline.connect("bm25_retriever.documents", "joiner.documents")
+        if use_feedback:
+            pipeline.connect("query_embedder.query_embedding", "feedback_retriever.query_embedding")
+            pipeline.connect("feedback_retriever.documents", "joiner.documents")
         pipeline.connect("joiner.documents", retriever_sink)
 
     return pipeline
@@ -528,6 +532,31 @@ def _retriever_params(
     if top_k is not None:
         p["top_k"] = top_k
     return p
+
+
+def _scope_from_haystack_filters(filters: dict | None) -> dict[str, str] | None:
+    """Flatten Haystack composite filters to ``{source_app, source_meta}``.
+
+    ``build_es_filters`` returns Haystack's ES integration shape (composite
+    `{operator, conditions: [{field, operator, value}, …]}` or leaf
+    `{field, operator, value}`), but ``_FeedbackMemoryRetriever`` hand-rolls
+    its kNN body and reads flat keys. Without this bridge, app/meta-scoped
+    chat would silently bypass the feedback retriever's scope filter
+    (PR #80 review, codex P1).
+    """
+    if not filters:
+        return None
+    flat: dict[str, str] = {}
+
+    def _walk(node: dict) -> None:
+        if "field" in node:
+            flat[node["field"]] = node["value"]
+        elif "conditions" in node:
+            for child in node["conditions"]:
+                _walk(child)
+
+    _walk(filters)
+    return flat or None
 
 
 def run_retrieval(
@@ -551,6 +580,14 @@ def run_retrieval(
         inputs["bm25_retriever"] = {"query": query, **rp}
     if "vector_retriever" in nodes and rp:
         inputs["vector_retriever"] = rp
+    # Feedback retriever must also see app/meta filters so its kNN over
+    # feedback_v1 honours the same scope as the vector/BM25 path. Without
+    # this, app-scoped chat could be boosted by liked sources from other
+    # apps via the joiner (PR #80 review, codex P1).
+    if "feedback_retriever" in nodes:
+        scope = _scope_from_haystack_filters(filters)
+        if scope:
+            inputs["feedback_retriever"] = {"filters": scope}
     if "joiner" in nodes and top_k is not None:
         inputs["joiner"] = {"top_k": top_k}
     if "reranker" in nodes:

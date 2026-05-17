@@ -96,6 +96,25 @@ def test_sign_rejects_missing_required_keys():
         sign({}, SECRET)
 
 
+def test_compute_sources_hash_distinguishes_source_app():
+    """Same source_id under different source_apps must hash differently —
+    document identity is the (source_app, source_id) PAIR (B11/B35)."""
+    from ragent.utility.feedback_token import compute_sources_hash
+
+    h_confluence = compute_sources_hash([("confluence", "DOC-A"), ("confluence", "DOC-B")])
+    h_drive = compute_sources_hash([("drive", "DOC-A"), ("confluence", "DOC-B")])
+    assert h_confluence != h_drive
+
+
+def test_compute_sources_hash_is_order_sensitive():
+    """Reordering pairs changes the hash — clients MUST submit the same order /chat sent."""
+    from ragent.utility.feedback_token import compute_sources_hash
+
+    a = compute_sources_hash([("confluence", "DOC-A"), ("drive", "DOC-B")])
+    b = compute_sources_hash([("drive", "DOC-B"), ("confluence", "DOC-A")])
+    assert a != b
+
+
 def test_verify_rejects_non_int_ts():
     """Sign accepts any-typed ts; verify must enforce int."""
     token = sign({**PAYLOAD, "ts": "1234567890"}, SECRET)  # type: ignore[dict-item]

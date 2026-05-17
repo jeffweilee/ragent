@@ -79,17 +79,19 @@ def test_chat_response_includes_request_id_and_feedback_token_when_secret_set():
     assert payload["user_id"] == "alice"
 
 
-def test_token_sources_hash_binds_actual_response_sources():
-    """Tampering with shown_source_ids at feedback time must fail HMAC."""
+def test_token_sources_hash_binds_actual_response_source_pairs():
+    """Tampering with shown_sources at feedback time must fail HMAC.
+
+    sources_hash is over (source_app, source_id) **pairs** so a malicious
+    client cannot forge the source_app for a known source_id.
+    """
     from hashlib import sha256
 
     client, _ = _make_app(feedback_secret=SECRET)
     resp = client.post("/chat/v1", json=_chat_body(), headers={"X-User-Id": "alice"})
     body = resp.json()
-    source_ids = [s["source_id"] for s in body["sources"]]
-    expected_hash = sha256(
-        json.dumps(source_ids, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+    pairs = [[s["source_app"], s["source_id"]] for s in body["sources"]]
+    expected_hash = sha256(json.dumps(pairs, separators=(",", ":")).encode("utf-8")).hexdigest()
     payload = verify_token(body["feedback_token"], SECRET)
     assert payload["sources_hash"] == expected_hash
 

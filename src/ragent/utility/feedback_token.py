@@ -43,12 +43,21 @@ def _canonical(payload: dict) -> bytes:
     return json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
 
 
-def compute_sources_hash(source_ids: list[str]) -> str:
-    """SHA-256 over the ordered ``source_id`` list — the value bound into the HMAC payload's
-    ``sources_hash`` field (B51). Both the chat router (token mint) and the feedback router
-    (token verify) call this so their inputs are byte-identical.
+def compute_sources_hash(source_refs: list[tuple[str, str]]) -> str:
+    """SHA-256 over the ordered list of ``(source_app, source_id)`` pairs — bound
+    into the HMAC payload's ``sources_hash`` field (B51).
+
+    Document identity is the **pair** ``(source_app, source_id)`` per B11/B35;
+    binding ``source_id`` alone would let a client forge the ``source_app``
+    component of the same vote (PR #80 review, gemini-code-assist
+    security-high). Each entry is serialised as a JSON array ``[app, id]`` so
+    chat-side mint and feedback-side verify produce byte-identical inputs.
+
+    Both call sites (``routers/chat`` mint, ``routers/feedback`` verify) must
+    pass pairs in the same order.
     """
-    return sha256(json.dumps(source_ids, separators=(",", ":")).encode("utf-8")).hexdigest()
+    payload = [[app, sid] for app, sid in source_refs]
+    return sha256(json.dumps(payload, separators=(",", ":")).encode("utf-8")).hexdigest()
 
 
 def _mac(body: bytes, secret: str) -> str:
