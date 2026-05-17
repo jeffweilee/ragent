@@ -416,6 +416,8 @@ def build_retrieval_pipeline(
     join_mode: str = "rrf",
     top_k: int = DEFAULT_TOP_K,
     rerank_client: Any | None = None,
+    feedback_retriever: Any | None = None,
+    feedback_weight: float = 0.5,
 ) -> Pipeline:
     if join_mode not in _VALID_MODES:
         raise ValueError(f"join_mode must be one of {sorted(_VALID_MODES)}, got {join_mode!r}")
@@ -433,6 +435,9 @@ def build_retrieval_pipeline(
         retriever_sink = "reranker.documents"
     else:
         retriever_sink = "source_hydrator.documents"
+
+    # Feedback retriever joins as a 3rd RRF input only in rrf join mode (B50).
+    use_feedback = feedback_retriever is not None and join_mode == "rrf"
 
     if join_mode == "vector_only":
         pipeline.add_component("query_embedder", _QueryEmbedder(embedder))
@@ -460,9 +465,21 @@ def build_retrieval_pipeline(
             "bm25_retriever",
             ElasticsearchBM25Retriever(document_store=document_store, top_k=top_k),
         )
-        pipeline.add_component(
-            "joiner", DocumentJoiner(join_mode=_HAYSTACK_JOIN_MODE[join_mode], top_k=top_k)
-        )
+        if use_feedback:
+            weights = [1.0, 1.0, feedback_weight]
+            pipeline.add_component("feedback_retriever", feedback_retriever)
+            pipeline.add_component(
+                "joiner",
+                DocumentJoiner(
+                    join_mode=_HAYSTACK_JOIN_MODE[join_mode], top_k=top_k, weights=weights
+                ),
+            )
+            pipeline.connect("query_embedder.query_embedding", "feedback_retriever.query_embedding")
+            pipeline.connect("feedback_retriever.documents", "joiner.documents")
+        else:
+            pipeline.add_component(
+                "joiner", DocumentJoiner(join_mode=_HAYSTACK_JOIN_MODE[join_mode], top_k=top_k)
+            )
         pipeline.connect("query_embedder.query_embedding", "vector_retriever.query_embedding")
         pipeline.connect("vector_retriever.documents", "joiner.documents")
         pipeline.connect("bm25_retriever.documents", "joiner.documents")

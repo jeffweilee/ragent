@@ -178,7 +178,13 @@ class ExtractorPlugin(Protocol):
 ### 3.4 Chat Pipeline
 
 ```
-QueryEmbedder → {ESVectorRetriever (kNN on `embedding`, optional filter) ∥ ESBM25Retriever (multi_match on `["text", "title^2"]`, optional filter)} → DocumentJoiner(RRF) → SourceHydrator(JOIN documents) → LLMClient.{chat | stream}
+QueryEmbedder → {ESVectorRetriever (kNN on `embedding`, optional filter)
+                 ∥ ESBM25Retriever (multi_match on `["text", "title^2"]`, optional filter)
+                 ∥ FeedbackMemoryRetriever (kNN on `feedback_v1.query_embedding`, optional;
+                                            present iff CHAT_FEEDBACK_ENABLED + CHAT_JOIN_MODE=rrf, B50)}
+              → DocumentJoiner(RRF, weights=[1, 1, CHAT_FEEDBACK_RRF_WEIGHT])
+              → SourceHydrator(JOIN documents)
+              → LLMClient.{chat | stream}
 ```
 
 Title participates in **both** retrieval surfaces (B15): semantic (baked into every chunk's `embedding` at ingest via `embed(f"{title}\n\n{text}")`) and lexical (BM25 boosted 2× via `multi_match`). No separate title-only retriever, no extra ES field beyond `title`.

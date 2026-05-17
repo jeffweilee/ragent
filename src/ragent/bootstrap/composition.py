@@ -168,27 +168,39 @@ def build_container() -> Container:
     )
     registry.register(StubGraphExtractor())
 
+    feedback_enabled = _bool_env("CHAT_FEEDBACK_ENABLED", False)
+    feedback_hmac_secret: str | None = None
+    feedback_repository = None
+    feedback_retriever = None
+    feedback_weight = 0.5
+    if feedback_enabled:
+        from ragent.pipelines.chat import _FeedbackMemoryRetriever
+        from ragent.repositories.feedback_repository import FeedbackRepository
+
+        feedback_repository = FeedbackRepository(engine)
+        feedback_hmac_secret = _require("FEEDBACK_HMAC_SECRET")
+        feedback_weight = _float_env("CHAT_FEEDBACK_RRF_WEIGHT", 0.5)
+        feedback_retriever = _FeedbackMemoryRetriever(
+            es_client=es_client,
+            doc_repo=doc_repo,
+            min_votes=_int_env("CHAT_FEEDBACK_MIN_VOTES", 3),
+            half_life_days=_int_env("CHAT_FEEDBACK_HALF_LIFE_DAYS", 14),
+        )
+
     retrieval_pipeline = build_retrieval_pipeline(
         embedder=embedding_client,
         document_store=document_store,
         doc_repo=doc_repo,
         join_mode=join_mode,
         rerank_client=rerank_client,
+        feedback_retriever=feedback_retriever,
+        feedback_weight=feedback_weight,
     )
 
     ingest_pipeline = build_ingest_pipeline(
         embedder=DocumentEmbedder(embedding_client),
         document_store=document_store,
     )
-
-    feedback_enabled = _bool_env("CHAT_FEEDBACK_ENABLED", False)
-    feedback_hmac_secret: str | None = None
-    feedback_repository = None
-    if feedback_enabled:
-        from ragent.repositories.feedback_repository import FeedbackRepository
-
-        feedback_repository = FeedbackRepository(engine)
-        feedback_hmac_secret = _require("FEEDBACK_HMAC_SECRET")
 
     unprotect_client = None
     if _bool_env("UNPROTECT_ENABLED", False):
