@@ -347,9 +347,11 @@ def _extract_request_id(headers: httpx.Headers) -> str | None:
     return None
 
 
-def _base_upstream_error(resp: httpx.Response, error_type: str) -> dict[str, Any]:
+def _base_upstream_error(
+    resp: httpx.Response, error_type: str, request_id: str | None = None
+) -> dict[str, Any]:
     err: dict[str, Any] = {"type": error_type, "status": resp.status_code}
-    req_id = _extract_request_id(resp.headers)
+    req_id = request_id if request_id is not None else _extract_request_id(resp.headers)
     if req_id:
         err["upstream_request_id"] = req_id
     return err
@@ -363,8 +365,8 @@ def _attach_body(err: dict[str, Any], body: str, raw_len: int) -> None:
         err["upstream_body"] = body
 
 
-def _build_4xx_error(resp: httpx.Response) -> dict[str, Any]:
-    err = _base_upstream_error(resp, _ERR_UPSTREAM_4XX)
+def _build_4xx_error(resp: httpx.Response, request_id: str | None = None) -> dict[str, Any]:
+    err = _base_upstream_error(resp, _ERR_UPSTREAM_4XX, request_id)
     ctype = resp.headers.get("content-type", "")
 
     if "application/json" in ctype or "application/problem+json" in ctype:
@@ -479,7 +481,7 @@ def _make_tool_callable(
             logger.error(
                 "mcp_hub.connect_error",
                 latency_ms=int((time.perf_counter() - start) * 1000),
-                error_class=type(exc).__name__,
+                error_type=type(exc).__name__,
                 **log_ctx,
             )
             raise ToolError(json.dumps({"type": _ERR_CONNECT, "message": str(exc)})) from exc
@@ -495,7 +497,9 @@ def _make_tool_callable(
                 upstream_request_id=upstream_request_id,
                 **log_ctx,
             )
-            raise ToolError(json.dumps(_base_upstream_error(resp, _ERR_UPSTREAM_5XX)))
+            raise ToolError(
+                json.dumps(_base_upstream_error(resp, _ERR_UPSTREAM_5XX, upstream_request_id))
+            )
 
         if resp.status_code >= 400:
             logger.warning(
@@ -508,7 +512,7 @@ def _make_tool_callable(
             return {
                 "ok": False,
                 "status": resp.status_code,
-                "error": _build_4xx_error(resp),
+                "error": _build_4xx_error(resp, upstream_request_id),
             }
 
         ctype = resp.headers.get("content-type", "")

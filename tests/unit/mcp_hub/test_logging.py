@@ -144,7 +144,7 @@ async def test_connect_error_logs_error(log_capture):
     records = [r for r in log_capture.records if "mcp_hub.connect_error" in r.getMessage()]
     assert len(records) == 1
     assert records[0].levelno == logging.ERROR
-    assert '"error_class": "ConnectError"' in records[0].getMessage()
+    assert '"error_type": "ConnectError"' in records[0].getMessage()
 
 
 def test_build_hub_logs_system_configured_per_system(log_capture, tmp_path):
