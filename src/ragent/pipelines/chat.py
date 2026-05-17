@@ -635,9 +635,7 @@ def build_retrieval_pipeline(
         pipeline.connect("vector_retriever.documents", "joiner.documents")
         pipeline.connect("bm25_retriever.documents", "joiner.documents")
         if use_feedback:
-            pipeline.connect(
-                "query_embedder.query_embedding", "feedback_retriever.query_embedding"
-            )
+            pipeline.connect("query_embedder.query_embedding", "feedback_retriever.query_embedding")
             pipeline.connect("feedback_retriever.documents", "joiner.documents")
         pipeline.connect("joiner.documents", retriever_sink)
 
