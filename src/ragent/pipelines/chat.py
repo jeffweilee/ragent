@@ -257,14 +257,15 @@ class _Reranker:
         self._top_k = top_k
 
     @component.output_types(documents=list[Document])
-    def run(self, query: str, documents: list[Document]) -> dict:
+    def run(self, query: str, documents: list[Document], top_k: int | None = None) -> dict:
         if not documents:
             return {"documents": []}
+        k = top_k if top_k is not None else self._top_k
         texts = [d.content or "" for d in documents]
-        results = self._client.rerank(query=query, texts=texts, top_k=self._top_k)
+        results = self._client.rerank(query=query, texts=texts, top_k=k)
         ordered: list[Document] = []
         invalid = 0
-        for r in results[: self._top_k]:
+        for r in results[:k]:
             i = r.get("index")
             # bool is an int subclass, so isinstance(True, int) is True; reject
             # explicitly so {"index": True} is not silently treated as docs[1].
@@ -402,7 +403,9 @@ class _FeedbackMemoryRetriever:
         self,
         query_embedding: list[float],
         filters: dict | None = None,
+        top_k: int | None = None,
     ) -> dict:
+        k = top_k if top_k is not None else self._top_k
         # 1. kNN feedback_v1
         knn_filter: list[dict] = [{"range": {"ts": {"gte": f"now-{self._lookback_days}d"}}}]
         if filters:
@@ -468,7 +471,7 @@ class _FeedbackMemoryRetriever:
             decay = 0.5 ** (age_days / self._half_life_days)
             scored.append((key, wilson * decay))
         scored.sort(key=lambda kv: kv[1], reverse=True)
-        scored = scored[: self._top_k]
+        scored = scored[:k]
         if not scored:
             _logger.info(
                 "feedback.retriever.below_min_votes",
@@ -494,7 +497,7 @@ class _FeedbackMemoryRetriever:
 
         # 6. Single ES terms query on chunks_v1
         terms_body = {
-            "size": self._top_k * _FEEDBACK_CHUNK_FAN_OUT,
+            "size": k * _FEEDBACK_CHUNK_FAN_OUT,
             "query": {"terms": {"document_id": list(scored_by_doc.keys())}},
         }
         chunk_hits = self._es.search(
@@ -711,12 +714,20 @@ def run_retrieval(
     # apps via the joiner (PR #80 review, codex P1).
     if "feedback_retriever" in nodes:
         scope = _scope_from_haystack_filters(filters)
+        fb_inputs: dict[str, Any] = {}
         if scope:
-            inputs["feedback_retriever"] = {"filters": scope}
+            fb_inputs["filters"] = scope
+        if top_k is not None:
+            fb_inputs["top_k"] = top_k
+        if fb_inputs:
+            inputs["feedback_retriever"] = fb_inputs
     if "joiner" in nodes and top_k is not None:
         inputs["joiner"] = {"top_k": top_k}
     if "reranker" in nodes:
-        inputs["reranker"] = {"query": query}
+        rr_inputs: dict[str, Any] = {"query": query}
+        if top_k is not None:
+            rr_inputs["top_k"] = top_k
+        inputs["reranker"] = rr_inputs
 
     result = pipeline.run(inputs)
     docs = result.get("excerpt_truncator", {}).get("documents", [])

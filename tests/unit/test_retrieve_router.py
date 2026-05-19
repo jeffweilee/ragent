@@ -209,10 +209,10 @@ def test_min_score_zero_accepted(app, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _fake_pipeline(docs: list[Document]):
+def _fake_pipeline(docs: list[Document], nodes: list[str] | None = None):
     """Minimal pipeline stub whose run() returns docs via excerpt_truncator."""
     pipeline = MagicMock()
-    pipeline.graph.nodes = []
+    pipeline.graph.nodes = nodes or []
     pipeline.run.return_value = {"excerpt_truncator": {"documents": docs}}
     return pipeline
 
@@ -269,6 +269,43 @@ def test_run_retrieval_top_k_applied_after_min_score():
     result = run_retrieval(_fake_pipeline(docs), query="q", top_k=2, min_score=0.5)
     assert len(result) == 2
     assert all(d.score >= 0.5 for d in result)
+
+
+# ---------------------------------------------------------------------------
+# T-APL.1 — run_retrieval must thread per-request top_k to reranker AND
+# feedback_retriever. The post-pipeline cap at line 725 only trims the final
+# document list; without these thread-throughs the reranker pays the rerank
+# cost for 20 candidates and the feedback retriever returns more sources to
+# the RRF joiner than the request asked for, shifting the final ranking.
+# ---------------------------------------------------------------------------
+
+
+def test_run_retrieval_threads_top_k_to_reranker():
+    pipeline = _fake_pipeline([], nodes=["reranker"])
+    run_retrieval(pipeline, query="q", top_k=3)
+    inputs = pipeline.run.call_args[0][0]
+    assert inputs["reranker"].get("top_k") == 3
+
+
+def test_run_retrieval_threads_top_k_to_feedback_retriever():
+    pipeline = _fake_pipeline([], nodes=["feedback_retriever"])
+    run_retrieval(pipeline, query="q", top_k=3)
+    inputs = pipeline.run.call_args[0][0]
+    assert inputs["feedback_retriever"].get("top_k") == 3
+
+
+def test_run_retrieval_omits_top_k_from_reranker_when_none():
+    pipeline = _fake_pipeline([], nodes=["reranker"])
+    run_retrieval(pipeline, query="q", top_k=None)
+    inputs = pipeline.run.call_args[0][0]
+    assert "top_k" not in inputs["reranker"]
+
+
+def test_run_retrieval_omits_feedback_retriever_entry_when_no_top_k_no_scope():
+    pipeline = _fake_pipeline([], nodes=["feedback_retriever"])
+    run_retrieval(pipeline, query="q", top_k=None)
+    inputs = pipeline.run.call_args[0][0]
+    assert "feedback_retriever" not in inputs
 
 
 def test_min_score_defaults_to_DEFAULT_MIN_SCORE(app, monkeypatch):

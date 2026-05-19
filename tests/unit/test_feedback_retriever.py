@@ -34,15 +34,15 @@ def _chunk_hit(document_id: str, chunk_id: str, text: str = "chunk text") -> dic
     }
 
 
-def _make_retriever(min_votes: int = 3, half_life_days: int = 14) -> tuple:
+def _make_retriever(
+    min_votes: int = 3, half_life_days: int = 14, top_k: int | None = None
+) -> tuple:
     es = MagicMock()
     doc_repo = MagicMock()
-    retriever = _FeedbackMemoryRetriever(
-        es_client=es,
-        doc_repo=doc_repo,
-        min_votes=min_votes,
-        half_life_days=half_life_days,
-    )
+    kwargs: dict = {"min_votes": min_votes, "half_life_days": half_life_days}
+    if top_k is not None:
+        kwargs["top_k"] = top_k
+    retriever = _FeedbackMemoryRetriever(es_client=es, doc_repo=doc_repo, **kwargs)
     return retriever, es, doc_repo
 
 
@@ -186,6 +186,46 @@ def test_optional_source_app_filter_propagates(from_thread):
     body = es.search.call_args.kwargs["body"]
     knn_filter = body["knn"]["filter"]["bool"]["filter"]
     assert {"term": {"source_app": "confluence"}} in knn_filter
+
+
+@patch("anyio.from_thread.run")
+def test_feedback_retriever_run_accepts_runtime_top_k_overrides_construction_default(from_thread):
+    """T-APL.1 — per-request top_k must reach the dedup-by-source cut, not the build-time default.
+
+    The retriever's run() previously dropped the runtime top_k and used
+    ``self._top_k`` for ``scored = scored[: self._top_k]`` (line ~471). When
+    run_retrieval passes top_k=2 but construction baked top_k=10, the joiner
+    receives 10 deduped sources from the feedback path instead of 2 — the RRF
+    weights then incorporate sources the user did not ask to consider, so the
+    final top-K ordering drifts.
+    """
+    retriever, es, _ = _make_retriever(min_votes=3, top_k=10)
+    # Five sources each with 3 likes — all five clear the min_votes gate.
+    hits = []
+    for letter in "ABCDE":
+        for _ in range(3):
+            hits.append(_hit("confluence", f"DOC-{letter}", 1, _fresh_ts(1)))
+    # Stub MariaDB hydration for any subset of the 5 sources — runtime ordering
+    # depends on per-hit microsecond timestamps so we can't pin which 2 pairs
+    # land in scored[:top_k] from the test; the assertion is on the *count*.
+    es.search = MagicMock(
+        side_effect=[
+            _knn_response(hits),
+            _knn_response([_chunk_hit(f"DOCID0{letter}", f"CK0{letter}") for letter in "ABCDE"]),
+        ]
+    )
+    from_thread.return_value = {
+        ("confluence", f"DOC-{letter}"): f"DOCID0{letter}" for letter in "ABCDE"
+    }
+    retriever.run(query_embedding=[0.1] * 1024, top_k=2)
+    # Exactly the runtime top_k sources are forwarded to the MariaDB lookup —
+    # this is the bug fix: without runtime top_k the constructor's top_k=10
+    # would forward all 5 qualifying sources.
+    pairs_arg = from_thread.call_args.args[1]
+    assert len(pairs_arg) == 2
+    # The chunks query also bounds its size by runtime top_k (not construction-time).
+    terms_body = es.search.call_args_list[1].kwargs["body"]
+    assert terms_body["size"] == 2 * 10  # k * _FEEDBACK_CHUNK_FAN_OUT
 
 
 @patch("anyio.from_thread.run")

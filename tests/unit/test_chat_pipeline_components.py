@@ -122,3 +122,25 @@ def test_reranker_rejects_bool_index() -> None:
     docs = [Document(id="A"), Document(id="B")]
     out = _Reranker(rerank_client, top_k=1).run(query="q", documents=docs)["documents"]
     assert out == []
+
+
+def test_reranker_run_accepts_runtime_top_k_overrides_construction_default() -> None:
+    """T-APL.1 — per-request top_k must reach the rerank API call, not the build-time default.
+
+    Without the runtime kwarg, run_retrieval's top_k is dropped on the floor at
+    the reranker boundary: the rerank API is called with self._top_k (e.g. 20)
+    even when the user asked for 2. Final response is still trimmed downstream,
+    so the user-visible answer length is correct — but the rerank invocation
+    pays for ranking ~10× more candidates than asked, and the rerank-ordered
+    list reaching the RRF joiner has a different score distribution than it
+    would under the requested top_k.
+    """
+    rerank_client = MagicMock()
+    rerank_client.rerank.return_value = [
+        {"index": 0, "score": 0.9},
+        {"index": 1, "score": 0.5},
+    ]
+    docs = [Document(id="A"), Document(id="B"), Document(id="C")]
+    out = _Reranker(rerank_client, top_k=20).run(query="q", documents=docs, top_k=2)["documents"]
+    rerank_client.rerank.assert_called_once_with(query="q", texts=["", "", ""], top_k=2)
+    assert len(out) == 2
