@@ -1,0 +1,120 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ragent-api
+  namespace: ragent
+  labels:
+    app.kubernetes.io/name: ragent
+    app.kubernetes.io/component: api
+  annotations:
+    reloader.stakater.com/auto: "true"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ragent
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ragent
+        app.kubernetes.io/component: api
+    spec:
+      serviceAccountName: ragent
+      containers:
+        - name: api
+          # Image tag is a placeholder — CI/CD must rewrite to an immutable
+          # digest/tag (e.g. via `kustomize edit set image` or `yq`) before
+          # apply. Never deploy `:latest` to a long-lived cluster.
+          image: ragent:REPLACE_WITH_RELEASE_TAG
+          command: ["python", "-m", "ragent.api"]
+          ports:
+            - name: http
+              containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: ragent-config
+            - secretRef:
+                name: ragent-secrets
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: ragent-api
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ragent-worker
+  namespace: ragent
+  labels:
+    app.kubernetes.io/name: ragent
+    app.kubernetes.io/component: worker
+  annotations:
+    reloader.stakater.com/auto: "true"
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ragent
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ragent
+        app.kubernetes.io/component: worker
+    spec:
+      serviceAccountName: ragent
+      containers:
+        - name: worker
+          # Same image as ragent-api — CI/CD must rewrite to the same
+          # immutable digest/tag as the api container.
+          image: ragent:REPLACE_WITH_RELEASE_TAG
+          command: ["python", "-m", "ragent.worker"]
+          envFrom:
+            - configMapRef:
+                name: ragent-config
+            - secretRef:
+                name: ragent-secrets
+          env:
+            - name: OTEL_SERVICE_NAME
+              value: ragent-worker
+          # Workers have no HTTP surface; liveness verifies the python
+          # entrypoint is still resident. Broker/DB readiness is enforced
+          # by the lifespan infra-ready check at boot, so kubelet only
+          # needs to detect a crashed/zombied process here.
+          livenessProbe:
+            exec:
+              command: ["pgrep", "-f", "ragent.worker"]
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2"
+              memory: "4Gi"

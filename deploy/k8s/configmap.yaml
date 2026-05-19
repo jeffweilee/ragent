@@ -1,0 +1,120 @@
+# ragent-config — non-secret tunables consumed by ragent-api / ragent-worker
+# Deployments via `envFrom: configMapRef`.
+#
+# REQUIRED overlay values (this file ships with empty placeholders; the
+# bootstrap calls `require()` which treats empty string as unset, so pods
+# WILL CrashLoopBackOff until these are patched per environment):
+#   ES_HOSTS, AI_API_AUTH_URL, EMBEDDING_API_URL, LLM_API_URL,
+#   RERANK_API_URL, HR_API_URL (if HR features enabled),
+#   UNPROTECT_API_URL (if UNPROTECT_ENABLED=true),
+#   OTEL_EXPORTER_OTLP_ENDPOINT (if traces enabled).
+#
+# Apply via Kustomize/Helm overlay or `kubectl create configmap ragent-config
+# --from-env-file=<env-specific>.env -o yaml --dry-run=client | kubectl apply -f -`.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: ragent-config
+  namespace: ragent
+data:
+  # 4.6.1 Bootstrap & HTTP server
+  RAGENT_ENV: "prod"
+  RAGENT_AUTH_DISABLED: "false"
+  RAGENT_TRUST_X_USER_ID_HEADER: "false"
+  RAGENT_PERMISSION_INGEST_ENABLED: "false"
+  RAGENT_PERMISSION_CHAT_ENABLED: "false"
+  RAGENT_HOST: "0.0.0.0"
+  RAGENT_PORT: "8000"
+  LOG_LEVEL: "INFO"
+  CORS_ALLOW_ORIGINS: ""
+
+  # 4.6.2 Datastore (non-secret tunables only; DSN/credentials live in Vault)
+  ES_HOSTS: ""  # REQUIRED — comma-separated https?://host:port, set via overlay
+  MARIADB_POOL_RECYCLE_SECONDS: "280"
+  ES_VERIFY_CERTS: "true"
+
+  # 4.6.3 Redis
+  REDIS_MODE: "sentinel"
+  REDIS_SENTINEL_HOSTS: "redis-sentinel-0.redis-sentinel:26379,redis-sentinel-1.redis-sentinel:26379,redis-sentinel-2.redis-sentinel:26379"
+  REDIS_BROKER_SENTINEL_MASTER: "ragent-broker"
+  REDIS_RATELIMIT_SENTINEL_MASTER: "ragent-ratelimit"
+
+  # 4.6.4 Third-party endpoints (URLs only — tokens in Vault)
+  AI_API_AUTH_URL: ""
+  AI_USE_K8S_SERVICE_ACCOUNT_TOKEN: "true"
+  EMBEDDING_API_URL: ""
+  LLM_API_URL: ""
+  RERANK_API_URL: ""
+  EMBEDDING_AUTH_HEADER_NAME: "Authorization"
+  LLM_AUTH_HEADER_NAME: "Authorization"
+  RERANK_AUTH_HEADER_NAME: "Authorization"
+  EMBEDDING_REGISTRY_TTL_SECONDS: "10"
+  COMMIT_MIN_HOURS: "24"
+  HR_API_URL: ""
+  UNPROTECT_ENABLED: "false"
+  UNPROTECT_API_URL: ""
+  UNPROTECT_DELEGATED_USER_SUFFIX: ""
+
+  # 4.6.5 Worker, reconciler & retry policy
+  WORKER_HEARTBEAT_INTERVAL_SECONDS: "30"
+  WORKER_MAX_ATTEMPTS: "5"
+  PIPELINE_TIMEOUT_SECONDS: "1800"
+  RECONCILER_PENDING_STALE_SECONDS: "300"
+  RECONCILER_UPLOADED_STALE_SECONDS: "300"
+  RECONCILER_DELETING_STALE_SECONDS: "300"
+
+  # 4.6.6 Pipeline & chat tunables
+  INGEST_INLINE_MAX_BYTES: "10485760"
+  INGEST_FILE_MAX_BYTES: "52428800"
+  INGEST_LIST_MAX_LIMIT: "100"
+  INGEST_MAX_ARCHIVE_MEMBERS: "5000"
+  INGEST_MAX_ARCHIVE_RATIO: "100"
+  INGEST_MAX_ARCHIVE_EXPANDED_BYTES: "524288000"
+  INGEST_MAX_PDF_PAGES: "2000"
+  CHUNK_TARGET_CHARS: "1000"
+  CHUNK_MAX_CHARS: "1500"
+  CHUNK_OVERLAP_CHARS: "100"
+  EMBEDDER_BATCH_SIZE: "32"
+  CHAT_JOIN_MODE: "rrf"
+  CHAT_RERANK_ENABLED: "true"
+  RETRIEVAL_TOP_K: "20"
+  RETRIEVAL_MIN_SCORE: ""
+  EXCERPT_MAX_CHARS: "512"
+  RAGENT_DEFAULT_LLM_PROVIDER: "openai"
+  RAGENT_DEFAULT_LLM_MODEL: "gptoss-120b"
+  RAGENT_DEFAULT_LLM_TEMPERATURE: "0.7"
+  RAGENT_DEFAULT_LLM_MAX_TOKENS: "4096"
+  RAGENT_DEFAULT_SYSTEM_PROMPT: "You are a helpful assistant"
+  RAGENT_DEFAULT_RAG_SYSTEM_PROMPT: ""
+  RAGENT_RAG_GROUNDING_RULES: ""
+  CHAT_RATE_LIMIT_PER_MINUTE: "30"
+  CHAT_RATE_LIMIT_WINDOW_SECONDS: "60"
+  MCP_REQUEST_MAX_BYTES: "262144"
+  PDF_OCR_LANGUAGES: "eng+chi_sim+chi_tra+jpn+deu"
+  CHAT_FEEDBACK_ENABLED: "false"
+  CHAT_FEEDBACK_RRF_WEIGHT: "0.5"
+  CHAT_FEEDBACK_MIN_VOTES: "3"
+  CHAT_FEEDBACK_HALF_LIFE_DAYS: "14"
+
+  # 4.6.7 Per-call timeouts
+  EMBEDDER_INGEST_TIMEOUT_SECONDS: "30"
+  EMBEDDER_QUERY_TIMEOUT_SECONDS: "10"
+  ES_BULK_TIMEOUT_SECONDS: "60"
+  ES_QUERY_TIMEOUT_SECONDS: "10"
+  MINIO_GET_TIMEOUT_SECONDS: "30"
+  MINIO_PUT_TIMEOUT_SECONDS: "60"
+  LLM_TIMEOUT_SECONDS: "120"
+  PLUGIN_FAN_OUT_TIMEOUT_SECONDS: "60"
+  READYZ_PROBE_TIMEOUT_SECONDS: "2"
+  UNPROTECT_TIMEOUT_SECONDS: "30"
+
+  # 4.6.8 Observability (OTEL_SERVICE_NAME is per-pod, set in Deployment)
+  OTEL_EXPORTER_OTLP_ENDPOINT: ""
+  OTEL_TRACES_SAMPLER: "parentbased_traceidratio"
+  OTEL_TRACES_SAMPLER_ARG: "0.1"
+  HAYSTACK_TELEMETRY_ENABLED: "false"
+  HAYSTACK_CONTENT_TRACING_ENABLED: "false"
+  RAGENT_METRICS_SOURCE_APP_ALLOWLIST: ""
+  RAGENT_METRICS_SOURCE_APP_FALLBACK: "other"
+  HTTP_ERROR_LOG_MAX_BYTES: "8192"

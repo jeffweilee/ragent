@@ -3,7 +3,7 @@
 -- Append-only event log of user feedback on chat sources. MariaDB stores
 -- meta only — never the chat query text, never the answer text. The ES
 -- `feedback_v1` index (T-FB.5) holds the query embedding + reason for the
--- kNN-based feedback retriever; this table is the source of truth and the
+-- kNN-based feedback retriever. This table is the source of truth and the
 -- replay source for ES recovery (B55, B57 item 7).
 --
 -- Document identity is `(source_app, source_id)` per B11/B35/B39/B41 — both
@@ -13,7 +13,7 @@
 -- with the same quadruple are an UPSERT (T-FB.4 last-write-wins).
 --
 -- IDs follow §5.3: `feedback_id` is a CHAR(26) UUIDv7→Crockford Base32 via
--- `new_id()`; `request_id` is the same shape emitted by /chat.
+-- `new_id()`. `request_id` is the same shape emitted by /chat.
 --
 -- No secondary indexes in P1 — per B57 review, only the uniqueness index
 -- is needed until a concrete query path requires aggregation (analytics /

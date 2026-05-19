@@ -63,3 +63,21 @@ INSERT IGNORE INTO system_settings (setting_key, setting_value) VALUES
   ('embedding.candidate', 'null'),
   ('embedding.read',      JSON_QUOTE('stable')),
   ('embedding.retired',   JSON_ARRAY());
+
+-- 010_feedback.sql: append-only feedback events (T-FB.3, B54/B55).
+-- MariaDB stores meta only. ES `feedback_v1` (§5.4) holds the query
+-- embedding and reason text. Idempotency key is the UNIQUE quadruple.
+CREATE TABLE IF NOT EXISTS feedback (
+  feedback_id     CHAR(26)     PRIMARY KEY,
+  request_id      CHAR(26)     NOT NULL,
+  user_id         VARCHAR(64)  NOT NULL,
+  source_app      VARCHAR(64)  NOT NULL,
+  source_id       VARCHAR(128) NOT NULL,
+  vote            TINYINT      NOT NULL,
+  reason          VARCHAR(32)  NULL,
+  position_shown  SMALLINT     NULL,
+  created_at      DATETIME(6)  NOT NULL,
+  updated_at      DATETIME(6)  NOT NULL,
+  UNIQUE KEY uq_user_req_app_src (user_id, request_id, source_app, source_id),
+  CONSTRAINT ck_vote_unit CHECK (vote IN (-1, 1))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
