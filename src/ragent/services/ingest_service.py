@@ -202,7 +202,12 @@ class IngestService:
         # to /chat between this call and reconciler reclaim.
         await self._registry.fan_out_delete(document_id)
 
-        if doc.status in ("UPLOADED", "PENDING"):
+        # Blob lifecycle by ingest_type:
+        #   inline → worker deletes on READY (only pre-READY rows still hold the blob)
+        #   upload → worker NEVER auto-deletes; DELETE API is the only reclaim path
+        #   file   → caller-owned; _delete_object short-circuits
+        ingest_type = getattr(doc, "ingest_type", "inline")
+        if doc.status in ("UPLOADED", "PENDING") or ingest_type == "upload":
             with contextlib.suppress(Exception):
                 self._delete_object(doc)
 
@@ -265,7 +270,7 @@ class IngestService:
             object_key=object_key,
             source_meta=source_meta,
             source_url=source_url,
-            ingest_type="inline",
+            ingest_type="upload",
             minio_site=None,
             mime_type=mime_type.value,
         )
@@ -280,7 +285,7 @@ class IngestService:
         logger.info(
             "ingest.received",
             document_id=document_id,
-            ingest_type="inline",
+            ingest_type="upload",
             mime_type=mime_type.value,
             source_id=source_id,
             source_app=source_app,

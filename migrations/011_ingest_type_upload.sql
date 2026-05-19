@@ -1,0 +1,33 @@
+-- 011_ingest_type_upload.sql — add `upload` to the ingest_type discriminator.
+--
+-- v2 ingest landed with ENUM('inline','file') because the JSON-body endpoint
+-- only exposed those two shapes. POST /ingest/v1/upload (admin multipart)
+-- was then bolted on and reused `inline` as the persisted discriminator —
+-- but `InlineIngestRequest` rejects binary MIMEs at the schema boundary,
+-- so the DB held rows that no inline request could ever produce, and the
+-- worker-vs-DELETE cleanup contract had to be inferred from status alone.
+--
+-- This migration introduces a dedicated `upload` value so the row reflects
+-- the real entry path. Cleanup branches:
+--   inline → worker deletes the staged blob on READY
+--   upload → worker NEVER auto-deletes (DELETE API is the sole reclaim path)
+--   file   → caller-owned, never deleted by the server
+--
+-- Backfill is intentionally left to a separate operator step — existing
+-- production rows that came through /ingest/v1/upload remain ingest_type=
+-- 'inline' until a backfill runs (their blobs were already deleted on
+-- READY, so no leak — the cost is only audit-log fidelity for historic rows).
+--
+-- WARNING — do NOT put a U+003B SEMICOLON inside these comment lines.
+-- `init_schema` and the alembic wrapper split the file on that character
+-- BEFORE stripping `--` lines, so a comment-embedded semicolon splits the
+-- file mid-comment and the tail is fed to MariaDB as raw SQL (CI failure
+-- on PR #84). Same trap that bit migration 009 (commit 067e3b8).
+--
+-- ALGORITHM=INSTANT is valid here because MariaDB 10.6 supports appending
+-- new ENUM members (`upload` at the tail) without rewriting rows. Declared
+-- explicitly so any future migration that reorders or removes a value gets
+-- a hard error instead of silently falling back to a table rebuild.
+ALTER TABLE documents
+  MODIFY COLUMN ingest_type ENUM('inline','file','upload') NOT NULL DEFAULT 'inline',
+  ALGORITHM=INSTANT;

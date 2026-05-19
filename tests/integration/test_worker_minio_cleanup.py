@@ -114,3 +114,20 @@ async def test_file_type_ingest_does_not_delete_minio_object():
 
     container.minio_registry.delete_object.assert_not_called()
     container.doc_repo.promote_to_ready_and_demote_siblings.assert_awaited_once()
+
+
+async def test_upload_type_ingest_does_not_delete_minio_object():
+    """ingest_type='upload': server staged the bytes but the contract reserves
+    deletion for the explicit DELETE API path (parallel to file). Worker must
+    NOT auto-delete the staged object on READY — otherwise the blob is gone
+    before an operator can re-issue rerun against the same row."""
+    from ragent.workers.ingest import ingest_pipeline_task
+
+    doc = _make_doc(ingest_type="upload")
+    container = make_ingest_container(doc)
+
+    with patch("ragent.bootstrap.composition.get_container", return_value=container):
+        await ingest_pipeline_task("DOC001")
+
+    container.minio_registry.delete_object.assert_not_called()
+    container.doc_repo.promote_to_ready_and_demote_siblings.assert_awaited_once()
