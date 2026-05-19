@@ -1,1 +1,1 @@
-"""Upload-path security guards (magic-byte, archive-bomb, PDF page-cap)."""
+"""Upload-path security guards (archive-bomb, PDF page-cap)."""

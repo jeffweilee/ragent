@@ -1,11 +1,11 @@
 """T-SEC.7 — `ragent_ingest_rejected_total{reason}` counter.
 
-The three guard layers (magic-byte, zip preflight, PDF page-count cap) each
+The worker-side guard layers (zip preflight, PDF page-count cap) each
 emit one increment with a closed `reason` label so operators can see in
 Grafana whether a threshold is tuned too tight (and which one).
 
 Closed label set keeps Prometheus cardinality bounded:
-  magic | invalid | members | ratio | expanded | per_member | traversal | pdf_pages
+  invalid | members | ratio | expanded | per_member | traversal | pdf_pages
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ def _value(reason: str) -> float:
 
 @pytest.mark.parametrize(
     "reason",
-    ["magic", "invalid", "members", "ratio", "expanded", "per_member", "traversal", "pdf_pages"],
+    ["invalid", "members", "ratio", "expanded", "per_member", "traversal", "pdf_pages"],
 )
 def test_record_ingest_rejection_increments_for_reason(reason: str) -> None:
     before = _value(reason)
@@ -47,16 +47,6 @@ def test_record_ingest_rejection_rejects_unknown_reason() -> None:
 # ---------------------------------------------------------------------------
 # Emission from each guard module (integration)
 # ---------------------------------------------------------------------------
-
-
-def test_magic_byte_guard_emits_metric() -> None:
-    from ragent.schemas.ingest import IngestMime
-    from ragent.security.file_signature import MagicByteMismatchError, assert_magic_byte
-
-    before = _value("magic")
-    with pytest.raises(MagicByteMismatchError):
-        assert_magic_byte(IngestMime.DOCX, b"NOT_A_ZIP")
-    assert _value("magic") == before + 1
 
 
 def test_zip_guard_invalid_emits_metric() -> None:

@@ -49,6 +49,18 @@ _MIME_ALIASES: dict[str, IngestMime] = {
 
 BINARY_MIMES: frozenset[IngestMime] = frozenset({IngestMime.DOCX, IngestMime.PPTX, IngestMime.PDF})
 
+# File extensions implied by each IngestMime. The unprotect upstream uses the
+# multipart `filename` to route to the right parser (xxx.pptx → PPTX path),
+# so the worker appends the canonical extension before calling unprotect.
+MIME_EXTENSIONS: dict[IngestMime, str] = {
+    IngestMime.TEXT_PLAIN: "txt",
+    IngestMime.TEXT_MARKDOWN: "md",
+    IngestMime.TEXT_HTML: "html",
+    IngestMime.DOCX: "docx",
+    IngestMime.PPTX: "pptx",
+    IngestMime.PDF: "pdf",
+}
+
 
 class _IngestBase(BaseModel):
     model_config = ConfigDict(extra="forbid")

@@ -25,7 +25,7 @@ from ragent.bootstrap.broker import broker
 from ragent.bootstrap.metrics import observe_pipeline_duration, record_pipeline_outcome
 from ragent.errors.codes import TaskErrorCode
 from ragent.pipelines.observability import bind_ingest_context, log_ingest_step
-from ragent.schemas.ingest import BINARY_MIMES
+from ragent.schemas.ingest import BINARY_MIMES, MIME_EXTENSIONS, IngestMime
 
 logger = structlog.get_logger(__name__)
 
@@ -34,6 +34,16 @@ DEFAULT_MIME = "text/plain"
 
 def _aggregate_timeout_seconds() -> float:
     return float(os.environ.get("INGEST_PIPELINE_TIMEOUT_SECONDS", "300"))
+
+
+def _unprotect_filename(object_key: str, mime: str) -> str:
+    try:
+        ext = MIME_EXTENSIONS[IngestMime(mime)]
+    except (KeyError, ValueError):
+        return object_key
+    if object_key.lower().endswith(f".{ext}"):
+        return object_key
+    return f"{object_key}.{ext}"
 
 
 @broker.task("ingest.pipeline")
@@ -89,7 +99,7 @@ async def ingest_pipeline_task(document_id: str) -> None:
             data = container.unprotect_client.unprotect(
                 file_bytes=data,
                 user_id=doc.create_user,
-                filename=doc.object_key,
+                filename=_unprotect_filename(doc.object_key, mime),
             )
 
         if mime in BINARY_MIMES:

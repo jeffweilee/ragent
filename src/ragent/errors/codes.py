@@ -46,7 +46,6 @@ class HttpErrorCode(StrEnum):
     # Ingest router validation (4xx).
     INGEST_MIME_UNSUPPORTED = "INGEST_MIME_UNSUPPORTED"  # 415
     INGEST_FILE_TOO_LARGE = "INGEST_FILE_TOO_LARGE"  # 413
-    INGEST_MAGIC_MISMATCH = "INGEST_MAGIC_MISMATCH"  # 415 — declared MIME ≠ file signature
     INGEST_ARCHIVE_UNSAFE = (
         "INGEST_ARCHIVE_UNSAFE"  # 413 — zip preflight rejected (bomb / traversal)
     )

@@ -11,7 +11,7 @@ from ragent.repositories.document_repository import DocumentRow
 from tests.conftest import make_ingest_container
 
 
-def _doc() -> DocumentRow:
+def _doc(mime_type: str | None = None) -> DocumentRow:
     now = datetime.datetime.now(datetime.UTC)
     return DocumentRow(
         document_id="DOC-UP-1",
@@ -25,6 +25,7 @@ def _doc() -> DocumentRow:
         attempt=0,
         created_at=now,
         updated_at=now,
+        mime_type=mime_type,
     )
 
 
@@ -85,11 +86,22 @@ async def test_pipeline_receives_original_bytes_when_unprotect_disabled():
 
 
 @pytest.mark.asyncio
-async def test_unprotect_filename_is_object_key():
-    """Worker passes doc.object_key as the filename argument to unprotect."""
+@pytest.mark.parametrize(
+    ("mime_type", "expected_ext"),
+    [
+        ("application/vnd.openxmlformats-officedocument.presentationml.presentation", "pptx"),
+        ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", "docx"),
+        ("application/pdf", "pdf"),
+        ("text/plain", "txt"),
+        ("text/markdown", "md"),
+        ("text/html", "html"),
+    ],
+)
+async def test_unprotect_filename_carries_mime_extension(mime_type: str, expected_ext: str):
+    """Worker appends mime-implied extension to object_key for unprotect fileInput."""
     unprotect_mock = MagicMock()
     unprotect_mock.unprotect.return_value = b"clean"
-    doc = _doc()
+    doc = _doc(mime_type=mime_type)
     container = make_ingest_container(doc, unprotect_client=unprotect_mock)
 
     from ragent.workers import ingest as worker_mod
@@ -98,4 +110,35 @@ async def test_unprotect_filename_is_object_key():
         await worker_mod.ingest_pipeline_task("DOC-UP-1")
 
     call_kwargs = unprotect_mock.unprotect.call_args[1]
-    assert call_kwargs["filename"] == doc.object_key
+    assert call_kwargs["filename"] == f"{doc.object_key}.{expected_ext}"
+
+
+@pytest.mark.asyncio
+async def test_unprotect_filename_skips_duplicate_extension():
+    """object_key already ending with the mime extension is passed through unchanged."""
+    unprotect_mock = MagicMock()
+    unprotect_mock.unprotect.return_value = b"clean"
+    now = datetime.datetime.now(datetime.UTC)
+    doc = DocumentRow(
+        document_id="DOC-UP-1",
+        create_user="user-42",
+        source_id="S1",
+        source_app="test-app",
+        source_title="Test Doc",
+        source_meta=None,
+        object_key="report.pptx",
+        status="UPLOADED",
+        attempt=0,
+        created_at=now,
+        updated_at=now,
+        mime_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+    )
+    container = make_ingest_container(doc, unprotect_client=unprotect_mock)
+
+    from ragent.workers import ingest as worker_mod
+
+    with patch("ragent.bootstrap.composition.get_container", return_value=container):
+        await worker_mod.ingest_pipeline_task("DOC-UP-1")
+
+    call_kwargs = unprotect_mock.unprotect.call_args[1]
+    assert call_kwargs["filename"] == "report.pptx"
