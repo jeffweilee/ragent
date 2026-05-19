@@ -3,6 +3,8 @@ import sys
 
 from taskiq_redis import ListQueueBroker, ListQueueSentinelBroker
 
+from ragent.middleware.taskiq_context import StructlogContextMiddleware
+
 
 def _make_broker() -> ListQueueBroker | ListQueueSentinelBroker:
     mode = os.environ.get("REDIS_MODE", "standalone")
@@ -23,3 +25,8 @@ def _make_broker() -> ListQueueBroker | ListQueueSentinelBroker:
 
 
 broker = _make_broker()
+# T-APL.9 — propagate request_id / user_id across the enqueue/execute seam so
+# worker logs correlate with the originating HTTP request. Registered on the
+# module-level broker so BOTH the api producer process and the worker consumer
+# process pick it up (they import this same module).
+broker.add_middlewares(StructlogContextMiddleware())
