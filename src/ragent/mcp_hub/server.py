@@ -20,6 +20,10 @@ from typing import Any
 
 import structlog
 import uvicorn
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
+from starlette.requests import Request
+from starlette.responses import Response
+from starlette.routing import Route
 
 from .mcp_hub import _INCOMING_HEADERS, HubBundle, build_hub
 
@@ -59,6 +63,14 @@ def build_app(bundle: HubBundle, *, path: str = "/mcp") -> Any:
     clients are closed on shutdown, then layer `HeaderForwardMiddleware` on
     the outside."""
     fastmcp_app = bundle.hub.http_app(path=path)
+
+    async def _metrics(_request: Request) -> Response:
+        return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+    # `Route` (not `Mount`) so `/metrics` serves directly without a 307 to
+    # `/metrics/`. The FastMCP mount lives at `path` (default `/mcp`), so the
+    # two never collide.
+    fastmcp_app.router.routes.append(Route("/metrics", _metrics))
     fastmcp_lifespan = fastmcp_app.router.lifespan_context
 
     async def _close(system: str, client: Any) -> None:

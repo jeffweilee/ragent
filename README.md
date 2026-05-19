@@ -54,6 +54,11 @@ Env: `MCP_HUB_TOOLS_YAML` (default `tools.yaml`), `MCP_HUB_NAME`,
 `MCP_HUB_PATH` (default `/mcp`). See `docs/00_spec.md §3.9` for the
 tools.yaml schema and header-forwarding contract.
 
+Per-system `defaults.verify_ssl: false` disables TLS verification (for
+self-signed staging upstreams); audit via the `verify_ssl` field on the
+`mcp_hub.system_configured` log event. Prometheus metrics at
+`GET /metrics` (sibling to `MCP_HUB_PATH`) — see `docs/00_spec.md §3.9.8`.
+
 ### Development
 
 ```bash

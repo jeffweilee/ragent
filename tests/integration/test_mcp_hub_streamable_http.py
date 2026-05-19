@@ -20,6 +20,7 @@ import textwrap
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 import pytest
 import uvicorn
 from fastmcp import Client
@@ -114,3 +115,43 @@ async def test_streamable_http_invokes_tool_against_upstream(tmp_path, httpserve
         "status": 200,
         "data": {"pong": True},
     }
+
+
+@pytest.mark.asyncio
+async def test_metrics_endpoint_exposes_hub_counters_after_tool_call(
+    tmp_path, httpserver: HTTPServer
+):
+    """`/metrics` is mounted sibling to `/mcp` on the same Starlette app.
+    After a successful tool call the per-tool counter shows up in the
+    Prometheus exposition body."""
+    httpserver.expect_request("/v1/ping", method="GET").respond_with_json({"ok": True})
+    upstream = httpserver.url_for("").rstrip("/")
+    tools_dir = _write_tools(
+        tmp_path,
+        f"""\
+        defaults:
+          base_url: {upstream}
+          timeout: 5
+        tools:
+          - name: ping
+            description: ping
+            method: GET
+            path: /v1/ping
+        """,
+    )
+
+    async with _serve(tools_dir) as url, Client(url) as client:
+        await client.call_tool("demo.ping", {})
+        # url ends with /mcp/; trim and hit /metrics on the same origin.
+        metrics_url = url.rsplit("/mcp/", 1)[0] + "/metrics"
+        async with httpx.AsyncClient() as http:
+            resp = await http.get(metrics_url)
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert "mcp_hub_tool_calls_total" in body
+    assert 'system="demo"' in body
+    assert 'tool="demo.ping"' in body
+    assert 'outcome="success"' in body
+    assert "mcp_hub_tool_call_duration_seconds" in body
+    assert "mcp_hub_tool_load_failures_total" in body

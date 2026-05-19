@@ -600,6 +600,8 @@ Standalone FastMCP-based service (`src/ragent/mcp_hub/`) that loads `tools.yaml`
 
 The Hub deliberately reads NO secrets/tokens from env — those flow via per-request MCP-client headers (see §3.9.4).
 
+The Hub also serves `GET /metrics` (Prometheus exposition, sibling to `MCP_HUB_PATH`) — see §3.9.8.
+
 #### 3.9.3 `tools.yaml` schema
 
 ```yaml
@@ -608,6 +610,8 @@ defaults:
   base_url: https://api.example.com    # required if any tool path is relative
   timeout: 30.0                         # seconds; httpx default 30
   max_connections: 100                  # per-system pool size
+  verify_ssl: true                      # set false for self-signed / staging upstreams;
+                                        # `mcp_hub.system_configured` log records the value
   headers:                              # baseline headers on every request
     Accept: application/json
 
@@ -690,6 +694,34 @@ Every tool returns a discriminated dict so the LLM can branch on success/failure
 | `mcp_hub.shutdown_error` | ERROR | `system`, `exc_info=True` |
 
 SECURITY: rendered header VALUES (Authorization, JWT, API keys) are NEVER written to log output (test-pinned).
+
+#### 3.9.8 Prometheus metrics (`GET /metrics`)
+
+The Hub exposes Prometheus exposition on `GET /metrics` (sibling to `MCP_HUB_PATH`). `Route` (not `Mount`) so scrapers hit the canonical path without a 307 round-trip. Definitions live in `src/ragent/bootstrap/metrics.py` so registration is import-time singleton across processes.
+
+| Metric | Type | Labels | Purpose |
+|---|---|---|---|
+| `mcp_hub_tool_load_failures_total` | Counter | `system`, `phase` ∈ {`file_parse`, `tool_parse`, `registration`} | Startup-time yaml / FastMCP registration failures. Phase distinguishes "bad file" vs "bad tool schema" vs "FastMCP rejected the registration". |
+| `mcp_hub_tool_calls_total` | Counter | `system`, `tool`, `outcome` ∈ {`success`, `upstream_4xx`, `upstream_5xx`, `timeout`, `connect_error`} | Every tool invocation, terminal outcome. Drives per-tool error-rate alerts. |
+| `mcp_hub_tool_call_duration_seconds` | Histogram | `system`, `outcome` | Upstream call latency. `tool` deliberately omitted to keep `_bucket` cardinality bounded; the counter above carries `tool` for drill-down. |
+
+Cardinality: labels enumerate from closed enums (`phase`, `outcome`) or deployment-bounded sources (`system`, `tool` ← yaml-declared). Caller helpers (`record_mcp_hub_load_failure`, `record_mcp_hub_tool_call`) guard against caller typos by collapsing unknown enum values to a safe default — typos cannot blow up cardinality.
+
+PromQL examples:
+```promql
+# Per-tool error rate (alert if > 0.05 sustained)
+sum by (system, tool) (rate(mcp_hub_tool_calls_total{outcome!="success"}[5m]))
+  / sum by (system, tool) (rate(mcp_hub_tool_calls_total[5m]))
+
+# p95 latency per system
+histogram_quantile(0.95,
+  sum by (le, system) (rate(mcp_hub_tool_call_duration_seconds_bucket[5m])))
+
+# Load-failure spike on a deploy
+sum by (system, phase) (increase(mcp_hub_tool_load_failures_total[1h]))
+```
+
+Load failures appear simultaneously as structured `mcp_hub.load_failure` log events (fields: `source`, `reason`, `system`, `phase`, `tool`) so log-based debugging matches metric drill-down dimensions exactly.
 
 ---
 

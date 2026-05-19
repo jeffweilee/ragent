@@ -175,6 +175,72 @@ feedback_es_write_failed_total = Counter(
 )
 
 
+# ─── MCP Hub microservice ────────────────────────────────────────────────────
+# Defined here (rather than in `mcp_hub/` package) so registration on the
+# default `prometheus_client.REGISTRY` happens import-time exactly once —
+# tests that cross-import bootstrap and mcp_hub modules cannot hit
+# duplicate-registration. The Hub runs as its own process and exposes
+# `/metrics` via `prometheus_client.make_asgi_app()` mounted on its
+# Starlette router.
+
+_MCP_HUB_LOAD_PHASES = frozenset({"file_parse", "tool_parse", "registration"})
+_MCP_HUB_CALL_OUTCOMES = frozenset(
+    {"success", "upstream_4xx", "upstream_5xx", "timeout", "connect_error"}
+)
+
+# Drives the load-failure alert panel:
+#   sum by (system, phase) (mcp_hub_tool_load_failures_total)
+mcp_hub_tool_load_failures_total = Counter(
+    "mcp_hub_tool_load_failures_total",
+    "tools.yaml load failures, by system and loading phase "
+    "(file_parse | tool_parse | registration).",
+    labelnames=("system", "phase"),
+)
+
+# Drives the per-tool error-rate panel:
+#   sum by (system, tool) (rate(mcp_hub_tool_calls_total{outcome!="success"}[5m]))
+#     / sum by (system, tool) (rate(mcp_hub_tool_calls_total[5m]))
+mcp_hub_tool_calls_total = Counter(
+    "mcp_hub_tool_calls_total",
+    "MCP Hub tool invocations, by system/tool/outcome.",
+    labelnames=("system", "tool", "outcome"),
+)
+
+# Drives the upstream latency p95 panel:
+#   histogram_quantile(0.95, sum by (le, system)
+#     (rate(mcp_hub_tool_call_duration_seconds_bucket[5m])))
+# `tool` deliberately dropped from this metric's labels so le-bucket
+# cardinality stays bounded; the counter above keeps `tool` for drill-down.
+mcp_hub_tool_call_duration_seconds = Histogram(
+    "mcp_hub_tool_call_duration_seconds",
+    "Wall-clock duration of upstream call per system, by outcome.",
+    labelnames=("system", "outcome"),
+)
+
+
+def record_mcp_hub_load_failure(*, system: str, phase: str) -> None:
+    """Increment the hub load-failure counter. `phase` must be one of
+    `_MCP_HUB_LOAD_PHASES`; unknown values raise (matching
+    `record_ingest_rejection`'s fail-fast convention) so caller typos cannot
+    silently leak label cardinality."""
+    if phase not in _MCP_HUB_LOAD_PHASES:
+        raise ValueError(f"unknown mcp_hub load phase {phase!r}")
+    mcp_hub_tool_load_failures_total.labels(system=system or "unknown", phase=phase).inc()
+
+
+def record_mcp_hub_tool_call(
+    *, system: str, tool: str, outcome: str, duration_seconds: float
+) -> None:
+    """Increment the per-call counter and observe the latency histogram.
+    `outcome` must be in `_MCP_HUB_CALL_OUTCOMES`; unknown values raise."""
+    if outcome not in _MCP_HUB_CALL_OUTCOMES:
+        raise ValueError(f"unknown mcp_hub call outcome {outcome!r}")
+    mcp_hub_tool_calls_total.labels(system=system, tool=tool, outcome=outcome).inc()
+    mcp_hub_tool_call_duration_seconds.labels(system=system, outcome=outcome).observe(
+        duration_seconds
+    )
+
+
 DocumentStatsRow = tuple[str, str | None, str | None, int]
 """(status, source_app, mime_type, count)."""
 
