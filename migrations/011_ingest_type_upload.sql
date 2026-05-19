@@ -10,14 +10,20 @@
 -- This migration introduces a dedicated `upload` value so the row reflects
 -- the real entry path. Cleanup branches:
 --   inline → worker deletes the staged blob on READY
---   upload → worker NEVER auto-deletes; DELETE API is the sole reclaim path
---   file   → caller-owned; never deleted by the server
+--   upload → worker NEVER auto-deletes (DELETE API is the sole reclaim path)
+--   file   → caller-owned, never deleted by the server
 --
 -- Backfill is intentionally left to a separate operator step — existing
 -- production rows that came through /ingest/v1/upload remain ingest_type=
 -- 'inline' until a backfill runs (their blobs were already deleted on
--- READY, so no leak; the cost is only audit-log fidelity for historic rows).
-
+-- READY, so no leak — the cost is only audit-log fidelity for historic rows).
+--
+-- WARNING — do NOT put a U+003B SEMICOLON inside these comment lines.
+-- `init_schema` and the alembic wrapper split the file on that character
+-- BEFORE stripping `--` lines, so a comment-embedded semicolon splits the
+-- file mid-comment and the tail is fed to MariaDB as raw SQL (CI failure
+-- on PR #84). Same trap that bit migration 009 (commit 067e3b8).
+--
 -- ALGORITHM=INSTANT is valid here because MariaDB 10.6 supports appending
 -- new ENUM members (`upload` at the tail) without rewriting rows. Declared
 -- explicitly so any future migration that reorders or removes a value gets
