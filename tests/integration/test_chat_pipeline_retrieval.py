@@ -350,8 +350,14 @@ def test_filter_source_app_vector_path(es_store, mock_embedder, mode: str) -> No
     that production wires via `composition.py`. Until this test, only the
     legacy retriever's filter shape was checked end-to-end, so a malformed
     filter on the registry path shipped silently (chat/retrieve 400)."""
+    # Mode-suffix the scope values too — the module-scoped `es_store` fixture
+    # persists docs across parametrize iterations, so reusing the same
+    # source_app across [legacy] and [registry] would let the second run see
+    # the first's chunk and break the exact-count assertion below.
     alpha_doc_id = f"doc-vfilter-alpha-{mode}"
     beta_doc_id = f"doc-vfilter-beta-{mode}"
+    alpha_app = f"vfilter_alpha_app_{mode}"
+    beta_app = f"vfilter_beta_app_{mode}"
     _write_and_refresh(
         es_store,
         [
@@ -361,7 +367,7 @@ def test_filter_source_app_vector_path(es_store, mock_embedder, mode: str) -> No
                 meta={
                     "chunk_id": f"vfilter-alpha-1-{mode}",
                     "document_id": alpha_doc_id,
-                    "source_app": "vfilter_alpha_app",
+                    "source_app": alpha_app,
                     _REGISTRY_MODEL_FIELD: _FIXED_EMBEDDING,
                 },
                 embedding=_FIXED_EMBEDDING,
@@ -372,7 +378,7 @@ def test_filter_source_app_vector_path(es_store, mock_embedder, mode: str) -> No
                 meta={
                     "chunk_id": f"vfilter-beta-1-{mode}",
                     "document_id": beta_doc_id,
-                    "source_app": "vfilter_beta_app",
+                    "source_app": beta_app,
                     _REGISTRY_MODEL_FIELD: _FIXED_EMBEDDING,
                 },
                 embedding=_FIXED_EMBEDDING,
@@ -381,21 +387,21 @@ def test_filter_source_app_vector_path(es_store, mock_embedder, mode: str) -> No
     )
     doc_repo = AsyncMock()
     doc_repo.get_sources_by_document_ids.return_value = {
-        alpha_doc_id: ("vfilter_alpha_app", "src-vfilter-alpha", "Alpha"),
-        beta_doc_id: ("vfilter_beta_app", "src-vfilter-beta", "Beta"),
+        alpha_doc_id: (alpha_app, "src-vfilter-alpha", "Alpha"),
+        beta_doc_id: (beta_app, "src-vfilter-beta", "Beta"),
     }
 
     pipeline = _pipeline(es_store, mock_embedder, doc_repo, mode=mode, join_mode="vector_only")
     docs = _run(
         pipeline,
         "vector filter test document",
-        filters={"field": "source_app", "operator": "==", "value": "vfilter_alpha_app"},
+        filters={"field": "source_app", "operator": "==", "value": alpha_app},
     )
 
-    assert len(docs) >= 1, f"vector retriever in {mode} mode returned no docs"
-    assert all(d.meta.get("source_app") == "vfilter_alpha_app" for d in docs), (
-        f"{mode}-mode vector filter should exclude beta_app documents"
+    assert len(docs) == 1, (
+        f"vector retriever in {mode} mode: expected exactly 1 doc, got {len(docs)}"
     )
+    assert docs[0].meta.get("source_app") == alpha_app
 
 
 def test_production_wiring_with_filter_smoke(es_store) -> None:
@@ -454,7 +460,6 @@ def test_production_wiring_with_filter_smoke(es_store) -> None:
         filters=build_es_filters(source_app="prod_wire_app", source_meta="prod_wire_space"),
     )
 
-    assert len(docs) >= 1, "production-wiring smoke returned no docs"
-    for d in docs:
-        assert d.meta.get("source_app") == "prod_wire_app"
-        assert d.meta.get("source_meta") == "prod_wire_space"
+    assert len(docs) == 1, f"production-wiring smoke: expected exactly 1 doc, got {len(docs)}"
+    assert docs[0].meta.get("source_app") == "prod_wire_app"
+    assert docs[0].meta.get("source_meta") == "prod_wire_space"
