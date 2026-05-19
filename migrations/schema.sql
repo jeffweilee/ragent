@@ -65,8 +65,8 @@ INSERT IGNORE INTO system_settings (setting_key, setting_value) VALUES
   ('embedding.retired',   JSON_ARRAY());
 
 -- 010_feedback.sql: append-only feedback events (T-FB.3, B54/B55).
--- MariaDB stores meta only; ES `feedback_v1` (§5.4) holds the query
--- embedding + reason text. Idempotency key is the UNIQUE quadruple.
+-- MariaDB stores meta only. ES `feedback_v1` (§5.4) holds the query
+-- embedding and reason text. Idempotency key is the UNIQUE quadruple.
 CREATE TABLE IF NOT EXISTS feedback (
   feedback_id     CHAR(26)     PRIMARY KEY,
   request_id      CHAR(26)     NOT NULL,
