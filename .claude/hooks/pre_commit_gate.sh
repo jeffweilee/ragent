@@ -191,7 +191,36 @@ if [[ $CODE_GATE -eq 0 ]]; then
     exit 0
 fi
 
-# 6. Quality gate (commit-time): format + lint only. The full test suite
+# 6. Migration SQL sanity — `init_schema.init_mariadb` and every
+#    `alembic/versions/NNN_*.py` upgrader feed the raw .sql through
+#    `for raw in sql.split(";"): _strip_comments(raw)`. The split runs
+#    BEFORE the `--`-line filter, so a `;` inside a comment bisects the
+#    comment block and the tail is fed to MariaDB as raw SQL (PR #84 / CI
+#    failure on test_schema_drift, see docs/00_journal.md 2026-05-19).
+#    Cheap grep guard: zero `;` allowed inside `--` lines of any staged
+#    migrations/*.sql file. Spell out "SEMICOLON" or restructure with
+#    em-dash / parentheses / sentence break instead.
+STAGED_MIGRATIONS="$(printf '%s\n' "$STAGED" | grep -E '^migrations/.*\.sql$' || true)"
+if [[ -n "$STAGED_MIGRATIONS" ]]; then
+    OFFENDERS=""
+    while IFS= read -r f; do
+        [[ -z "$f" ]] && continue
+        # Match both `^-- ... ;` (full-line comment) and `SQL ... -- comment;`
+        # (trailing inline comment) — `_strip_comments` only filters lines that
+        # *start* with `--`, but the split-before-strip parser breaks on either
+        # form because the `;` in the trailing comment also splits the file.
+        if HIT="$(grep -nE -- '--[^\n]*;' "$f")"; then
+            OFFENDERS+="$f:\n$HIT\n"
+        fi
+    done <<<"$STAGED_MIGRATIONS"
+    if [[ -n "$OFFENDERS" ]]; then
+        block "migration SQL contains \`;\` inside a \`--\` comment line — this trips the split-before-strip parser in alembic upgraders and init_schema.init_mariadb, producing 'syntax error near …' against the comment text. See docs/00_journal.md 2026-05-19 row.
+$(printf '%b' "$OFFENDERS")
+  Reword the comment to use em-dash / parentheses / sentence break, or spell out 'U+003B SEMICOLON'."
+    fi
+fi
+
+# 7. Quality gate (commit-time): format + lint only. The full test suite
 #    (`make test-gate`) moved to the pre-push hook (.claude/hooks/pre_push_gate.sh)
 #    so commits stay fast; tests still run before code leaves the machine.
 LOG_DIR="$(mktemp -d -t ragent-precommit-XXXXXX)"
