@@ -2,8 +2,10 @@
 
 POST /ingest/v1/upload accepts a multipart form with the file bytes and
 metadata fields. The server stages bytes to the default MinIO site and
-enqueues the pipeline task — identical downstream behaviour to ingest_type
-"inline" (server owns the object; delete cleans it up).
+enqueues the pipeline task. The persisted row carries ingest_type="upload"
+(distinct from JSON-body "inline" because the multipart path accepts binary
+MIMEs the inline schema rejects, and the worker does NOT auto-delete the
+staged blob on READY — DELETE /ingest/v1/{id} is the sole reclaim path).
 """
 
 from __future__ import annotations

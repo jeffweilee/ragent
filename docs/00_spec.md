@@ -47,10 +47,11 @@
 > **MinIO multi-site:** server reads `MINIO_SITES` JSON env at boot → `MinioSiteRegistry`. `__default__` is mandatory (used by inline). Sites with `read_only=true` refuse post-READY delete (`file` ingests against caller-owned buckets).
 >
 > **Cleanup branching by `documents.ingest_type`:**
-> | `ingest_type` | Worker reads from | Post-READY delete |
-> |---|---|---|
-> | `inline` | `__default__/<object_key=document_id>` | yes (same as v1) |
-> | `file` | caller's `(minio_site, object_key)` | **no** (object isn't ours) |
+> | `ingest_type` | Entry path | Worker reads from | Post-READY auto-delete | Reclaimed by `DELETE /ingest/v1/{id}` |
+> |---|---|---|---|---|
+> | `inline` | `POST /ingest/v1` JSON body (UTF-8 text only — binary MIMEs rejected at schema layer) | `__default__/<server-built object_key>` | **yes** | yes if status pre-READY (post-READY the blob is already gone) |
+> | `file`   | `POST /ingest/v1` JSON body (caller-supplied `minio_site` + `object_key`) | caller's `(minio_site, object_key)` | **no** (object isn't ours) | **no** (caller-owned) |
+> | `upload` | `POST /ingest/v1/upload` multipart (server stages binary file bytes) | `__default__/<server-built object_key>` | **no** (the only path that reclaims is explicit DELETE) | **yes** at any status |
 >
 > **Storage model (revised):** chunks live **only** in ES `chunks_v1`. The MariaDB `chunks` table is **dropped**. `documents` keeps metadata. Two stores total: `documents` (MariaDB, metadata) + `chunks_v1` (ES, content + embedding + raw_content).
 >
@@ -880,7 +881,7 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 
 ### 5.1 MariaDB
 
-> **v2 OVERRIDE** — `documents` adds `ingest_type ENUM('inline','file') NOT NULL DEFAULT 'inline'`, `minio_site VARCHAR(64) NULL`, `source_url VARCHAR(2048) NULL`. The **`chunks` table is dropped** — chunks live only in ES `chunks_v1`. `object_key` semantics: for `inline` it points into `__default__` MinIO site; for `file` it is the caller-supplied key in the named site (no copy).
+> **v2 OVERRIDE** — `documents` adds `ingest_type ENUM('inline','file','upload') NOT NULL DEFAULT 'inline'`, `minio_site VARCHAR(64) NULL`, `source_url VARCHAR(2048) NULL`. The **`chunks` table is dropped** — chunks live only in ES `chunks_v1`. `object_key` semantics: for `inline`/`upload` it points into `__default__` MinIO site; for `file` it is the caller-supplied key in the named site (no copy). The third discriminator value `upload` was added by `migrations/011_ingest_type_upload.sql` to distinguish the multipart `POST /ingest/v1/upload` entry path from the JSON-body `inline` shape (different cleanup contract — see §3.1 table).
 
 ```sql
 CREATE TABLE documents (

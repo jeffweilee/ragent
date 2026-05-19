@@ -216,8 +216,10 @@ async def ingest_pipeline_task(document_id: str) -> None:
     )
     record_pipeline_outcome(source_app=doc.source_app, mime_type=doc.mime_type, outcome="success")
 
-    # File-type ingests are caller-owned: never delete. Inline staging blob is
-    # no longer needed regardless of survivor outcome (chunks are in ES).
+    # Only inline staging blobs are auto-deleted on READY (chunks are in ES,
+    # so the bytes are no longer needed). `file` is caller-owned; `upload` is
+    # server-staged but reserved for the DELETE API path so admin operators
+    # can rerun against the same row without losing the source bytes.
     if (doc.ingest_type or "inline") == "inline":
         with contextlib.suppress(Exception):
             registry.delete_object(site, doc.object_key)

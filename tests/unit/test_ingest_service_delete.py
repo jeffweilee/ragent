@@ -124,3 +124,22 @@ async def test_delete_calls_fan_out_delete_outside_tx():
     registry.fan_out_delete = AsyncMock(return_value=[])
     await svc.delete("DOCID001")
     registry.fan_out_delete.assert_awaited_once_with("DOCID001")
+
+
+async def test_delete_upload_ready_deletes_default_site_object():
+    """`upload` rows are server-staged but the worker never auto-deletes —
+    DELETE API is the only reclaim path, so it must call `delete_object`
+    even at status=READY."""
+    doc = _make_doc(status="READY", ingest_type="upload")
+    svc, _, storage, _ = _make_service(doc=doc)
+    await svc.delete("DOCID001")
+    storage.delete_object.assert_called_once()
+    assert "confluence_S1_DOCID001" in storage.delete_object.call_args.args
+
+
+async def test_delete_file_ready_skips_storage_delete():
+    """Caller-owned bytes; never touched by the server regardless of status."""
+    doc = _make_doc(status="READY", ingest_type="file", minio_site="tenant-eu-1")
+    svc, _, storage, _ = _make_service(doc=doc)
+    await svc.delete("DOCID001")
+    storage.delete_object.assert_not_called()

@@ -102,7 +102,7 @@ curl http://localhost:8000/ingest/v1/01J9ABCDEFGHJKMNPQRSTVWXYZ \
 ```
 
 Status values: `UPLOADED → PENDING → READY | FAILED`; `DELETING` during delete.
-For `ingest_type=file` rows, `minio_site` is the registered site name (e.g. `tenant-eu-1`); for `ingest_type=inline` it is `null` and bytes were staged to `__default__`.
+For `ingest_type=file` rows, `minio_site` is the registered site name (e.g. `tenant-eu-1`); for `ingest_type∈{inline,upload}` it is `null` and bytes were staged to `__default__`. The discriminator additionally controls blob lifecycle: `inline` blobs are auto-deleted by the worker on `READY`; `upload` blobs are reclaimed only via `DELETE /ingest/v1/{id}`; `file` blobs are never deleted by the server.
 
 **Terminal-failure `error_code` values** (worker-side, surfaced when `status="FAILED"`):
 - `INGEST_ARCHIVE_UNSAFE` — DOCX/PPTX zip preflight rejected the file (zip bomb shape: too many members, ratio too high, declared size exceeds 500 MB cap, single oversized member, or path-traversal entry).
@@ -173,7 +173,7 @@ Error responses (RFC 9457 problem+json):
 
 ### `POST /ingest/v1/upload` — Multipart file upload (admin)
 
-Admin convenience path: the caller POSTs file bytes directly; the server stages them to the default MinIO site and enqueues the pipeline — identical downstream behaviour to `ingest_type=inline` (server owns the object; `DELETE` cleans it up).
+Admin convenience path: the caller POSTs file bytes directly; the server stages them to the default MinIO site and enqueues the pipeline. The persisted row carries `ingest_type="upload"` — distinct from the JSON-body `inline` value because (a) the multipart endpoint accepts binary MIMEs that `InlineIngestRequest` rejects at the schema boundary, and (b) the worker does **not** auto-delete the staged blob on `READY` (the blob is reclaimed only by `DELETE /ingest/v1/{id}`).
 
 Cap: `INGEST_INLINE_MAX_BYTES` (default 10 MB). When the client includes `Content-Length` for the part, the size is rejected before the file is read into memory.
 

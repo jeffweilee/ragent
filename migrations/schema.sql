@@ -18,7 +18,10 @@ CREATE TABLE IF NOT EXISTS documents (
   updated_at       DATETIME(6)  NOT NULL,
   -- v2 columns (002_ingest_v2.sql). Appended at end so ALGORITHM=INSTANT
   -- in alembic ALTER produces an identical column ordering (drift test).
-  ingest_type      ENUM('inline','file') NOT NULL DEFAULT 'inline',
+  -- 011_ingest_type_upload.sql widened the enum to add 'upload' for the
+  -- multipart POST /ingest/v1/upload path (distinct cleanup contract: blob
+  -- survives READY and is reclaimed only by the DELETE API).
+  ingest_type      ENUM('inline','file','upload') NOT NULL DEFAULT 'inline',
   minio_site       VARCHAR(64)  NULL,
   source_url       VARCHAR(2048) NULL,
   -- 004_documents_mime_type.sql: appended NULL to keep ALGORITHM=INSTANT online.

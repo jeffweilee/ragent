@@ -59,7 +59,12 @@ async def test_create_from_upload_calls_put_object_default():
     assert call_kwargs["content_type"] == "text/markdown"
 
 
-async def test_create_from_upload_records_inline_ingest_type():
+async def test_create_from_upload_records_upload_ingest_type():
+    """Upload path is server-staged but distinct from JSON-body `inline`:
+    the multipart endpoint accepts binary MIMEs that `InlineIngestRequest`
+    rejects at the schema boundary, so the DB row must reflect a third
+    discriminator value `upload`. Cleanup branches on this value — worker
+    keeps the blob until explicit DELETE."""
     svc, repo, _, _ = _service()
     await svc.create_from_upload(
         create_user="admin",
@@ -71,9 +76,28 @@ async def test_create_from_upload_records_inline_ingest_type():
     )
     repo.create.assert_called_once()
     kwargs = repo.create.call_args.kwargs
-    assert kwargs["ingest_type"] == "inline"
+    assert kwargs["ingest_type"] == "upload"
     assert kwargs["minio_site"] is None
     assert kwargs["mime_type"] == "text/markdown"
+
+
+async def test_create_from_upload_emits_log_with_upload_type():
+    """Business log must record the real discriminator so log-based audits
+    don't confuse JSON-body inline with multipart upload."""
+    import structlog
+
+    svc, _, _, _ = _service()
+    with structlog.testing.capture_logs() as logs:
+        await svc.create_from_upload(
+            create_user="admin",
+            source_id="doc-1",
+            source_app="upload-cli",
+            source_title="My Doc",
+            mime_type=_MIME,
+            data=_DATA,
+        )
+    received = next(e for e in logs if e["event"] == "ingest.received")
+    assert received.get("ingest_type") == "upload"
 
 
 async def test_create_from_upload_enqueues_pipeline_task():
