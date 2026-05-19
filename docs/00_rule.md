@@ -112,6 +112,15 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 
 ---
 
+### Ingest Type Discriminator
+
+- **Rule**: `documents.ingest_type` is a **faithful** discriminator of the entry path, not a cleanup label. Each distinct ingest entry path owns a distinct enum value; cleanup semantics are derived from the discriminator inside the service layer, never the reverse.
+  - Three values, three contracts: `inline` (JSON body, UTF-8 text only, worker auto-deletes blob on READY); `file` (JSON body, caller-owned bytes, server never deletes); `upload` (multipart, server-staged bytes, reclaimed only by `DELETE /ingest/v1/{id}`).
+  - Adding a fourth entry path requires: (a) a new enum value via migration, (b) a row in spec §3.1 cleanup matrix, (c) a test pinning the blob-lifecycle contract for the new branch.
+  - **Anti-pattern**: reusing an existing discriminator value because "the cleanup happens to match" (see `docs/00_journal.md` Spec row 2026-05-19).
+
+---
+
 ### ID Generation Strategy: UUIDv7 + Base32
 
 - **Rule**: Primary keys for all new tables **must** adopt this strategy.
@@ -138,6 +147,12 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 - **Rule**: Optional env vars that default to `None` (no-op / disabled) MUST use `if not raw:` (covers both `None` and `""`), never `if raw is None:`.
   - **Rationale**: `--env-file` loaders resolve a blank assignment (e.g. `VAR=` in `.env.example`) as `""`, not as a missing key; `if raw is None:` silently parses the blank as the typed value and crashes at boot with `ValueError`.
   - **Verification**: every `optional_*_env` utility must have a regression test asserting it returns `None` when the var is set to `""`.
+
+### Falsy Guard for Operator-Facing Values
+
+- **Rule**: `value or <fallback>` is acceptable ONLY when the falsy value (`0`, `0.0`, `""`, `[]`) is a **programming error** for that field (e.g. `batch_size=0`, an empty header name). When the falsy value is a **valid operator choice** — timeouts, `top_k`, `min_score`, thresholds, weights, ports, retry counts — use `value if value is not None else <fallback>` instead.
+  - **Timeout semantics**: `timeout=0` means **fail-fast** (immediate) for both httpx and Elasticsearch/urllib3; `None` means no timeout. Never collapse `0` to the env default.
+  - **Verification**: for every configurable numeric field, add a unit test that passes the literal `0` and asserts the value is honoured, not overwritten by the default.
 
 ---
 
@@ -239,6 +254,17 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 ---
 
 
+### Elasticsearch: Ingest Pipeline for Housekeeping Fields
+
+- **Rule**: Write-time housekeeping fields on ES documents (timestamps, fingerprints, schema versions, simple derived values) MUST be populated via an ES **ingest pipeline** referenced from `index.default_pipeline` — never stamped by Python writers.
+  - Pipeline JSON lives under `resources/es/pipelines/<name>.json` (single source of truth). Bootstrap MUST `PUT _ingest/pipeline/<name>` **before** `PUT <index>` (ES rejects index creation when `default_pipeline` references a missing pipeline). Pinned by `tests/unit/test_init_schema.py::test_init_es_puts_pipelines_before_indexes`.
+  - **Semantics under `DuplicatePolicy.OVERWRITE`**: the pipeline re-runs on every overwrite, so `_ingest.timestamp` reflects **last-write time**. Name fields accordingly — `indexed_at` is preferred; use `created_at` only when the spec explicitly documents the last-write semantic.
+  - **Anti-pattern (code-review rejection)**: any Python writer assigning `datetime.utcnow()` (or `Clock.now()`) into an ES `_source` dict for a housekeeping field.
+  - **Exception**: per-row timestamps on **MariaDB** rows use SQLAlchemy `server_default` / repository-set — MariaDB is the system of record there, ES is a derived serving view.
+
+---
+
+
 ### Shell Hook Testing
 
 - **Rule: Every `.claude/hooks/` behaviour path must have an automated subprocess test.** Hooks are load-bearing quality gates; the "harness-level scaffolding exempt from TDD" assumption is rescinded. Minimum coverage for any hook (new or modified):
@@ -250,6 +276,15 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
   - Gate rejects when only one skill's entry is present.
   - Gate rejects when the audit entry's `ts` is older than the freshness window.
 - **Test location**: `tests/unit/test_quality_gate_hooks.py` using `subprocess.run` against a temporary git repo fixture. Every new hook branch is a behavioural change and requires a corresponding test before commit.
+
+---
+
+
+### Factory Branch Integration Coverage
+
+- **Rule**: When a factory function (`build_retrieval_pipeline`, `build_ingest_pipeline`, any `build_<X>`) grows a new constructor branch, the integration test suite **MUST be parametrized over every branch the production composition root can reach**. Removing a parametrize id is a coverage regression.
+  - Add a "production-wiring smoke" test per composition root that calls `build_<X>(…)` with the **exact kwargs `composition.py` passes** (modulo DI for external services) and runs one representative request end-to-end.
+  - **PR review checklist**: for every new constructor branch under `src/ragent/pipelines/` or `src/ragent/bootstrap/`, grep the matching integration test file for the new branch's distinguishing kwarg. Absent ⇒ block.
 
 ---
 
@@ -335,3 +370,4 @@ uv run bandit -r src/ --severity-level high --confidence-level high
 - `/simplify` and `/review` are mandatory, not user-gated (CLAUDE.md steps 7–8). Every cycle touching `src/`, `tests/`, `pyproject.toml`, or docs must invoke both via the Skill tool before commit.
 - `.claude/.pre_commit_approved` is written only by `stamp_pre_commit_approved.sh <skill>` at the tail of a skill run — never by manual `date >`. The gate verifies `diff_sha` match; re-staging after stamping invalidates the marker.
 - `stamp_pre_commit_approved.sh` requires `RAGENT_SKILL_INVOCATION_TOKEN` to be set and appends to `.claude/.stamp_audit.log`. The gate cross-checks that BOTH `simplify` AND `review` entries exist for the current diff_sha within the 45-minute freshness window — a single skill running twice does not satisfy the gate.
+- **/simplify Phase 2 is non-negotiable**: when `/simplify` runs, Phase 2 (three parallel review agents — Reuse / Quality / Efficiency) MUST be launched. The phrase "diff is small/focused/surgical, inline review sufficient" is the exact rationalisation pattern the journal documents as a process violation. After emitting the simplify stamp, confirm in chat which of the three agents ran — if the answer is "none, did it inline" the commit must be blocked.
