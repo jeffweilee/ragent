@@ -13,6 +13,13 @@ pytestmark = pytest.mark.docker
 _EMBEDDING_DIM = 1024
 _FIXED_EMBEDDING = [0.1] * _EMBEDDING_DIM
 
+# B50 registry-mode field for the parametrized filter test. Production wires
+# `_DynamicFieldEmbeddingRetriever` against a per-model dense_vector field
+# computed from `EmbeddingModelConfig.field`; the fixture installs the
+# matching mapping so registry-mode kNN has a field to query.
+_REGISTRY_MODEL_NAME = "testmodel"
+_REGISTRY_MODEL_FIELD = f"embedding_{_REGISTRY_MODEL_NAME}_{_EMBEDDING_DIM}"
+
 
 @pytest.fixture(scope="module")
 def es_store(es_url: str):
@@ -31,6 +38,29 @@ def es_store(es_url: str):
         health = json.loads(resp.read())
         if health.get("status") not in ("yellow", "green"):
             raise RuntimeError(f"chunks_v1 index not ready: {health}")
+    # Install the registry-mode dense_vector field used by the parametrized
+    # filter test. Mirrors what EmbeddingLifecycleService.promote() does in
+    # production when a new model is added.
+    put_mapping = urllib.request.Request(
+        f"{es_url}/chunks_v1/_mapping",
+        method="PUT",
+        data=json.dumps(
+            {
+                "properties": {
+                    _REGISTRY_MODEL_FIELD: {
+                        "type": "dense_vector",
+                        "dims": _EMBEDDING_DIM,
+                        "index": True,
+                        "similarity": "cosine",
+                        "index_options": {"type": "flat"},
+                    }
+                }
+            }
+        ).encode(),
+        headers={"Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(put_mapping, timeout=30) as resp:
+        resp.read()
     store = ElasticsearchDocumentStore(
         hosts=es_url,
         index="chunks_v1",
@@ -57,9 +87,43 @@ def mock_embedder():
     return embedder
 
 
-def _pipeline(es_store, mock_embedder, doc_repo, join_mode="rrf"):
+def _stub_registry():
+    """Registry stub for the B50 registry-mode pipeline branch — returns a
+    single model whose `.field` matches the dense_vector field installed by
+    the `es_store` fixture so kNN has a real field to target."""
+    from ragent.clients.embedding_model_config import EmbeddingModelConfig
+
+    model = EmbeddingModelConfig(
+        name=_REGISTRY_MODEL_NAME,
+        dim=_EMBEDDING_DIM,
+        api_url="http://test",
+        model_arg=_REGISTRY_MODEL_NAME,
+    )
+    reg = MagicMock()
+    reg.read_model.return_value = model
+    return reg
+
+
+def _embed_query_callable(model, texts):
+    return [_FIXED_EMBEDDING] * len(texts)
+
+
+def _pipeline(es_store, mock_embedder, doc_repo, *, mode="legacy", join_mode="rrf"):
+    """Build the retrieval pipeline. `mode="legacy"` instantiates Haystack's
+    standard `ElasticsearchEmbeddingRetriever`; `mode="registry"` matches the
+    production composition root (`bootstrap/composition.py`) and instantiates
+    `_DynamicFieldEmbeddingRetriever` — distinct filter path, must be
+    integration-tested separately or it ships with zero ES coverage."""
     from ragent.pipelines.chat import build_retrieval_pipeline
 
+    if mode == "registry":
+        return build_retrieval_pipeline(
+            document_store=es_store,
+            doc_repo=doc_repo,
+            join_mode=join_mode,
+            registry=_stub_registry(),
+            embed_query_callable=_embed_query_callable,
+        )
     return build_retrieval_pipeline(
         embedder=mock_embedder,
         document_store=es_store,
@@ -272,3 +336,125 @@ def test_filter_source_app_isolates_results(es_store, mock_embedder) -> None:
     assert all(d.meta.get("source_app") == "alpha_app" for d in docs), (
         "filter should exclude beta_app documents"
     )
+
+
+# ── source_app filter — vector retriever path (legacy vs registry) ───────────
+
+
+@pytest.mark.parametrize("mode", ["legacy", "registry"])
+def test_filter_source_app_vector_path(es_store, mock_embedder, mode: str) -> None:
+    """Pin the vector-retriever filter path against real ES for BOTH pipeline
+    construction modes. `legacy` exercises Haystack's
+    `ElasticsearchEmbeddingRetriever` (which normalises filters internally);
+    `registry` exercises `_DynamicFieldEmbeddingRetriever` — the B50 branch
+    that production wires via `composition.py`. Until this test, only the
+    legacy retriever's filter shape was checked end-to-end, so a malformed
+    filter on the registry path shipped silently (chat/retrieve 400)."""
+    alpha_doc_id = f"doc-vfilter-alpha-{mode}"
+    beta_doc_id = f"doc-vfilter-beta-{mode}"
+    _write_and_refresh(
+        es_store,
+        [
+            Document(
+                id=f"vfilter-alpha-1-{mode}",
+                content="vector filter test document alpha tenant",
+                meta={
+                    "chunk_id": f"vfilter-alpha-1-{mode}",
+                    "document_id": alpha_doc_id,
+                    "source_app": "vfilter_alpha_app",
+                    _REGISTRY_MODEL_FIELD: _FIXED_EMBEDDING,
+                },
+                embedding=_FIXED_EMBEDDING,
+            ),
+            Document(
+                id=f"vfilter-beta-1-{mode}",
+                content="vector filter test document beta tenant",
+                meta={
+                    "chunk_id": f"vfilter-beta-1-{mode}",
+                    "document_id": beta_doc_id,
+                    "source_app": "vfilter_beta_app",
+                    _REGISTRY_MODEL_FIELD: _FIXED_EMBEDDING,
+                },
+                embedding=_FIXED_EMBEDDING,
+            ),
+        ],
+    )
+    doc_repo = AsyncMock()
+    doc_repo.get_sources_by_document_ids.return_value = {
+        alpha_doc_id: ("vfilter_alpha_app", "src-vfilter-alpha", "Alpha"),
+        beta_doc_id: ("vfilter_beta_app", "src-vfilter-beta", "Beta"),
+    }
+
+    pipeline = _pipeline(es_store, mock_embedder, doc_repo, mode=mode, join_mode="vector_only")
+    docs = _run(
+        pipeline,
+        "vector filter test document",
+        filters={"field": "source_app", "operator": "==", "value": "vfilter_alpha_app"},
+    )
+
+    assert len(docs) >= 1, f"vector retriever in {mode} mode returned no docs"
+    assert all(d.meta.get("source_app") == "vfilter_alpha_app" for d in docs), (
+        f"{mode}-mode vector filter should exclude beta_app documents"
+    )
+
+
+def test_production_wiring_with_filter_smoke(es_store) -> None:
+    """Build the retrieval pipeline with the exact constructor shape used by
+    `bootstrap/composition.py` (registry + embed_query_callable + rrf join)
+    and run one filtered query against real ES. Regression coverage for the
+    chat/retrieve 400 filter-malformed bug — pins the production wiring so a
+    future filter-path change cannot ship without ES-level verification."""
+    _write_and_refresh(
+        es_store,
+        [
+            Document(
+                id="prod-wire-1",
+                content="production wiring smoke test alpha",
+                meta={
+                    "chunk_id": "prod-wire-1",
+                    "document_id": "doc-prod-wire-1",
+                    "source_app": "prod_wire_app",
+                    "source_meta": "prod_wire_space",
+                    _REGISTRY_MODEL_FIELD: _FIXED_EMBEDDING,
+                },
+                embedding=_FIXED_EMBEDDING,
+            ),
+            Document(
+                id="prod-wire-2",
+                content="production wiring smoke test bravo",
+                meta={
+                    "chunk_id": "prod-wire-2",
+                    "document_id": "doc-prod-wire-2",
+                    "source_app": "other_app",
+                    "source_meta": "other_space",
+                    _REGISTRY_MODEL_FIELD: _FIXED_EMBEDDING,
+                },
+                embedding=_FIXED_EMBEDDING,
+            ),
+        ],
+    )
+    doc_repo = AsyncMock()
+    doc_repo.get_sources_by_document_ids.return_value = {
+        "doc-prod-wire-1": ("prod_wire_app", "src-prod-wire-1", "Prod Wire 1"),
+        "doc-prod-wire-2": ("other_app", "src-prod-wire-2", "Prod Wire 2"),
+    }
+
+    from ragent.pipelines.chat import build_es_filters, build_retrieval_pipeline
+
+    pipeline = build_retrieval_pipeline(
+        document_store=es_store,
+        doc_repo=doc_repo,
+        join_mode="rrf",
+        registry=_stub_registry(),
+        embed_query_callable=_embed_query_callable,
+    )
+    docs = _run(
+        pipeline,
+        "production wiring smoke test",
+        filters=build_es_filters(source_app="prod_wire_app", source_meta="prod_wire_space"),
+    )
+
+    assert len(docs) >= 1, "production-wiring smoke returned no docs"
+    for d in docs:
+        assert d.meta.get("source_app") == "prod_wire_app"
+        assert d.meta.get("source_meta") == "prod_wire_space"
