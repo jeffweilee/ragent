@@ -50,6 +50,7 @@ def _add_cors_middleware(app: FastAPI, origins: list[str]) -> None:
 _NO_USER_ID_PATHS = frozenset(
     {"/livez", "/readyz", "/startupz", "/metrics", "/docs", "/redoc", "/openapi.json"}
 )
+_USER_ID_HEADER = "X-User-Id"
 
 # Producer-side task labels that MUST be registered before traffic. Journal
 # 2026-05-06 (B27): missing registration silently 500s on first dispatch.
@@ -133,7 +134,7 @@ def _x_user_id_middleware(app: FastAPI) -> None:
     async def require_user_id(request: Request, call_next: Any) -> Response:
         if request.url.path in _NO_USER_ID_PATHS:
             return await call_next(request)
-        if not request.headers.get("X-User-Id"):
+        if not request.headers.get(_USER_ID_HEADER):
             logger.warning(
                 "api.user_id_missing",
                 path=request.url.path,
@@ -141,7 +142,9 @@ def _x_user_id_middleware(app: FastAPI) -> None:
                 error_code=HttpErrorCode.MISSING_USER_ID,
                 http_status=422,
             )
-            return problem(422, HttpErrorCode.MISSING_USER_ID, "X-User-Id header is required")
+            return problem(
+                422, HttpErrorCode.MISSING_USER_ID, f"{_USER_ID_HEADER} header is required"
+            )
         return await call_next(request)
 
 
