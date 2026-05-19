@@ -9,6 +9,7 @@ import base64
 import json
 import os
 import ssl
+from collections.abc import Iterator
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
@@ -61,17 +62,46 @@ def _es_request(url: str, method: str = "GET", body: dict | None = None) -> dict
 
 
 def _strip_comments(sql: str) -> str:
-    lines = [ln for ln in sql.splitlines() if not ln.strip().startswith("--")]
-    return "\n".join(lines).strip()
+    """Drop `--` line comments — both whole-line (`^--`) and trailing
+    (`<sql> -- tail`). Preserves blank lines so multi-line statements stay
+    intact after the `;` split. Does NOT handle `--` inside string literals
+    because the project's migrations contain no such literals (the JSON
+    seed in 009_system_settings uses `JSON_OBJECT(...)`, not string lits).
+    Adding tokenizer support is a future change if that invariant breaks.
+    """
+    out: list[str] = []
+    for ln in sql.splitlines():
+        stripped = ln.lstrip()
+        if stripped.startswith("--"):
+            continue
+        idx = ln.find("--")
+        if idx >= 0:
+            ln = ln[:idx].rstrip()
+        out.append(ln)
+    return "\n".join(out).strip()
+
+
+def _iter_statements(sql: str) -> Iterator[str]:
+    """Yield non-empty SQL statements from a multi-statement script.
+
+    Strips `--` line comments FIRST, then splits on `;`. The reverse order
+    (split-then-strip — the historical pattern across init_schema and the
+    alembic wrappers) tears a `--` comment in half whenever it contains a
+    `;` mid-line, leaving the trailing portion without its `--` prefix and
+    fed to the engine as broken SQL (PR #86 hit this twice, once on
+    schema.sql and once on migrations/010_feedback.sql).
+    """
+    for raw in _strip_comments(sql).split(";"):
+        stmt = raw.strip()
+        if stmt:
+            yield stmt
 
 
 def init_mariadb(engine) -> None:
     sql = (_MIGRATIONS / "schema.sql").read_text(encoding="utf-8")
     with engine.begin() as conn:
-        for raw in sql.split(";"):
-            stmt = _strip_comments(raw)
-            if stmt:
-                conn.execute(text(stmt))
+        for stmt in _iter_statements(sql):
+            conn.execute(text(stmt))
 
 
 def init_es(es_url: str) -> None:
