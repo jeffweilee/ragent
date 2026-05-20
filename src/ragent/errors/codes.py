@@ -59,7 +59,7 @@ class HttpErrorCode(StrEnum):
     # Identity / middleware (422).
     MISSING_USER_ID = "MISSING_USER_ID"
 
-    # Auth — decode-only JWT middleware (401, §3.5 / §3.5.1).
+    # Auth — JWT middleware (401, §3.5).
     AUTH_TOKEN_EXPIRED = "AUTH_TOKEN_EXPIRED"
     AUTH_CLAIM_MISSING = "AUTH_CLAIM_MISSING"
     AUTH_TOKEN_INVALID = "AUTH_TOKEN_INVALID"
