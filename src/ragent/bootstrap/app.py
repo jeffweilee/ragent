@@ -20,6 +20,7 @@ from ragent.bootstrap.metrics import (
     make_document_stats_fetcher,
     setup_metrics,
 )
+from ragent.bootstrap.openapi import install_openapi, is_trust_header_mode
 from ragent.bootstrap.telemetry import setup_tracing
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
@@ -167,7 +168,7 @@ def _x_user_id_middleware(
 
     user_id_header_lower = user_id_header.lower().encode("latin-1")
     jwt_header_lower = jwt_header.lower()
-    trust_header_mode = auth_disabled or trust_header
+    trust_header_mode = is_trust_header_mode(auth_disabled=auth_disabled, trust_header=trust_header)
     if not trust_header_mode and token_manager is None:
         raise RuntimeError(
             "JWT auth mode requires a token_manager; "
@@ -416,14 +417,28 @@ def create_app() -> FastAPI:
 
     _register_unhandled_exception_handler(app)
 
+    # Single env read so middleware and Swagger doc derive from the same
+    # values — flipping any of these flips both at once (T8.D1).
+    _user_id_header = str_env("RAGENT_USER_ID_HEADER", _DEFAULT_USER_ID_HEADER)
+    _jwt_header = str_env("RAGENT_JWT_HEADER", _DEFAULT_JWT_HEADER)
+    _trust_header = bool_env("RAGENT_TRUST_X_USER_ID_HEADER", False)
+    _auth_disabled = bool_env("RAGENT_AUTH_DISABLED", False)
     _x_user_id_middleware(
         app,
-        user_id_header=str_env("RAGENT_USER_ID_HEADER", _DEFAULT_USER_ID_HEADER),
-        jwt_header=str_env("RAGENT_JWT_HEADER", _DEFAULT_JWT_HEADER),
+        user_id_header=_user_id_header,
+        jwt_header=_jwt_header,
         jwt_claim=str_env("RAGENT_JWT_CLAIM_USER_ID", _DEFAULT_JWT_CLAIM),
-        trust_header=bool_env("RAGENT_TRUST_X_USER_ID_HEADER", False),
-        auth_disabled=bool_env("RAGENT_AUTH_DISABLED", False),
+        trust_header=_trust_header,
+        auth_disabled=_auth_disabled,
         token_manager=container.auth_token_manager,
+    )
+    install_openapi(
+        app,
+        auth_disabled=_auth_disabled,
+        trust_header=_trust_header,
+        user_id_header=_user_id_header,
+        jwt_header=_jwt_header,
+        public_paths=_PUBLIC_PATHS,
     )
     # CORSMiddleware is registered after _x_user_id_middleware so it runs
     # BEFORE the user-ID check (Starlette wraps in reverse order). This lets
