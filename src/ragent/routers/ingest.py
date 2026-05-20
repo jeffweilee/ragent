@@ -11,11 +11,12 @@ from collections.abc import Callable
 from typing import Annotated, Any
 
 import structlog
-from fastapi import APIRouter, Header, Query, Response
+from fastapi import APIRouter, Depends, Query, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.routing import APIRoute
 from pydantic import BaseModel
 
+from ragent.auth.deps import get_user_id
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
 from ragent.schemas.ingest import IngestRequest
@@ -149,7 +150,7 @@ def create_router(svc: Any) -> APIRouter:
     @router.post("", status_code=202, response_model=IngestCreatedResponse)
     async def create_document(
         body: IngestRequest,
-        x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+        x_user_id: Annotated[str | None, Depends(get_user_id)] = None,
     ):
         try:
             doc_id = await svc.create(create_user=x_user_id, request=body)
@@ -171,7 +172,7 @@ def create_router(svc: Any) -> APIRouter:
     @router.get("/{document_id}", response_model=IngestDetailResponse)
     async def get_document(
         document_id: str,
-        x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+        x_user_id: Annotated[str | None, Depends(get_user_id)] = None,
     ):
         doc = await svc.get(document_id)
         if doc is None:
@@ -201,7 +202,7 @@ def create_router(svc: Any) -> APIRouter:
     @router.post("/{document_id}/rerun", status_code=202, response_model=IngestCreatedResponse)
     async def rerun_document(
         document_id: str,
-        x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+        x_user_id: Annotated[str | None, Depends(get_user_id)] = None,
     ):
         try:
             await svc.rerun(document_id)
@@ -226,7 +227,7 @@ def create_router(svc: Any) -> APIRouter:
     @router.delete("/{document_id}", status_code=204)
     async def delete_document(
         document_id: str,
-        x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+        x_user_id: Annotated[str | None, Depends(get_user_id)] = None,
     ):
         await svc.delete(document_id)
         return Response(status_code=204)
@@ -237,7 +238,7 @@ def create_router(svc: Any) -> APIRouter:
         limit: int = Query(100),
         source_id: str | None = Query(None),
         source_app: str | None = Query(None),
-        x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+        x_user_id: Annotated[str | None, Depends(get_user_id)] = None,
     ) -> IngestListResponse:
         result = await svc.list(
             after=after, limit=limit, source_id=source_id, source_app=source_app

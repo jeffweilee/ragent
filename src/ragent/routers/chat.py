@@ -8,11 +8,12 @@ import time
 from typing import Annotated, Any
 
 import structlog
-from fastapi import APIRouter, Header, Response
+from fastapi import APIRouter, Depends, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 from opentelemetry import trace
 
+from ragent.auth.deps import get_user_id
 from ragent.clients.rate_limiter import RateLimiter
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
@@ -118,7 +119,7 @@ def create_chat_router(
     @router.post("")
     async def chat(
         body: ChatRequest,
-        x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+        x_user_id: Annotated[str | None, Depends(get_user_id)] = None,
     ) -> Response:
         with _tracer.start_as_current_span("chat.request") as span:
             span.set_attribute("model", body.model)
@@ -182,7 +183,7 @@ def create_chat_router(
     @router.post("/stream")
     async def chat_stream(
         body: ChatRequest,
-        x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+        x_user_id: Annotated[str | None, Depends(get_user_id)] = None,
     ) -> Response:
         with _tracer.start_as_current_span("chat.request") as request_span:
             request_span.set_attribute("model", body.model)

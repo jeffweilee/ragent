@@ -12,9 +12,10 @@ from __future__ import annotations
 
 from typing import Annotated, Any
 
-from fastapi import APIRouter, File, Form, Header, UploadFile
+from fastapi import APIRouter, Depends, File, Form, UploadFile
 from fastapi.responses import JSONResponse
 
+from ragent.auth.deps import get_user_id
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
 from ragent.schemas.ingest import SOURCE_META_MAX, SOURCE_URL_MAX, IngestMime
@@ -37,7 +38,7 @@ def create_router(svc: Any, *, max_upload_bytes: int = UPLOAD_MAX_BYTES_DEFAULT)
         mime_type: Annotated[IngestMime, Form()],
         source_meta: Annotated[str | None, Form(max_length=SOURCE_META_MAX)] = None,
         source_url: Annotated[str | None, Form(max_length=SOURCE_URL_MAX)] = None,
-        x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+        x_user_id: Annotated[str | None, Depends(get_user_id)] = None,
     ):
         # Early rejection when the client provides Content-Length for the part,
         # avoiding a full read into memory before the service-level size check.

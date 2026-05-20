@@ -5,11 +5,12 @@ from __future__ import annotations
 from typing import Annotated, Any
 
 import structlog
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Depends
 from fastapi.concurrency import run_in_threadpool
 from opentelemetry import trace
 from pydantic import BaseModel, Field, field_validator
 
+from ragent.auth.deps import get_user_id
 from ragent.pipelines.chat import (
     DEFAULT_MIN_SCORE,
     DEFAULT_TOP_K,
@@ -81,7 +82,7 @@ def create_retrieve_router(
     @router.post("", response_model=RetrieveResponse)
     async def retrieve(
         body: RetrieveRequest,
-        x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+        x_user_id: Annotated[str | None, Depends(get_user_id)] = None,
     ) -> RetrieveResponse:
         with _tracer.start_as_current_span("retrieve.request") as span:
             if x_user_id:
