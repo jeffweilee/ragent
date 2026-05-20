@@ -21,8 +21,9 @@ Supported MIME types (`mime_type`):
 | `text/html` | HTML | Script/nav/aside stripped |
 | `application/vnd.openxmlformats-officedocument.wordprocessingml.document` | DOCX | One atom per paragraph/table |
 | `application/vnd.openxmlformats-officedocument.presentationml.presentation` | PPTX | One atom per slide |
+| `application/pdf` | PDF | Per-page text extraction + OCR fallback (≤ `INGEST_MAX_PDF_PAGES`, default 2000 pages) |
 
-CSV is no longer accepted.
+CSV is no longer accepted. Binary MIMEs (DOCX, PPTX, PDF) are rejected at the schema boundary for `ingest_type=inline` (returns `415 INGEST_MIME_UNSUPPORTED`); use `ingest_type=file` or `POST /ingest/v1/upload` for binary files.
 
 
 ### `POST /ingest/v1` — `ingest_type=inline` (content in body)

@@ -372,3 +372,41 @@ uv run bandit -r src/ --severity-level high --confidence-level high
 - `/simplify` and `/review` are mandatory, not user-gated (CLAUDE.md steps 7–8). Every cycle touching `src/`, `tests/`, `pyproject.toml`, or docs must invoke both via the Skill tool before commit.
 - `.claude/.pre_commit_approved` is written only by `stamp_pre_commit_approved.sh <skill>` at the tail of a skill run — never by manual `date >`. The gate verifies `diff_sha` match; re-staging after stamping invalidates the marker.
 - `stamp_pre_commit_approved.sh` requires `RAGENT_SKILL_INVOCATION_TOKEN` to be set and appends to `.claude/.stamp_audit.log`. The gate cross-checks that BOTH `simplify` AND `review` entries exist for the current diff_sha within the 45-minute freshness window — a single skill running twice does not satisfy the gate.
+
+## Cross-Middleware Header Propagation
+
+Cross-`BaseHTTPMiddleware`-boundary identity / context propagation MUST go through ASGI `scope` **dict-key channels** (`scope["ragent.<name>"]`) — NEVER through `scope["headers"]` mutation. Starlette caches a `Headers` view per `Request` instance with its own list copy on first `request.headers` access; inner-middleware header writes are only visible to that Request's downstream handler chain (and any FastAPI `Header(alias=...)` deps in the route dispatcher), NOT to outer middleware after `call_next` returns. The scope dict itself is shared by reference and is the correct propagation channel.
+
+- Scope-key channel names MUST use `<project>.<name>` prefix (e.g. `ragent.user_id`) to avoid collision with Starlette's reserved keys (`state`, `path_params`, `headers`, `type`, `app`) and other libraries' extension keys (`otel.*`). Document the producer (where it's written) and consumer (where it's read) at the definition site.
+- When a middleware dual-writes (header for route-handler `Header(alias=...)` deps AND scope-key for outer-middleware observability), the scope-key write is the authoritative propagation channel.
+- Per-request log fields enumerated in spec §3.7 (`request_id`, `user_id`, etc.) MUST be backed by at least one unit test that emits a real request through the WHOLE middleware stack and asserts field presence on the captured `api.request` record — assertions on contextvar state alone are insufficient because `structlog.testing.capture_logs()` strips the processor chain (`merge_contextvars` excluded), and the bug class only surfaces when tested end-to-end.
+
+## Per-Request Parameter End-to-End Threading
+
+Any HTTP/RPC parameter the spec advertises as per-request MUST be honoured end-to-end via two paired audits:
+
+- **Component side:** each `@component`'s `run()` MUST accept the same-named kwarg (`top_k`, `min_score`, `filters`, `timeout`) and fall back to `self._<name>` only when the runtime value is `None`. The pattern `self._top_k = top_k or self._top_k` is forbidden for any field where `0` or `[]` is a legal operator value — use `self._top_k = top_k if top_k is not None else self._top_k`.
+- **Orchestrator side:** dispatch helpers (`run_retrieval`, `build_messages`) MUST thread the kwarg into `inputs[<node>]` for EVERY node that consumes it, not only the leaf retriever.
+- **Cross-check at audit time:** grep `self._<param>` in the pipeline module — every read site NOT in `__init__` is a candidate for runtime-kwarg promotion.
+- **Tests** for "user-visible param X reaches component Y" MUST assert on the call to Y's downstream collaborator (rerank client, ES search body), NOT on the final response shape — the response cap silently corrects the visible symptom and lets the drift live.
+
+## ES Ingest Pipeline for Housekeeping Fields
+
+Write-time housekeeping fields on ES documents (timestamps, simple derived values, fingerprints, schema versions) MUST be populated via an ES **ingest pipeline** referenced from `index.default_pipeline` — never stamped by Python writers.
+
+- Pipeline JSON lives at `resources/es/pipelines/<name>.json` (single source of truth); spec §5.2 mirrors it; `test_es_resource_drift.py` pins both directions.
+- Bootstrap (`src/ragent/bootstrap/init_schema.py`) MUST `PUT _ingest/pipeline/<name>` **before** `PUT <index>` — ES rejects index creation when `default_pipeline` references a missing pipeline. This ordering invariant is CI-enforced via the integration test suite.
+- **Semantics under `DuplicatePolicy.OVERWRITE`:** the pipeline re-runs on every overwrite; `_ingest.timestamp` reflects **last-write time**, not first. Name accordingly — `indexed_at` preferred; `created_at` only if spec §5.2 explicitly documents the last-write semantic. Do NOT use `set { override: false }` to fake first-write semantics — it inspects the incoming `_source`, not the stored doc, and under OVERWRITE is a cosmetic no-op.
+- Mapping MUST declare the field (e.g. `{"type":"date"}`) so it appears in `GET <index>/_mapping`; relying on dynamic mapping is forbidden (B26).
+- **Anti-pattern, code-review rejection:** any Python writer assigning `datetime.utcnow()` (or `Clock.now()`) into an ES `_source` dict for a housekeeping field. The only legitimate Python-side timestamp is on the MariaDB row (SQLAlchemy `server_default` / repository-set), where MariaDB is the system of record and ES is a derived serving view.
+
+## JWT/OIDC Library Requirements
+
+*(Spec §3.5 owns the auth contract; this rule governs library selection and wiring.)*
+
+Runtime libraries that perform outbound network calls (JWKS fetch, OIDC discovery) MUST expose an explicit DI seam for the HTTP client (accept an `httpx.Client` / `requests.Session` parameter, or an injectable transport/adapter). Module-level `httpx.get(url)` or `requests.get(url)` with no hook is a hard rejection — they preclude TLS cert pinning, custom CA bundles, proxies, per-call timeouts, and in-process test mocking. Audit any candidate library's source for `<httpx|requests>\.<get|post>(` before adoption.
+
+- Library deprecation warnings at import time are first-class signals — replace with the named successor in the same cycle (no "warning suppressed" path), because the wrapper code will eventually break and the cost of early replacement is lower than the cost of a crisis-driven refactor.
+- The JWT verifier instance (`VerifyingTokenManager`) is constructed exactly once in `bootstrap/composition.py` and injected; routers and middleware never import the underlying JWT library (`joserfc`, or any future successor) directly.
+- JWT tests MUST use an in-process fake OIDC fixture (RSA keypair + JWKS endpoint on `httpx.MockTransport`) — never hit the real issuer in unit/integration tests.
+- Reusing a production dep's `pytest_extension` for test fixtures is acceptable only when (i) the borrowed fixtures cover ≥ 50% of test setup AND (ii) the dep is unlikely to be swapped within 6 months; otherwise self-roll using stdlib + `httpx.MockTransport`.
