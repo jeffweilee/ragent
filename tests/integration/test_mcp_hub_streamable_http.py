@@ -37,12 +37,41 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
+async def _drain_pending_tasks(keep: set[asyncio.Task]) -> None:
+    """Cancel any tasks still on the loop besides those in `keep`. Uvicorn
+    keep-alive workers and FastMCP's anyio task group can leak background
+    tasks that emit "Event loop is closed" once pytest-asyncio tears the
+    function-scoped loop down. Cancelling + gathering them here drains
+    that residue deterministically."""
+    current = asyncio.current_task()
+    pending = [
+        t
+        for t in asyncio.all_tasks()
+        if t is not current and t not in keep and not t.done()
+    ]
+    for t in pending:
+        t.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
 @asynccontextmanager
 async def _serve(tools_dir: Path):
     bundle = build_hub(tools_dir)
     app = build_app(bundle, path="/mcp")
     port = _free_port()
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    # `timeout_keep_alive=0` closes connections immediately after each
+    # response so no keep-alive worker sits idle on the loop at shutdown.
+    server = uvicorn.Server(
+        uvicorn.Config(
+            app,
+            host="127.0.0.1",
+            port=port,
+            log_level="warning",
+            timeout_keep_alive=0,
+        )
+    )
+    tasks_before = set(asyncio.all_tasks())
     task = asyncio.create_task(server.serve())
     try:
         for _ in range(200):
@@ -53,17 +82,20 @@ async def _serve(tools_dir: Path):
             raise RuntimeError("hub did not start within 10s")
         yield f"http://127.0.0.1:{port}/mcp/"
     finally:
-        # Defensive teardown: signal shutdown, bound the wait so a stuck
-        # FastMCP session-manager cleanup can't hang the test forever, and
-        # swallow CancelledError if uvicorn's shutdown races the asyncio
-        # loop teardown (root cause of "Event loop is closed" flakes in CI).
+        # 1. Signal graceful shutdown.
         server.should_exit = True
+        # 2. Bound the wait so a stuck FastMCP cleanup can't hang the test.
         try:
             await asyncio.wait_for(task, timeout=10)
         except TimeoutError:
             task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task
+        # 3. Cancel anything else that crept onto the loop (anyio task-group
+        #    leftovers, transport close callbacks). Without this the
+        #    function-scoped pytest-asyncio loop tears down with pending
+        #    tasks and the test reports "Event loop is closed".
+        await _drain_pending_tasks(keep=tasks_before)
 
 
 def _write_tools(tmp_path: Path, body: str) -> Path:
