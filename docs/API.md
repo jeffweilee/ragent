@@ -4,6 +4,8 @@ Interactive docs (auto-generated from OpenAPI schema):
 - Swagger UI: http://localhost:8000/docs
 - ReDoc: http://localhost:8000/redoc
 
+The Swagger UI **Authorize** button drives every protected endpoint. The published security scheme tracks the runtime auth mode (T8.D1): in trust-header mode (P1 default / dev) the scheme is `UserIdHeader` pointing at `X-User-Id`; in JWT mode (P2 prod, `RAGENT_AUTH_DISABLED=false` + `RAGENT_TRUST_X_USER_ID_HEADER=false`) the scheme is `JWT` pointing at `X-Auth-Token` (or whatever `RAGENT_JWT_HEADER` overrides it to). Public paths (`/livez`, `/readyz`, `/startupz`, `/metrics`, `/docs`, `/docs/oauth2-redirect`, `/redoc`, `/openapi.json`) carry no security requirement.
+
 All endpoints return RFC 9457 problem+json on errors. `X-User-Id` header is recorded for audit in Phase 1.
 
 ## Ingest

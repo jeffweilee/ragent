@@ -16,13 +16,14 @@ from hashlib import sha256
 from typing import Annotated, Any
 
 import structlog
-from fastapi import APIRouter, Header
+from fastapi import APIRouter, Depends
 from fastapi.concurrency import run_in_threadpool
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import Response
 from fastapi.routing import APIRoute
 from opentelemetry import trace
 
+from ragent.auth.deps import get_user_id
 from ragent.bootstrap.metrics import feedback_es_write_failed_total
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
@@ -85,7 +86,7 @@ def create_feedback_router(
     @router.post("", status_code=204)
     async def post_feedback(
         body: FeedbackRequest,
-        x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+        x_user_id: Annotated[str | None, Depends(get_user_id)] = None,
     ) -> Response:
         with _tracer.start_as_current_span("feedback.request") as span:
             if x_user_id:
