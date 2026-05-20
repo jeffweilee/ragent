@@ -130,3 +130,45 @@ def test_contextvars_cleared_between_requests():
     # After the response, no contextvars should remain bound from this request.
     ctx = structlog.contextvars.get_contextvars()
     assert ctx.get("request_id") != "first"
+
+
+def test_jwt_mode_api_request_log_carries_resolved_user_id(
+    oidc_token_manager, make_token
+):
+    """JWT-authenticated requests emit `api.request` with the verified user_id.
+
+    The outer ``RequestLoggingMiddleware`` runs before the inner
+    ``_x_user_id_middleware`` resolves the JWT, and Starlette's per-Request
+    Headers replacement prevents direct header propagation across the
+    middleware boundary; the contract pinned here is that the resolved id
+    still reaches the outer log via the ASGI scope dict-key channel.
+    """
+    from ragent.bootstrap.app import _x_user_id_middleware
+    from ragent.bootstrap.logging_config import configure_logging
+    from ragent.middleware.logging import RequestLoggingMiddleware
+
+    configure_logging("ragent-test")
+    app = FastAPI()
+    # Order matters: register _x_user_id_middleware FIRST so it runs as the
+    # innermost middleware; RequestLoggingMiddleware is registered LAST so it
+    # wraps everything (Starlette wraps in reverse registration order).
+    _x_user_id_middleware(
+        app,
+        trust_header=False,
+        auth_disabled=False,
+        token_manager=oidc_token_manager,
+    )
+    app.add_middleware(RequestLoggingMiddleware)
+
+    @app.get("/protected")
+    async def protected():  # type: ignore[no-untyped-def]
+        return {"ok": True}
+
+    token = make_token(preferred_username="alice")
+    client = TestClient(app)
+    with structlog.testing.capture_logs() as logs:
+        resp = client.get("/protected", headers={"X-Auth-Token": token})
+    assert resp.status_code == 200
+    api_logs = [e for e in logs if e.get("event") == "api.request"]
+    assert len(api_logs) == 1
+    assert api_logs[0]["user_id"] == "alice", api_logs[0]

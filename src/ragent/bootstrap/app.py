@@ -23,7 +23,7 @@ from ragent.bootstrap.metrics import (
 from ragent.bootstrap.telemetry import setup_tracing
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
-from ragent.middleware.logging import RequestLoggingMiddleware
+from ragent.middleware.logging import SCOPE_USER_ID_KEY, RequestLoggingMiddleware
 from ragent.routers.admin_embedding import create_router as create_admin_embedding_router
 from ragent.routers.admin_ingest import create_router as create_upload_ingest_router
 from ragent.routers.chat import create_chat_router
@@ -176,19 +176,30 @@ def _x_user_id_middleware(
         )
 
     def _inject_header(request: Request, value: str) -> None:
-        """Overwrite ``user_id_header`` in the ASGI scope.
+        """Make the resolved user_id visible to the downstream handler chain.
 
-        Downstream consumers (``RequestLoggingMiddleware``, FastAPI's
-        ``Header(alias=...)`` dependencies) read ``request.headers``, which
-        is materialised from ``scope["headers"]`` on each access — mutating
-        the scope list propagates.
+        Writes two channels:
+
+        1. ``scope["headers"]`` — FastAPI's ``Header(alias=...)`` dependencies
+           construct their own Request inside the route dispatcher and read
+           from headers; the route layer must see the resolved value.
+        2. ``scope[SCOPE_USER_ID_KEY]`` — Starlette's ``Headers(scope=...)``
+           constructor **replaces** ``scope["headers"]`` with a fresh list per
+           Request instance, so each ``BaseHTTPMiddleware`` boundary captures
+           a different list reference. The outer ``RequestLoggingMiddleware``
+           therefore cannot reliably observe header mutations done in inner
+           middleware; the scope dict itself IS shared, so a dedicated dict
+           key is the propagation channel for the outer log.
         """
         encoded = value.encode("latin-1")
         headers: list[tuple[bytes, bytes]] = [
-            (name, val) for (name, val) in request.scope["headers"] if name != user_id_header_lower
+            (name, val)
+            for (name, val) in request.scope["headers"]
+            if name != user_id_header_lower
         ]
         headers.append((user_id_header_lower, encoded))
         request.scope["headers"] = headers
+        request.scope[SCOPE_USER_ID_KEY] = value
 
     @app.middleware("http")
     async def require_user_id(request: Request, call_next: Any) -> Response:
@@ -207,6 +218,9 @@ def _x_user_id_middleware(
                 return problem(
                     422, HttpErrorCode.MISSING_USER_ID, f"{user_id_header} header is required"
                 )
+            # No contextvar bind needed here: the outer RequestLoggingMiddleware
+            # already read the inbound X-User-Id header and bound it before
+            # call_next. Re-binding the same value would be a no-op.
             return await call_next(request)
 
         token = request.headers.get(jwt_header_lower) or ""
@@ -223,6 +237,12 @@ def _x_user_id_middleware(
             return problem(exc.http_status, exc.error_code, "Authentication failed")
 
         _inject_header(request, user_id)
+        # Same contextvar binding as the trust-header branch — RequestLogging
+        # Middleware reads X-User-Id from request.headers BEFORE call_next, so
+        # in JWT mode the user id is absent at the outer layer; binding here
+        # makes the JWT-derived id available to every subsequent log emission
+        # (handler-time logs + the outer api.request log via merge_contextvars).
+        structlog.contextvars.bind_contextvars(user_id=user_id)
         return await call_next(request)
 
 
