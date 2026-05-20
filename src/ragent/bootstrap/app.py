@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -11,6 +12,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import Response
 from starlette.middleware.cors import CORSMiddleware
 
+from ragent.auth.jwt import JwtAuthError, decode_jwt_payload
 from ragent.bootstrap.guard import enforce
 from ragent.bootstrap.init_schema import init_schema
 from ragent.bootstrap.logging_config import configure_logging
@@ -31,6 +33,7 @@ from ragent.routers.health import create_health_router
 from ragent.routers.ingest import create_router as create_ingest_router
 from ragent.routers.mcp import create_mcp_router
 from ragent.routers.retrieve import create_retrieve_router
+from ragent.utility.env import bool_env, str_env
 from ragent.utility.env import list_env as _list_env
 
 logger = structlog.get_logger(__name__)
@@ -50,7 +53,9 @@ def _add_cors_middleware(app: FastAPI, origins: list[str]) -> None:
 _NO_USER_ID_PATHS = frozenset(
     {"/livez", "/readyz", "/startupz", "/metrics", "/docs", "/redoc", "/openapi.json"}
 )
-_USER_ID_HEADER = "X-User-Id"
+_DEFAULT_USER_ID_HEADER = "X-User-Id"
+_DEFAULT_JWT_HEADER = "X-Auth-Token"
+_DEFAULT_JWT_CLAIM = "preferred_username"
 
 # Producer-side task labels that MUST be registered before traffic. Journal
 # 2026-05-06 (B27): missing registration silently 500s on first dispatch.
@@ -129,22 +134,79 @@ def _register_unhandled_exception_handler(app: FastAPI) -> None:
         return problem(http_status, error_code, title)
 
 
-def _x_user_id_middleware(app: FastAPI) -> None:
+def _x_user_id_middleware(
+    app: FastAPI,
+    *,
+    user_id_header: str = _DEFAULT_USER_ID_HEADER,
+    jwt_header: str = _DEFAULT_JWT_HEADER,
+    jwt_claim: str = _DEFAULT_JWT_CLAIM,
+    trust_header: bool = True,
+    auth_disabled: bool = True,
+) -> None:
+    """User-identity middleware (§3.5).
+
+    Branch matrix:
+      * ``auth_disabled=True`` (P1 default) OR ``trust_header=True`` (P2 dev override):
+        require ``<user_id_header>`` non-empty; 422 ``MISSING_USER_ID`` otherwise.
+      * ``auth_disabled=False`` AND ``trust_header=False`` (P2 prod): read
+        ``<jwt_header>``, decode-only-validate per §3.5.1, extract
+        ``<jwt_claim>``, and inject the result into ``<user_id_header>`` on
+        the request scope so downstream routers (whose ``Header(alias=...)``
+        is bound to the canonical name) observe it transparently.
+    """
+
+    user_id_header_lower = user_id_header.lower().encode("latin-1")
+    jwt_header_lower = jwt_header.lower()
+    trust_header_mode = auth_disabled or trust_header
+
+    def _inject_header(request: Request, value: str) -> None:
+        """Overwrite ``user_id_header`` in the ASGI scope.
+
+        Downstream consumers (``RequestLoggingMiddleware``, FastAPI's
+        ``Header(alias=...)`` dependencies) read ``request.headers``, which
+        is materialised from ``scope["headers"]`` on each access — mutating
+        the scope list propagates.
+        """
+        encoded = value.encode("latin-1")
+        headers: list[tuple[bytes, bytes]] = [
+            (name, val) for (name, val) in request.scope["headers"] if name != user_id_header_lower
+        ]
+        headers.append((user_id_header_lower, encoded))
+        request.scope["headers"] = headers
+
     @app.middleware("http")
     async def require_user_id(request: Request, call_next: Any) -> Response:
         if request.url.path in _NO_USER_ID_PATHS:
             return await call_next(request)
-        if not request.headers.get(_USER_ID_HEADER):
+
+        if trust_header_mode:
+            if not request.headers.get(user_id_header):
+                logger.warning(
+                    "api.user_id_missing",
+                    path=request.url.path,
+                    method=request.method,
+                    error_code=HttpErrorCode.MISSING_USER_ID,
+                    http_status=422,
+                )
+                return problem(
+                    422, HttpErrorCode.MISSING_USER_ID, f"{user_id_header} header is required"
+                )
+            return await call_next(request)
+
+        token = request.headers.get(jwt_header_lower) or ""
+        try:
+            user_id = decode_jwt_payload(token, claim_user_id=jwt_claim, now=int(time.time()))
+        except JwtAuthError as exc:
             logger.warning(
-                "api.user_id_missing",
+                "api.jwt_invalid",
                 path=request.url.path,
                 method=request.method,
-                error_code=HttpErrorCode.MISSING_USER_ID,
-                http_status=422,
+                error_code=exc.error_code,
+                http_status=exc.http_status,
             )
-            return problem(
-                422, HttpErrorCode.MISSING_USER_ID, f"{_USER_ID_HEADER} header is required"
-            )
+            return problem(exc.http_status, exc.error_code, "Authentication failed")
+
+        _inject_header(request, user_id)
         return await call_next(request)
 
 
@@ -315,7 +377,14 @@ def create_app() -> FastAPI:
 
     _register_unhandled_exception_handler(app)
 
-    _x_user_id_middleware(app)
+    _x_user_id_middleware(
+        app,
+        user_id_header=str_env("RAGENT_USER_ID_HEADER", _DEFAULT_USER_ID_HEADER),
+        jwt_header=str_env("RAGENT_JWT_HEADER", _DEFAULT_JWT_HEADER),
+        jwt_claim=str_env("RAGENT_JWT_CLAIM_USER_ID", _DEFAULT_JWT_CLAIM),
+        trust_header=bool_env("RAGENT_TRUST_X_USER_ID_HEADER", False),
+        auth_disabled=bool_env("RAGENT_AUTH_DISABLED", False),
+    )
     # CORSMiddleware is registered after _x_user_id_middleware so it runs
     # BEFORE the user-ID check (Starlette wraps in reverse order). This lets
     # CORS preflight OPTIONS requests short-circuit before hitting the 422 gate.
