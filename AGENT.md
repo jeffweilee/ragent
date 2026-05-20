@@ -1,0 +1,199 @@
+# CLAUDE.md - Project Guidelines & TDD Workflow
+
+* Read `docs/00_rule.md` and follow development standards and mandatory workflow for this project. 
+* Strict adherence to **TDD (Test-Driven Development)** and **Minimalism** and **Integrity** are required.
+---
+
+## Tech Stack
+- FastAPI (Python 3.12, `uv` package management)
+- TaskIQ + Redis Sentinel
+- Haystack 2.x
+- MariaDB 10.6
+- Elasticsearch 9.2.3
+- Neo4j 5.2.6
+- Third-Party Customized API
+  - Embedding API
+  - LLM API
+  - Rerank API
+- Observability
+  - OpenTelemetry
+  - Grafana
+  - Prometheus 
+
+---
+
+## THE TDD WORKFLOW
+
+Whenever team start to work or user says "go" or "continue", follow these steps precisely:
+
+1.  **Read `plan.md`**: Find the next unmarked test item `[ ]`.
+2.  **Red Phase**: Implement the failing test first. Verify it fails.
+3.  **Green Phase**: Write the **minimum** code necessary to make the test pass.
+4.  **Refactor Phase**: Clean up the code while ensuring tests remain green.
+5.  **Verification**: Run test, lint, format.
+6.  **Progress**: Mark the test as complete `[x]` in `plan.md`.
+7.  **Simplify**: Run `/simplify` — AI code quality pass; stage any resulting fixes and re-verify tests pass.
+8.  **Review**: Run `/review` — team code review covering **all** of the following; address every finding before proceeding:
+    - **Plan compliance**: every objective in `docs/00_plan.md` for this cycle is fully implemented — no partial or skipped items.
+    - **Spec alignment**: behaviour matches `docs/00_spec.md` contracts (HTTP shapes, error codes, streaming framing, DB schema, etc.).
+    - **Test coverage**: every new behaviour path has a corresponding test; no dead or unreachable code.
+    - **Code quality**: no duplication, no hidden coupling, no premature abstraction, no commented-out code.
+
+    The stamp is emitted as the **last action of each skill body** (the
+    `/simplify` and `/review` skill prompts call the hardened script with
+    `RAGENT_SKILL_INVOCATION_TOKEN` set). The agent NEVER stamps manually
+    — there is no shell-callable bypass.
+9.  **Commit**: Git commit with `[BEHAVIORAL]` or `[STRUCTURAL]` prefix.
+    _(The pre-commit gate verifies the marker JSON, the `diff_sha` binding,
+    the freshness window, AND the audit log shows BOTH /simplify and /review
+    ran for the current diff. It then consumes the marker.)_
+10. **Documentation**: Follow "RESOURCES" Section to update each document accordingly.
+11. **Next**: Start new round and repeat the workflow until all plans matches successful criteria.
+
+---
+
+
+## TIDY FIRST APPROACH
+
+Separate all changes into two distinct types:
+
+### 1. STRUCTURAL CHANGES
+
+Rearranging code without changing behavior:
+
+- Renaming variables, methods, or classes for clarity
+- Extracting methods or functions
+- Moving code to more appropriate locations
+- Reorganizing imports or dependencies
+- Reformatting code
+
+### 2. BEHAVIORAL CHANGES
+
+Adding or modifying actual functionality:
+
+- Implementing new features
+- Fixing bugs that change program behavior
+- Modifying algorithms or logic
+- Adding new dependencies that change behavior
+
+### Critical Rules:
+
+- **Never mix structural and behavioral changes in the same commit**
+- **Always make structural changes first** when both are needed
+- Validate structural changes do not alter behavior by running tests before and after
+- If a structural change breaks tests, revert and investigate
+
+---
+
+## CORE DEVELOPMENT PHILOSOPHY
+
+### 1. Think Before Coding
+*   **Understand** essence of the problem. Solutions must be able to achieve the goal and solve the problem.
+*   **Surface Trade-offs**: If multiple solutions exist, present them. Never pick silently.
+*   **No Assumptions**: Explicitly state assumptions. If a requirement is vague, **stop and ask**.
+*   **Push Back**: If a simpler approach exists, suggest it. Avoid over-engineering.
+
+### 2. Simplicity First (YAGNI)
+*   **Minimum Viable Code**: No speculative features or "future-proofing."
+*   **No Abstractions**: Avoid abstractions for single-use logic.
+*   **Refinement**: If 50 lines can do what 200 lines do, rewrite it.
+
+### 3. Surgical Changes
+*   **Scope Control**: Touch only what is necessary. Do not "improve" adjacent code or formatting.
+*   **Style Matching**: Match existing patterns and idioms, even if you prefer others.
+*   **Orphan Cleanup**: Only remove imports/variables made unused by **your** changes.
+
+---
+
+## CODE QUALITY STANDARDS
+IMPORTANT: Quality is non-negotiable. Every line of code must be traceable to a test and a specific requirement.
+
+*   **DRY (Don't Repeat Yourself)**: Eliminate duplication ruthlessly.
+*   **SRP (Single Responsibility)**: Keep methods small and focused.
+*   **Explicit Dependencies**: No hidden coupling or global state side effects.
+*   **Documentation**: Explain *why* something is done, not *what* (the code should be self-explanatory).
+
+---
+
+## TESTING STRATEGY
+
+### The Test Pyramid
+*   **Unit Tests (80%)**: Focus on individual functions. Must be fast (<1s) with no external I/O (use mocks for S3, JWT, etc.).
+*   **Integration Tests (15%)**: Test component interactions (Router + Auth + Storage). Test Coverage > 90%.
+*   **E2E Tests (5%)**: Full-stack workflows with real MinIO. Mark with `#[ignore]` for manual runs.
+
+### Organization
+```text
+tests/
+├── unit/           # Fast unit logic
+├── integration/    # Component orchestration
+└── e2e/            # Full proxy/system flows
+```
+
+## RESOURCES
+* README.md: Quick start and overview.
+* `docs/00_rule.md`: Project Rule.
+* `docs/00_spec.md`: Full technical specification.
+* `docs/00_plan.md`: The master TDD implementation checklist.
+* `docs/00_agent_team.md`: RAGENT agent team and workflow.
+* `docs/00_journal.md`: Team reflection that prevents the same mistake from happening again. Create blameless, actionable, and documented guidelines by **DOMAIN**.
+
+---
+
+## Common Commands
+
+```bash
+make doctor                    # pre-flight: env / datastores / AI endpoints / alembic head
+make doctor PROBE_LIVE=1       # post-launch: also probes /livez and /readyz
+make test-gate                 # pre-commit gate (excludes tests/e2e — release-step only)
+make test                      # full suite incl. e2e (testcontainers MariaDB/ES/Redis/MinIO)
+make check                     # format + lint + test
+uv run pytest tests/unit/test_X.py::test_Y -x        # single test
+uv run --env-file .env alembic upgrade head          # migrations
+uv run --env-file .env python -m ragent.api          # API (port 8000)
+uv run --env-file .env python -m ragent.worker       # background worker
+```
+
+## Pre-commit Approval Marker
+
+The pre-commit hook (`.claude/hooks/pre_commit_gate.sh`) verifies four things
+against `.claude/.pre_commit_approved` and `.claude/.stamp_audit.log`:
+
+1. The marker file is valid JSON `{"diff_sha": <sha256 git diff --cached>,
+   "ts": <epoch>, "by": "simplify"|"review"}` — manual `date >` stamping
+   produces plain text and is rejected.
+2. `ts` is within the 45-minute freshness window.
+3. `diff_sha` matches the staged diff's sha256 *now* (re-staging after
+   stamping invalidates the marker).
+4. The append-only audit log contains BOTH a `"by":"simplify"` entry AND a
+   `"by":"review"` entry for the current `diff_sha`, each with `ts` inside
+   the same 45-minute freshness window (a single skill running twice no
+   longer satisfies the gate, and stale entries from a long-ago review of
+   the same diff are also rejected).
+
+The marker is emitted ONLY by `.claude/hooks/stamp_pre_commit_approved.sh
+<simplify|review>`, which itself refuses to run unless
+`RAGENT_SKILL_INVOCATION_TOKEN` is set. That env var is set inside the
+`/simplify` and `/review` skill bodies — no shell-callable bypass exists.
+The hook consumes the marker on commit; the next commit needs a fresh
+`/simplify` + `/review` cycle.
+
+## Architecture (orientation only — read `docs/00_spec.md` for contracts)
+
+- **Composition root**: `src/ragent/bootstrap/composition.py::build_container()`
+  is the single DI seam. Every external dep (MariaDB, ES, Redis, MinIO,
+  AI clients) is constructed here and injected into routers/services/workers.
+  Don't read env vars elsewhere.
+- **Three processes**: `ragent.api` (FastAPI), `ragent.worker` (TaskIQ),
+  `ragent.reconciler` (K8s CronJob — safety net, not load-bearing for the
+  local two-command path).
+- **Ingest contract**: discriminated union (`inline | file`) → MinIO stage
+  → DB row UPLOADED → kiq → worker pipeline (load → split → chunk → embed
+  → ES write) → READY. Chunks live in ES `chunks_v1` only; the v1 `chunks`
+  DB table was dropped in `003_drop_chunks.sql`.
+- **Chat contract**: `_QueryEmbedder → ES{vector+BM25} → joiner → reranker
+  (optional) → _SourceHydrator → _ExcerptTruncator`. Hydrator filters by
+  `documents.status='READY'`.
+- **Idempotency**: ES writes use `DuplicatePolicy.OVERWRITE`; worker
+  pipeline is retry-safe. Supersede uses DB-elected `MAX(created_at)`
+  survivor — caller-supplied `survivor_id` must match the elected row.
