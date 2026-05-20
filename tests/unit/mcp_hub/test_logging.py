@@ -9,6 +9,7 @@ import logging
 import httpx
 import pytest
 import structlog
+from structlog.testing import capture_logs
 
 from ragent.mcp_hub.mcp_hub import (
     _INCOMING_HEADERS,
@@ -247,7 +248,11 @@ def test_build_hub_logs_ready_with_correct_tool_count(log_capture, tmp_path):
     assert '"failure_count": 0' in msg
 
 
-def test_build_hub_logs_each_load_failure(log_capture, tmp_path):
+def test_build_hub_logs_each_load_failure(tmp_path):
+    """Uses `structlog.testing.capture_logs` instead of the stdlib `caplog`
+    bridge — the bridge route was flaky in CI's pytest-cov instrumented
+    run on PR #90 (locally green every time). Capturing structlog events
+    directly is robust and matches the event shape we actually assert on."""
     d = tmp_path / "tools.d"
     d.mkdir()
     (d / "ok.yaml").write_text(
@@ -255,9 +260,10 @@ def test_build_hub_logs_each_load_failure(log_capture, tmp_path):
     )
     (d / "broken.yaml").write_text("[[[ broken yaml")
 
-    build_hub(d, name="t")
+    with capture_logs() as captured:
+        build_hub(d, name="t")
 
-    records = [r for r in log_capture.records if "load_failure" in r.getMessage()]
-    assert len(records) == 1
-    assert records[0].levelno == logging.WARNING
-    assert "broken.yaml" in records[0].getMessage()
+    load_fails = [e for e in captured if e.get("event") == "mcp_hub.load_failure"]
+    assert len(load_fails) == 1
+    assert load_fails[0].get("log_level") == "warning"
+    assert "broken.yaml" in load_fails[0].get("source", "")

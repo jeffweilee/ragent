@@ -1,34 +1,33 @@
-"""End-to-end: boot the MCP Hub the same way `python -m ragent.mcp_hub.server`
-does, drive it through FastMCP's Streamable HTTP client. Locks the wiring
-between `build_hub` (yaml → tool registry) and `build_app` (FastMCP HTTP
-app + lifespan + HeaderForwardMiddleware) so a regression in the boot path
-fails CI instead of only showing up the first time an operator runs the
-microservice.
+"""End-to-end: boot the MCP Hub as `python -m ragent.mcp_hub.server` in a
+subprocess and drive it via real HTTP. The subprocess owns its own asyncio
+loop, fully isolated from pytest-asyncio's function-scoped loop, so
+uvicorn keep-alive workers and FastMCP's anyio task group can never leak
+residue into the test runner and trigger "Event loop is closed" at CI
+teardown (root-caused after three CI failures on PR #90; see
+`docs/00_journal.md` row 2026-05-20 'Task Drain' for the in-process
+attempt and why subprocess isolation is the durable fix).
 
-Two scenarios:
-- `tools/list` over Streamable HTTP returns the dot-qualified tool names
-  the hub registered from yaml.
-- `tools/call` against a stub upstream round-trips through the hub's httpx
-  client and produces the canonical `{ok, status, data}` envelope.
+Three scenarios:
+- `tools/list` over Streamable HTTP returns the dot-qualified tool names.
+- `tools/call` against a stub upstream returns the `{ok, status, data}` envelope.
+- `GET /metrics` after a tool call exposes the per-tool Prometheus counter.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
+import os
 import socket
+import subprocess
+import sys
 import textwrap
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
 import pytest
-import uvicorn
 from fastmcp import Client
 from pytest_httpserver import HTTPServer
-
-from ragent.mcp_hub.mcp_hub import build_hub
-from ragent.mcp_hub.server import build_app
 
 
 def _free_port() -> int:
@@ -37,63 +36,50 @@ def _free_port() -> int:
         return s.getsockname()[1]
 
 
-async def _drain_pending_tasks(keep: set[asyncio.Task]) -> None:
-    """Cancel any tasks still on the loop besides those in `keep`. Uvicorn
-    keep-alive workers and FastMCP's anyio task group can leak background
-    tasks that emit "Event loop is closed" once pytest-asyncio tears the
-    function-scoped loop down. Cancelling + gathering them here drains
-    that residue deterministically."""
-    current = asyncio.current_task()
-    pending = [
-        t for t in asyncio.all_tasks() if t is not current and t not in keep and not t.done()
-    ]
-    for t in pending:
-        t.cancel()
-    if pending:
-        await asyncio.gather(*pending, return_exceptions=True)
-
-
 @asynccontextmanager
 async def _serve(tools_dir: Path):
-    bundle = build_hub(tools_dir)
-    app = build_app(bundle, path="/mcp")
+    """Spawn the Hub in a subprocess; yield its base URL. Subprocess
+    isolation means uvicorn's loop + FastMCP's anyio task group live in
+    their own process and CANNOT leak background tasks into the
+    pytest-asyncio function-scoped loop."""
     port = _free_port()
-    # `timeout_keep_alive=0` closes connections immediately after each
-    # response so no keep-alive worker sits idle on the loop at shutdown.
-    server = uvicorn.Server(
-        uvicorn.Config(
-            app,
-            host="127.0.0.1",
-            port=port,
-            log_level="warning",
-            timeout_keep_alive=0,
-        )
+    env = os.environ.copy()
+    env["MCP_HUB_TOOLS_YAML"] = str(tools_dir)
+    env["MCP_HUB_HOST"] = "127.0.0.1"
+    env["MCP_HUB_PORT"] = str(port)
+    env["MCP_HUB_PATH"] = "/mcp"
+    proc = subprocess.Popen(
+        [sys.executable, "-m", "ragent.mcp_hub.server"],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
     )
-    tasks_before = set(asyncio.all_tasks())
-    task = asyncio.create_task(server.serve())
+    base_url = f"http://127.0.0.1:{port}"
     try:
-        for _ in range(200):
-            if server.started:
-                break
-            await asyncio.sleep(0.05)
-        else:
-            raise RuntimeError("hub did not start within 10s")
-        yield f"http://127.0.0.1:{port}/mcp/"
+        async with httpx.AsyncClient() as http:
+            for _ in range(200):
+                if proc.poll() is not None:
+                    stderr = proc.stderr.read().decode(errors="replace") if proc.stderr else ""
+                    raise RuntimeError(
+                        f"hub subprocess exited early (rc={proc.returncode}): {stderr[-2000:]}"
+                    )
+                try:
+                    resp = await http.get(f"{base_url}/metrics", timeout=0.5)
+                    if resp.status_code == 200:
+                        break
+                except (httpx.ConnectError, httpx.ReadTimeout):
+                    pass
+                await asyncio.sleep(0.05)
+            else:
+                raise RuntimeError("hub subprocess did not become ready within 10s")
+        yield base_url
     finally:
-        # 1. Signal graceful shutdown.
-        server.should_exit = True
-        # 2. Bound the wait so a stuck FastMCP cleanup can't hang the test.
+        proc.terminate()
         try:
-            await asyncio.wait_for(task, timeout=10)
-        except TimeoutError:
-            task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await task
-        # 3. Cancel anything else that crept onto the loop (anyio task-group
-        #    leftovers, transport close callbacks). Without this the
-        #    function-scoped pytest-asyncio loop tears down with pending
-        #    tasks and the test reports "Event loop is closed".
-        await _drain_pending_tasks(keep=tasks_before)
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=2)
 
 
 def _write_tools(tmp_path: Path, body: str) -> Path:
@@ -123,7 +109,7 @@ async def test_streamable_http_lists_tools(tmp_path):
         """,
     )
 
-    async with _serve(tools_dir) as url, Client(url) as client:
+    async with _serve(tools_dir) as base_url, Client(f"{base_url}/mcp/") as client:
         tools = await client.list_tools()
 
     assert {t.name for t in tools} == {"demo.ping", "demo.pong"}
@@ -147,7 +133,7 @@ async def test_streamable_http_invokes_tool_against_upstream(tmp_path, httpserve
         """,
     )
 
-    async with _serve(tools_dir) as url, Client(url) as client:
+    async with _serve(tools_dir) as base_url, Client(f"{base_url}/mcp/") as client:
         result = await client.call_tool("demo.echo", {})
 
     assert result.structured_content == {
@@ -161,7 +147,7 @@ async def test_streamable_http_invokes_tool_against_upstream(tmp_path, httpserve
 async def test_metrics_endpoint_exposes_hub_counters_after_tool_call(
     tmp_path, httpserver: HTTPServer
 ):
-    """`/metrics` is mounted sibling to `/mcp` on the same Starlette app.
+    """`/metrics` is a Route sibling to `/mcp` on the Hub's Starlette app.
     After a successful tool call the per-tool counter shows up in the
     Prometheus exposition body."""
     httpserver.expect_request("/v1/ping", method="GET").respond_with_json({"ok": True})
@@ -180,12 +166,10 @@ async def test_metrics_endpoint_exposes_hub_counters_after_tool_call(
         """,
     )
 
-    async with _serve(tools_dir) as url, Client(url) as client:
+    async with _serve(tools_dir) as base_url, Client(f"{base_url}/mcp/") as client:
         await client.call_tool("demo.ping", {})
-        # url ends with /mcp/; trim and hit /metrics on the same origin.
-        metrics_url = url.rsplit("/mcp/", 1)[0] + "/metrics"
         async with httpx.AsyncClient() as http:
-            resp = await http.get(metrics_url)
+            resp = await http.get(f"{base_url}/metrics")
 
     assert resp.status_code == 200
     body = resp.text

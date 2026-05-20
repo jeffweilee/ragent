@@ -18,15 +18,13 @@ the system's `httpx.AsyncClient(verify=...)`.
 from __future__ import annotations
 
 import asyncio
-import json
-import logging
 import ssl
 import textwrap
 from pathlib import Path
 
 import pytest
-import structlog
 from prometheus_client import REGISTRY
+from structlog.testing import capture_logs
 
 from ragent.bootstrap.metrics import (
     record_mcp_hub_load_failure,
@@ -250,16 +248,12 @@ def test_make_client_passes_verify_through_to_httpx():
 
 @pytest.mark.asyncio
 async def test_build_hub_emits_load_failure_with_structured_fields_and_increments_counter(
-    tmp_path: Path, caplog: pytest.LogCaptureFixture
+    tmp_path: Path,
 ):
-    structlog.configure(
-        processors=[structlog.processors.add_log_level, structlog.processors.JSONRenderer()],
-        logger_factory=structlog.stdlib.LoggerFactory(),
-        wrapper_class=structlog.stdlib.BoundLogger,
-        cache_logger_on_first_use=False,
-    )
-    caplog.set_level(logging.WARNING)
-
+    """Uses `structlog.testing.capture_logs` (NOT `caplog` + stdlib bridge)
+    because the stdlib route flakes in CI's pytest-cov instrumented run
+    even though it passes locally — see docs/00_journal.md row
+    2026-05-20 'Log Capture Bridge'."""
     bad = tmp_path / "broken.yaml"
     bad.write_text(
         textwrap.dedent(
@@ -285,10 +279,11 @@ async def test_build_hub_emits_load_failure_with_structured_fields_and_increment
         {"system": "broken", "phase": "tool_parse"},
     )
 
-    bundle = build_hub(tmp_path)
+    with capture_logs() as captured:
+        bundle = build_hub(tmp_path)
+
     try:
-        events = [json.loads(r.message) for r in caplog.records if r.message.startswith("{")]
-        load_fails = [e for e in events if e.get("event") == "mcp_hub.load_failure"]
+        load_fails = [e for e in captured if e.get("event") == "mcp_hub.load_failure"]
         assert any(
             e.get("system") == "broken"
             and e.get("phase") == "tool_parse"
