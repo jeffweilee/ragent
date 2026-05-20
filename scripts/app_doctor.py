@@ -490,6 +490,132 @@ def check_ai_endpoints() -> None:
     _try("J1→J2 token exchange", _exchange)
 
 
+# ------------------------------------------------------------------ OIDC
+
+
+def check_oidc() -> None:
+    _section("OIDC (JWT verification)")
+
+    from ragent.utility.env import bool_env
+
+    if bool_env("RAGENT_AUTH_DISABLED", False):
+        _skip("OIDC", "RAGENT_AUTH_DISABLED=true — JWT verifier not built")
+        return
+    if bool_env("RAGENT_TRUST_X_USER_ID_HEADER", False):
+        _skip("OIDC", "RAGENT_TRUST_X_USER_ID_HEADER=true — JWT verifier not built")
+        return
+
+    domain = os.environ.get("OIDC_DOMAIN", "").strip()
+    audience = os.environ.get("OIDC_AUDIENCE", "").strip()
+
+    if domain:
+        _ok("OIDC_DOMAIN", domain)
+    else:
+        _fail("OIDC_DOMAIN", "unset — required when RAGENT_AUTH_DISABLED=false")
+    if audience:
+        _ok("OIDC_AUDIENCE", audience)
+    else:
+        _fail("OIDC_AUDIENCE", "unset — required when RAGENT_AUTH_DISABLED=false")
+
+    if not domain:
+        return
+
+    use_https = bool_env("OIDC_USE_HTTPS", True)
+    verify_ssl = bool_env("OIDC_VERIFY_SSL", True)
+    scheme = "https" if use_https else "http"
+    discovery_url = f"{scheme}://{domain}/.well-known/openid-configuration"
+    jwks_uri: str | None = None
+
+    def _discovery() -> str:
+        nonlocal jwks_uri
+        import httpx
+
+        with httpx.Client(timeout=5.0, verify=verify_ssl) as c:
+            resp = c.get(discovery_url)
+        if resp.status_code >= 400:
+            raise RuntimeError(f"HTTP {resp.status_code} from {discovery_url}")
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise RuntimeError(f"non-JSON discovery response from {discovery_url}") from exc
+        missing = [k for k in ("issuer", "jwks_uri") if k not in data]
+        if missing:
+            raise RuntimeError(f"discovery missing keys: {missing}")
+        jwks_uri = data["jwks_uri"]
+        return f"issuer={data['issuer']}"
+
+    _try("OIDC discovery", _discovery)
+
+    if jwks_uri is None:
+        _skip("JWKS fetch", "discovery failed — see above")
+        return
+
+    def _jwks() -> str:
+        import httpx
+
+        with httpx.Client(timeout=5.0, verify=verify_ssl) as c:
+            resp = c.get(jwks_uri)
+        if resp.status_code >= 400:
+            raise RuntimeError(f"HTTP {resp.status_code} from {jwks_uri}")
+        try:
+            keys = resp.json().get("keys")
+        except ValueError as exc:
+            raise RuntimeError(f"non-JSON JWKS response from {jwks_uri}") from exc
+        if not keys:
+            raise RuntimeError(f"JWKS has no keys at {jwks_uri}")
+        return f"{len(keys)} key(s)"
+
+    _try("JWKS fetch", _jwks)
+
+
+# ------------------------------------------------------------------ unprotect
+
+
+def check_unprotect() -> None:
+    _section("Unprotect API")
+
+    from ragent.utility.env import bool_env
+
+    if not bool_env("UNPROTECT_ENABLED", False):
+        _skip("unprotect", "UNPROTECT_ENABLED=false — worker bypasses unprotect step")
+        return
+
+    required = ("UNPROTECT_API_URL", "UNPROTECT_APIKEY", "UNPROTECT_DELEGATED_USER_SUFFIX")
+    for var in required:
+        val = os.environ.get(var, "").strip()
+        if not val:
+            _fail(var, "unset — required when UNPROTECT_ENABLED=true")
+        elif var == "UNPROTECT_APIKEY":
+            _ok(var, "set (redacted)")
+        else:
+            _ok(var, val)
+
+    url = os.environ.get("UNPROTECT_API_URL", "").strip()
+    if not url:
+        return
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.hostname:
+        _fail("UNPROTECT_API_URL format", f"invalid URL {url!r}")
+        return
+
+    def _probe() -> str:
+        import httpx
+
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        try:
+            _tcp(parsed.hostname, port, timeout=2.0)
+        except OSError as exc:
+            raise RuntimeError(f"TCP {parsed.hostname}:{port} unreachable: {exc}") from exc
+        try:
+            with httpx.Client(timeout=3.0, verify=False) as c:
+                resp = c.head(url)
+            return f"{parsed.hostname}:{port} HTTP {resp.status_code}"
+        except httpx.HTTPError:
+            return f"{parsed.hostname}:{port} TCP ok (HTTP probe skipped)"
+
+    _try("UNPROTECT_API_URL reachability", _probe)
+
+
 # ------------------------------------------------------------------ live API
 
 
@@ -528,7 +654,10 @@ def main() -> int:
     ap.add_argument(
         "--skip",
         default="",
-        help="comma-separated sections to skip: tools,env,mariadb,es,redis,minio,ai,live",
+        help=(
+            "comma-separated sections to skip: "
+            "tools,env,mariadb,es,redis,minio,ai,oidc,unprotect,live"
+        ),
     )
     args = ap.parse_args()
     skip = {s.strip() for s in args.skip.split(",") if s.strip()}
@@ -552,6 +681,10 @@ def main() -> int:
         check_minio()
     if "ai" not in skip:
         check_ai_endpoints()
+    if "oidc" not in skip:
+        check_oidc()
+    if "unprotect" not in skip:
+        check_unprotect()
     if args.probe_live and "live" not in skip:
         check_live_api()
 
