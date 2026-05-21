@@ -15,11 +15,13 @@ def _sse_lines(deltas: list[str], usage: dict | None = None) -> list[bytes]:
     for d in deltas:
         payload = {"choices": [{"delta": {"content": d}, "finish_reason": None}]}
         lines.append(f"data: {json.dumps(payload)}\n\n".encode())
-    # done event with usage
-    done_payload: dict = {"choices": [{"delta": {}, "finish_reason": "stop"}]}
+    # finish_reason stop chunk (no content, no usage)
+    lines.append(
+        f"data: {json.dumps({'choices': [{'delta': {}, 'finish_reason': 'stop'}]})}\n\n".encode()
+    )
+    # separate usage chunk — OpenAI include_usage=true sends choices:[] with usage
     if usage:
-        done_payload["usage"] = usage
-    lines.append(f"data: {json.dumps(done_payload)}\n\n".encode())
+        lines.append(f"data: {json.dumps({'choices': [], 'usage': usage})}\n\n".encode())
     lines.append(b"data: [DONE]\n\n")
     return lines
 
@@ -173,3 +175,36 @@ def test_stream_wraps_timeout_as_upstream_timeout_error():
         list(client.stream(messages=[{"role": "user", "content": "q"}], model="m"))
     assert exc_info.value.error_code == "LLM_TIMEOUT"
     assert exc_info.value.http_status == 504
+
+
+def test_stream_usage_out_populated_when_api_returns_usage():
+    """usage_out collector receives the usage dict from the terminal SSE chunk."""
+    usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+    http = _mock_streaming_http(["Hello", " world"], usage=usage)
+    client = LLMClient(api_url="https://llm.example.com", http=http, get_token=lambda: "tok")
+    collector: list = []
+    deltas = list(
+        client.stream(
+            messages=[{"role": "user", "content": "hi"}],
+            model="m",
+            usage_out=collector,
+        )
+    )
+    assert deltas == ["Hello", " world"]
+    assert collector == [usage]
+
+
+def test_stream_usage_out_empty_when_api_omits_usage():
+    """usage_out stays empty when the API does not include a usage field."""
+    http = _mock_streaming_http(["hi"])
+    client = LLMClient(api_url="https://llm.example.com", http=http, get_token=lambda: "tok")
+    collector: list = []
+    list(client.stream(messages=[{"role": "user", "content": "q"}], model="m", usage_out=collector))
+    assert collector == []
+
+
+def test_stream_usage_out_none_does_not_break():
+    """Omitting usage_out (default None) still works correctly."""
+    http = _mock_streaming_http(["hi"], usage={"prompt_tokens": 1, "completion_tokens": 1})
+    client = LLMClient(api_url="https://llm.example.com", http=http, get_token=lambda: "tok")
+    assert list(client.stream(messages=[{"role": "user", "content": "q"}], model="m")) == ["hi"]

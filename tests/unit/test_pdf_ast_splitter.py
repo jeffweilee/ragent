@@ -19,7 +19,7 @@ def _make_pdf_bytes(pages: list[str]) -> bytes:
 def _run_splitter(data: bytes) -> list:
     from haystack.dataclasses import Document as HDoc
 
-    from ragent.pipelines.factory import _PdfASTSplitter
+    from ragent.pipelines.ingest import _PdfASTSplitter
 
     splitter = _PdfASTSplitter()
     doc = HDoc(
@@ -93,7 +93,7 @@ def test_pdf_page_text_no_images_uses_fast_path():
     """Pages without images return plain get_text without calling OCR."""
     from unittest.mock import MagicMock
 
-    from ragent.pipelines.factory import _pdf_page_text
+    from ragent.pipelines.ingest import _pdf_page_text
 
     page = MagicMock()
     page.get_images.return_value = []
@@ -108,7 +108,7 @@ def test_pdf_page_text_ocr_success():
     """Pages with images use OCR; result is the OCR-extracted text."""
     from unittest.mock import MagicMock
 
-    from ragent.pipelines.factory import _pdf_page_text
+    from ragent.pipelines.ingest import _pdf_page_text
 
     page = MagicMock()
     page.get_images.return_value = [("xref",)]
@@ -125,7 +125,7 @@ def test_pdf_page_text_ocr_fallback_on_failure():
     """When OCR raises (e.g. Tesseract not installed), falls back to plain get_text."""
     from unittest.mock import MagicMock
 
-    from ragent.pipelines.factory import _pdf_page_text
+    from ragent.pipelines.ingest import _pdf_page_text
 
     page = MagicMock()
     page.get_images.return_value = [("xref",)]
@@ -159,10 +159,10 @@ def test_pdf_page_count_exceeds_cap_raises(monkeypatch):
     BEFORE the per-page extraction loop runs."""
     import pytest
 
-    from ragent.pipelines import factory
+    from ragent.pipelines import ingest
     from ragent.security.archive_guard import PdfTooManyPagesError
 
-    monkeypatch.setattr(factory, "INGEST_MAX_PDF_PAGES", 2)
+    monkeypatch.setattr(ingest, "INGEST_MAX_PDF_PAGES", 2)
     data = _make_pdf_bytes(["A", "B", "C"])  # 3 pages > cap of 2
 
     with pytest.raises(PdfTooManyPagesError) as exc_info:
@@ -177,9 +177,9 @@ def test_pdf_page_count_exceeds_cap_raises(monkeypatch):
 
 def test_pdf_page_count_at_cap_passes(monkeypatch):
     """A PDF exactly at the cap is accepted (boundary)."""
-    from ragent.pipelines import factory
+    from ragent.pipelines import ingest
 
-    monkeypatch.setattr(factory, "INGEST_MAX_PDF_PAGES", 3)
+    monkeypatch.setattr(ingest, "INGEST_MAX_PDF_PAGES", 3)
     data = _make_pdf_bytes(["A", "B", "C"])  # exactly 3 pages
     atoms = _run_splitter(data)
     assert len(atoms) == 3

@@ -55,7 +55,7 @@ def test_chat_passes_min_score_to_run_retrieval(monkeypatch):
 
 
 def test_chat_top_k_defaults_to_DEFAULT_TOP_K_when_omitted(monkeypatch):
-    from ragent.pipelines.chat import DEFAULT_TOP_K
+    from ragent.pipelines.retrieve import DEFAULT_TOP_K
 
     app = _make_app()
     client, calls = _capture_client(app, monkeypatch)
@@ -64,7 +64,7 @@ def test_chat_top_k_defaults_to_DEFAULT_TOP_K_when_omitted(monkeypatch):
 
 
 def test_chat_min_score_defaults_to_DEFAULT_MIN_SCORE_when_omitted(monkeypatch):
-    from ragent.pipelines.chat import DEFAULT_MIN_SCORE
+    from ragent.pipelines.retrieve import DEFAULT_MIN_SCORE
 
     app = _make_app()
     client, calls = _capture_client(app, monkeypatch)

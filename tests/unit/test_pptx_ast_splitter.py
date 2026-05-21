@@ -29,7 +29,7 @@ def _make_pptx_bytes(slides: list[list[str]]) -> bytes:
 def _run_splitter(data: bytes) -> list:
     from haystack.dataclasses import Document as HDoc
 
-    from ragent.pipelines.factory import _PptxASTSplitter
+    from ragent.pipelines.ingest import _PptxASTSplitter
 
     splitter = _PptxASTSplitter()
     mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation"

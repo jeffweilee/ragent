@@ -581,9 +581,8 @@ def build_retrieval_pipeline(
     pipeline = Pipeline()
 
     def _add(name: str, component: Any) -> None:
-        """Wrap with chat.step.{started,ok,failed} observability then add."""
         pipeline.add_component(
-            name, wrap_pipeline_component(component, namespace="chat", step=name)
+            name, wrap_pipeline_component(component, namespace="retrieve", step=name)
         )
 
     _add("source_hydrator", _SourceHydrator(doc_repo))

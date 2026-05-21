@@ -51,12 +51,12 @@ class _StubLLM:
 
 
 def _patch_pipelines(monkeypatch, docs):
-    from ragent.pipelines import chat as pipelines_chat
+    from ragent.pipelines import retrieve as pipelines_retrieve
     from ragent.routers import chat as chat_router_mod
     from ragent.routers import retrieve as retrieve_router_mod
 
     fake = lambda *_a, **_kw: list(docs)  # noqa: E731
-    monkeypatch.setattr(pipelines_chat, "run_retrieval", fake, raising=True)
+    monkeypatch.setattr(pipelines_retrieve, "run_retrieval", fake, raising=True)
     monkeypatch.setattr(chat_router_mod, "run_retrieval", fake, raising=True)
     monkeypatch.setattr(retrieve_router_mod, "run_retrieval", fake, raising=True)
 
@@ -141,6 +141,47 @@ def test_chat_business_log_has_safe_attributes_only(exporter, monkeypatch):
     assert "query_len" in rec
     serialized = repr(rec)
     assert "supersecret-query" not in serialized
+
+
+def test_chat_stream_llm_log_includes_token_counts(monkeypatch):
+    """The streaming path logs prompt_tokens and completion_tokens in chat.llm."""
+    usage = {"prompt_tokens": 8, "completion_tokens": 3, "total_tokens": 11}
+
+    class _StubStreamLLM:
+        def stream(self, *, usage_out=None, **_kwargs):
+            if usage_out is not None:
+                usage_out.append(usage)
+            yield "hello"
+            yield " world"
+
+        def chat(self, **_kwargs):  # pragma: no cover
+            return {"content": "", "usage": {}}
+
+    docs = [_make_doc()]
+    _patch_pipelines(monkeypatch, docs)
+    app = FastAPI()
+    app.include_router(
+        create_chat_router(retrieval_pipeline=_StubPipeline(docs), llm_client=_StubStreamLLM())
+    )
+    client = TestClient(app)
+    with structlog.testing.capture_logs() as logs:
+        resp = client.post(
+            "/chat/v1/stream",
+            json={
+                "messages": [{"role": "user", "content": "hi"}],
+                "model": "m",
+                "provider": "openai",
+                "temperature": 0.0,
+                "max_tokens": 16,
+            },
+        )
+    assert resp.status_code == 200
+    llm_logs = [e for e in logs if e.get("event") == "chat.llm"]
+    assert llm_logs, "expected chat.llm log"
+    rec = llm_logs[0]
+    assert rec.get("prompt_tokens") == 8
+    assert rec.get("completion_tokens") == 3
+    assert "completion_chars" in rec
 
 
 def test_retrieve_dedupe_log_records_count(exporter, monkeypatch):

@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock
 
 from haystack.dataclasses import Document
 
-from ragent.pipelines.chat import _SourceHydrator
+from ragent.pipelines.retrieve import _SourceHydrator
 from tests.conftest import run_in_threadpool
 
 

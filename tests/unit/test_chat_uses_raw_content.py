@@ -12,7 +12,7 @@ from unittest.mock import MagicMock
 
 from haystack.dataclasses import Document
 
-from ragent.pipelines.chat import _ExcerptTruncator, _Reranker, doc_to_source_entry
+from ragent.pipelines.retrieve import _ExcerptTruncator, _Reranker, doc_to_source_entry
 from ragent.schemas.chat import ChatRequest, build_rag_messages
 
 

@@ -41,7 +41,7 @@ def _registry(*models: EmbeddingModelConfig) -> MagicMock:
 
 
 def test_idle_state_writes_stable_vector_to_doc_embedding() -> None:
-    from ragent.pipelines.factory import DocumentEmbedder
+    from ragent.pipelines.ingest import DocumentEmbedder
 
     stable = _model("bge-m3", 1024)
     calls: list[tuple[str, list[str]]] = []
@@ -73,7 +73,7 @@ def test_idle_state_writes_stable_vector_to_doc_embedding() -> None:
 
 
 def test_dual_write_state_writes_stable_to_embedding_and_candidate_to_meta() -> None:
-    from ragent.pipelines.factory import DocumentEmbedder
+    from ragent.pipelines.ingest import DocumentEmbedder
 
     stable = _model("bge-m3", 1024)
     candidate = _model("bge-m3-v2", 768)
@@ -103,7 +103,7 @@ def test_dual_write_state_writes_stable_to_embedding_and_candidate_to_meta() -> 
 def test_dual_write_preserves_existing_meta() -> None:
     """The candidate-field injection must not clobber chunk metadata
     that earlier pipeline stages (loader, splitter, chunker) attached."""
-    from ragent.pipelines.factory import DocumentEmbedder
+    from ragent.pipelines.ingest import DocumentEmbedder
 
     stable = _model("bge-m3", 1024)
     candidate = _model("bge-m3-v2", 768)
@@ -135,7 +135,7 @@ def test_dual_write_preserves_existing_meta() -> None:
 
 
 def test_empty_documents_short_circuit_skips_embed_calls() -> None:
-    from ragent.pipelines.factory import DocumentEmbedder
+    from ragent.pipelines.ingest import DocumentEmbedder
 
     stable = _model("bge-m3", 1024)
     calls: list[str] = []
@@ -153,7 +153,7 @@ def test_empty_documents_short_circuit_skips_embed_calls() -> None:
 
 def test_each_model_invoked_once_per_run_not_once_per_text() -> None:
     """Batching invariant: many texts → one embed call per model."""
-    from ragent.pipelines.factory import DocumentEmbedder
+    from ragent.pipelines.ingest import DocumentEmbedder
 
     stable = _model("bge-m3", 1024)
     candidate = _model("bge-m3-v2", 768)
@@ -178,7 +178,7 @@ def test_registry_with_no_write_models_raises() -> None:
     chunks with no embedding rather than silently produce field-less docs."""
     import pytest
 
-    from ragent.pipelines.factory import DocumentEmbedder
+    from ragent.pipelines.ingest import DocumentEmbedder
 
     reg = MagicMock()
     reg.write_models.return_value = []

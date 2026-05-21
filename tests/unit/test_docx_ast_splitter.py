@@ -50,7 +50,7 @@ def _make_docx_with_table(headers: list[str], rows: list[list[str]]) -> bytes:
 def _run_splitter(data: bytes) -> list:
     from haystack.dataclasses import Document as HDoc
 
-    from ragent.pipelines.factory import _DocxASTSplitter
+    from ragent.pipelines.ingest import _DocxASTSplitter
 
     splitter = _DocxASTSplitter()
     mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"

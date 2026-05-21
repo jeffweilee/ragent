@@ -19,7 +19,7 @@ from jsonschema import Draft7Validator, ValidationError
 from ragent import __version__ as _RAGENT_VERSION
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
-from ragent.pipelines.chat import (
+from ragent.pipelines.retrieve import (
     DEFAULT_TOP_K,
     build_es_filters,
     dedupe_by_document,

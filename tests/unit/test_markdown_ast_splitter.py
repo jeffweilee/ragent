@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from haystack.dataclasses import Document
 
-from ragent.pipelines.factory import _MarkdownASTSplitter
+from ragent.pipelines.ingest import _MarkdownASTSplitter
 
 
 def _run(src: str) -> list[Document]:

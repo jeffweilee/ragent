@@ -67,8 +67,8 @@ def build_container() -> Container:
     from ragent.clients.llm import LLMClient
     from ragent.clients.rate_limiter import RateLimiter
     from ragent.clients.rerank import RerankClient
-    from ragent.pipelines.chat import EXCERPT_MAX_CHARS_DEFAULT, build_retrieval_pipeline
-    from ragent.pipelines.factory import DocumentEmbedder, build_ingest_pipeline
+    from ragent.pipelines.ingest import DocumentEmbedder, build_ingest_pipeline
+    from ragent.pipelines.retrieve import EXCERPT_MAX_CHARS_DEFAULT, build_retrieval_pipeline
     from ragent.plugins.registry import PluginRegistry
     from ragent.plugins.stub_graph import StubGraphExtractor
     from ragent.plugins.vector import VectorExtractor
@@ -253,7 +253,7 @@ def build_container() -> Container:
     feedback_retriever = None
     feedback_weight = 0.5
     if feedback_enabled:
-        from ragent.pipelines.chat import _FeedbackMemoryRetriever
+        from ragent.pipelines.retrieve import _FeedbackMemoryRetriever
         from ragent.repositories.feedback_repository import FeedbackRepository
 
         feedback_repository = FeedbackRepository(engine)

@@ -8,7 +8,7 @@ import pytest
 from haystack.dataclasses import Document
 from haystack_integrations.document_stores.elasticsearch import ElasticsearchDocumentStore
 
-from ragent.pipelines.chat import _LLMGenerator, _Reranker, build_retrieval_pipeline
+from ragent.pipelines.retrieve import _LLMGenerator, _Reranker, build_retrieval_pipeline
 
 
 def test_reranker_reorders_documents_by_score() -> None:

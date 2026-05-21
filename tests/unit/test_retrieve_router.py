@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from haystack.dataclasses import Document
 
-from ragent.pipelines.chat import run_retrieval
+from ragent.pipelines.retrieve import run_retrieval
 from ragent.routers.retrieve import create_retrieve_router
 
 
@@ -149,7 +149,7 @@ def test_top_k_passed_to_run_retrieval(app, monkeypatch):
 
 
 def test_top_k_defaults_to_configured_value(app, monkeypatch):
-    from ragent.pipelines.chat import DEFAULT_TOP_K
+    from ragent.pipelines.retrieve import DEFAULT_TOP_K
 
     calls: list = []
     client = _client_capture(app, monkeypatch, calls)
@@ -310,7 +310,7 @@ def test_run_retrieval_omits_feedback_retriever_entry_when_no_top_k_no_scope():
 
 def test_min_score_defaults_to_DEFAULT_MIN_SCORE(app, monkeypatch):
     """When RETRIEVAL_MIN_SCORE is not set, min_score defaults to DEFAULT_MIN_SCORE (None)."""
-    from ragent.pipelines.chat import DEFAULT_MIN_SCORE
+    from ragent.pipelines.retrieve import DEFAULT_MIN_SCORE
 
     calls: list = []
     client = _client_capture(app, monkeypatch, calls)
@@ -324,10 +324,10 @@ def test_min_score_env_driven_default_flows_to_router(monkeypatch):
     import sys
 
     monkeypatch.setenv("RETRIEVAL_MIN_SCORE", "0.6")
-    sys.modules.pop("ragent.pipelines.chat", None)
+    sys.modules.pop("ragent.pipelines.retrieve", None)
     sys.modules.pop("ragent.routers.retrieve", None)
     sys.modules.pop("ragent.schemas.chat", None)
-    importlib.import_module("ragent.pipelines.chat")
+    importlib.import_module("ragent.pipelines.retrieve")
     importlib.import_module("ragent.routers.retrieve")
 
     from ragent.routers.retrieve import RetrieveRequest
@@ -336,9 +336,9 @@ def test_min_score_env_driven_default_flows_to_router(monkeypatch):
     assert req.min_score == pytest.approx(0.6)
 
     # Teardown: restore clean module state
-    sys.modules.pop("ragent.pipelines.chat", None)
+    sys.modules.pop("ragent.pipelines.retrieve", None)
     sys.modules.pop("ragent.routers.retrieve", None)
     sys.modules.pop("ragent.schemas.chat", None)
-    importlib.import_module("ragent.pipelines.chat")
+    importlib.import_module("ragent.pipelines.retrieve")
     importlib.import_module("ragent.routers.retrieve")
     importlib.import_module("ragent.schemas.chat")

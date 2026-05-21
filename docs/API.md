@@ -295,7 +295,7 @@ data: {"type": "delta", "content": " the documents..."}
 data: {"type": "done", "content": "Based on the documents...", "model": "gptoss-120b", "provider": "openai", "sources": [...], "request_id": "01J9...", "feedback_token": "<base64url>.<hmac_hex>"}
 ```
 
-> The `done` event carries the same `request_id` + `feedback_token` fields as the non-streaming response (conditional on `CHAT_FEEDBACK_ENABLED` + `X-User-Id`).
+> The `done` event carries the same `request_id` + `feedback_token` fields as the non-streaming response (conditional on `CHAT_FEEDBACK_ENABLED` + `X-User-Id`). Note: the `done` event body omits `usage` — token counts are captured in server-side observability logs (`chat.llm` event) but not returned to callers in P1.
 
 Error event: `{"type": "error", "error_code": "LLM_ERROR", "message": "..."}`
 

@@ -8,7 +8,7 @@ def _build(join_mode: str):
 
     from haystack_integrations.document_stores.elasticsearch import ElasticsearchDocumentStore
 
-    from ragent.pipelines.chat import build_retrieval_pipeline
+    from ragent.pipelines.retrieve import build_retrieval_pipeline
 
     embedder = MagicMock()
     doc_store = MagicMock(spec=ElasticsearchDocumentStore)
@@ -67,7 +67,7 @@ def test_top_k_propagated_to_retrievers_and_joiner():
 
     from haystack_integrations.document_stores.elasticsearch import ElasticsearchDocumentStore
 
-    from ragent.pipelines.chat import build_retrieval_pipeline
+    from ragent.pipelines.retrieve import build_retrieval_pipeline
 
     pipeline = build_retrieval_pipeline(
         embedder=MagicMock(),
@@ -89,7 +89,7 @@ def _build_with_feedback(join_mode: str, feedback_retriever):
 
     from haystack_integrations.document_stores.elasticsearch import ElasticsearchDocumentStore
 
-    from ragent.pipelines.chat import build_retrieval_pipeline
+    from ragent.pipelines.retrieve import build_retrieval_pipeline
 
     return build_retrieval_pipeline(
         embedder=MagicMock(),
@@ -104,7 +104,7 @@ def _build_with_feedback(join_mode: str, feedback_retriever):
 def _make_feedback_retriever():
     from unittest.mock import MagicMock
 
-    from ragent.pipelines.chat import _FeedbackMemoryRetriever
+    from ragent.pipelines.retrieve import _FeedbackMemoryRetriever
 
     return _FeedbackMemoryRetriever(es_client=MagicMock(), doc_repo=MagicMock())
 

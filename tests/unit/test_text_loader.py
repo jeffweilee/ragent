@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from ragent.pipelines.factory import _TextLoader
+from ragent.pipelines.ingest import _TextLoader
 
 
 def test_loader_builds_single_document_with_meta() -> None:

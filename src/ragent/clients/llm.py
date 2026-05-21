@@ -42,6 +42,7 @@ class LLMClient:
         model: str,
         temperature: float = 0.7,
         max_tokens: int = 4096,
+        usage_out: list | None = None,
     ) -> Generator[str, None, None]:
         with _tracer.start_as_current_span("llm.stream") as span:
             span.set_attribute("peer.service", "llm")
@@ -52,7 +53,9 @@ class LLMClient:
                     self._sleep(2.0)
                 try:
                     span.set_attribute("retry_attempt", attempt)
-                    yield from self._do_stream(messages, model, temperature, max_tokens)
+                    yield from self._do_stream(
+                        messages, model, temperature, max_tokens, usage_out=usage_out
+                    )
                     logger.info("llm.call", peer_service="llm", model=model, retry_attempt=attempt)
                     return
                 except Exception as exc:
@@ -76,7 +79,9 @@ class LLMClient:
                 error_code=error_code,
             ) from last_exc
 
-    def _do_stream(self, messages, model, temperature, max_tokens) -> Generator[str, None, None]:
+    def _do_stream(
+        self, messages, model, temperature, max_tokens, usage_out: list | None = None
+    ) -> Generator[str, None, None]:
         with self._http.post(
             self._url,
             json={
@@ -105,6 +110,8 @@ class LLMClient:
                     content = choices[0].get("delta", {}).get("content")
                     if content:
                         yield content
+                if usage_out is not None and "usage" in payload:
+                    usage_out.append(payload["usage"])
 
     def chat(
         self,

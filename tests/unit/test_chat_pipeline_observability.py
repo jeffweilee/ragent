@@ -1,9 +1,10 @@
-"""T-APL.6 — Per-step structured logging for chat / retrieve pipeline components.
+"""T-APL.6 — Per-step structured logging for the retrieve pipeline components.
 
-Mirrors `test_pipeline_logging.py` (ingest) but for the `chat` namespace.
-Each chat pipeline component emits ``chat.step.{started,ok,failed}`` via
-``structlog.get_logger("ragent.chat")``; the wrapper inherits context vars
-bound by ``RequestLoggingMiddleware`` (``request_id``, ``user_id``).
+Each retrieval pipeline component emits ``retrieve.step.{started,ok,failed}``
+via ``structlog.get_logger("ragent.retrieve")``; the wrapper inherits context
+vars bound by ``RequestLoggingMiddleware`` (``request_id``, ``user_id``).
+The generic ``wrap_pipeline_component`` helper supports any namespace; this
+file tests both the retrieve-pipeline wiring and generic namespace behaviour.
 """
 
 from __future__ import annotations
@@ -16,12 +17,12 @@ import structlog
 from haystack.dataclasses import Document
 from haystack_integrations.document_stores.elasticsearch import ElasticsearchDocumentStore
 
-from ragent.pipelines.chat import (
+from ragent.pipelines.observability import wrap_pipeline_component
+from ragent.pipelines.retrieve import (
     _FeedbackMemoryRetriever,
     build_retrieval_pipeline,
     run_retrieval,
 )
-from ragent.pipelines.observability import wrap_pipeline_component
 
 
 class _FakeComponent:
@@ -34,7 +35,7 @@ def test_wrap_pipeline_component_emits_namespaced_events() -> None:
     wrap_pipeline_component(comp, namespace="chat", step="reranker")
     with structlog.testing.capture_logs() as logs:
         comp.run(documents=[Document(), Document(), Document()])
-    events = [e for e in logs if e.get("event", "").startswith("chat.step.")]
+    events = [e for e in logs if e.get("event") in {"chat.step.started", "chat.step.ok"}]
     assert [e["event"] for e in events] == ["chat.step.started", "chat.step.ok"]
     ok = events[1]
     assert ok["step"] == "reranker"
@@ -68,7 +69,7 @@ def test_wrap_pipeline_component_ingest_namespace_still_emits_ingest_events() ->
     wrap_pipeline_component(comp, namespace="ingest", step="splitter")
     with structlog.testing.capture_logs() as logs:
         comp.run(documents=[Document()])
-    events = [e for e in logs if e.get("event", "").startswith("ingest.step.")]
+    events = [e for e in logs if e.get("event") in {"ingest.step.started", "ingest.step.ok"}]
     assert [e["event"] for e in events] == ["ingest.step.started", "ingest.step.ok"]
 
 
@@ -159,8 +160,8 @@ def test_count_documents_only_counts_actual_document_lists() -> None:
     assert _count_documents([1, 2, 3, 4]) is None
 
 
-def test_build_retrieval_pipeline_wraps_each_component_with_chat_namespace() -> None:
-    """Every component the factory adds emits a `chat.step.ok` on a happy-path run.
+def test_build_retrieval_pipeline_wraps_each_component_with_retrieve_namespace() -> None:
+    """Every component the factory adds emits a `retrieve.step.ok` on a happy-path run.
 
     Uses join_mode=bm25_only to minimise the mock surface: only the BM25
     retriever needs a fake doc-producing run, no embedder is constructed.
@@ -183,5 +184,28 @@ def test_build_retrieval_pipeline_wraps_each_component_with_chat_namespace() -> 
     with structlog.testing.capture_logs() as logs:
         run_retrieval(pipeline, query="alpha", top_k=1)
 
-    ok_events = {e["step"] for e in logs if e.get("event") == "chat.step.ok"}
+    ok_events = {e["step"] for e in logs if e.get("event") == "retrieve.step.ok"}
     assert {"bm25_retriever", "source_hydrator", "excerpt_truncator"}.issubset(ok_events)
+    # Must NOT emit chat.step.ok — SRP: retrieve endpoint must not pollute chat namespace.
+    assert not any(e.get("event") == "chat.step.ok" for e in logs)
+
+
+def test_wrap_pipeline_component_emits_debug_docs_on_document_output() -> None:
+    """After a successful run returning documents, a DEBUG `.docs` event is emitted
+    with {document_id, chunk_id, score} for each output document."""
+
+    class _PassthroughComponent:
+        def run(self, documents: list) -> dict:
+            return {"documents": documents}
+
+    comp = _PassthroughComponent()
+    wrap_pipeline_component(comp, namespace="retrieve", step="hydrator")
+    doc = Document(id="chunk-1", content="hello", meta={"document_id": "doc-A"}, score=0.92)
+
+    with structlog.testing.capture_logs() as logs:
+        comp.run(documents=[doc])
+
+    debug_events = [e for e in logs if e.get("event") == "retrieve.step.ok.docs"]
+    assert len(debug_events) == 1
+    entries = debug_events[0]["doc_refs"]
+    assert entries == [{"document_id": "doc-A", "chunk_id": "chunk-1", "score": 0.92}]

@@ -141,6 +141,22 @@ def wrap_pipeline_component(
             if chunks_out is not None:
                 span.set_attribute("chunks_out", chunks_out)
             span.set_attribute("duration_ms", duration_ms)
+            if isinstance(result, dict) and "documents" in result:
+                docs_out = result["documents"]
+                if _count_documents(docs_out) is not None:
+                    logger.info(
+                        ok_event + ".docs",
+                        step=step,
+                        doc_refs=[
+                            {
+                                "document_id": (d.meta or {}).get("document_id"),
+                                "chunk_id": d.id,
+                                "score": d.score,
+                            }
+                            for d in docs_out
+                        ],
+                        **_ctx(),
+                    )
         # Re-snapshot contextvars: components may bind new ones during run()
         # (e.g. _MimeAwareSplitter sets `splitter=<label>`) — the ok payload
         # MUST include those, so do not reuse the pre-run `ctx` here.

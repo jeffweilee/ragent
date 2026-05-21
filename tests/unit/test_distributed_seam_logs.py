@@ -184,12 +184,14 @@ async def test_supersede_completed_fires_after_task(monkeypatch: pytest.MonkeyPa
 def test_hydrator_logs_dropped_count_when_chunks_filtered(monkeypatch: pytest.MonkeyPatch):
     """Hydrator MUST emit chat.hydrator.dropped with dropped_count when ES
     returns chunks whose document_id is not in the READY-only DB result."""
-    from ragent.pipelines import chat as chat_mod
+    from ragent.pipelines import retrieve as retrieve_mod
 
     repo = MagicMock()
     repo.get_sources_by_document_ids = lambda _ids: {"R1": ("app", "DOC-R", "Title")}
 
-    monkeypatch.setattr(chat_mod.anyio.from_thread, "run", lambda fn, *args, **kw: fn(*args, **kw))
+    monkeypatch.setattr(
+        retrieve_mod.anyio.from_thread, "run", lambda fn, *args, **kw: fn(*args, **kw)
+    )
 
     docs = [
         Document(content="a", meta={"document_id": "R1"}),  # kept
@@ -197,7 +199,7 @@ def test_hydrator_logs_dropped_count_when_chunks_filtered(monkeypatch: pytest.Mo
         Document(content="c", meta={"document_id": "X2"}),  # dropped
     ]
 
-    h = chat_mod._SourceHydrator(doc_repo=repo)
+    h = retrieve_mod._SourceHydrator(doc_repo=repo)
     with structlog.testing.capture_logs() as logs:
         result = h.run(docs)
 
@@ -213,20 +215,22 @@ def test_hydrator_logs_dropped_count_when_chunks_filtered(monkeypatch: pytest.Mo
 def test_hydrator_does_not_log_when_no_drop(monkeypatch: pytest.MonkeyPatch):
     """No dropped_count event when every chunk passes the READY gate
     (avoid log spam on the happy path)."""
-    from ragent.pipelines import chat as chat_mod
+    from ragent.pipelines import retrieve as retrieve_mod
 
     repo = MagicMock()
     repo.get_sources_by_document_ids = lambda _ids: {
         "R1": ("app", "DOC-R", "Title"),
         "R2": ("app", "DOC-R", "Title"),
     }
-    monkeypatch.setattr(chat_mod.anyio.from_thread, "run", lambda fn, *args, **kw: fn(*args, **kw))
+    monkeypatch.setattr(
+        retrieve_mod.anyio.from_thread, "run", lambda fn, *args, **kw: fn(*args, **kw)
+    )
 
     docs = [
         Document(content="a", meta={"document_id": "R1"}),
         Document(content="b", meta={"document_id": "R2"}),
     ]
-    h = chat_mod._SourceHydrator(doc_repo=repo)
+    h = retrieve_mod._SourceHydrator(doc_repo=repo)
     with structlog.testing.capture_logs() as logs:
         h.run(docs)
     assert "chat.hydrator.dropped" not in [e["event"] for e in logs]
