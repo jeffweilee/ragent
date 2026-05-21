@@ -207,5 +207,5 @@ def test_wrap_pipeline_component_emits_debug_docs_on_document_output() -> None:
 
     debug_events = [e for e in logs if e.get("event") == "retrieve.step.ok.docs"]
     assert len(debug_events) == 1
-    entries = debug_events[0]["documents"]
+    entries = debug_events[0]["doc_refs"]
     assert entries == [{"document_id": "doc-A", "chunk_id": "chunk-1", "score": 0.92}]

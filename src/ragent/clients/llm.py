@@ -110,7 +110,7 @@ class LLMClient:
                     content = choices[0].get("delta", {}).get("content")
                     if content:
                         yield content
-                elif usage_out is not None and "usage" in payload:
+                if usage_out is not None and "usage" in payload:
                     usage_out.append(payload["usage"])
 
     def chat(

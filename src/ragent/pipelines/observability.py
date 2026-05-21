@@ -147,7 +147,7 @@ def wrap_pipeline_component(
                     logger.info(
                         ok_event + ".docs",
                         step=step,
-                        documents=[
+                        doc_refs=[
                             {
                                 "document_id": (d.meta or {}).get("document_id"),
                                 "chunk_id": d.id,
