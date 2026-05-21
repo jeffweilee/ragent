@@ -431,7 +431,9 @@ class _PdfASTSplitter:
                     try:
                         md = pymupdf4llm.to_markdown(pdf, pages=[page_idx], use_ocr=True)
                     except Exception:
-                        _logger.warning("pdf_to_markdown_fallback", page=page_idx + 1, exc_info=True)
+                        _logger.warning(
+                            "pdf_to_markdown_fallback", page=page_idx + 1, exc_info=True
+                        )
                         md = pdf[page_idx].get_text("text").strip()
                     fitz.TOOLS.store_shrink(100)
                     if not md.strip():

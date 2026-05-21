@@ -97,7 +97,6 @@ def test_pdf_splitter_calls_to_markdown_per_page(monkeypatch):
     """to_markdown is called once per page with pages=[i] and use_ocr=True."""
     from unittest.mock import patch
 
-
     calls = []
 
     def fake_to_markdown(pdf, *, pages, use_ocr, **kwargs):
