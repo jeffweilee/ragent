@@ -226,7 +226,7 @@ Request schema is shared by both endpoints. Only `messages` is required.
   "provider": "openai",
   "model": "gptoss-120b",
   "temperature": 0.7,
-  "max_tokens": 4096,
+  "maxTokens": 4096,
   "source_app": "confluence",
   "source_meta": "engineering",
   "top_k": 20,
@@ -434,8 +434,9 @@ curl -X POST http://localhost:8000/feedback/v1 \
 
 | Endpoint | Description |
 |---|---|
-| `GET /livez` | Liveness probe — always 200 if process is up |
-| `GET /readyz` | Readiness probe — checks all dependencies (DB, ES, Redis, MinIO) |
+| `GET /livez` | Liveness probe — always `200 {"status":"ok"}` if process is up |
+| `GET /startupz` | Startup probe — `503` until every `/readyz` probe has passed at least once; latches `200` permanently after first all-green. Use as k8s `startupProbe`. |
+| `GET /readyz` | Readiness probe — checks all dependencies (DB, ES, Redis, MinIO); `503` with `application/problem+json` if any fail |
 | `GET /metrics` | Prometheus metrics (text/plain) |
 
 ```bash

@@ -239,6 +239,28 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 ---
 
 
+### Production-Wiring Smoke Tests
+
+- **Rule: When a factory function with multiple constructor branches grows a new branch, integration tests MUST be parametrized over every branch the production composition root can reach.** The parametrize ids are part of the public test contract — removing one is a coverage regression. Canonical example: `build_retrieval_pipeline` has `legacy` and `registry` modes; every filter / hydrator / reranker integration test parametrizes both.
+
+- **Rule: Each composition root factory (`build_<X>`) must have a "production-wiring smoke" test** that calls the factory with the **exact same kwargs `composition.py` passes** (modulo DI for external services) and runs one representative request end-to-end. The test's existence is asserted by a `tests/unit/test_composition_smoke_coverage.py` registry — any new composition-root constructor must register a paired smoke test or fail collection.
+
+- **PR review checklist:** for every new constructor branch under `src/ragent/pipelines/` or `src/ragent/bootstrap/`, grep the matching integration test file for the new branch's distinguishing kwarg (e.g. `registry=`, `embed_query_callable=`). Absent ⇒ block.
+
+---
+
+
+### Falsy-Value Guard for Constructor/Function Params
+
+- **Rule: Use `value if value is not None else <fallback>` (NOT `value or <fallback>`) for any parameter where `0`, `0.0`, `False`, or `""` is a valid deliberate operator choice** (timeouts, `top_k`, `min_score`, thresholds, weights, ports, sizes). `value or default` is acceptable ONLY when the falsy case is itself a programming error (e.g. `batch_size=0` causes `range(0, n, 0) → ValueError`, `auth_header_name=""` is nonsense for an HTTP header).
+
+- **Timeout semantics (doc at every call site):** `timeout=0` ⇒ **fail-fast** (httpx `ReadTimeout`/`ConnectTimeout`; urllib3/ES non-blocking socket `settimeout(0)`). `timeout=None` ⇒ no timeout. Never collapse `0` to the env default.
+
+- **Rule: Operator-facing env helpers that back a param MUST use `ragent.utility.env.float_env_or(passed, var, default)`** (or the typed sibling) rather than inline `float(os.environ.get(var, "30"))` — the helper emits an operator-readable `[ragent] <var> must be a float` diagnostic on malformed input instead of a bare `ValueError`.
+
+---
+
+
 ### Shell Hook Testing
 
 - **Rule: Every `.claude/hooks/` behaviour path must have an automated subprocess test.** Hooks are load-bearing quality gates; the "harness-level scaffolding exempt from TDD" assumption is rescinded. Minimum coverage for any hook (new or modified):

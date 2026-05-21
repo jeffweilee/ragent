@@ -1,25 +1,18 @@
 # 00_spec.md — Distributed RAG Agent
 
 > Source: `docs/draft.md` · Standard: `docs/00_rule.md`
-
 ---
-
 ## 1. Mission
-
 - Enterprise internal knowledge retrieval backend.
 - Streaming chat answers grounded in private documents.
 - Pluggable extractor architecture: graph reasoning (P3) without pipeline rewrite.
-
 ### Auth Modes (switchable; enforced by startup guard)
 - **Mode A — open auth** (`RAGENT_AUTH_DISABLED=true`): no auth surface; `X-User-Id` header trusted; recorded as `documents.create_user` (audit only, not authorization). Guard requires `RAGENT_ENV=dev` AND `RAGENT_HOST=127.0.0.1` — loopback dev only.
 - **Mode B — trust-header** (`RAGENT_AUTH_DISABLED=false`, `RAGENT_TRUST_X_USER_ID_HEADER=true`): JWT middleware bypassed; `X-User-Id` header trusted directly. Guard requires `RAGENT_ENV=dev` — dev override only.
 - **Mode C — OIDC JWT** (both flags false): full JWKS-backed JWT verification (§3.5). Any env, any bind. Guard requires `OIDC_DOMAIN` and `OIDC_AUDIENCE`.
 - Permission gating remains **DISABLED**. The Permission Layer (§3.5) ships in **P2**, backed by OpenFGA, and stays out of the retrieval/ES path.
-
 ---
-
 ## 2. Phase 1 Scope
-
 | In P1 | Deferred |
 |---|---|
 | Ingest CRUD (Create / Read / List / Delete) with cascade | Permission Layer (OpenFGA) → P2 |
@@ -28,72 +21,40 @@
 | Third-party clients: Embedding, LLM, Rerank, TokenManager | Rerank wiring → P2 |
 | Reconciler + locking | MCP real handler → P2 |
 | Observability: OTEL auto-trace | — |
-
 ---
-
 ## 3. Domains
-
 ### 3.1 Ingest Lifecycle
-
-> **v2 OVERRIDE (2026-05-06)** — see `docs/team/2026_05_06_ingest_api_v2.md` for the full team decision; the operative contract below supersedes the v1 multipart description further down.
+> **v2 API contract:** `POST /ingest/v1` is JSON-only. Discriminator `ingest_type`:
+> - `inline` — UTF-8 `content` field; staged to MinIO `__default__`; ceiling `INGEST_INLINE_MAX_BYTES` (10 MB).
+> - `file` — caller-supplied `(minio_site, object_key)`; HEAD-probed (absent → 422 `INGEST_OBJECT_NOT_FOUND`); ceiling `INGEST_FILE_MAX_BYTES` (50 MB). No copy — worker reads caller's bucket.
+> - `upload` — `POST /ingest/v1/upload` multipart; server stages to `__default__`.
 >
-> **API:** `POST /ingest` is **JSON only** (no multipart). Body discriminator `ingest_type ∈ {inline, file}`:
-> - `inline` → `{ingest_type, mime_type, content: str, source_id, source_app, source_title, source_meta?, source_url?}`. `content` is UTF-8; size ceiling `INGEST_INLINE_MAX_BYTES` (default 10 MB) on the encoded byte length. API stages the content to MinIO `__default__` site.
-> - `file` → `{ingest_type, mime_type, minio_site, object_key, source_id, source_app, source_title, source_meta?, source_url?}`. API HEAD-probes `(minio_site, object_key)`; absent → 422 `INGEST_OBJECT_NOT_FOUND`; size > `INGEST_FILE_MAX_BYTES` (50 MB) → 413. **No copy** — worker reads from caller's bucket.
+> MIME allow-list: `text/plain`, `text/markdown`, `text/html`, DOCX, PPTX, PDF. CSV dropped. Source columns: `source_id`, `source_app`, `source_title`, `source_meta?` (≤ 1024), `source_url?` (≤ 2048). MinIO multi-site: `MINIO_SITES` JSON → `MinioSiteRegistry`; `__default__` mandatory.
 >
-> **MIME allow-list:** `text/plain`, `text/markdown`, `text/html`, `application/vnd.openxmlformats-officedocument.wordprocessingml.document` (DOCX), `application/vnd.openxmlformats-officedocument.presentationml.presentation` (PPTX), `application/pdf` (PDF). Anything else → 415 `INGEST_MIME_UNSUPPORTED`. **CSV is dropped** (was v1).
+> **Cleanup by `ingest_type`:** `inline` — MinIO deleted post-READY (blob ours); `file` — never deleted (caller-owned); `upload` — reclaimed only by explicit `DELETE /ingest/v1/{id}`.
 >
-> **Source columns:** `source_id`, `source_app`, `source_title`, `source_meta?` (free-format ≤ 1024 chars; renamed from `source_workspace` per B35) **plus new `source_url`** (opaque ≤ 2048 chars, display-only in citations).
->
-> **MinIO multi-site:** server reads `MINIO_SITES` JSON env at boot → `MinioSiteRegistry`. `__default__` is mandatory (used by inline). Sites with `read_only=true` refuse post-READY delete (`file` ingests against caller-owned buckets).
->
-> **Cleanup branching by `documents.ingest_type`:**
-> | `ingest_type` | Entry path | Worker reads from | Post-READY auto-delete | Reclaimed by `DELETE /ingest/v1/{id}` |
-> |---|---|---|---|---|
-> | `inline` | `POST /ingest/v1` JSON body (UTF-8 text only — binary MIMEs rejected at schema layer) | `__default__/<server-built object_key>` | **yes** | yes if status pre-READY (post-READY the blob is already gone) |
-> | `file`   | `POST /ingest/v1` JSON body (caller-supplied `minio_site` + `object_key`) | caller's `(minio_site, object_key)` | **no** (object isn't ours) | **no** (caller-owned) |
-> | `upload` | `POST /ingest/v1/upload` multipart (server stages binary file bytes) | `__default__/<server-built object_key>` | **no** (the only path that reclaims is explicit DELETE) | **yes** at any status |
->
-> **Storage model (revised):** chunks live **only** in ES `chunks_v1`. The MariaDB `chunks` table is **dropped**. `documents` keeps metadata. Two stores total: `documents` (MariaDB, metadata) + `chunks_v1` (ES, content + embedding + raw_content).
->
-> **Per-step structured logging (Logging Rule extension):** every pipeline component emits `event=ingest.step.{started,ok,failed}` with `{document_id, step, mime_type, duration_ms, error_code?, error?}`. Failures map to a small enum (`PIPELINE_UNROUTABLE`, `EMBEDDER_ERROR`, `ES_WRITE_ERROR`, `PIPELINE_TIMEOUT`). Happy path emits `event=ingest.ready` with chunk count. This is how operators answer "which doc, which step, why failed" from logs alone.
->
-> **State machine, locking, heartbeat, supersede, reconciler arms — unchanged from v1.** Only the ingress and pipeline interior change.
+> **Logging:** every pipeline step emits `event=ingest.step.{started,ok,failed}` with `{document_id, step, duration_ms, error_code?}`; terminal `event=ingest.ready` carries chunk count.
 
 **State machine:** `UPLOADED → PENDING → READY | FAILED`; `DELETING` transient on delete.
 
-**Locking discipline:**
-- Status mutations use **atomic conditional UPDATE** with rowcount-based dispatch — no `SELECT FOR UPDATE [NOWAIT]` on the documents row-mutation paths (`claim_for_processing`, `claim_for_deletion`, `update_status`, `promote_to_ready_and_demote_siblings`). The canonical idiom is `UPDATE documents SET status=:to_status, … WHERE document_id=:id AND status IN (:accept_set)`; `rowcount=1` means the caller won the transition, `rowcount=0` means another writer beat us (or the row is gone) and the caller no-ops gracefully. InnoDB's row-level X-lock during the UPDATE statement serialises concurrent writers — the lock window is microseconds, not the multi-statement span of the old `SELECT FOR UPDATE` pattern. (The reconciler stale-sweep and supersede single-loser-per-tx scan retain `SKIP LOCKED` semantics — those are bulk load-shedding scans across rows, not single-row transitions.)
-- Pipeline body runs **outside any DB transaction**: no row locks are held while external calls (embedder, ES, plugins, MinIO) run. The worker's claim (TX-A) is a single atomic UPDATE that flips `UPLOADED|PENDING → PENDING` and bumps `attempt`; the terminal commit (TX-B) is another single atomic UPDATE that flips `PENDING → READY|FAILED`. Heartbeat keeps the `PENDING` row warm; the Reconciler's stale-sweep is governed entirely by `updated_at`, not by row locks.
-- `update_status` and the claim path both validate transitions via the WHERE clause's accept-set; an invalid transition surfaces as `rowcount=0` (no exception) on the claim path, and as `IllegalStateTransition` (raised in code on rowcount=0) on the `update_status` path — preserving the v1 error contract for terminal writes.
+**Locking discipline:** atomic conditional UPDATE (`WHERE … AND status IN (:accept_set)`); rowcount=1 → won, rowcount=0 → graceful no-op. No `SELECT FOR UPDATE [NOWAIT]` on single-row mutation paths. Pipeline body outside any DB tx (no locks held during external calls). `update_status` rowcount=0 raises `IllegalStateTransition`. Reconciler stale-sweep and supersede retain `SKIP LOCKED` (bulk load-shedding, not single-row).
 
-**Worker heartbeat (B16) — closes the no-lock-window race:** because the pipeline body holds no row lock, a naive Reconciler "PENDING > 5 min" sweep would happily re-dispatch a still-running worker and produce double processing. The worker therefore **updates `documents.updated_at = NOW()` every 30 s** during the pipeline body (background timer; one cheap PK-keyed `UPDATE`). The Reconciler's threshold becomes `WHERE status='PENDING' AND updated_at < NOW() - INTERVAL 5 MINUTE` — only **stale-heartbeat** rows are re-dispatched. Heartbeat interval is configured via `WORKER_HEARTBEAT_INTERVAL_SECONDS` (default 30).
+**Worker heartbeat (B16):** `UPDATE documents SET updated_at=NOW()` every `WORKER_HEARTBEAT_INTERVAL_SECONDS` (default 30). Reconciler threshold: `updated_at < NOW() - 5 min` — live workers never re-dispatched.
 
-**Per-document pipeline timeout (B18):** the worker enforces an overall ceiling of `PIPELINE_TIMEOUT_SECONDS` (default 1800 s = 30 min) around the pipeline body. On overrun, the worker transitions the row to `FAILED` with `error_code=PIPELINE_TIMEOUT` and runs the §3.1 R5 cleanup path (`fan_out_delete` + `delete_by_document_id`). This bounds pathological-document worst case so the Reconciler never sees an infinitely-running worker (heartbeat would also catch it after 5 min, but the ceiling makes the failure deterministic).
+**Pipeline timeout (B18):** ceiling `PIPELINE_TIMEOUT_SECONDS` (default 1800 s); overrun → `FAILED` + `error_code=PIPELINE_TIMEOUT` + cleanup.
 
-**Storage model:** MinIO is **transient staging only** — needed because Router (API) and Worker may run on different hosts. The original file is deleted from MinIO after the pipeline reaches a terminal state (`READY` or `FAILED`). After ingest, only chunks (ES) + metadata (MariaDB) remain.
-
-**Object key convention (B10):** `{source_app}_{source_id}_{document_id}` (single bucket from `MINIO_BUCKET` env, default `ragent`). `source_app` and `source_id` are sanitized to `[A-Za-z0-9._-]` (other chars percent-encoded) to satisfy MinIO key constraints. The `document_id` suffix guarantees uniqueness even when the same `(source_app, source_id)` is re-POSTed before supersede converges.
+**Storage:** MinIO is transient staging only — deleted after terminal state. Persistent stores: chunks (ES `chunks_v1`) + metadata (MariaDB). Object key: `{source_app}_{source_id}_{document_id}` (B10).
 
 **Pipeline retry idempotency:** Every pipeline run begins with `ChunkRepository.delete_by_document_id(document_id)` and `VectorExtractor.delete(document_id)` (idempotent ES bulk-delete) so a Reconciler retry of a partially-written attempt does not produce duplicate chunks. `chunk_id` may therefore be a fresh `new_id()` per run; identity is by `(document_id, ord)`.
 
 **Supersede model (smart upsert):** Every `POST /ingest` carries a mandatory `(source_id, source_app, source_title)` triple (e.g. `("DOC-123", "confluence", "Q3 OKR Planning")`) and an optional `source_meta` (free-format ≤ 1024 chars). The `(source_id, source_app)` pair is the **logical identity** of a document; `source_title` is human-readable display text required by chat retrieval (`sources[].title` in §3.4). At steady state at most one `READY` row may exist per `(source_id, source_app)`. A new POST always creates a fresh `document_id`; when it reaches `READY`, the system enqueues a **supersede** task that selects every `READY` row sharing the same `(source_id, source_app)`, keeps the one with `MAX(created_at)`, and cascade-deletes the rest. This guarantees "latest write wins" even when documents finish out-of-order, gives zero-downtime replacement (old chunks remain queryable until the new ones are indexed), and preserves the old version if the new ingest fails. Supersede is enqueued **only** on the `PENDING → READY` transition; FAILED or mid-flight DELETE never triggers it. Uniqueness is **eventual**, enforced by supersede — not by a DB UNIQUE constraint, since transient duplicates are expected during ingestion. **Mutation = re-POST with the same `(source_id, source_app)` (and updated `source_title` if the title changed); there is no PUT/PATCH endpoint.**
 
 **Create flow:**
-1. `POST /ingest` (`source_id`, `source_app`, `source_title`, optional `source_meta`) → MIME/size validation → MinIO upload (staging) → `documents(UPLOADED, source_id, source_app, source_title, source_meta)` → kiq `ingest.pipeline` → 202.
-2. Worker `ingest.pipeline`:
-   - **TX-A (atomic claim):** single statement `UPDATE documents SET status='PENDING', attempt=attempt+1, updated_at=NOW(6) WHERE document_id=:id AND status IN ('UPLOADED','PENDING')`. `rowcount=1` → proceed; `rowcount=0` → log `event=ingest.claim_skipped` and exit gracefully (row is already READY/FAILED/DELETING or missing). The `PENDING` source state in the accept-set is what makes reconciler redispatch and manual rerun (§3.1.x) safe.
-   - **Heartbeat (B16):** start a background timer that issues `UPDATE documents SET updated_at=NOW() WHERE document_id=?` every `WORKER_HEARTBEAT_INTERVAL_SECONDS` (default 30) for the lifetime of the pipeline body. Cancelled in `finally` before TX-B.
-   - **Pipeline body (no DB tx, wall-clock-bounded by `PIPELINE_TIMEOUT_SECONDS`, default 1800):** `delete_by_document_id` (idempotency) → run §3.2 → `fan_out` → all required ok ⇒ outcome=`READY`; any required error ⇒ outcome=`PENDING_RETRY` (no terminal commit; Reconciler resumes); attempt > 5 ⇒ outcome=`FAILED`; ceiling exceeded ⇒ outcome=`FAILED` with `error_code=PIPELINE_TIMEOUT` (B18).
-   - **TX-B (terminal only):** commit `READY` or `FAILED`. **On `FAILED`, also call `fan_out_delete` + `delete_by_document_id` to clean partial output before commit.**
-   - **Post-commit (best-effort, no tx):** `MinIOClient.delete_object` (errors swallowed → log `event=minio.orphan_object`); on `READY`, kiq `ingest.supersede(document_id)` (idempotent).
-3. Worker `ingest.supersede`:
-   - **Single-loser-per-tx:** in a loop, `SELECT 1 row` matching `(source_id, source_app, status='READY')` ordered ASC by `created_at` (i.e. the oldest non-survivor) using `FOR UPDATE SKIP LOCKED` → cascade-delete that row → commit → repeat. Survivor = whichever row remains last; query naturally stops when only one `READY` row is left for the pair. **Avoids holding K row-locks across K cascades.**
-   - Naturally idempotent: re-delivery finds ≤ 1 row and no-ops.
+1. `POST /ingest` → MIME/size validation → MinIO staging → `documents(UPLOADED)` → kiq `ingest.pipeline` → 202.
+2. Worker `ingest.pipeline`: TX-A = atomic `UPDATE … SET status='PENDING' WHERE … AND status IN ('UPLOADED','PENDING')` (rowcount=0 → `claim_skipped`); heartbeat timer (B16); pipeline body outside any DB tx (idempotent `delete_by_document_id` first, §3.2 pipeline, `fan_out`); TX-B = commit `READY` or `FAILED` (on `FAILED`: `fan_out_delete` + `delete_by_document_id` first); post-commit: MinIO delete (best-effort) + kiq `ingest.supersede`.
+3. Worker `ingest.supersede`: loop `SELECT … FOR UPDATE SKIP LOCKED` oldest `READY` loser → cascade-delete → commit → repeat. Idempotent on re-delivery.
 
-**Delete flow:**
-1. `DELETE /ingest/{id}` → atomic claim `UPDATE … SET status='DELETING' WHERE document_id=:id AND status IN ('UPLOADED','PENDING','READY','FAILED')`. `rowcount=1` → outside-tx cascade (`fan_out_delete` → `delete_by_document_id` → if prior status was `PENDING/UPLOADED` also `MinIO.delete_object` → final tx: delete row → 204). `rowcount=0` → silent 204 (idempotent re-DELETE or row already DELETING).
-2. Any mid-cascade failure → row stays `DELETING`; Reconciler resumes idempotently.
+**Delete flow:** atomic `UPDATE … SET status='DELETING'`; rowcount=1 → outside-tx `fan_out_delete → delete_by_document_id → MinIO.delete_object (if was PENDING/UPLOADED) → delete row → 204`; rowcount=0 → silent 204. Mid-cascade failure → row stays `DELETING`; Reconciler resumes.
 
 **BDD:**
 - **S1** POST 1 MB `.txt` → 202 + 26-char task_id; status → `READY` within 60 s; chunks in ES.
@@ -103,27 +64,20 @@
 - **S16** Pipeline reaches terminal state (`READY` or `FAILED`) → MinIO object deleted; subsequent re-processing not possible without re-upload.
 - **S14** Re-DELETE an already-deleted document → 204, no plugin calls.
 - **S15** `GET /ingest?limit=2` on 5 docs → ≤ 2 items + `next_cursor` continues.
-- **S17 supersede happy path** — Given a `READY` doc D1 with `(source_id="X", source_app="confluence")`, When client POSTs another file with the same pair, Then a new doc D2 is created; while D2 is `PENDING`, queries still see D1 chunks; when D2 reaches `READY`, supersede task cascade-deletes D1; queries now see only D2 chunks.
-- **S18 supersede on failure preserves old** — Given D1 `READY` with `(source_id, source_app)=("X","confluence")`, When new D2 with the same pair ends up `FAILED`, Then D1 remains `READY` and queryable; supersede task is **not** enqueued.
-- **S19 supersede idempotent** — Given supersede already ran for D2, When the task fires again, Then no further deletes occur (only one `READY` row remains for that `(source_id, source_app)`).
-- **S20 supersede out-of-order finish** — Given D1 (created at t=0) and D2 (created at t=1) share `(source_id="X", source_app="confluence")`, When D2 reaches `READY` first (D1 still `PENDING`) and D1 reaches `READY` later, Then after both supersede tasks run only D2 (the row with `MAX(created_at)`) remains; D1 is cascade-deleted.
-- **S22 same source_id different source_app coexist** — Given doc D1 with `(source_id="X", source_app="confluence")` is `READY`, When client POSTs with `(source_id="X", source_app="slack")`, Then both reach `READY` and coexist; supersede touches neither.
-- **S23 missing source_id, source_app, or source_title** — Given a POST omits any of `source_id` / `source_app` / `source_title`, Then router returns 422 problem+json with field-level `errors[]`; no MinIO upload, no DB row.
-- **S24 UPLOADED orphan recovered (R1)** — Given a row in `UPLOADED` for > 5 min (TaskIQ message lost or broker outage at POST time), When the Reconciler runs, Then it re-kiqs `ingest.pipeline` and the doc proceeds normally.
-- **S25 pipeline retry produces no duplicate chunks (R4)** — Given a Reconciler retry of a previously partially-written ingest, When the pipeline reruns, Then `chunks` count for that `document_id` equals the chunker's output and `chunks_v1` ES index has no orphans.
-- **S26 multi-READY invariant repaired (R3)** — Given two `READY` rows for the same `(source_id, source_app)` (e.g. supersede task lost between status commit and kiq), When the Reconciler runs, Then it re-enqueues `ingest.supersede` and convergence happens within one cycle.
-- **S27 FAILED transition cleans partial output (R5)** — Given a doc transitions to `FAILED`, When the FAILED state is committed, Then `chunks` and ES `chunks_v1` for that `document_id` have been cleared (no leakage into chat retrieval).
-- **S28 worker claim race (R7)** — Given two workers receive the same `document_id` (initial kiq + Reconciler dispatch), When both run the atomic-claim UPDATE concurrently, Then InnoDB serialises them on the row's brief X-lock: the first transitions `UPLOADED→PENDING` (or refreshes `PENDING→PENDING`) and proceeds; the second's UPDATE may also succeed (status was still `PENDING`) — pipeline idempotency (`delete_by_document_id` first step) keeps chunks consistent — or returns `rowcount=0` if the first already advanced the row past the accept-set, in which case the loser logs `event=ingest.claim_skipped` and exits. Neither path raises `LockNotAvailable`; the legacy `NOWAIT`-based contention story no longer applies.
-- **S30 reconciler heartbeat (R8)** — Given a Reconciler tick runs, Then `reconciler_tick_total` increments and `event=reconciler.tick` is emitted; absence > 10 min triggers Prometheus alert.
-- **S31 supersede single-loser-per-tx (P-C)** — Given supersede must delete K=10 losers, When the task runs, Then each is deleted in its own committed tx (loop), not one tx holding K row-locks.
-- **S33 worker heartbeat (B16)** — Given a worker runs 4 min, When the Reconciler ticks at 5 min, Then it sees `updated_at` refreshed < 30 s ago and does **not** re-dispatch. When a worker dies and `updated_at` ages past 5 min, Reconciler re-dispatches exactly once.
-- **S34 pipeline timeout (B18)** — Given a pipeline body runs longer than `PIPELINE_TIMEOUT_SECONDS`, When the ceiling fires, Then the worker transitions the row to `FAILED` with `error_code=PIPELINE_TIMEOUT`, runs cleanup (`fan_out_delete` + `delete_by_document_id`), and emits `event=ingest.failed reason=pipeline_timeout`.
-- **S41 manual rerun** — Given a document with status in `{UPLOADED, PENDING, FAILED}`, When `POST /ingest/v1/{id}/rerun` is called with `X-User-Id`, Then the row's `status` is flipped to `PENDING`, `attempt` is reset to `0` (so an exhausted FAILED row isn't immediately re-FAILED by the reconciler's `_mark_failed` budget check), `error_code`/`error_reason` are cleared, `ingest.pipeline` is re-enqueued, and the response is `202 {"document_id": ...}`. Given the status is `READY` or `DELETING`, the response is `409 INGEST_NOT_RERUNNABLE` (use re-POST with same `(source_id, source_app)` for READY supersede). Given the document does not exist, the response is `404 INGEST_NOT_FOUND`.
-
+- **S17** Supersede happy path — D2 `READY` → supersede cascades D1; D1 chunks queryable until D2 commits.
+- **S18** D2 `FAILED` → D1 stays `READY`; supersede not enqueued.
+- **S19** Supersede idempotent — re-delivery no-ops when only 1 `READY` row remains.
+- **S20** Out-of-order finish — only `MAX(created_at)` survivor (D2) remains after both tasks run.
+- **S24** `UPLOADED` orphan > 5 min → Reconciler re-kiqs `ingest.pipeline`.
+- **S25** Pipeline retry → no duplicate chunks (idempotent `delete_by_document_id` first step).
+- **S26** Multi-READY pair → Reconciler re-enqueues `ingest.supersede`.
+- **S27** `FAILED` transition → chunks + ES `chunks_v1` cleared before commit.
+- **S28** Concurrent claim race → InnoDB brief X-lock serialises; loser logs `event=ingest.claim_skipped`.
+- **S33** Live worker heartbeat < 5 min → Reconciler does not re-dispatch; dead worker → re-dispatch once.
+- **S34** Pipeline timeout → `FAILED` + `error_code=PIPELINE_TIMEOUT` + cleanup.
+- **S41** `POST /ingest/v1/{id}/rerun` on `{UPLOADED,PENDING,FAILED}` → 202 (status `PENDING`, attempt reset); `READY`/`DELETING` → 409 `INGEST_NOT_RERUNNABLE`; missing → 404.
 ---
-
 ### 3.2 Indexing Pipeline
-
 > **v2 Pipeline:**
 > ```
 > _TextLoader → FileTypeRouter
@@ -145,11 +99,8 @@
 - Every external call carries an explicit timeout: Embedder 30 s/batch (ingest), ES bulk 60 s, MinIO get 30 s, plugin `extract()` 60 s overall (enforced by `PluginRegistry.fan_out`).
 - **Overall pipeline ceiling:** `PIPELINE_TIMEOUT_SECONDS` (default 1800 s, B18). Overrun ⇒ `FAILED` with `error_code=PIPELINE_TIMEOUT`.
 - The pipeline body runs with no DB transaction open (see §3.1 locking discipline).
-
 ---
-
 ### 3.3 Pluggable Extractors
-
 **Protocol v1 (frozen):**
 
 ```python
@@ -160,7 +111,6 @@ class ExtractorPlugin(Protocol):
     def delete(self, document_id: str) -> None: ...
     def health(self) -> bool: ...
 ```
-
 **P1 plugins:** `VectorExtractor` (required, ES bulk), `StubGraphExtractor` (optional, no-op). See §4.4.
 
 **Plugin construction (B17):** the Protocol freezes the **interface** (`extract`, `delete`, `health` plus three attributes) but plugins are **dependency-injected** via their constructor. `VectorExtractor.__init__(repo: DocumentRepository, chunks: ChunkRepository, embedder: EmbeddingClient, es: ElasticsearchClient)` — `extract(document_id)` reads `source_title` from `repo` and chunk rows from `chunks`. Plugins MUST NOT import `pipelines/` or HTTP layers; they accept their dependencies as constructor args, the registry simply holds the constructed instances.
@@ -174,11 +124,8 @@ class ExtractorPlugin(Protocol):
 - **S4 Protocol conformance** — Given an object missing any of `name` / `required` / `queue` / `extract` / `delete` / `health`, When `isinstance(obj, ExtractorPlugin)` is evaluated, Then it returns `False` (and `register()` raises before fan_out).
 - **S5 stub no-op extract → READY** — Given a registered `StubGraphExtractor` (optional, no-op `extract`), When the worker runs `fan_out(document_id)`, Then `Result(ok=True)` is returned in 0 ms and `all_required_ok` does not depend on it (since `required=False`).
 - **S11 duplicate registration** — Given a `PluginRegistry` already holding a plugin named `vector`, When `register()` is called with another plugin of the same `name`, Then it raises `DuplicatePluginError` and the existing instance is unaffected.
-
 ---
-
 ### 3.4 Chat Pipeline
-
 ```
 QueryEmbedder → {ESVectorRetriever (kNN on `embedding`, optional filter)
                  ∥ ESBM25Retriever (multi_match on `["text", "title^2"]`, optional filter)
@@ -188,7 +135,6 @@ QueryEmbedder → {ESVectorRetriever (kNN on `embedding`, optional filter)
               → SourceHydrator(JOIN documents)
               → LLMClient.{chat | stream}
 ```
-
 Title participates in **both** retrieval surfaces (B15): semantic (baked into every chunk's `embedding` at ingest via `embed(f"{title}\n\n{text}")`) and lexical (BM25 boosted 2× via `multi_match`). No separate title-only retriever, no extra ES field beyond `title`.
 
 **SourceHydrator gate (B36):** Chunks whose `document_id` has no `READY` row in `documents` are **dropped** (not passed through with empty fields). Orphan chunks, in-flight rows, `DELETING` rows never reach LLM or `sources[]`. Reconciler = disk reclaim, not retrieval correctness.
@@ -200,9 +146,7 @@ Title participates in **both** retrieval surfaces (B15): semantic (baked into ev
 **Join mode (`CHAT_JOIN_MODE`):** `rrf` (default, RRF k=60) | `concatenate` | `vector_only` | `bm25_only`. Factory assembles graph at startup; chat router is mode-agnostic.
 
 **P1 OPEN:** no permission gating. ES queries permission-blind in every phase; Permission Layer post-filters in P2+ (§3.5). P1 retrievers run sequentially; P2 makes them concurrent (AsyncPipeline).
-
 #### 3.4.1 Request schema (shared by `/chat` and `/chat/stream`)
-
 ```json
 {
   "messages":         [{"role": "system|user|assistant", "content": "..."}],
@@ -216,16 +160,13 @@ Title participates in **both** retrieval surfaces (B15): semantic (baked into ev
   "min_score":        null
 }
 ```
-
 - `messages` required; all other fields optional (fall back to defaults above).
 - `source_app` (≤ 64) / `source_meta` (≤ 1024): optional ES `term` filters (AND when both); empty string → 422 `CHAT_FILTER_INVALID`; omit to skip (B29→B35).
 - `top_k` (default `RETRIEVAL_TOP_K`, default 20, range 1–200): max chunks to LLM context.
 - `min_score` (default `RETRIEVAL_MIN_SCORE`, default `null`): score floor; `null` = no filtering.
 - `maxTokens` caps LLM output; `provider` validated against `{"openai"}` allow-list (B22), echoed verbatim, 422 `CHAT_PROVIDER_UNSUPPORTED` otherwise.
 - Missing `role:"system"` → server prepends default. Retrieval query = last `role:"user"` message.
-
 #### 3.4.2 Response schema
-
 `/chat` (non-streaming, `Content-Type: application/json`) and the terminal `done` event of `/chat/stream` both carry:
 
 ```json
@@ -252,20 +193,16 @@ Title participates in **both** retrieval surfaces (B15): semantic (baked into ev
   "feedback_token": "<base64url>.<hmac_hex>"
 }
 ```
-
 - `sources` is `null` when empty; otherwise all fields are populated. `type` is always `"knowledge"` in P1 (reserved enum).
 - `sources[].source_title/url/mime_type` from `documents`; `score` is RRF retrieval score; `excerpt` is truncated to `EXCERPT_MAX_CHARS` (default 512) in router (B23) — LLM receives full text untruncated.
 - `usage` from `LLMClient` (non-streaming only; streaming `done` event HTTP body omits `usage` — P1 limitation; however the internal `chat.llm` structured log captures `prompt_tokens`/`completion_tokens` for both paths).
 - `request_id` + `feedback_token` are present **only when `CHAT_FEEDBACK_ENABLED=true` AND the request carried `X-User-Id`** (B55, T-FB.10). Both omitted otherwise — clients should treat them as optional and skip the `/feedback/v1` UI when absent.
-
 #### 3.4.3 Streaming wire format (`/chat/stream` only)
-
 ```
 data: {"type":"delta","content":"<token chunk>"}\n\n
 …
 data: {"type":"done","content":"<full>","model":"…","provider":"…","sources":[…]}\n\n
 ```
-
 **Error mid-stream (B6):** If the LLM or any retriever fails *after* the first `delta` has been written, the server emits a single default-event `data:` line with payload `{"type":"error","error_code":"<CODE>","message":"<text>"}` and closes the connection. **No `event: error` named-event is used.** Pre-stream failures (before the first `delta`) return a normal RFC 9457 problem+json response. `/chat` always uses problem+json on error (it has no streaming surface).
 
 **BDD:**
@@ -280,131 +217,66 @@ data: {"type":"done","content":"<full>","model":"…","provider":"…","sources"
 - **S6g filter AND (B29→B35)** — Both `source_app` and `source_meta` supplied → AND filter; only rows matching both appear.
 - **S6h filter no-match (B29)** — No matching chunks → `sources: null`; LLM still answers.
 - **S6i empty filter rejected (B29)** — `source_app=""` → 422 `CHAT_FILTER_INVALID`; no LLM call.
-
 ---
-
 #### 3.4.4 `POST /retrieve` — Retrieval without LLM
+Runs the full retrieval pipeline (embed → kNN + BM25 → RRF → hydration) and returns ranked chunks without invoking the LLM.
 
-Runs the full retrieval pipeline (embed → kNN + BM25 → RRF join → source hydration) and returns ranked chunks without invoking the LLM. Useful for retrieval quality inspection and custom UIs.
+**Request:** `query` (required), `source_app` / `source_meta` (optional ES `term` filters, B29→B35), `top_k` (default `RETRIEVAL_TOP_K`=20, range 1–200), `min_score` (default `null`, post-pipeline score floor), `dedupe` (default `false`, keep highest-scored chunk per `document_id`).
 
-**Request schema:**
-
-```json
-{
-  "query":            "What are our Q3 OKRs?",
-  "source_app":       "confluence",
-  "source_meta":      "engineering",
-  "top_k":            20,
-  "min_score":        0.3,
-  "dedupe":           false
-}
-```
-
-- Only `query` is required.
-- `source_app` / `source_meta`: same optional ES `term` filters as `/chat` (B29 → B35).
-- `top_k` (default `RETRIEVAL_TOP_K`, env-configurable, default 20): max chunks returned from the retrieval pipeline; range 1–200.
-- `min_score` (default `null`): post-retrieval score threshold — chunks whose retrieval score is below this value are dropped. Applied after `pipeline.run()` (not passed to ES retrievers, which do not accept a score threshold param).
-- `dedupe` (default `false`): when `true`, keeps only the highest-scored chunk per `document_id` (pipeline output is already score-sorted, so first-seen = best).
-
-**Response schema:**
+**Response:**
 
 ```json
 {
   "chunks": [
-    {
-      "document_id":  "01J9...",
-      "source_app":   "confluence",
-      "source_id":    "DOC-123",
-      "source_meta":  "engineering",
-      "type":         "knowledge",
-      "source_title": "Q3 OKR Planning",
-      "source_url":   "https://wiki.example/q3-okr",
-      "mime_type":    "text/markdown",
-      "excerpt":      "...truncated to EXCERPT_MAX_CHARS...",
-      "score":        0.87
-    }
+    {"document_id":"01J9...","source_app":"confluence","source_id":"DOC-123","source_meta":"engineering",
+     "type":"knowledge","source_title":"Q3 OKR Planning","source_url":"https://...","mime_type":"text/markdown",
+     "excerpt":"...truncated to EXCERPT_MAX_CHARS...","score":0.87}
   ]
 }
 ```
-
-- `chunks` is an empty array when no results are found (never `null`).
-- `excerpt` is truncated to `EXCERPT_MAX_CHARS` (default 512) in the router — same rule as `/chat` `sources[].excerpt` (B23).
-- `dedupe=false`: the same `document_id` can appear multiple times if multiple chunks from the same document ranked highly.
-- `dedupe=true`: one entry per `document_id`; the chunk with the highest RRF score is kept.
+`chunks` is `[]` when empty (never `null`). `excerpt` truncated to `EXCERPT_MAX_CHARS` (B23).
 
 **BDD:**
-- **S38 retrieve returns all chunks by default** — Given two chunks from the same `document_id` both rank in the top-K, When `POST /retrieve {"query":"..."}` (no `dedupe`), Then both appear in `chunks[]` with the same `document_id`.
-- **S39 retrieve dedupe=true keeps best chunk** — Given the same two chunks, When `POST /retrieve {"query":"...","dedupe":true}`, Then exactly one entry with that `document_id` appears, and its `excerpt` matches the higher-scored chunk.
-- **S40 retrieve empty index** — Given an empty ES index, When `POST /retrieve`, Then `{"chunks":[]}` is returned (not `null`).
-- **S41 retrieve filter (B29 → B35)** — Same `source_app` / `source_meta` filter semantics as `/chat`; non-matching filter returns `{"chunks":[]}`.
-
-- **S36 CJK BM25 via icu_tokenizer (B26)** — Given a document body containing `"產品規格"` (no whitespace) indexed under the `icu_text` analyzer, When a chat query for `"產品規格"` runs against `chunks_v1`, Then the BM25 retriever returns the chunk; the same query against a `standard`-analyzed control index does not. Proves the analyzer choice (B26) is functionally required for CJK retrieval.
-- **S37 chat rate-limit per user (B31)** — Given `CHAT_RATE_LIMIT_PER_MINUTE=N` and a single `X-User-Id`, When the same caller issues N+1 `POST /chat` (or `/chat/stream`) requests within the window, Then the first N succeed and the (N+1)th returns 429 `application/problem+json` with `error_code=CHAT_RATE_LIMITED` and a `Retry-After` header equal to seconds until window reset. A different `X-User-Id` gets an independent budget; ingest, MCP, and health endpoints are unaffected. After the window expires the counter resets.
-- ~~**S8**~~ — Superseded by S58–S67 (§3.8) in P2.5; the `POST /mcp/v1/tools/rag` 501 stub was removed.
-
+- **S38** Two chunks from same `document_id` rank in top-K → both appear (no `dedupe`).
+- **S39** `dedupe=true` → one entry per `document_id`, highest-scored chunk kept.
+- **S40** Empty index → `{"chunks":[]}` (not `null`).
+- **S41** Filter semantics same as `/chat` (B29→B35); non-matching → `{"chunks":[]}`.
+- **S36** CJK BM25 (B26) — `"產品規格"` under `icu_text` analyzer is recalled; `standard` analyzer misses it.
+- **S37** Rate-limit (B31) — N+1 requests within window → 429 `CHAT_RATE_LIMITED` + `Retry-After`; independent budget per `X-User-Id`.
+- ~~**S8**~~ — Superseded by S58–S67 (§3.8).
 ---
+#### 3.4.5 `POST /feedback/v1` — User feedback on chat sources (B54/B55/B56)
+Echoes the HMAC-signed token from a prior `/chat` response with a vote against one shown source. Dual-writes MariaDB `feedback` + ES `feedback_v1`; next `/chat` consults `_FeedbackMemoryRetriever` (B54) when `CHAT_FEEDBACK_ENABLED=true`.
 
-#### 3.4.5 `POST /feedback/v1` — User feedback on chat sources (B54/B55/B56, T-FB.6)
-
-Closes the feedback loop: client echoes back the HMAC-signed token from a prior `/chat` response and reports a vote against one of the shown sources. Dual-writes MariaDB `feedback` (§5.1) and ES `feedback_v1` (§5.4); next `/chat` consults the ES index via `_FeedbackMemoryRetriever` (B54) when `CHAT_FEEDBACK_ENABLED=true`.
-
-**Request schema:**
+**Request:**
 
 ```json
 {
-  "request_id":     "01J9...",
-  "feedback_token": "<base64url>.<hmac_hex>",
-  "query_text":     "what are our Q3 OKRs?",
-  "shown_sources":  [
-    {"source_app": "confluence", "source_id": "DOC-A"},
-    {"source_app": "confluence", "source_id": "DOC-B"},
-    {"source_app": "drive",      "source_id": "DOC-C"}
-  ],
-  "source_app":     "confluence",
-  "source_id":      "DOC-A",
-  "vote":           1,
-  "reason":         "irrelevant",
-  "position_shown": 0
+  "request_id": "01J9...", "feedback_token": "<base64url>.<hmac_hex>",
+  "query_text": "...", "shown_sources": [{"source_app":"confluence","source_id":"DOC-A"}, ...],
+  "source_app": "confluence", "source_id": "DOC-A",
+  "vote": 1, "reason": "irrelevant", "position_shown": 0
 }
 ```
+Token TTL = 7 days; signed `request_id` + `user_id` are authoritative; `shown_sources` bound via `sources_hash = sha256(json([[source_app,source_id],…]))`. `vote` ∈ {+1,-1}. `reason` ∈ {`irrelevant`, `hallucinated`, `outdated`, `incomplete`, `wrong_citation`, `other`} (B56, frozen). `position_shown` recorded for future IPS (unused P1).
 
-- `request_id`, `feedback_token`: from the `/chat` response (§3.4.2). Token TTL = 7 days. The token's signed `request_id` and `user_id` are **authoritative**; the body's `request_id` must equal the signed value, and (if `X-User-Id` is present) it must equal the token's `user_id`. Mismatch → 401 `FEEDBACK_TOKEN_INVALID`.
-- `query_text`, `shown_sources`: re-supplied by client; HMAC over `sources_hash = sha256(json([[source_app, source_id], …]))` binds the **pair** list (document identity is `(source_app, source_id)` per B11/B35).
-- `(source_app, source_id)` of the voted source ∈ `shown_sources` (server-enforced).
-- `vote` ∈ {+1, -1}.
-- `reason` ∈ {`irrelevant`, `hallucinated`, `outdated`, `incomplete`, `wrong_citation`, `other`} (B56, frozen) or omitted.
-- `position_shown`: 0-based index of the voted source in the original `/chat sources[]` (recorded for future IPS; B57 item 1, unused in P1).
+**Response:** `204` on success.
 
-**Response:** `204 No Content` on success; `application/problem+json` on error per §4.1.1.
+**Errors:** `401 FEEDBACK_TOKEN_INVALID` (HMAC mismatch / mismatched `request_id` / mismatched `X-User-Id` / `shown_sources` hash mismatch) · `410 FEEDBACK_TOKEN_EXPIRED` · `422 FEEDBACK_SOURCE_INVALID` (voted pair ∉ `shown_sources`) · `422 FEEDBACK_VALIDATION`.
 
-**Errors:**
-- `401 FEEDBACK_TOKEN_INVALID` — HMAC mismatch, malformed token, `request_id` mismatch with signed value, `X-User-Id` mismatch with signed `user_id`, or `shown_sources` doesn't match the signed `sources_hash`.
-- `410 FEEDBACK_TOKEN_EXPIRED` — token `ts` outside the 7-day window.
-- `422 FEEDBACK_SOURCE_INVALID` — voted `(source_app, source_id)` pair not in `shown_sources`.
-- `422 FEEDBACK_VALIDATION` — schema violations (vote ∉ {±1}, reason outside enum, missing required field).
-
-**Dual-write semantics (B55):**
-1. MariaDB `feedback` UPSERT keyed on `(user_id, request_id, source_app, source_id)` — idempotent; second vote overwrites.
-2. ES `feedback_v1` index with `_id = sha256(user_id|request_id|source_app|source_id)` — same idempotency. Re-embeds `query_text` once per call via `EmbeddingClient.embed([query_text], query=True)`. ES doc carries `source_app` (`_FeedbackMemoryRetriever` aggregates by the pair).
-3. ES leg failure logs `event=feedback.es_write_failed` and increments `ragent_feedback_es_write_failed_total`; the request still returns 204 because MariaDB is the truth.
+**Dual-write (B55):** MariaDB UPSERT keyed `(user_id, request_id, source_app, source_id)` first; ES `_id = sha256(user_id|request_id|source_app|source_id)`, re-embeds `query_text`. ES failure → 204 + `ragent_feedback_es_write_failed_total++` (fail-open; MariaDB is truth).
 
 **BDD:**
-- **S42 happy** — Valid token + valid shape → 204; MariaDB row exists; ES doc indexed with `source_app` field present.
-- **S43 tampered token** — Single byte flip → 401 `FEEDBACK_TOKEN_INVALID`.
-- **S44 expired token** — `ts` > 7 days ago → 410 `FEEDBACK_TOKEN_EXPIRED`.
-- **S45 sources_hash mismatch** — Client supplies different `shown_sources` than at sign time → 401 `FEEDBACK_TOKEN_INVALID`.
-- **S46 source not shown** — Voted `(source_app, source_id)` pair not in `shown_sources` → 422 `FEEDBACK_SOURCE_INVALID`.
-- **S47 reason enum** — Reason outside B56 frozen set → 422.
-- **S48 idempotent re-vote** — Same `(user_id, request_id, source_app, source_id)` posted twice → both return 204, single MariaDB row with `updated_at` advanced.
-- **S49 ES fail-open** — ES write raises → 204 + `ragent_feedback_es_write_failed_total += 1`.
-- **S50 request_id replay rejected** — Body `request_id` differs from signed payload `request_id` → 401 `FEEDBACK_TOKEN_INVALID`; no MariaDB/ES write.
-- **S51 cross-user reuse rejected** — `X-User-Id` differs from signed `user_id` → 401 `FEEDBACK_TOKEN_INVALID`; no write.
-- **S52 chat filter scope honoured** — `/chat` with `source_app=confluence` AND `CHAT_FEEDBACK_ENABLED=true` → `_FeedbackMemoryRetriever`'s kNN filter contains `term: {source_app: confluence}` (no boosting from other-app likes leaks into the response).
-
+- **S42** Valid token → 204; MariaDB row + ES doc both present.
+- **S43** Byte-flipped token → 401 `FEEDBACK_TOKEN_INVALID`.
+- **S44** `ts` > 7 days → 410 `FEEDBACK_TOKEN_EXPIRED`.
+- **S45** `shown_sources` hash mismatch → 401.
+- **S46** Voted pair ∉ `shown_sources` → 422 `FEEDBACK_SOURCE_INVALID`.
+- **S48** Re-vote same (user, request, source) → 204 both times, single MariaDB row.
+- **S49** ES write raises → 204 + counter increment.
+- **S52** `/chat` with `source_app=confluence` + `CHAT_FEEDBACK_ENABLED=true` → `_FeedbackMemoryRetriever` kNN filter scoped to that `source_app`.
 ---
-
 ### 3.5 Authentication & Permission
-
 Two distinct concerns, kept architecturally separate from retrieval:
 
 | Concern | Question answered | Mechanism | P1 | Future phase |
@@ -417,22 +289,17 @@ Two distinct concerns, kept architecturally separate from retrieval:
 **P1 (current phase):** No JWT — `<RAGENT_USER_ID_HEADER>` trusted, written to `documents.create_user` (audit only, not authz). No permission gating — all chunks visible. `auth_mode=open` in audit logs. **TokenManager (J1→J2) is active** for Embedding/LLM/Rerank API auth (unrelated to user auth).
 
 **P2 additions:**
-- **JWT:** standard OIDC token. Carried in the `<RAGENT_JWT_HEADER>` request header as a **raw token, no `Bearer ` prefix** — clients send a raw JWT. **joserfc** (`joserfc` package — the actively-maintained successor to `authlib.jose`) verifies: signature against the JWKS published at `{scheme}://<OIDC_DOMAIN>/.well-known/jwks.json` (scheme = `https` unless `OIDC_USE_HTTPS=false`), `iss == OIDC discovery's "issuer"` (compared with trailing slashes stripped to absorb pydantic/IdP variance), `aud == <OIDC_AUDIENCE>`, `exp` ≥ now, `nbf` ≤ now. OIDC discovery + JWKS are fetched at composition (`build_container()`) via an injected `httpx.Client` (the same client controls `verify=...` for TLS verification — see `OIDC_VERIFY_SSL`), so a misconfigured `OIDC_DOMAIN` aborts startup rather than 500-ing the first protected request; the fetched JWKS is then cached in-process for the verifier's lifetime. Cache reuse is a contract requirement pinned by T8.1a tests. Once verified, `<RAGENT_JWT_CLAIM_USER_ID>` (default `preferred_username`) is extracted as the downstream `user_id`. Failure mapping: absent header / malformed token / bad signature / wrong `iss` / wrong `aud` / non-numeric `exp` / `nbf` in future / unknown `kid` / unsupported `alg` / any other verification error → 401 `AUTH_TOKEN_INVALID`; expired → 401 `AUTH_TOKEN_EXPIRED`; missing required claim → 401 `AUTH_CLAIM_MISSING`. `RAGENT_TRUST_X_USER_ID_HEADER=true` (non-prod only) bypasses JWT verification and reads `<RAGENT_USER_ID_HEADER>` directly.
-- **Public paths (auth short-circuit):** the JWT middleware does not read the header or call the verifier for `/livez`, `/readyz`, `/startupz`, `/metrics`, `/docs`, `/docs/oauth2-redirect`, `/redoc`, `/openapi.json`. The set is a strict superset of `middleware/logging.py::_SKIP_PATHS` (which covers only the four operational health/metrics paths) — extended here with the FastAPI auto-docs surface. These endpoints are declared `P1 Auth = none` in §4.1 and remain auth-free in P2. The outbound MCP HUB (`src/ragent/mcp_hub/server.py`) runs as a separate process and is not covered by this middleware.
-- **Header injection:** the extracted `user_id` is written into `<RAGENT_USER_ID_HEADER>` on the request scope so downstream routers (whose `Header(alias=...)` is bound to the canonical name) see the same value irrespective of the inbound auth mode.
-- **Swagger/OpenAPI doc derivation (T8.D1):** `src/ragent/bootstrap/openapi.py::install_openapi` is called from `create_app` with the **same** env-resolved values that wire `_x_user_id_middleware`. The active mode publishes exactly one `apiKey` security scheme in `/openapi.json::components.securitySchemes` — `UserIdHeader` (name = `<RAGENT_USER_ID_HEADER>`) in trust-header mode, `JWT` (name = `<RAGENT_JWT_HEADER>`) in JWT mode — and tags every non-public operation with `security: [{<scheme>: []}]`. Public paths (§3.5 list) carry NO `security`. Per-route `Header(alias=...)` declarations are NOT the source of truth for docs; this generator is. Flipping `RAGENT_AUTH_DISABLED` / `RAGENT_TRUST_X_USER_ID_HEADER` / `RAGENT_JWT_HEADER` updates the middleware AND the Swagger Authorize button together — the two cannot drift.
-- **Handler-side user_id source (T8.D2, T8.D3):** route handlers obtain the resolved `user_id` via `Depends(ragent.auth.deps.get_user_id)` — NOT via `Header(alias="X-User-Id")`. The dep reads `request.scope[SCOPE_USER_ID_KEY]` (populated by the middleware in both trust-header and JWT modes) with a header fallback for unit tests that bypass the middleware. Because `Depends(...)` is invisible to OpenAPI, the T8.D1 security scheme remains the single documented source. `tests/unit/test_no_auth_header_in_routes.py` is the anti-drift CI gate that fails collection if any router re-introduces `Header(alias="X-User-Id"|"X-Auth-Token")`.
-- **PermissionClient (OpenFGA):** `batch_check(user_id, document_ids) → set[str]` post-filters retrieved chunks. Gated per-surface: `RAGENT_PERMISSION_INGEST_ENABLED` / `RAGENT_PERMISSION_CHAT_ENABLED` (both default `false`). Chat pipeline: ES retrieval → `batch_check` → `SourceHydrator → LLM`. May over-fetch K' = K × factor so K results remain after filtering.
-- OpenFGA is fully encapsulated behind `PermissionClient`; never reaches the retrieval/ES path.
+- **JWT:** raw token (no `Bearer`) in `<RAGENT_JWT_HEADER>`. **joserfc** verifies: JWKS from `{scheme}://<OIDC_DOMAIN>/.well-known/jwks.json`, `iss`, `aud`, `exp`, `nbf`. JWKS fetched + cached at composition via injected `httpx.Client` (misconfigured `OIDC_DOMAIN` aborts startup). Claim `<RAGENT_JWT_CLAIM_USER_ID>` (default `preferred_username`) → `user_id`. Failures: `AUTH_TOKEN_INVALID` / `AUTH_TOKEN_EXPIRED` / `AUTH_CLAIM_MISSING`.
+- **Public paths** (no auth): `/livez`, `/readyz`, `/startupz`, `/metrics`, `/docs`, `/docs/oauth2-redirect`, `/redoc`, `/openapi.json`.
+- **Header injection:** extracted `user_id` written into `<RAGENT_USER_ID_HEADER>` on request scope; route handlers use `Depends(get_user_id)` — NOT `Header(alias="X-User-Id")` (anti-drift gate: `tests/unit/test_no_auth_header_in_routes.py`).
+- **OpenAPI:** `install_openapi` publishes one `apiKey` scheme (`UserIdHeader` or `JWT`) and tags all non-public ops; middleware and docs are kept in sync (T8.D1).
+- **PermissionClient (OpenFGA):** `batch_check(user_id, document_ids) → set[str]` post-filters chunks. Gated by `RAGENT_PERMISSION_INGEST_ENABLED` / `RAGENT_PERMISSION_CHAT_ENABLED` (both default `false`).
 
 **BDD:**
 - **S9 token refresh at boundary** — Given `TokenManager` cache holds a J2 with `expiresAt = T0 + 60 min`, When the wall clock advances to `T0 + 55 min` (`expiresAt − 5 min`) and a caller asks for the J2 token, Then `TokenManager` issues exactly one J1→J2 refresh HTTP exchange and returns the new token; 100 concurrent callers around the boundary share that single refresh (single-flight, P-F).
 - Permission-gating BDD specified when the P2 plan is written.
-
 ---
-
 ### 3.6 Resilience
-
 **Reconciler (Kubernetes `CronJob`, schedule `*/5 * * * *`, `SELECT … FOR UPDATE SKIP LOCKED`) — B9:**
 
 > Implementation = a one-shot Python entrypoint (`python -m ragent.reconciler`) packaged in the same image, scheduled by **K8s CronJob** with `concurrencyPolicy: Forbid` and `successfulJobsHistoryLimit: 3`. Not a TaskIQ scheduled task (decouples sweeper liveness from broker health — Reconciler is the recovery surface for broker outage itself, see R1).
@@ -450,62 +317,40 @@ Two distinct concerns, kept architecturally separate from retrieval:
 - See also S24 (UPLOADED orphan), S26 (multi-READY repair), S30 (heartbeat).
 
 **Infrastructure (B27):** Redis broker (TaskIQ) and Redis rate-limiter are **separate logical instances**, each independently configurable as **standalone or Sentinel** via `REDIS_MODE` env (default `standalone` for dev/CI, set `sentinel` in prod). Sentinel mode shares a single sentinel quorum (`REDIS_SENTINEL_HOSTS`, ≥ 3 nodes) and resolves each instance by its master name (`REDIS_BROKER_SENTINEL_MASTER`, `REDIS_RATELIMIT_SENTINEL_MASTER`). Standalone mode reads direct URLs (`REDIS_BROKER_URL`, `REDIS_RATELIMIT_URL`). Connection layer uses `redis-py-sentinel` when mode=sentinel, plain `redis-py` when mode=standalone. The same code path is used by both the API process and the worker.
-
 #### 3.6.1 Chaos drill suite (P2.6 軌三 / T7.4.x)
+Nightly CI lane (`@pytest.mark.docker`), one file per case under `tests/e2e/test_chaos/`. Common asserts: terminal `documents.status`, no orphan ES chunks, OTEL spans present, `chaos_drill_outcome_total{case,outcome}` increment.
 
-The chaos suite asserts the resilience claims of §3.6 (reconciler recovery, idempotent retries, partial-failure tolerance) hold under realistic injected faults. Each case is its own e2e file under `tests/e2e/test_chaos/test_C<N>_<scenario>.py`, marked `@pytest.mark.docker`, gated by a nightly CI lane (not per-PR; injection drills are slow). Case matrix (B49):
-
-| # | Case | Injection point | Expected terminal state |
+| # | Case | Injection | Expected |
 |---|---|---|---|
-| **C1** | Worker `SIGKILL` after `PENDING` transition | `os.kill(worker_pid, SIGKILL)` once status flips to `PENDING` | Reconciler re-dispatch → `READY` ≤ `RECONCILER_PENDING_STALE_SECONDS + RECONCILER_TICK_INTERVAL_SECONDS + worker_pipeline_p99 + slack`; `reconciler_tick_total` increments; no orphan ES chunks |
-| **C2** | MariaDB commit ↔ ES bulk crash | Monkeypatch worker to raise `ConnectionError` between DB `commit` and ES `bulk` | Worker retries idempotently; final state `READY` with ES chunks present; `multi_ready_repaired_total` unchanged (no demote needed) |
-| **C3** | ES bulk 207 partial failure | WireMock returns ES `_bulk` response with `errors:true` and 5/50 items failed | Worker retries failed items only (idempotent OVERWRITE); `READY` with all 50 chunks; `event=es.bulk_partial_failure` log emitted |
-| **C4** | Rerank 5xx during chat | WireMock `/rerank` returns 500 for 3 consecutive calls | Chat returns `200` with RRF-ordered sources (fail-open behaviour, decision to be pinned by P2.3 reranker-wiring commit); `rerank_degraded_total{reason="5xx"}+=3` |
-| **C5** | LLM stream interrupt mid-response | WireMock streams 3 `delta` events then drops TCP connection | Server emits `data: {"type":"error","error_code":"LLM_STREAM_INTERRUPTED",...}` per B6; client connection closes cleanly; no 500 in API logs |
-| **C6** | MinIO 503 during worker download | WireMock proxy injects 503 on `GET /staging/{key}` for 2/3 attempts | Worker retries (3×@2s built-in); succeeds on attempt 3; `READY`; `minio.transient_error` log count = 2 |
-
-**Common asserts** (every case): `documents.status` reaches terminal value; ES chunks match DB (no orphans); per-case OTEL spans present; `chaos_drill_outcome_total{case="C<N>", outcome="pass"}` increments.
-
+| **C1** | Worker `SIGKILL` after `PENDING` | `os.kill(worker_pid)` at `PENDING` | Reconciler re-dispatch → `READY`; no orphans |
+| **C2** | MariaDB commit ↔ ES bulk crash | `ConnectionError` between commit + ES bulk | Idempotent retry → `READY` |
+| **C3** | ES bulk 207 partial | 5/50 items fail | Retry failed items; `READY` all 50 chunks |
+| **C4** | Rerank 5xx (×3) | WireMock 500 | Chat 200 RRF-ordered (fail-open); `rerank_degraded_total+=3` |
+| **C5** | LLM stream interrupt | Drop TCP after 3 `delta` | `data:{type:"error",error_code:"LLM_STREAM_INTERRUPTED"}`; no 500 |
+| **C6** | MinIO 503 (2/3 attempts) | WireMock 503 on GET | Retries; `READY` on attempt 3 |
 ---
-
 ### 3.7 Observability
-
 - Haystack auto-trace + FastAPI OTEL middleware → Tempo + Prometheus.
 - Structured logs for state-machine transitions; `auth_mode=open` field in P1.
 - **Heartbeat metrics (R8):** `reconciler_tick_total` (counter); Prometheus alert when missing > 10 min. Worker emits `worker_pipeline_duration_seconds` (histogram) and `event=ingest.{started,failed,ready}`.
 - **Orphan/leak counters:** `minio_orphan_object_total` (post-commit cleanup failure), `multi_ready_repaired_total` (Reconciler R3 sweep).
 - **ES events (B26):** `event=es.bbq_unsupported` (cluster rejected `bbq_hnsw`; bootstrap retried with standard HNSW); `event=schema.drift` (resource file ↔ live mapping mismatch). Both surface in `/readyz` as degraded (B4).
 - **Structured logging (structlog).** JSON to stdout. Categories: (1) **API trace** (`api.request/error`) — per-request `{request_id, method, path, status_code, duration_ms, user_id, trace_id}` via `RequestLoggingMiddleware` (excl. /livez, /readyz, /metrics). (2) **Business** — `chat.retrieval/llm`, `ingest.failed/ready`, `reconciler.tick`, `embedding/rerank.call`, etc., paired with OTEL spans sharing `trace_id`. (2a) **Per-step pipeline** (T2v.42/T-APL.7) — `ingest.step.{started,ok,failed}` and `retrieve.step.{started,ok,failed}` carry `{step, duration_ms, atoms_in?, chunks_out?, error_code?}` plus inherited contextvars (`request_id`/`user_id` from middleware, `document_id`/`mime_type` from the ingest worker). Emitted by every Haystack component wrapped via `wrap_pipeline_component(*, namespace, step)`. After each successful step that returns documents, a companion `{namespace}.step.ok.docs` event is emitted with field `doc_refs: [{document_id, chunk_id, score}]` for every output document (field named `doc_refs` not `documents` to avoid the privacy denylist) — enabling per-chunk tracing across ES search, hydration, reranking, and truncation without re-instrumenting individual components. **Dual emission (T-APL.11):** the same wrapper also opens an OTEL span named `{namespace}.step.{step}` with attributes `{pipeline.namespace, pipeline.step, atoms_in?, chunks_out?, duration_ms}` so traced deployments get waterfall visibility without re-instrumentation; un-traced processes (no `setup_tracing()`) hit the NoOp tracer and pay only context-manager enter/exit cost. **Cross-process correlation (T-APL.9):** `request_id` and `user_id` propagate from the api process across the TaskIQ enqueue/execute seam via `StructlogContextMiddleware` (snapshot to `message.labels` on `pre_send`, rebind on `pre_execute`) so worker-side `ingest.*` logs carry the originating HTTP request's id. (3) **Error** — `error_type, error_code`, traceback, redacted. Format: ISO 8601 UTC; `LOG_FORMAT=console` for dev. **Privacy:** identity + metric fields only; denylist processor drops `query/prompt/messages/completion/chunks/embedding/documents/body/authorization/cookie/password/token/secret` and stamps `content_redacted=true`. `HAYSTACK_CONTENT_TRACING_ENABLED` pinned off.
-
 ---
-
 ### 3.8 MCP Tool Server (P2.5)
-
-Exposes ragent's retrieval pipeline as a **Model Context Protocol** tool so external LLM agents (Claude Desktop, Cursor, in-house agents) can call ragent's corpus through the MCP standard rather than a bespoke HTTP shape. The MCP server **wraps `POST /retrieve/v1`** (§3.4.4) — it does NOT call the LLM. The calling agent's own LLM does the synthesis; ragent supplies the grounded chunks.
-
-**Decision (B47):** P2.5 implements a **real MCP server speaking JSON-RPC 2.0** (not the P1 stub's REST shape). The P1 `POST /mcp/v1/tools/rag` 501 endpoint is **removed** and replaced by `POST /mcp/v1` carrying JSON-RPC envelopes. This is the user-requested Option B (full MCP, retrieve-only). Option A (REST tool-call) and Option C (REST + thin MCP shim) were rejected because they either misrepresent the protocol (A) or carry two surfaces with the same behavior (C).
-
+**Decision (B47):** Real MCP JSON-RPC 2.0 server at `POST /mcp/v1`. P1 501 stub removed. Sole tool `retrieve` wraps `POST /retrieve/v1` (§3.4.4) — the calling agent's LLM does synthesis, ragent supplies chunks.
 #### 3.8.1 Protocol
-
-- **Transport:** Streamable HTTP, request/response subset (POST only; no server-initiated SSE in P2.5). Pinned MCP spec revision: `"2024-11-05"`.
-- **Endpoint:** `POST /mcp/v1` (single endpoint; method dispatched from JSON-RPC `method` field).
-- **Envelope:** JSON-RPC 2.0:
+- **Transport:** Streamable HTTP, POST only, MCP spec revision `2024-11-05`.
+- **Endpoint:** `POST /mcp/v1` (method dispatched from JSON-RPC `method` field).
+- **Envelope:**
   ```json
-  // Request
-  {"jsonrpc": "2.0", "id": <int|str|null>, "method": "<method>", "params": {...}}
-  // Success response
-  {"jsonrpc": "2.0", "id": <same-as-request>, "result": {...}}
-  // Error response
-  {"jsonrpc": "2.0", "id": <same-as-request>, "error": {"code": <int>, "message": "<text>", "data": {...}?}}
+  {"jsonrpc":"2.0","id":<int|str|null>,"method":"<method>","params":{...}}
+  {"jsonrpc":"2.0","id":<same>,"result":{...}}
+  {"jsonrpc":"2.0","id":<same>,"error":{"code":<int>,"message":"...","data":{...}}}
   ```
-- **Notification** (no response): omit `id`. P2.5 supports `notifications/initialized` only.
-- **Auth:** `<RAGENT_JWT_HEADER>: <raw-jwt>` (P2.2 onwards, joserfc-verified per §3.5) or `<RAGENT_USER_ID_HEADER>` fallback (`RAGENT_TRUST_X_USER_ID_HEADER=true`, dev only). Auth applies before JSON-RPC dispatch; failure returns HTTP 401 with `application/problem+json` (NOT a JSON-RPC error — auth is a transport-layer concern).
-- **Stateless mode:** P2.5 supports stateless requests only (no `Mcp-Session-Id` header). Stateful sessions deferred to P3 — gate condition: an MCP client requires server-initiated SSE or long-running tool resumption.
-- **Request body cap:** `MCP_REQUEST_MAX_BYTES` (default 256 KiB); over-limit returns HTTP 413 `application/problem+json` (transport-layer, not JSON-RPC error).
-- **Batch requests:** NOT implemented (P3 if needed). Array body → `-32600 Invalid Request`.
-
+- **Auth:** `<RAGENT_JWT_HEADER>` (JWT, joserfc per §3.5) or `<RAGENT_USER_ID_HEADER>` fallback (dev). Auth failure → HTTP 401 `application/problem+json` (transport-layer, not JSON-RPC).
+- **Stateless.** No `Mcp-Session-Id`. Batch requests → `-32600 Invalid Request`. Body cap: `MCP_REQUEST_MAX_BYTES` (256 KiB default).
 #### 3.8.2 Supported methods
-
 | Method | Direction | Purpose |
 |---|---|---|
 | `initialize` | client → server | Capability negotiation. Returns `{protocolVersion, capabilities, serverInfo}`. |
@@ -515,86 +360,50 @@ Exposes ragent's retrieval pipeline as a **Model Context Protocol** tool so exte
 | `ping` | bidirectional | Returns `{}`. Optional keepalive. |
 
 Any other method → JSON-RPC error `-32601 Method not found`.
-
 #### 3.8.3 The `retrieve` tool
-
-The sole tool advertised by `tools/list`. Mirrors §3.4.4 `POST /retrieve/v1` semantics:
+Mirrors §3.4.4 `POST /retrieve/v1` semantics:
 
 ```json
 {
   "name": "retrieve",
-  "description": "Retrieve relevant document chunks from the ragent corpus using hybrid vector+BM25 search with optional reranking. Returns ranked chunks (no LLM synthesis).",
+  "description": "Retrieve ranked chunks from ragent corpus (hybrid vector+BM25). No LLM synthesis.",
   "inputSchema": {
     "type": "object",
     "properties": {
-      "query":       {"type": "string", "minLength": 1, "description": "Natural-language query."},
+      "query":       {"type": "string", "minLength": 1},
       "top_k":       {"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
-      "source_app":  {"type": "string",  "minLength": 1, "maxLength": 64,   "description": "Optional ES term filter."},
-      "source_meta": {"type": "string",  "minLength": 1, "maxLength": 1024, "description": "Optional ES term filter."},
-      "min_score":   {"type": "number",  "minimum": 0,    "description": "Optional post-pipeline score floor."},
-      "dedupe":      {"type": "boolean", "default": false, "description": "Keep one chunk per document_id."}
+      "source_app":  {"type": "string",  "minLength": 1, "maxLength": 64},
+      "source_meta": {"type": "string",  "minLength": 1, "maxLength": 1024},
+      "min_score":   {"type": "number",  "minimum": 0},
+      "dedupe":      {"type": "boolean", "default": false}
     },
     "required": ["query"]
   }
 }
 ```
-
-**`tools/call` result shape** (MCP spec compliant):
-```json
-{
-  "content": [
-    {"type": "text", "text": "{\"chunks\":[{...},{...}]}"}
-  ],
-  "isError": false
-}
-```
-
-The single `content[0].text` value is the **JSON-stringified** `RetrieveResponse` (same shape as `POST /retrieve/v1`). MCP standardises tool-result content as a typed array; text type with stringified JSON is the canonical pattern for structured returns (the calling LLM parses it). `isError: true` is set when the tool itself fails (e.g. retrieval pipeline raises); transport-layer failures still come through `error` envelopes.
-
+**Result:** `{"content":[{"type":"text","text":"{\"chunks\":[...]}"}],"isError":false}` — `content[0].text` is JSON-stringified `RetrieveResponse`. `isError:true` on pipeline failure.
 #### 3.8.4 Error codes (JSON-RPC layer)
+| Code | Meaning |
+|---|---|
+| `-32700` | Parse error (malformed JSON) |
+| `-32600` | Invalid Request (missing `jsonrpc`/`method`, array body) |
+| `-32601` | Method not found |
+| `-32602` | Invalid params (unknown tool name or `inputSchema` validation fail) |
+| `-32603` | Internal error |
+| `-32001` | Tool execution failed (`MCP_TOOL_EXECUTION_FAILED`) |
 
-| Code | Meaning | Origin |
-|---|---|---|
-| `-32700` | Parse error (malformed JSON) | Transport |
-| `-32600` | Invalid Request (missing `jsonrpc` / `method`, etc.) | Transport |
-| `-32601` | Method not found | Dispatch |
-| `-32602` | Invalid params (e.g. `tools/call` with unknown `name`, or `inputSchema` validation fail) | Dispatch |
-| `-32603` | Internal error | Server |
-| `-32001` | Tool execution failed (retrieval pipeline error; mirrors `MCP_TOOL_EXECUTION_FAILED`) | App |
-
-App-level errors (-32000..-32099) carry `data.error_code` matching the existing `HttpErrorCode` catalog (§4.1.2) so operators correlate JSON-RPC errors with HTTP errors. Example:
-```json
-{"jsonrpc":"2.0","id":1,"error":{"code":-32001,"message":"retrieval pipeline failed","data":{"error_code":"MCP_TOOL_EXECUTION_FAILED"}}}
-```
-
+App-level errors carry `data.error_code` matching §4.1.2 catalog for cross-surface correlation.
 #### 3.8.5 BDD
-
-- **S58 mcp initialize** — `initialize` with `protocolVersion:"2024-11-05"` → `result.{protocolVersion:"2024-11-05", capabilities:{tools:{}}, serverInfo:{name:"ragent",version:"<semver>"}}`.
-- **S59 mcp tools/list** — `result.tools` has exactly one entry `name:"retrieve"` with `inputSchema` matching §3.8.3.
-- **S60 mcp tools/call retrieve** — Given indexed corpus and `tools/call` with `{name:"retrieve", arguments:{query:"...",top_k:3}}`, When the server processes it, Then `result.content[0].text` is JSON parseable into `{chunks: list}` of length ≤ 3 and `result.isError` is `false`.
-- **S61 mcp method not found** — Given `{method:"resources/list"}` (unimplemented), Then `error.code` is `-32601`.
-- **S62 mcp tools/call invalid name** — Given `{method:"tools/call", params:{name:"unknown_tool",arguments:{}}}`, Then `error.code` is `-32602` and `error.data.error_code` is `MCP_TOOL_NOT_FOUND`.
-- **S63 mcp tools/call missing query** — Given `{method:"tools/call", params:{name:"retrieve",arguments:{}}}` (no `query`), Then `error.code` is `-32602` and `error.data.error_code` is `MCP_TOOL_INPUT_INVALID`.
-- **S64 mcp parse error** — Given a request body that is not valid JSON, Then HTTP `200` with JSON-RPC body `{jsonrpc:"2.0",id:null,error:{code:-32700,...}}` (per JSON-RPC 2.0 §5: `id` is `null` when parse failed).
-- **S65 mcp notifications/initialized** — Given `{jsonrpc:"2.0", method:"notifications/initialized"}` (no `id`), Then HTTP `204` with empty body; no JSON-RPC response object emitted.
-- **S66 mcp auth required** — Given `RAGENT_AUTH_DISABLED=false` and `RAGENT_TRUST_X_USER_ID_HEADER=false` and no `<RAGENT_JWT_HEADER>` header, Then HTTP `401` with `application/problem+json` (NOT a JSON-RPC error envelope) and `error_code=AUTH_TOKEN_INVALID`.
-- **S67 mcp tool retrieval failure** — Given the retrieval pipeline raises, When `tools/call retrieve` is invoked, Then JSON-RPC response is `{error:{code:-32001, message:..., data:{error_code:"MCP_TOOL_EXECUTION_FAILED"}}}` — NOT `isError:true` inside a successful result. (App-error vs tool-soft-error distinction: pipeline crashes are JSON-RPC errors; an empty-result-set retrieval is `isError:false` with empty `chunks`.)
-
+- **S58** `initialize` → `result.{protocolVersion:"2024-11-05", capabilities:{tools:{}}, serverInfo:{name:"ragent",...}}`.
+- **S59** `tools/list` → exactly one entry `name:"retrieve"` with `inputSchema` matching §3.8.3.
+- **S60** `tools/call {name:"retrieve", arguments:{query:"...",top_k:3}}` → `result.content[0].text` parseable to `{chunks:list}` of ≤ 3; `result.isError=false`.
+- **S61** `{method:"resources/list"}` → `error.code=-32601`.
+- **S62** `tools/call` unknown name → `error.code=-32602`, `error.data.error_code=MCP_TOOL_NOT_FOUND`.
+- **S64** Non-JSON body → HTTP 200, `{error:{code:-32700,...,id:null}}`.
+- **S67** Pipeline raises → `{error:{code:-32001,...,data:{error_code:"MCP_TOOL_EXECUTION_FAILED"}}}` (NOT `isError:true`).
 ### 3.9 MCP Hub Microservice
-
-Standalone FastMCP-based service (`src/ragent/mcp_hub/`) that loads `tools.yaml` files at startup and dynamically registers each declared REST endpoint as an MCP tool. **Different scope** from §3.8: §3.8 is the in-process JSON-RPC server bolted onto the API exposing only `retrieve`; §3.9 is a separate microservice that federates arbitrary third-party REST APIs into one MCP surface for agent clients (Claude Desktop / Cursor / in-house). The Hub holds no upstream tokens — identity (`X-User-Id`, `Authorization`, etc.) is supplied by the MCP client per request and selectively forwarded by yaml.
-
-#### 3.9.1 Process and transport
-
-- **Entry point:** `python -m ragent.mcp_hub.server`.
-- **Transport:** FastMCP Streamable HTTP, mounted at `MCP_HUB_PATH` (default `/mcp`). Clients connect to `http://<host>:<port>{MCP_HUB_PATH}/`.
-- **Bind:** `MCP_HUB_HOST` (default `0.0.0.0`), `MCP_HUB_PORT` (default `9000`).
-- **Registry source:** `MCP_HUB_TOOLS_YAML` (default `tools.yaml`); may be a single yaml file OR a directory. In directory mode every `*.yaml`/`*.yml` is one SYSTEM (name = filename stem, overridable via top-level `system:`); tool names auto-qualify as `<system>.<tool>` so independent registries can reuse raw names.
-- **Per-system isolation:** each system gets its own `httpx.AsyncClient` (`defaults.timeout`, `defaults.max_connections`, `defaults.headers`). A slow upstream cannot starve other systems' pools.
-- **Lifespan:** FastMCP's session-manager lifespan runs first; on shutdown the Hub closes every per-system httpx client. Wired through `server.build_app(bundle)` — production `main()` and the integration test share this factory.
-
+Standalone FastMCP-based service (`src/ragent/mcp_hub/`) that federates arbitrary third-party REST APIs into one MCP surface via `tools.yaml`. **Distinct from §3.8** (in-process `retrieve`-only server) — this is a separate microservice for external APIs. Hub holds no tokens; identity is forwarded by yaml per-request. Entry: `python -m ragent.mcp_hub.server`. Transport: FastMCP Streamable HTTP at `{MCP_HUB_PATH}` (default `/mcp`), bind `MCP_HUB_HOST:MCP_HUB_PORT`. Each system gets its own `httpx.AsyncClient` — slow upstream cannot starve others.
 #### 3.9.2 Env-var inventory
-
 | Var | Default | Purpose |
 |---|---|---|
 | `MCP_HUB_TOOLS_YAML` | `tools.yaml` | File or directory; directory mode = multi-system |
@@ -606,136 +415,58 @@ Standalone FastMCP-based service (`src/ragent/mcp_hub/`) that loads `tools.yaml`
 The Hub deliberately reads NO secrets/tokens from env — those flow via per-request MCP-client headers (see §3.9.4).
 
 The Hub also serves `GET /metrics` (Prometheus exposition, sibling to `MCP_HUB_PATH`) — see §3.9.8.
-
 #### 3.9.3 `tools.yaml` schema
-
 ```yaml
 system: my-system           # optional; default = filename stem
 defaults:
-  base_url: https://api.example.com    # required if any tool path is relative
-  timeout: 30.0                         # seconds; httpx default 30
-  max_connections: 100                  # per-system pool size
-  verify_ssl: true                      # MUST be an explicit yaml boolean (true/false).
-                                        # Strings ("false", "true"), null, ints → load
-                                        # failure. `mcp_hub.system_configured` log records
-                                        # the value; false is for self-signed / staging.
-  headers:                              # baseline headers on every request
-    Accept: application/json
+  base_url: https://api.example.com
+  timeout: 30.0
+  max_connections: 100
+  verify_ssl: true          # MUST be explicit yaml boolean; strings → load failure
+  headers: {Accept: application/json}
 
 tools:
-  - name: get_user                      # tool name (qualified as <system>.get_user)
+  - name: get_user
     description: Fetch user by id.
     method: GET                         # GET/POST/PUT/PATCH/DELETE/HEAD
-    path: /v1/users/{user_id}           # supports {placeholder} for path params
+    path: /v1/users/{user_id}           # {placeholder} for path params
     timeout: 5.0                        # optional per-tool override
-    base_url: https://other.example.com # optional per-tool override
-    static_headers:                     # constant headers (literal strings only)
-      X-Service: ragent
-    forward_headers:                    # template per outgoing header
+    static_headers: {X-Service: ragent}
+    forward_headers:                    # template referencing incoming header names
       Authorization: "Bearer {x-jwt-token}"
       X-User-Id: "{x-user-id}"
     parameters:
-      - name: user_id
-        type: string                    # string|integer|number|boolean|array|object
-        location: path                  # path|query|body|header
-        required: true
-      - name: include_inactive
-        type: boolean
-        location: query
-        required: false
-        default: false
+      - {name: user_id, type: string, location: path, required: true}
+      - {name: include_inactive, type: boolean, location: query, default: false}
 ```
-
-Validation (load-time, enforced by `doctor`):
-- Duplicate tool names within a system → reject.
-- `path` placeholders without a matching `location: path` param → reject.
-- `location: path` params not referenced in the path template → reject.
-- `location: body` params on a non-body method (GET/HEAD/DELETE) → reject.
-- A header declared in both `static_headers` and `forward_headers` (case-insensitive) → reject.
-- A `location: header` param colliding (after `_`→`-`, case-insensitive) with `static_headers`/`forward_headers` → reject (would silently fight at request time).
-- Missing `defaults.base_url` when at least one tool path is relative → reject (absolute-URL tool paths still accepted).
-- One bad yaml or one bad tool isolates: the rest of the registry still serves; failures surface on `HubBundle.failures` and as `mcp_hub.load_failure` warnings.
-
+Validation (load-time, `doctor`): duplicate names, placeholder/param mismatches, body params on GET/HEAD/DELETE, header conflicts between `static_headers`/`forward_headers`/`location:header` → reject. One bad tool isolates; rest still serves; failures surface on `HubBundle.failures`.
 #### 3.9.4 Header forwarding contract
-
-`HeaderForwardMiddleware` lowercases every incoming HTTP header and publishes the dict into a request-scoped `ContextVar` (`_INCOMING_HEADERS`). The Hub trusts these verbatim — deploy behind mTLS or a trusted internal network so untrusted callers cannot forge them. The MCP-client application sets them on its transport, out-of-band from the model loop; the LLM never controls header values.
-
-Template syntax in `forward_headers` values:
-- `{header-name}` placeholders reference incoming headers by lowercase name.
-- Any missing placeholder → the entire outgoing header is skipped (graceful degradation; never sends empty strings).
-- Composable: `Authorization: "Bearer {x-jwt-token}"`, `X-Trace: "user={x-user-id};req={x-request-id}"`.
-- Outgoing header NAME on the left can be any case (HTTP is case-insensitive).
-
-Merge order at request time: `system.defaults.headers` → tool `static_headers` (overrides) → rendered `forward_headers` (overrides) → `location: header` tool args (overrides).
-
+`HeaderForwardMiddleware` lowercases incoming headers into a request-scoped `ContextVar`. `{header-name}` placeholders in `forward_headers` reference incoming headers; missing → header skipped (never empty string). Deploy behind mTLS — Hub trusts headers verbatim; LLM never controls header values. Merge order: `defaults.headers` → `static_headers` → `forward_headers` → `location:header` args.
 #### 3.9.5 Response envelope
-
-Every tool returns a discriminated dict so the LLM can branch on success/failure without parsing HTTP status:
-
 ```json
-// 2xx
-{"ok": true,  "status": 200, "data": <json-or-text-body>}
-// 4xx — body preserved (JSON or text/plain, ≤ 4096 bytes, truncated flag if cut)
-{"ok": false, "status": 404, "error": {"type": "upstream_4xx", "status": 404,
-                                       "upstream_body": ..., "upstream_request_id": "..."}}
+{"ok":true,  "status":200, "data":<json-or-text>}
+{"ok":false, "status":404, "error":{"type":"upstream_4xx","status":404,"upstream_body":..., "upstream_request_id":"..."}}
 ```
-
-5xx, timeout, and connect errors raise `ToolError` (FastMCP propagates as JSON-RPC error). 5xx bodies are redacted (status + request_id only) to prevent stack-trace / SQL leakage. `x-request-id` from the upstream response is captured (also `x-correlation-id`, `request-id`).
-
+5xx / timeout / connect → `ToolError` (JSON-RPC error). 5xx bodies redacted (status + request_id only). `x-request-id` / `x-correlation-id` captured from upstream response.
 #### 3.9.6 Operational tools
-
 - `python -m ragent.mcp_hub.doctor` — CI-runnable yaml validator. Exit 0 on clean load, 1 on schema error, 2 on missing file. Reports ALL failures in one run (non-strict mode).
 - Make target: `make mcp-hub-doctor` (chained into `make check`).
-
-#### 3.9.7 Structured logging (operator-facing)
-
-| Event | Level | Fields |
-|---|---|---|
-| `mcp_hub.system_configured` | INFO | `system`, `base_url`, `timeout`, `max_connections` |
-| `mcp_hub.ready` | INFO | `systems`, `tool_count`, `failure_count` |
-| `mcp_hub.load_failure` | WARN | `source`, `reason` |
-| `mcp_hub.tool_call.success` | INFO | `tool`, `system`, `status`, `latency_ms`, `request_id` |
-| `mcp_hub.upstream_4xx` | WARN | + `upstream_request_id` |
-| `mcp_hub.upstream_5xx` | ERROR | + `upstream_request_id` |
-| `mcp_hub.timeout` / `mcp_hub.connect_error` | ERROR | `tool`, `latency_ms`, `configured_timeout` |
-| `mcp_hub.shutdown_error` | ERROR | `system`, `exc_info=True` |
-
-SECURITY: rendered header VALUES (Authorization, JWT, API keys) are NEVER written to log output (test-pinned).
-
+#### 3.9.7 Structured logging
+Events: `mcp_hub.system_configured` (INFO), `mcp_hub.ready` (INFO), `mcp_hub.load_failure` (WARN), `mcp_hub.tool_call.success` (INFO), `mcp_hub.upstream_4xx` (WARN), `mcp_hub.upstream_5xx` (ERROR), `mcp_hub.timeout` / `mcp_hub.connect_error` (ERROR), `mcp_hub.shutdown_error` (ERROR). **SECURITY:** rendered header values (Authorization, JWT, API keys) NEVER logged (test-pinned).
 #### 3.9.8 Prometheus metrics (`GET /metrics`)
+`Route` (not `Mount`) at `/metrics` sibling to `MCP_HUB_PATH`. Definitions in `src/ragent/bootstrap/metrics.py`.
 
-The Hub exposes Prometheus exposition on `GET /metrics` (sibling to `MCP_HUB_PATH`). `Route` (not `Mount`) so scrapers hit the canonical path without a 307 round-trip. Definitions live in `src/ragent/bootstrap/metrics.py` so registration is import-time singleton across processes.
+| Metric | Type | Labels |
+|---|---|---|
+| `mcp_hub_tool_load_failures_total` | Counter | `system`, `phase` ∈ {`file_parse`, `tool_parse`, `registration`} |
+| `mcp_hub_tool_calls_total` | Counter | `system`, `tool`, `outcome` ∈ {`success`, `upstream_4xx`, `upstream_5xx`, `timeout`, `connect_error`} |
+| `mcp_hub_tool_call_duration_seconds` | Histogram | `system`, `outcome` (no `tool` — bounds cardinality) |
 
-| Metric | Type | Labels | Purpose |
-|---|---|---|---|
-| `mcp_hub_tool_load_failures_total` | Counter | `system`, `phase` ∈ {`file_parse`, `tool_parse`, `registration`} | Startup-time yaml / FastMCP registration failures. Phase distinguishes "bad file" vs "bad tool schema" vs "FastMCP rejected the registration". |
-| `mcp_hub_tool_calls_total` | Counter | `system`, `tool`, `outcome` ∈ {`success`, `upstream_4xx`, `upstream_5xx`, `timeout`, `connect_error`} | Every tool invocation, terminal outcome. Drives per-tool error-rate alerts. |
-| `mcp_hub_tool_call_duration_seconds` | Histogram | `system`, `outcome` | Upstream call latency. `tool` deliberately omitted to keep `_bucket` cardinality bounded; the counter above carries `tool` for drill-down. |
-
-Cardinality: labels enumerate from closed enums (`phase`, `outcome`) or deployment-bounded sources (`system`, `tool` ← yaml-declared). Caller helpers (`record_mcp_hub_load_failure`, `record_mcp_hub_tool_call`) guard against caller typos by collapsing unknown enum values to a safe default — typos cannot blow up cardinality.
-
-PromQL examples:
-```promql
-# Per-tool error rate (alert if > 0.05 sustained)
-sum by (system, tool) (rate(mcp_hub_tool_calls_total{outcome!="success"}[5m]))
-  / sum by (system, tool) (rate(mcp_hub_tool_calls_total[5m]))
-
-# p95 latency per system
-histogram_quantile(0.95,
-  sum by (le, system) (rate(mcp_hub_tool_call_duration_seconds_bucket[5m])))
-
-# Load-failure spike on a deploy
-sum by (system, phase) (increase(mcp_hub_tool_load_failures_total[1h]))
-```
-
-Load failures appear simultaneously as structured `mcp_hub.load_failure` log events (fields: `source`, `reason`, `system`, `phase`, `tool`) so log-based debugging matches metric drill-down dimensions exactly.
+Caller helpers collapse unknown enum values to a safe default — typos cannot blow cardinality.
 
 ---
-
 ## 4. Inventories
-
 ### 4.1 Endpoints
-
 > **v2 OVERRIDE for `POST /ingest`** — JSON body only (no multipart).
 > ```jsonc
 > // ingest_type=inline
@@ -769,30 +500,9 @@ Load failures appear simultaneously as structured `mcp_hub.load_failure` log eve
 | GET    | `/metrics`              | none        | — | `200 text/plain; version=0.0.4` — Prometheus exposition (counters/histograms in §3.7) |
 
 Future-phase auth: JWT verify (auth) + `PermissionClient` post-retrieval gate (permission, OpenFGA-backed) — see §3.5. ES queries remain permission-blind in every phase.
-
 ### 4.1.1 Error Response Schema (B5)
-
-All non-2xx responses use **RFC 9457 Problem Details** (`Content-Type: application/problem+json`), extended with a business-semantic `error_code`:
-
-```json
-{
-  "type":        "https://ragent.dev/errors/ingest-mime-unsupported",
-  "title":       "Unsupported media type",
-  "status":      415,
-  "detail":      "MIME 'image/png' is not in the P1 allow-list",
-  "instance":    "/ingest",
-  "error_code":  "INGEST_MIME_UNSUPPORTED",
-  "trace_id":    "01J9..."
-}
-```
-
-- `error_code` is a stable `SCREAMING_SNAKE_CASE` string clients may switch on; HTTP status is for transport semantics only.
-- `trace_id` echoes the OTEL trace id when present.
-- 422 responses additionally include `errors: [{field, message}, …]` for field-level validation (e.g. missing `source_id`).
-- **`/livez`, `/readyz`, `/metrics` are the only endpoints whose 2xx body is NOT problem+json**; their non-2xx still uses problem+json.
-
+All non-2xx: **RFC 9457 Problem Details** (`application/problem+json`) with `error_code` (stable `SCREAMING_SNAKE_CASE`), `trace_id` (OTEL trace id), and for 422 an `errors:[{field,message},…]` array. `/livez`, `/readyz`, `/metrics` 2xx bodies are NOT problem+json; their non-2xx still use it.
 ### 4.1.2 Error Code Catalog (I6)
-
 Inventory of every `error_code` emitted by P1 (API responses + log events). New codes MUST be added here in the same commit that introduces them.
 
 | `error_code` | HTTP / Surface | When | Origin |
@@ -831,9 +541,7 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 | `AUTH_TOKEN_EXPIRED`                 | 401             | JWT `exp` claim is in the past (raised through joserfc's verification path, T8.1a) | Auth middleware T8.2a |
 | `AUTH_CLAIM_MISSING`                 | 401             | `<RAGENT_JWT_CLAIM_USER_ID>` claim absent or empty after JWKS verification (T8.1a) | Auth middleware T8.2a |
 | `AUTH_TOKEN_INVALID`                 | 401             | JWT header absent, token malformed, signature mismatch, wrong `iss`, wrong `aud`, or any other JWKS verification failure outside expiry/missing-claim (T8.1a) | Auth middleware T8.2a |
-
 ### 4.2 Supported Formats
-
 | Format | Converter | MIME (allow-list) | Notes | Phase |
 |---|---|---|---|:---:|
 | `.txt`  | `TextFileToDocument`     | `text/plain`              | UTF-8 text | **P1** |
@@ -846,25 +554,19 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 | `.xlsx` | `XLSXToDocument`         | `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` | active sheets | P2 |
 
 > 415 on unsupported MIME; 413 on > 50 MB. PDF ingest uses `pymupdf4llm.to_markdown` per page to produce structured markdown atoms (headings, tables, paragraphs); `rapidocr-onnxruntime` is auto-selected by pymupdf4llm for image-bearing pages (no OS-level dependency). If `to_markdown` raises, the splitter falls back to `page.get_text("text")` and logs a warning — the page is still ingested as plain text.
-
 ### 4.3 Pipeline Catalog
-
 | Pipeline | Components | Timeouts | Test Path | Phase |
 |---|---|---|---|:---:|
 | **Ingest** | `delete_by_document_id (idempotency) → FileTypeRouter → Converter → DocumentCleaner → LanguageRouter → {cjk_splitter \| en_splitter} (sentence-level, B1) → EmbeddingClient(bge-m3, batch=32) → ChunkRepository.bulk_insert → PluginRegistry.fan_out (per-plugin 60 s)` | Embedder 30 s/batch · ES bulk 60 s · MinIO get 30 s · plugin 60 s | `tests/integration/test_ingest_pipeline.py` | **P1** sync |
 | **Chat** | `QueryEmbedder → ESVector(kNN on `embedding`, `bbq_hnsw` index, optional `term` filter on `source_app`/`source_meta` — B29 → B35) → ESBM25(multi_match `text`+`title^2`, `icu_text` analyzer, B26, same optional filter) → DocumentJoiner (C6 `CHAT_JOIN_MODE`: rrf\|concatenate\|vector_only\|bm25_only) → SourceHydrator(JOIN documents → returns full chunk content) → LLMClient.{chat\|stream}` (retrievers sequential in P1; parallel in P2 — see §3.4 P-A); router truncates `sources[].excerpt` to `EXCERPT_MAX_CHARS` (B23) | Embedder 10 s (single query) · ES query 10 s · LLM 120 s · per-batch ingest embed 30 s (asymmetric — query is one string, ingest is up to 32) | `tests/integration/test_chat_endpoint.py` (T3.9), `tests/integration/test_chat_stream_endpoint.py` (T3.11), `tests/integration/test_chat_pipeline_retrieval.py` (T3.5) | **P1** sync |
 | **Retrieve** | Same as Chat pipeline up to `SourceHydrator` (shared `retrieval_pipeline` instance); no LLM call; router truncates `chunks[].excerpt` to `EXCERPT_MAX_CHARS` (B23); optional `dedupe` post-step (§3.4.4) | Embedder 10 s · ES query 10 s | `tests/unit/test_retrieve_router.py` (T3.19) | **P1** sync |
-
 ### 4.4 Plugin Catalog
-
 | Plugin | `name` | `required` | `queue` | `extract()` | `delete()` | Phase |
 |---|---|:---:|---|---|---|:---:|
 | `VectorExtractor`    | `vector`     | ✓ | `extract.vector` | embed `f"{source_title}\n\n{chunk_text}"` (B15) → ES bulk index by `chunk_id`, denormalising `title`, `source_app`, `source_meta` onto each row (B15, B29 → B35) | ES bulk `_op_type=delete` | **P1** |
 | `StubGraphExtractor` | `graph_stub` | — | `extract.graph`  | no-op | no-op | **P1** |
 | `GraphExtractor`     | `graph`      | — | `extract.graph`  | LightRAG → Graph DB upsert | entity GC + ref_count | P3 |
-
 ### 4.5 Third-Party Client Catalog
-
 | Client | Endpoint | Auth | Phase |
 |---|---|---|:---:|
 | `TokenManager` (×3 local / ×1 K8s) | `AI_API_AUTH_URL/auth/api/accesstoken` | J1 `{"key":…}` → J2 | **P1** |
@@ -876,21 +578,17 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on client.
 
 **TokenManager refresh discipline (P-F):** each `TokenManager` instance has its own `threading.Lock`; concurrent callers around the `expiresAt − 5 min` boundary share one in-flight refresh per manager. Local mode: three independent managers (`AI_LLM/EMBEDDING/RERANK_API_J1_TOKEN`), each caching its own J2. K8s mode (`AI_USE_K8S_SERVICE_ACCOUNT_TOKEN=true`): one shared manager reads the SA token file per refresh and its J2 is shared across all three clients.
-
 ### 4.6 Environment Variables (C2 + B28)
-
 > **Inventory rules (B28):** every external dependency, every per-call timeout, every operational threshold, and every credential MUST appear in this table. Code that reads a literal value not represented here is a spec drift bug. Vars marked `(required)` have no default and refuse boot.
 
 > **v2 removed vars (C6):** `MINIO_ENDPOINT/ACCESS_KEY/SECRET_KEY/SECURE/BUCKET` (→ `MINIO_SITES`), `INGEST_MAX_FILE_SIZE_BYTES` (→ `INGEST_INLINE/FILE_MAX_BYTES`), `CHUNK_TARGET_CHARS_EN/CJK/CSV`, `CHUNK_OVERLAP_CHARS_EN/CJK/CSV`, `CHUNK_HARD_SPLIT_OVERLAP_CHARS`.
-
 #### 4.6.1 Bootstrap & HTTP server
-
 | Variable | Default | Description |
 |---|---|---|
 | `RAGENT_ENV`                          | (required)       | `dev` \| `staging` \| `prod`. Modes A & B require `dev`; Mode C tolerates any value (§1). |
 | `RAGENT_AUTH_DISABLED`                | `false`          | `true` selects Mode A (open auth — guard requires dev + loopback). `false` selects Mode B or C depending on `RAGENT_TRUST_X_USER_ID_HEADER` (§1, §3.5). |
 | `RAGENT_TRUST_X_USER_ID_HEADER`       | `false`          | When `true` (and `AUTH_DISABLED=false`), selects Mode B: JWT middleware bypassed, `<RAGENT_USER_ID_HEADER>` trusted as `user_id` (§3.5). Guard requires `RAGENT_ENV=dev`. |
-| `RAGENT_USER_ID_HEADER`               | `X-User-Id`      | Canonical header name carrying the downstream `user_id`. In trust mode this is the inbound header read directly; in JWT mode the extracted claim is injected into this header on the request scope. Routers consume the value via `Header(alias=...)` — currently hard-coded to the default, so changing this env var requires updating each router's alias. `RequestLoggingMiddleware` is header-name-agnostic: the auth middleware writes the resolved `user_id` into `request.scope["ragent.user_id"]` in both modes, and the logging layer reads from there, so customising this env var alone does not break `api.request` logging. |
+| `RAGENT_USER_ID_HEADER`               | `X-User-Id`      | Downstream `user_id` header. In trust mode: inbound header read directly. In JWT mode: extracted claim injected into this header on request scope. Routers use `Depends(get_user_id)`, not `Header(alias=...)`. |
 | `RAGENT_JWT_HEADER`                   | `X-Auth-Token`   | **Mode C only.** Inbound header carrying the raw JWT (no `Bearer ` prefix). Read only when `RAGENT_AUTH_DISABLED=false` AND `RAGENT_TRUST_X_USER_ID_HEADER=false`. |
 | `RAGENT_JWT_CLAIM_USER_ID`            | `preferred_username` | **Mode C only.** JWT payload claim path used as the downstream `user_id`. Verified value is non-empty string; missing/empty → 401 `AUTH_CLAIM_MISSING`. |
 | `OIDC_DOMAIN`                         | (required in Mode C) | OIDC issuer domain. JWKS is fetched from `{scheme}://<OIDC_DOMAIN>/.well-known/jwks.json` (resolved via the OIDC discovery `jwks_uri`); the verifier validates `iss == discovery["issuer"]`. Guard exits if unset when `AUTH_DISABLED=false` AND `TRUST_X_USER_ID_HEADER=false`. |
@@ -903,9 +601,7 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `RAGENT_PORT`                         | `8000`           | API bind port. |
 | `LOG_LEVEL`                           | `INFO`           | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR`. Applies to app + TaskIQ + Reconciler. |
 | `CORS_ALLOW_ORIGINS`                  | *(unset)*        | Comma-separated list of allowed CORS origins (e.g. `https://app.example.com,https://admin.example.com`). When unset or empty, no `CORSMiddleware` is added and all cross-origin requests are denied. |
-
 #### 4.6.2 Datastore connections (boot-blocking)
-
 | Variable | Default | Description |
 |---|---|---|
 | `MARIADB_DSN`                         | (required)       | Full SQLAlchemy DSN, e.g. `mysql+aiomysql://user:pass@host:3306/ragent?charset=utf8mb4`. Used by repositories, bootstrap, `/readyz`. |
@@ -916,15 +612,8 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `ES_API_KEY`                          | (optional)       | Alternative to user/password (mutually exclusive). |
 | `ES_VERIFY_CERTS`                     | `true`           | Set `false` for self-signed dev clusters. |
 | `ES_CHUNKS_INDEX`                     | `chunks_v1`      | Chunks index name. Threaded through `Container.chunks_index_name` to `ElasticsearchDocumentStore`, `_FeedbackMemoryRetriever`, `VectorExtractor`, `Reconciler`, and `/readyz` ES probe (T-EI.1). `init_es` also honours it when PUT-ing the `chunks_v1.json` schema, so override-and-rename works end-to-end (T-EI.6 / B60). Non-chunks resources (e.g. `feedback_v1.json`) keep filename-as-name semantics. |
-| `MINIO_SITES`                         | (required)       | v2: JSON list of `{name, endpoint, access_key, secret_key, bucket, secure?, read_only?}`. Must include `name="__default__"` (inline ingest). Supersedes the five legacy vars below. |
-| `MINIO_ENDPOINT`                      | (optional)       | DEPRECATED. |
-| `MINIO_ACCESS_KEY`                    | (optional)       | DEPRECATED. |
-| `MINIO_SECRET_KEY`                    | (optional)       | DEPRECATED. |
-| `MINIO_SECURE`                        | `false`          | DEPRECATED. |
-| `MINIO_BUCKET`                        | `ragent`         | DEPRECATED. |
-
+| `MINIO_SITES`                         | (required)       | v2: JSON list of `{name, endpoint, access_key, secret_key, bucket, secure?, read_only?}`. Must include `name="__default__"` (inline ingest). Legacy `MINIO_ENDPOINT`/`MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY`/`MINIO_SECURE`/`MINIO_BUCKET` accepted when `MINIO_SITES` absent (synthesised into a `__default__` entry) — deprecated. |
 #### 4.6.3 Redis (B27)
-
 | Variable | Default | Description |
 |---|---|---|
 | `REDIS_MODE`                          | `standalone`     | `standalone` \| `sentinel`. Applies to broker and rate-limiter. |
@@ -933,9 +622,7 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `REDIS_SENTINEL_HOSTS`                | (required if mode=sentinel) | Comma-separated `host:port` list (≥ 3 nodes recommended). |
 | `REDIS_BROKER_SENTINEL_MASTER`        | `ragent-broker`  | Master name for broker instance (mode=sentinel). |
 | `REDIS_RATELIMIT_SENTINEL_MASTER`     | `ragent-ratelimit` | Master name for rate-limiter instance (mode=sentinel). |
-
 #### 4.6.4 Third-party API endpoints & credentials
-
 | Variable | Default | Description |
 |---|---|---|
 | `AI_API_AUTH_URL`                     | (required)       | TokenManager J1→J2 endpoint (`POST /auth/api/accesstoken`). |
@@ -956,9 +643,7 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `UNPROTECT_DELEGATED_USER_SUFFIX`     | (required when enabled) | Appended to `X-User-Id` to form the `delegatedUser` form field: `{X-User-Id}{suffix}`. |
 | `EMBEDDING_REGISTRY_TTL_SECONDS`      | `10`             | B50 — TTL on the `ActiveModelRegistry` cache of `system_settings.embedding.*`. A cutover/rollback takes effect on the next App-cache refresh within this many seconds; the `dual_write_warmup` preflight gate refuses cutover until `2 × TTL` has elapsed since promote. |
 | `COMMIT_MIN_HOURS`                    | `24`             | B50 — minimum observation window in `CUTOVER` state before `/embedding/v1/commit` is allowed (soft gate; override with `force=true`). Discourages impulsive commits that would retire the old stable field before issues surface. |
-
 #### 4.6.5 Worker, Reconciler & retry policy
-
 | Variable | Default | Description |
 |---|---|---|
 | `WORKER_HEARTBEAT_INTERVAL_SECONDS`   | `30`             | How often the worker refreshes `documents.updated_at` during pipeline body (B16). |
@@ -967,9 +652,7 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `RECONCILER_PENDING_STALE_SECONDS`    | `300`            | Re-dispatch threshold for `PENDING` rows whose heartbeat aged past this. |
 | `RECONCILER_UPLOADED_STALE_SECONDS`   | `300`            | Re-kiq threshold for `UPLOADED` orphans (R1: TaskIQ message lost / broker outage at POST). |
 | `RECONCILER_DELETING_STALE_SECONDS`   | `300`            | Resume threshold for stuck `DELETING` cascades. |
-
 #### 4.6.6 Pipeline & chat tunables
-
 | Variable | Default | Description |
 |---|---|---|
 | `INGEST_INLINE_MAX_BYTES`             | `10485760`       | v2: 10 MB cap on inline `content` UTF-8 byte length; 413 on overrun. |
@@ -1005,9 +688,7 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `FEEDBACK_HMAC_SECRET`                | *(required when `CHAT_FEEDBACK_ENABLED=true`)* | HMAC key for signing `/chat` response tokens and verifying `POST /feedback/v1` payloads (B55). Boot fails when feedback is enabled but the secret is unset. |
 
 > **MCP protocol pins are NOT env-driven** — `protocolVersion` (`2024-11-05`) and `serverInfo.name` (`ragent`) are **pinned in spec §3.8.1 / B47** and live as module-level constants in `src/ragent/routers/mcp.py`. Operators flipping the protocol version would silently break the contract; the pin is intentional. The only MCP env knob is the body cap above.
-
 #### 4.6.7 Per-call timeouts (matches §4.3 catalog)
-
 | Variable | Default (s) | Site |
 |---|---|---|
 | `EMBEDDER_INGEST_TIMEOUT_SECONDS`     | `30`             | per-batch (32 strings) ingest call. |
@@ -1022,9 +703,7 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `UNPROTECT_TIMEOUT_SECONDS`           | `30`             | per-call budget for the unprotect API POST (when `UNPROTECT_ENABLED=true`). |
 
 > Timeouts above are intentionally asymmetric: ingest embedder uses 30 s/batch (32 strings), query embedder uses 10 s (1 string) (C8). Same client, two call sites, two budgets.
-
 #### 4.6.8 Observability (OpenTelemetry)
-
 | Variable | Default | Description |
 |---|---|---|
 | `OTEL_EXPORTER_OTLP_ENDPOINT`         | (optional)       | OTLP collector URL; absence disables export (no-op tracer). |
@@ -1036,14 +715,10 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `RAGENT_METRICS_SOURCE_APP_ALLOWLIST` | (empty)          | Comma-separated allow-list of `source_app` values that pass through verbatim as a Prometheus label. Anything outside the list is collapsed to `RAGENT_METRICS_SOURCE_APP_FALLBACK` to bound label cardinality. |
 | `RAGENT_METRICS_SOURCE_APP_FALLBACK`  | `other`          | Bucket name for `source_app` values not in the allow-list. |
 | `HTTP_ERROR_LOG_MAX_BYTES`            | `8192`           | Max bytes of request/response body included in `http.upstream_error` log records. Bodies above this size are truncated with `request_truncated` / `response_truncated` set to `true`. Sensitive headers (`Authorization`, `apikey`, `Cookie`, `X-API-Key`, `Proxy-Authorization`, plus the configured values of `EMBEDDING_AUTH_HEADER_NAME` / `LLM_AUTH_HEADER_NAME` / `RERANK_AUTH_HEADER_NAME`) and the J1 `key` field of the auth POST are always redacted regardless of size. |
-
 ---
-
 ## 5. Data Structures
-
 ### 5.1 MariaDB
-
-> **v2 OVERRIDE** — `documents` adds `ingest_type ENUM('inline','file','upload') NOT NULL DEFAULT 'inline'`, `minio_site VARCHAR(64) NULL`, `source_url VARCHAR(2048) NULL`. The **`chunks` table is dropped** — chunks live only in ES `chunks_v1`. `object_key` semantics: for `inline`/`upload` it points into `__default__` MinIO site; for `file` it is the caller-supplied key in the named site (no copy). The third discriminator value `upload` was added by `migrations/011_ingest_type_upload.sql` to distinguish the multipart `POST /ingest/v1/upload` entry path from the JSON-body `inline` shape (different cleanup contract — see §3.1 table).
+> **v2:** `documents` has `ingest_type ENUM('inline','file','upload')`, `minio_site VARCHAR(64) NULL`, `source_url VARCHAR(2048) NULL`. `chunks` table dropped — chunks in ES only. `upload` discriminator added by `011_ingest_type_upload.sql`.
 
 ```sql
 CREATE TABLE documents (
@@ -1053,7 +728,7 @@ CREATE TABLE documents (
   source_app       VARCHAR(64)  NOT NULL,
   source_title     VARCHAR(256) NOT NULL,
   source_meta      VARCHAR(1024) NULL,
-  ingest_type      ENUM('inline','file')  NOT NULL DEFAULT 'inline',
+  ingest_type      ENUM('inline','file','upload')  NOT NULL DEFAULT 'inline',
   minio_site       VARCHAR(64)   NULL,          -- NULL for inline (uses __default__ site)
   source_url       VARCHAR(2048) NULL,
   mime_type        VARCHAR(256)  NOT NULL,
@@ -1088,16 +763,8 @@ CREATE TABLE feedback (
 -- Append-only event log. ES `feedback_v1` (§5.4) is the derived serving view (B54/B55).
 -- No content/text — query_text lives only in `feedback_v1` per the "text in ES, meta in MariaDB" rule.
 ```
-
-No physical FK. ORM-level cascade only.
-
-**ID classification:**
-- **Internal IDs** (UID rule applies — `00_rule.md` §ID Generation Strategy): `document_id`, `chunk_id` — `CHAR(26)` UUIDv7→Crockford Base32, generated by `new_id()`.
-- **External IDs / display fields** (UID rule does **not** apply — supplied by clients or upstream systems): `source_id` (≤ 128 chars; client-supplied stable identifier), `source_app` (≤ 64 chars; namespace/source system), `source_title` (≤ 256 chars; human-readable title surfaced as `sources[].source_title` in chat/retrieve responses), `source_meta` (optional free-format ≤ 1024 chars; renamed from `source_workspace` per B35), `create_user` (≤ 64 chars; audit metadata only, **not an authorization field**).
-- The `task_id` returned from `POST /ingest` is the `document_id` itself; no separate task identifier exists.
-
+No physical FK. ORM-level cascade only. `task_id` returned from `POST /ingest` = `document_id`. Internal IDs (`document_id`, `chunk_id`): `CHAR(26)` UUIDv7→Crockford Base32 from `new_id()`. External IDs (`source_id`, `source_app`, `source_title`, `source_meta`, `create_user`) — caller-supplied, UID rule does not apply.
 ### 5.2 Elasticsearch `chunks_v1`
-
 > **v2 OVERRIDE** — adds `raw_content` field (`type: text, index: false`, `_source`-only). `content` (existing `text` column, may also be exposed under that legacy name) holds the **normalized** view embedded by bge-m3 + BM25-analyzed; `raw_content` holds the **original byte slice** the splitter captured (markdown fences, HTML tags, etc.). Chat retrieval scores against `content`, but the LLM context and `sources[].excerpt` use `raw_content` (with `content` fallback for legacy chunks). `source_url` is added as a `keyword` field for citation rendering.
 
 > **Source of truth (B26):** `resources/es/chunks_v1.json` — settings + mappings, checked into git. Bootstrap (§6.1) reads this file and `PUT /chunks_v1` if the index does not exist. The block below is the canonical content; any drift between this spec snippet and the resource file is a CI failure (`tests/integration/test_es_resource_drift.py`).
@@ -1143,42 +810,21 @@ No physical FK. ORM-level cascade only.
   }
 }
 ```
+**Topology:** 1 primary shard, 0 replicas (prod overrides via cluster template). **BM25 (B26):** `text`/`title` use `icu_text` (`icu_tokenizer + icu_folding + lowercase`) — required for CJK; `analysis-icu` plugin hard dependency (verified at `/readyz`). Test override: `tests/resources/es/chunks_v1.json` uses `standard` analyzer + `flat` vector index for vanilla CI containers (B42 delta). **Vector (B58):** `bbq_hnsw` — ~32× memory saving vs `flat` at negligible recall cost; test file keeps `flat`.
 
-**Shard topology (B26):** `number_of_shards: 1` (single primary — sufficient for P1 corpus size, simpler routing); `number_of_replicas: 0` (no replicas — single-node dev/CI clusters reach `green` immediately; prod overrides via cluster-level template when HA is needed in P2).
-
-**BM25 analyzer (B26):** `text` and `title` use the custom `icu_text` analyzer (`icu_tokenizer` + `icu_folding` + `lowercase`) — required for CJK tokenisation; the default `standard` analyzer collapses CJK to per-character or mega-tokens and breaks BM25. The `analysis-icu` plugin is a hard ES dependency, verified at `/readyz` (B26, I5). **Test override (B42):** integration tests run against a vanilla `elasticsearch:9.2.3` container without the plugin and load `tests/resources/es/chunks_v1.json` (standard analyzer) via the `RAGENT_ES_RESOURCES_DIR` env override; CJK BM25 behaviour is therefore not covered by integration tests and is validated by manual / staging smoke tests instead (see §7 Decision Log B42).
-
-**Vector index (B26 → B58):** `embedding` uses `index_options.type = bbq_hnsw` — Better Binary Quantization HNSW (ES 8.16+) — for ~32× memory reduction at negligible recall cost. The earlier P1 choice (`flat`, exact brute-force kNN) was reversed in B58 (2026-05-19): with a 1024-dim corpus, `bbq_hnsw`'s residual recall loss sits well within chat retrieval's RRF tolerance, and the memory savings remove a Phase-2 migration step. **Test override:** `tests/resources/es/chunks_v1.json` keeps `flat` so vanilla `elasticsearch:9.2.3` CI containers stay light-weight; the structural-match invariant (`test_init_schema.py`) tolerates this delta alongside the B42 ICU delta.
-
-**Default ingest pipeline `chunks_default` (B59):** `settings.index.default_pipeline = "chunks_default"` wires every chunk write through an ES ingest pipeline that fills the new `indexed_at` field from the coordinating-node clock — no Python writer touches the field (`docs/00_journal.md` 2026-05-19 Architecture row codifies the rule). Source of truth: `resources/es/pipelines/chunks_default.json`, mirrored below.
+**Default ingest pipeline `chunks_default` (B59):** `settings.index.default_pipeline = "chunks_default"` fills `indexed_at` from `_ingest.timestamp` on every write. Source of truth: `resources/es/pipelines/chunks_default.json`:
 
 ```json
-{
-  "description": "chunks_v1 default ingest pipeline (B59): fills indexed_at with the ES coordinating-node timestamp on every write — single source of truth for the chunk row's last-write time. Re-runs on every OVERWRITE.",
-  "processors": [
-    { "set": { "field": "indexed_at", "value": "{{{_ingest.timestamp}}}" } }
-  ]
-}
+{"processors":[{"set":{"field":"indexed_at","value":"{{{_ingest.timestamp}}}"}}]}
 ```
+`init_es()` MUST PUT the pipeline BEFORE the index — ES rejects index creation with a missing `default_pipeline`. `indexed_at` = **last write time** (not first); operators needing creation time read `documents.created_at`.
 
-**Bootstrap order (B59):** `init_es()` MUST `PUT _ingest/pipeline/chunks_default` BEFORE `PUT chunks_v1` — ES rejects index creation when its `default_pipeline` references a missing pipeline (`tests/unit/test_init_schema.py::test_init_es_puts_pipelines_before_indexes` pins the ordering invariant). Pipeline PUT is idempotent on the ES side (overwrite by id), unlike index PUT which is guarded by HEAD.
-
-**`indexed_at` semantics (B59):** the field reflects the **last** time a given `chunk_id` was successfully written to ES, not the first. Worker pipeline retries and B40 `DuplicatePolicy.OVERWRITE` re-runs the ingest pipeline on every overwrite, so `_ingest.timestamp` advances. `set` processor's `override: false` flag would not preserve first-write semantics under OVERWRITE — it inspects only the incoming `_source`, never the stored doc. Operators who need true creation time must read `documents.created_at` (MariaDB SoT).
-
-**Title surface (B15):** `title` is denormalised onto every chunk row from `documents.source_title`. Two retrieval surfaces are derived from it:
-1. **Lexical** — BM25 retriever runs `multi_match` on `["text", "title^2"]` (title boosted 2× over body) using the `icu_text` analyzer (B26).
-2. **Semantic** — `embedding` is computed as `embed(f"{source_title}\n\n{chunk_text}")` at ingest time, so every chunk vector already carries title semantics. No separate `title_embedding` field is stored.
-
-**Filter surface (B29 → B35):** `source_app` and `source_meta` are denormalised from `documents` onto every chunk row as `keyword` fields. Chat (§3.4.1) accepts optional `source_app` and `source_meta` filter params; when present they apply as ES `term` filters in **both** retrievers' `filter` clause (kNN `filter` and BM25 `bool.filter`). Filtering happens **before** scoring narrows the candidate pool, so top-K returned reflects the requested scope without over-fetch. These are **not auth fields** (B14): they are content-scope metadata, like `lang`. Permission gating remains a separate post-retrieval layer (§3.5).
-
+**Title (B15):** `title` denormalised per chunk; BM25 `multi_match ["text","title^2"]`; semantic embedding = `embed(f"{source_title}\n\n{chunk_text}")`. **Filter (B29→B35):** `source_app`/`source_meta` denormalised as `keyword`; applied as ES `term` filters in both retrievers — **not auth fields**.
 ### 5.3 ID / DateTime
-
 - `new_id()` → UUIDv7 → Crockford Base32 → 26 chars (lexicographically sortable).
 - `utcnow()` → tz-aware UTC. `to_iso()` → ISO 8601 `...Z`. `from_db(naive)` → attach UTC.
-
 ### 5.4 Elasticsearch `feedback_v1`
-
-> **Source of truth (B26 pattern):** `resources/es/feedback_v1.json` — settings + mappings, checked into git. Bootstrap (§6.1) reads this file and `PUT /feedback_v1` if the index does not exist. Mirrors the `chunks_v1` pattern (§5.2): ES holds text + vector, MariaDB holds meta only.
+Source of truth: `resources/es/feedback_v1.json`. ES holds text + vector; MariaDB holds meta only (same pattern as §5.2).
 
 ```json
 {
@@ -1212,17 +858,10 @@ No physical FK. ORM-level cascade only.
   }
 }
 ```
-
-**Indexing semantics (B54/B55):**
-- `_id` = `sha256(user_id|request_id|source_app|source_id)` so re-votes overwrite (mirrors MariaDB `uq_user_req_app_src`).
-- `query_embedding` produced at feedback-write time via `EmbeddingClient.embed([query_text], query=True)` — same model used by `/chat` retrieval so kNN similarity is comparable.
-- `user_id_hash = sha256(user_id).hexdigest()` — defence-in-depth for ES dumps; plaintext `user_id` lives only in MariaDB (`feedback.user_id`).
-- Test override (B42) at `tests/resources/es/feedback_v1.json` omits the ICU analyzer, identical otherwise.
+**Semantics:** `_id = sha256(user_id|request_id|source_app|source_id)` → re-votes overwrite. `query_embedding` re-embedded at write time (same model as `/chat`). `user_id_hash = sha256(user_id)` — PII defence; plaintext in MariaDB only. Test override (B42): omits ICU analyzer.
 
 ---
-
 ## 6. Standards
-
 - **Layers:** Router (HTTP only) → Service (orchestration) → Repository (CRUD only).
 - **Methods:** ≤ 30 LOC, max 2-level nesting. Utilities in `utility/`.
 - **IDs:** UUIDv7 + Crockford Base32 (26 chars). **DateTime:** end-to-end UTC + `Z` suffix.
@@ -1230,9 +869,7 @@ No physical FK. ORM-level cascade only.
 - **Quality gate:** `uv run ruff format . && uv run ruff check . --fix && uv run pytest --cov=src/ragent --cov-branch --cov-fail-under=92` before every commit. **Test coverage floor: 92% (line + branch)** — CI rejects drops; DoD requirement.
 - **TDD commits:** `[STRUCTURAL]` or `[BEHAVIORAL]` prefix; never mixed.
 - **JSON naming convention (B21):** within request/response bodies, **identifier and resource fields are `snake_case`** (`document_id`, `source_id`, `source_app`, `source_title`, `error_code`, `next_cursor`, `task_id`, `trace_id`); **LLM token/config knobs are `camelCase`** (`maxTokens`, `promptTokens`, `completionTokens`, `totalTokens`, `temperature`, `topP` if added later) — preserved to match upstream OpenAI-shape expectations. Within a single body both styles may coexist; the rule above resolves which to use for any new field.
-
 ### 6.1 Schema & Migration (B3)
-
 Two artefacts, **both versioned in git**, both consulted at boot:
 
 | Artefact | Path | Purpose | Owner |
@@ -1246,9 +883,7 @@ Two artefacts, **both versioned in git**, both consulted at boot:
 - Auto-init is for dev/test bring-up convenience only; production migrations MUST go through Alembic (DB) or a controlled `PUT /<index>-vN` + reindex flow (ES). Boot-init refuses to run any `ALTER` or ES mapping update — schema drift is logged as `event=schema.drift` and surfaces in `/readyz` as a degraded state, not an automatic mutation.
 
 **Invariant:** `schema.sql` ≡ replaying `001 → NNN`. CI enforces this with `tests/integration/test_schema_drift.py` (apply both paths to two scratch DBs, `mysqldump` both, diff must be empty).
-
 ### 6.2 Module Layout
-
 > Canonical project tree. Every file is produced by exactly one Green/Structural plan row; no file is written outside this layout. Layered dependency rule: **routers → services → repositories**; **plugins / clients / storage / pipelines** are leaf concerns injected via the composition root (B30). **Only `bootstrap/composition.py` reads env vars** — every other module receives its config via constructor argument (B17, B30).
 
 ```
@@ -1307,13 +942,10 @@ ragent/
 │   └── state_machine.py                          # T0.7 (S10) — status transition rules; consumed by repo.update_status
 └── tests/{conftest.py, unit/, integration/, e2e/}
 ```
-
 **Module conventions:** No env reads outside `bootstrap/composition.py`. `@broker.task` decorators import from `ragent.bootstrap.broker` only. Plugins never import `pipelines/`, `routers/`, or HTTP layers. Routers → services → repositories (constructor-injected). `bootstrap/init_schema.py` applies `schema.sql` + `resources/es/*.json` idempotently; no inline DDL.
 
 ---
-
 ## 7. Decision Log
-
 > Frozen 2026-05-04. Each row records a once-blocking design choice with the alternatives considered. Changes require a new dated row (append-only, never edit in place).
 
 | ID | Date | Domain | Question | Decision | Alternatives rejected | Affects |
