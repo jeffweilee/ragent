@@ -840,12 +840,12 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 | `.md`   | `MarkdownToDocument`     | `text/markdown`           | front-matter stripped | **P1** |
 | `.html` | `HTMLToDocument`         | `text/html`               | visible text, script/style stripped | **P1** |
 | `.csv`  | `CSVToDocument`          | `text/csv`                | row-as-document; rows packed by `RowMerger` to ~2 000 chars (B24); bounded by global 50 MB file limit (B2) | **P1** |
-| `.pdf`  | `_PdfASTSplitter`        | `application/pdf`         | one atom per page; fast MuPDF text extraction; Tesseract OCR on image-bearing pages; batch-safe for large files | **P1** |
+| `.pdf`  | `_PdfASTSplitter`        | `application/pdf`         | per-page `pymupdf4llm.to_markdown` → `_MarkdownASTSplitter`; RapidOCR auto-selected for image-bearing pages; structured atoms (headings, tables, paragraphs) | **P1** |
 | `.docx` | `_DocxASTSplitter`       | `application/vnd.openxmlformats-officedocument.wordprocessingml.document` | paragraphs + tables (python-docx) | **P1** |
 | `.pptx` | `_PptxASTSplitter`       | `application/vnd.openxmlformats-officedocument.presentationml.presentation` | one atom per slide (python-pptx) | **P1** |
 | `.xlsx` | `XLSXToDocument`         | `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet` | active sheets | P2 |
 
-> 415 on unsupported MIME; 413 on > 50 MB. PDF ingest supports scanned / image-bearing pages via Tesseract OCR (requires OS-level `tesseract`); pages with no raster images use the fast MuPDF text path (no Tesseract cost).
+> 415 on unsupported MIME; 413 on > 50 MB. PDF ingest uses `pymupdf4llm.to_markdown` per page to produce structured markdown atoms (headings, tables, paragraphs); `rapidocr-onnxruntime` is auto-selected by pymupdf4llm for image-bearing pages (no OS-level dependency). If `to_markdown` raises, the splitter falls back to `page.get_text("text")` and logs a warning — the page is still ingested as plain text.
 
 ### 4.3 Pipeline Catalog
 
@@ -1003,7 +1003,6 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `CHAT_FEEDBACK_MIN_VOTES`             | `3`              | `(likes + dislikes)` threshold below which a (source_app, source_id) is dropped from the retriever (B54). Defeats single-user signal poisoning. |
 | `CHAT_FEEDBACK_HALF_LIFE_DAYS`        | `14`             | Score decay half-life applied to the per-source Wilson score: `score × 0.5 ** (age_days / this)` (B54). |
 | `FEEDBACK_HMAC_SECRET`                | *(required when `CHAT_FEEDBACK_ENABLED=true`)* | HMAC key for signing `/chat` response tokens and verifying `POST /feedback/v1` payloads (B55). Boot fails when feedback is enabled but the secret is unset. |
-| `PDF_OCR_LANGUAGES`                   | `eng+chi_sim+chi_tra+jpn+deu` | Tesseract language pack list (plus-separated) used by `_PdfASTSplitter` when OCR-ing image-bearing pages. Install matching `tesseract-ocr-<lang>` packages if non-default languages are added. |
 
 > **MCP protocol pins are NOT env-driven** — `protocolVersion` (`2024-11-05`) and `serverInfo.name` (`ragent`) are **pinned in spec §3.8.1 / B47** and live as module-level constants in `src/ragent/routers/mcp.py`. Operators flipping the protocol version would silently break the contract; the pin is intentional. The only MCP env knob is the body cap above.
 

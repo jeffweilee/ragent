@@ -1,4 +1,4 @@
-"""TDD — _PdfASTSplitter: PDF binary → Document atoms (one per page)."""
+"""TDD — _PdfASTSplitter: PDF binary → Document atoms via pymupdf4llm per-page to_markdown."""
 
 from __future__ import annotations
 
@@ -34,31 +34,35 @@ def _run_splitter(data: bytes) -> list:
 # ---------------------------------------------------------------------------
 
 
-def test_pdf_one_atom_per_page():
+def test_pdf_at_least_one_atom_per_nonempty_page():
     data = _make_pdf_bytes(["Page one content", "Page two content"])
     atoms = _run_splitter(data)
-    assert len(atoms) == 2
+    page_numbers = {a.meta["page_number"] for a in atoms}
+    assert page_numbers == {1, 2}
 
 
 def test_pdf_content_contains_page_text():
     data = _make_pdf_bytes(["Hello World"])
     atoms = _run_splitter(data)
-    assert len(atoms) == 1
-    assert "Hello World" in atoms[0].content
+    assert len(atoms) >= 1
+    assert any("Hello World" in a.content for a in atoms)
 
 
 def test_pdf_raw_content_set():
     data = _make_pdf_bytes(["Test content"])
     atoms = _run_splitter(data)
-    assert "raw_content" in atoms[0].meta
-    assert "Test content" in atoms[0].meta["raw_content"]
+    assert len(atoms) >= 1
+    assert all("raw_content" in a.meta for a in atoms)
+    assert any("Test content" in a.meta["raw_content"] for a in atoms)
 
 
 def test_pdf_meta_passthrough():
     data = _make_pdf_bytes(["text"])
     atoms = _run_splitter(data)
-    assert atoms[0].meta["document_id"] == "doc-pdf"
-    assert atoms[0].meta["mime_type"] == "application/pdf"
+    assert len(atoms) >= 1
+    for atom in atoms:
+        assert atom.meta["document_id"] == "doc-pdf"
+        assert atom.meta["mime_type"] == "application/pdf"
 
 
 def test_pdf_empty_bytes_skipped():
@@ -80,61 +84,58 @@ def test_pdf_empty_page_skipped():
 def test_pdf_page_number_in_meta():
     data = _make_pdf_bytes(["First", "Second", "Third"])
     atoms = _run_splitter(data)
-    assert len(atoms) == 3
-    assert [a.meta.get("page_number") for a in atoms] == [1, 2, 3]
+    page_numbers = {a.meta.get("page_number") for a in atoms}
+    assert page_numbers == {1, 2, 3}
 
 
 # ---------------------------------------------------------------------------
-# _pdf_page_text — OCR branch (image-bearing pages)
+# to_markdown integration — splitter calls pymupdf4llm per page
 # ---------------------------------------------------------------------------
 
 
-def test_pdf_page_text_no_images_uses_fast_path():
-    """Pages without images return plain get_text without calling OCR."""
-    from unittest.mock import MagicMock
+def test_pdf_splitter_calls_to_markdown_per_page(monkeypatch):
+    """to_markdown is called once per page with pages=[i] and use_ocr=True."""
+    from unittest.mock import patch
 
-    from ragent.pipelines.ingest import _pdf_page_text
+    calls = []
 
-    page = MagicMock()
-    page.get_images.return_value = []
-    page.get_text.return_value = "  Plain text  "
+    def fake_to_markdown(pdf, *, pages, use_ocr, **kwargs):
+        calls.append(pages)
+        return f"Page {pages[0]} content\n"
 
-    result = _pdf_page_text(page)
-    assert result == "Plain text"
-    page.get_textpage_ocr.assert_not_called()
+    with patch("ragent.pipelines.ingest.pymupdf4llm") as mock_module:
+        mock_module.to_markdown.side_effect = fake_to_markdown
+        data = _make_pdf_bytes(["Alpha", "Beta"])
+        _run_splitter(data)
 
-
-def test_pdf_page_text_ocr_success():
-    """Pages with images use OCR; result is the OCR-extracted text."""
-    from unittest.mock import MagicMock
-
-    from ragent.pipelines.ingest import _pdf_page_text
-
-    page = MagicMock()
-    page.get_images.return_value = [("xref",)]
-    fake_tp = object()
-    page.get_textpage_ocr.return_value = fake_tp
-    page.get_text.return_value = "  OCR result  "
-
-    result = _pdf_page_text(page)
-    assert result == "OCR result"
-    page.get_text.assert_called_with(textpage=fake_tp)
+    assert len(calls) == 2
+    assert calls[0] == [0]
+    assert calls[1] == [1]
 
 
-def test_pdf_page_text_ocr_fallback_on_failure():
-    """When OCR raises (e.g. Tesseract not installed), falls back to plain get_text."""
-    from unittest.mock import MagicMock
+def test_pdf_empty_markdown_page_skipped(monkeypatch):
+    """Pages where to_markdown returns blank markdown produce no atoms."""
+    from unittest.mock import patch
 
-    from ragent.pipelines.ingest import _pdf_page_text
+    with patch("ragent.pipelines.ingest.pymupdf4llm") as mock_module:
+        mock_module.to_markdown.return_value = "   "
+        data = _make_pdf_bytes(["anything"])
+        atoms = _run_splitter(data)
 
-    page = MagicMock()
-    page.get_images.return_value = [("xref",)]
-    page.get_textpage_ocr.side_effect = RuntimeError("tesseract not available")
-    page.get_text.return_value = "Fallback plain text"
+    assert atoms == []
 
-    result = _pdf_page_text(page)
-    assert result == "Fallback plain text"
-    page.get_textpage_ocr.assert_called_once()
+
+def test_pdf_to_markdown_fallback_on_failure(monkeypatch):
+    """When to_markdown raises, falls back to plain fitz text; page is still ingested."""
+    from unittest.mock import patch
+
+    with patch("ragent.pipelines.ingest.pymupdf4llm") as mock_module:
+        mock_module.to_markdown.side_effect = RuntimeError("rapidocr internal error")
+        data = _make_pdf_bytes(["Fallback text"])
+        atoms = _run_splitter(data)
+
+    assert len(atoms) >= 1
+    assert any("Fallback text" in a.content for a in atoms)
 
 
 def test_pdf_store_shrink_called_once_per_page(monkeypatch):
@@ -182,7 +183,8 @@ def test_pdf_page_count_at_cap_passes(monkeypatch):
     monkeypatch.setattr(ingest, "INGEST_MAX_PDF_PAGES", 3)
     data = _make_pdf_bytes(["A", "B", "C"])  # exactly 3 pages
     atoms = _run_splitter(data)
-    assert len(atoms) == 3
+    page_numbers = {a.meta["page_number"] for a in atoms}
+    assert page_numbers == {1, 2, 3}
 
 
 def test_pdf_max_pages_module_default():

@@ -22,7 +22,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-          version: "latest"
+          version: "0.8.17"
 
       - name: Setup Python
         run: uv python install
@@ -74,7 +74,7 @@ jobs:
         uses: astral-sh/setup-uv@v5
         with:
           enable-cache: true
-          version: "latest"
+          version: "0.8.17"
 
       - name: Setup Python
         run: uv python install

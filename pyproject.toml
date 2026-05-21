@@ -33,6 +33,7 @@ dependencies = [
     "fastmcp>=2.0",
     "pyyaml>=6.0",
     "joserfc>=1.6.4",
+    "rapidocr-onnxruntime>=1.4.4",
 ]
 
 [project.optional-dependencies]

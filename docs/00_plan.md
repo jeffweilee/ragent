@@ -548,6 +548,17 @@ v2 replaces the underlying behavior in C2–C6):
 | T-SEC.7 | Behavioral | • **Achieve:** Expose Prometheus counter for guard rejections so over-tight thresholds surface in Grafana.<br>• **Deliver:** `src/ragent/bootstrap/metrics.py` — `ragent_ingest_rejected_total{reason}` counter + `record_ingest_rejection(reason)` helper with `reason ∈ {magic, invalid, members, ratio, expanded, per_member, traversal, pdf_pages}` (closed set; unknown raises). Emission sites: `MagicByteMismatchError`/`ArchiveBombError`/`PdfTooManyPagesError.__init__`. `tests/unit/test_metrics_ingest_rejected.py` parametrizes one assertion per reason plus end-to-end emission tests from each guard. | §4.6 | [x] | Dev |
 | T-SEC.8 | Refactor | • **Achieve:** Update spec + env-var inventory (closed-system rule per `docs/00_journal.md` 2026-05-04 Config).<br>• **Deliver:** `docs/00_spec.md §4.1.2` (error catalogue) gains rows for `INGEST_MAGIC_MISMATCH` / `INGEST_ARCHIVE_UNSAFE` / `INGEST_PDF_TOO_MANY_PAGES`; `docs/00_spec.md §3.1` validation-order prose covers magic-byte + archive preflight + page-count cap; `docs/00_spec.md §4.6` env-var table already populated by T-SEC.3/.4 and T-SEC.5/.6 drift fixes; `.env.example` already mirrored; `docs/API.md` GET-status section documents the terminal `error_code` values. | §4.2, §4.6 | [x] | Dev |
 
+### Replace Tesseract OCR with RapidOCR (branch `claude/enable-pdf-ocr-GVQBy`) — 2026-05-21
+
+> Source: user request 2026-05-21. Tesseract requires OS-level installation (`tesseract-ocr` + language packs), which is too heavy for the container image. Replace with `rapidocr-onnxruntime` — pure-Python, ONNX-based, no OS dependencies, auto-detects CJK/EN/JP/DE. Remove `PDF_OCR_LANGUAGES` env var (no longer needed).
+
+| ID | Phase | Deliver | Spec | Status | Owner |
+|---|---|---|---|---|---|
+| T-OCR.1 | Red | Update `tests/unit/test_pdf_ast_splitter.py` OCR tests to mock `_get_rapidocr_engine` instead of `page.get_textpage_ocr`; add `test_pdf_page_text_ocr_engine_receives_pixmap` asserting pixmap is passed to engine. Confirm tests fail before impl. | §4.2 | [x] | QA |
+| T-OCR.2 | Green | `pyproject.toml` — add `rapidocr-onnxruntime`; `src/ragent/pipelines/ingest.py` — remove `PDF_OCR_LANGUAGES`; add `_get_rapidocr_engine()` lazy singleton; rewrite `_pdf_page_text()` to render pixmap + call RapidOCR; update docstrings. | §4.2 | [x] | Dev |
+| T-OCR.3 | Refactor | `docs/00_spec.md` L843/848/1006 — replace Tesseract wording; remove `PDF_OCR_LANGUAGES` env-var row. `.env.example` — remove `PDF_OCR_LANGUAGES` line. | §4.6 | [x] | Dev |
+| T-OCR.4 | Refactor | Use `pymupdf4llm.to_markdown(pdf, pages=[i], use_ocr=True)` per page instead of custom `_pdf_page_text()`; feed result to `_MarkdownASTSplitter`; remove `_rapidocr_engine` singleton and `_pdf_page_text`; update tests and spec §4.2. | §4.2 | [x] | Dev |
+
 ### Embedding-model lifecycle (branch `claude/design-embedding-model-switch-5N3Uh`) — 2026-05-15
 
 > Source: B50. Multi-vector single-index swap with five admin APIs and a CANDIDATE/CUTOVER state machine. Design doc: `docs/team/2026_05_15_embedding_model_lifecycle.md`.

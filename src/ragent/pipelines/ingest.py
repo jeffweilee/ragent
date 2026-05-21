@@ -7,7 +7,7 @@ Splitter dispatches per ``meta["mime_type"]``:
 - ``text/plain``      → Haystack ``DocumentSplitter`` (passage)
 - ``text/markdown``   → ``_MarkdownASTSplitter`` (mistletoe)
 - ``text/html``       → ``_HtmlASTSplitter`` (selectolax)
-- ``application/pdf`` → ``_PdfASTSplitter`` (PyMuPDF + Tesseract OCR)
+- ``application/pdf`` → ``_PdfASTSplitter`` (pymupdf4llm to_markdown + RapidOCR auto)
 
 Each splitter emits atoms whose ``meta["raw_content"]`` is the original
 byte slice (markdown fences / HTML fragments preserved). ``_BudgetChunker``
@@ -22,6 +22,7 @@ import io
 import re
 from typing import Any
 
+import pymupdf4llm
 import structlog
 from haystack.components.preprocessors import DocumentSplitter
 from haystack.components.writers import DocumentWriter
@@ -34,7 +35,7 @@ from ragent.errors.codes import TaskErrorCode
 from ragent.pipelines.observability import IngestStepError, wrap_pipeline_component
 from ragent.schemas.ingest import IngestMime
 from ragent.security.archive_guard import INGEST_MAX_PDF_PAGES
-from ragent.utility.env import int_env, str_env
+from ragent.utility.env import int_env
 
 _logger = structlog.get_logger(__name__)
 
@@ -46,8 +47,6 @@ CHUNK_OVERLAP_CHARS = int_env("CHUNK_OVERLAP_CHARS", 100)
 # treated as misconfiguration (overlap ≥ target produces tiny advance steps
 # and can blow up to millions of chunks on a 1 MB atom).
 CHUNK_MAX_PIECES_PER_ATOM = int_env("CHUNK_MAX_PIECES_PER_ATOM", 10_000)
-
-PDF_OCR_LANGUAGES = str_env("PDF_OCR_LANGUAGES", "eng+chi_sim+chi_tra+jpn+deu")
 
 
 def validate_chunk_config() -> None:
@@ -400,42 +399,24 @@ class _PptxASTSplitter:
 # ---------------------------------------------------------------------------
 
 
-def _pdf_page_text(page: Any) -> str:
-    """Return extracted text for one fitz page.
-
-    Image-free pages skip Tesseract entirely. Image-bearing pages attempt OCR;
-    on any failure (Tesseract absent, language pack missing, etc.) falls back to
-    plain text extraction.
-    """
-    if not page.get_images(full=False):
-        return page.get_text("text").strip()
-    try:
-        tp = page.get_textpage_ocr(language=PDF_OCR_LANGUAGES, full=True)
-        return page.get_text(textpage=tp).strip()
-    except Exception:
-        _logger.warning("pdf_ocr_fallback_to_plain_text", exc_info=True)
-        return page.get_text("text").strip()
-
-
 @component
 class _PdfASTSplitter:
-    """PDF binary → one atom per page (PyMuPDF; Tesseract OCR for image pages).
+    """PDF binary → markdown atoms via pymupdf4llm (RapidOCR auto-selected for image pages).
 
-    Reads raw bytes from ``meta["raw_bytes"]``. Empty pages are skipped.
-    ``meta["page_number"]`` carries the 1-based page index.
+    Per page: ``pymupdf4llm.to_markdown(pdf, pages=[i], use_ocr=True)`` → markdown string
+    → ``_MarkdownASTSplitter`` → structured atoms (headings, paragraphs, tables).
+    Empty pages produce no atoms. ``meta["page_number"]`` carries the 1-based index.
 
-    Text-based pages use fast MuPDF extraction (no Tesseract cost).
-    Image-bearing pages trigger OCR for that page only, capturing text
-    embedded in graphics without burning CPU on purely textual pages.
-
-    After each page ``fitz.TOOLS.store_shrink(100)`` evicts MuPDF's 256 MB
-    LRU cache (decompressed streams, OCR pixmaps, font data), bounding peak
-    RSS to roughly one page's worth of intermediate data at a time.
+    ``fitz.TOOLS.store_shrink(100)`` after each page evicts MuPDF's 256 MB LRU cache,
+    bounding peak RSS to one page's worth of intermediate data at a time.
     """
+
+    def __init__(self) -> None:
+        self._md_splitter = _MarkdownASTSplitter()
 
     @component.output_types(documents=list[Document])
     def run(self, documents: list[Document]) -> dict:
-        import fitz  # PyMuPDF — bundled engine of pymupdf4llm
+        import fitz
 
         from ragent.security.archive_guard import assert_safe_pdf_page_count
 
@@ -447,22 +428,18 @@ class _PdfASTSplitter:
             with fitz.open(stream=raw_bytes, filetype="pdf") as pdf:
                 assert_safe_pdf_page_count(pdf.page_count, max_pages=INGEST_MAX_PDF_PAGES)
                 for page_idx in range(pdf.page_count):
-                    page = pdf[page_idx]
-                    text = _pdf_page_text(page)
-                    del page  # drop Python ref; triggers fz_drop_page
-                    fitz.TOOLS.store_shrink(100)  # evict MuPDF LRU cache
-                    if not text:
-                        continue
-                    atoms.append(
-                        Document(
-                            content=text,
-                            meta={
-                                **base_meta,
-                                "raw_content": text,
-                                "page_number": page_idx + 1,
-                            },
+                    try:
+                        md = pymupdf4llm.to_markdown(pdf, pages=[page_idx], use_ocr=True)
+                    except Exception:
+                        _logger.warning(
+                            "pdf_to_markdown_fallback", page=page_idx + 1, exc_info=True
                         )
-                    )
+                        md = pdf[page_idx].get_text("text").strip()
+                    fitz.TOOLS.store_shrink(100)
+                    if not md.strip():
+                        continue
+                    page_doc = Document(content=md, meta={**base_meta, "page_number": page_idx + 1})
+                    atoms.extend(self._md_splitter.run([page_doc])["documents"])
         return {"documents": atoms}
 
 
