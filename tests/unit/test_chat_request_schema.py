@@ -168,7 +168,7 @@ def test_source_meta_long_value_accepted():
 
 
 def test_chat_request_top_k_defaults_to_DEFAULT_TOP_K():
-    from ragent.pipelines.chat import DEFAULT_TOP_K
+    from ragent.pipelines.retrieve import DEFAULT_TOP_K
 
     ChatRequest, _ = _import()
     req = ChatRequest(messages=[{"role": "user", "content": "hi"}])
@@ -196,7 +196,7 @@ def test_chat_request_top_k_capped_at_200():
 
 
 def test_chat_request_min_score_defaults_to_DEFAULT_MIN_SCORE():
-    from ragent.pipelines.chat import DEFAULT_MIN_SCORE
+    from ragent.pipelines.retrieve import DEFAULT_MIN_SCORE
 
     ChatRequest, _ = _import()
     req = ChatRequest(messages=[{"role": "user", "content": "hi"}])

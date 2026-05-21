@@ -51,12 +51,12 @@ class _StubLLM:
 
 
 def _patch_pipelines(monkeypatch, docs):
-    from ragent.pipelines import chat as pipelines_chat
+    from ragent.pipelines import retrieve as pipelines_retrieve
     from ragent.routers import chat as chat_router_mod
     from ragent.routers import retrieve as retrieve_router_mod
 
     fake = lambda *_a, **_kw: list(docs)  # noqa: E731
-    monkeypatch.setattr(pipelines_chat, "run_retrieval", fake, raising=True)
+    monkeypatch.setattr(pipelines_retrieve, "run_retrieval", fake, raising=True)
     monkeypatch.setattr(chat_router_mod, "run_retrieval", fake, raising=True)
     monkeypatch.setattr(retrieve_router_mod, "run_retrieval", fake, raising=True)
 

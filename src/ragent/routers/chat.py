@@ -17,7 +17,7 @@ from ragent.auth.deps import get_user_id
 from ragent.clients.rate_limiter import RateLimiter
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
-from ragent.pipelines.chat import (
+from ragent.pipelines.retrieve import (
     EXCERPT_MAX_CHARS_DEFAULT,
     build_es_filters,
     doc_to_source_entry,

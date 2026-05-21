@@ -16,7 +16,7 @@ import structlog
 from haystack.dataclasses import Document
 from haystack_integrations.document_stores.elasticsearch import ElasticsearchDocumentStore
 
-from ragent.pipelines.chat import (
+from ragent.pipelines.retrieve import (
     _FeedbackMemoryRetriever,
     build_retrieval_pipeline,
     run_retrieval,

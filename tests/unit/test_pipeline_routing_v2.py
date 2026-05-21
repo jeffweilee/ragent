@@ -8,7 +8,7 @@ from __future__ import annotations
 import pytest
 from haystack.dataclasses import Document
 
-from ragent.pipelines.factory import _MimeAwareSplitter
+from ragent.pipelines.ingest import _MimeAwareSplitter
 from ragent.pipelines.observability import IngestStepError
 
 

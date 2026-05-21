@@ -23,7 +23,7 @@ def enforce() -> None:
     if log_level not in _VALID_LOG_LEVELS:
         _exit(f"LOG_LEVEL '{log_level}' is invalid; must be one of {sorted(_VALID_LOG_LEVELS)}")
 
-    from ragent.pipelines.factory import validate_chunk_config
+    from ragent.pipelines.ingest import validate_chunk_config
 
     try:
         validate_chunk_config()

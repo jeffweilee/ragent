@@ -7,8 +7,8 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 
-from ragent.pipelines.chat import DEFAULT_MIN_SCORE as _DEFAULT_MIN_SCORE
-from ragent.pipelines.chat import DEFAULT_TOP_K as _DEFAULT_TOP_K
+from ragent.pipelines.retrieve import DEFAULT_MIN_SCORE as _DEFAULT_MIN_SCORE
+from ragent.pipelines.retrieve import DEFAULT_TOP_K as _DEFAULT_TOP_K
 from ragent.schemas.ingest import SOURCE_META_MAX
 
 _DEFAULT_PROVIDER = os.environ.get("RAGENT_DEFAULT_LLM_PROVIDER", "openai")

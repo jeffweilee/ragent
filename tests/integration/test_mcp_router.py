@@ -100,7 +100,7 @@ def mock_doc_repo(es_store):
 
 @pytest.fixture
 def app(es_store, mock_embedder, mock_doc_repo) -> FastAPI:
-    from ragent.pipelines.chat import build_retrieval_pipeline
+    from ragent.pipelines.retrieve import build_retrieval_pipeline
 
     pipeline = build_retrieval_pipeline(
         embedder=mock_embedder,

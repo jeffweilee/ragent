@@ -8,7 +8,7 @@ import pytest
 from haystack.core.component import component
 from haystack.dataclasses import Document
 
-from ragent.pipelines.factory import build_ingest_pipeline
+from ragent.pipelines.ingest import build_ingest_pipeline
 from tests.conftest import FakeDocumentStore as _FakeStore
 from tests.conftest import run_in_threadpool
 

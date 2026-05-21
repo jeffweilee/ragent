@@ -77,8 +77,8 @@ def test_composition_threads_es_chunks_index_to_vector_extractor(
             MagicMock(),
         ),
         patch("elasticsearch.Elasticsearch", MagicMock()),
-        patch("ragent.pipelines.chat.build_retrieval_pipeline", MagicMock()),
-        patch("ragent.pipelines.factory.build_ingest_pipeline", MagicMock()),
+        patch("ragent.pipelines.retrieve.build_retrieval_pipeline", MagicMock()),
+        patch("ragent.pipelines.ingest.build_ingest_pipeline", MagicMock()),
         patch("ragent.repositories.document_repository.DocumentRepository", MagicMock()),
         patch("ragent.storage.minio_registry.MinioSiteRegistry", MagicMock()),
         patch("ragent.clients.rate_limiter.RateLimiter", MagicMock()),
@@ -114,7 +114,7 @@ def test_composition_threads_es_chunks_index_to_feedback_retriever(
     feedback_spy = MagicMock(name="_FeedbackMemoryRetriever")
 
     with (
-        patch("ragent.pipelines.chat._FeedbackMemoryRetriever", feedback_spy),
+        patch("ragent.pipelines.retrieve._FeedbackMemoryRetriever", feedback_spy),
         patch("ragent.bootstrap.init_schema.patch_aiomysql_ping"),
         patch("sqlalchemy.ext.asyncio.create_async_engine", MagicMock()),
         patch("ragent.clients.embedding.EmbeddingClient", MagicMock()),
@@ -126,8 +126,8 @@ def test_composition_threads_es_chunks_index_to_feedback_retriever(
             MagicMock(),
         ),
         patch("elasticsearch.Elasticsearch", MagicMock()),
-        patch("ragent.pipelines.chat.build_retrieval_pipeline", MagicMock()),
-        patch("ragent.pipelines.factory.build_ingest_pipeline", MagicMock()),
+        patch("ragent.pipelines.retrieve.build_retrieval_pipeline", MagicMock()),
+        patch("ragent.pipelines.ingest.build_ingest_pipeline", MagicMock()),
         patch("ragent.repositories.document_repository.DocumentRepository", MagicMock()),
         patch("ragent.repositories.feedback_repository.FeedbackRepository", MagicMock()),
         patch("ragent.storage.minio_registry.MinioSiteRegistry", MagicMock()),

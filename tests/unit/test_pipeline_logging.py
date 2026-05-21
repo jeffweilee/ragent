@@ -132,7 +132,7 @@ def test_build_ingest_pipeline_wraps_steps_in_order(monkeypatch) -> None:
 
     from haystack_integrations.document_stores.elasticsearch import ElasticsearchDocumentStore
 
-    from ragent.pipelines.factory import DocumentEmbedder, build_ingest_pipeline
+    from ragent.pipelines.ingest import DocumentEmbedder, build_ingest_pipeline
 
     class _StubEmbedder:
         def embed(self, texts):
@@ -250,7 +250,7 @@ def test_splitter_context_var_appears_in_split_step_log() -> None:
     from pptx import Presentation
     from pptx.util import Inches
 
-    from ragent.pipelines.factory import _MimeAwareSplitter
+    from ragent.pipelines.ingest import _MimeAwareSplitter
     from ragent.schemas.ingest import IngestMime
 
     prs = Presentation()

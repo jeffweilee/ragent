@@ -36,7 +36,7 @@ def _registry(read: EmbeddingModelConfig) -> MagicMock:
 
 
 def test_registry_mode_embeds_with_read_model_and_emits_field_name() -> None:
-    from ragent.pipelines.chat import _QueryEmbedder
+    from ragent.pipelines.retrieve import _QueryEmbedder
 
     stable = _model("bge-m3", 1024)
     calls: list[tuple[str, list[str]]] = []
@@ -58,7 +58,7 @@ def test_registry_mode_picks_candidate_field_in_cutover_state() -> None:
     """When `embedding.read = "candidate"`, the registry's read_model
     returns the candidate; the query path embeds with it and points the
     retriever at `embedding_<cand>_<dim>`."""
-    from ragent.pipelines.chat import _QueryEmbedder
+    from ragent.pipelines.retrieve import _QueryEmbedder
 
     candidate = _model("bge-m3-v2", 768)
 
@@ -76,7 +76,7 @@ def test_registry_mode_refreshes_read_model_per_call() -> None:
     """A live cutover during a long-running App must take effect on the
     next query, not require a restart. `read_model()` is therefore called
     fresh on every `run()`."""
-    from ragent.pipelines.chat import _QueryEmbedder
+    from ragent.pipelines.retrieve import _QueryEmbedder
 
     stable = _model("bge-m3", 1024)
     candidate = _model("bge-m3-v2", 768)
@@ -103,7 +103,7 @@ def test_registry_mode_refreshes_read_model_per_call() -> None:
 def test_legacy_mode_preserves_pre_em_signature() -> None:
     """The (`embedder`)-only constructor must continue to work for the
     existing single-model integration tests during the registry rollout."""
-    from ragent.pipelines.chat import _QueryEmbedder
+    from ragent.pipelines.retrieve import _QueryEmbedder
 
     client = MagicMock()
     client.embed.return_value = [[0.25] * 1024]
@@ -119,7 +119,7 @@ def test_legacy_mode_preserves_pre_em_signature() -> None:
 def test_legacy_mode_does_not_emit_embedding_field() -> None:
     """Legacy mode does not know about field names — that's the registry's
     job. Output stays at the original two-key shape."""
-    from ragent.pipelines.chat import _QueryEmbedder
+    from ragent.pipelines.retrieve import _QueryEmbedder
 
     client = MagicMock()
     client.embed.return_value = [[0.0] * 1024]
@@ -136,7 +136,7 @@ def test_legacy_mode_does_not_emit_embedding_field() -> None:
 
 
 def test_dynamic_retriever_builds_knn_body_with_provided_field() -> None:
-    from ragent.pipelines.chat import _DynamicFieldEmbeddingRetriever
+    from ragent.pipelines.retrieve import _DynamicFieldEmbeddingRetriever
 
     store = MagicMock()
     store._search_documents.return_value = [MagicMock()]
@@ -156,7 +156,7 @@ def test_dynamic_retriever_defaults_field_to_legacy_embedding_when_omitted() -> 
     """When the upstream component doesn't emit `embedding_field` (legacy
     mode, or older pipelines), fall back to the historical `embedding` field
     so retrieval keeps working during the rollout."""
-    from ragent.pipelines.chat import _DynamicFieldEmbeddingRetriever
+    from ragent.pipelines.retrieve import _DynamicFieldEmbeddingRetriever
 
     store = MagicMock()
     store._search_documents.return_value = []
@@ -170,7 +170,7 @@ def test_dynamic_retriever_defaults_field_to_legacy_embedding_when_omitted() -> 
 
 def test_dynamic_retriever_passes_top_k_override_and_filters() -> None:
     """Filters are normalised to ES DSL before reaching `_search_documents`."""
-    from ragent.pipelines.chat import _DynamicFieldEmbeddingRetriever
+    from ragent.pipelines.retrieve import _DynamicFieldEmbeddingRetriever
 
     store = MagicMock()
     store._search_documents.return_value = []
@@ -195,7 +195,7 @@ def test_dynamic_retriever_normalises_composite_filters() -> None:
     """Composite AND filters (source_app + source_meta) must also be
     normalised — `build_es_filters` emits this shape when both router params
     are present."""
-    from ragent.pipelines.chat import _DynamicFieldEmbeddingRetriever
+    from ragent.pipelines.retrieve import _DynamicFieldEmbeddingRetriever
 
     store = MagicMock()
     store._search_documents.return_value = []
@@ -228,7 +228,7 @@ def test_dynamic_retriever_rejects_empty_embedding() -> None:
     """Match the upstream contract — a zero-length vector is a bug."""
     import pytest
 
-    from ragent.pipelines.chat import _DynamicFieldEmbeddingRetriever
+    from ragent.pipelines.retrieve import _DynamicFieldEmbeddingRetriever
 
     retriever = _DynamicFieldEmbeddingRetriever(document_store=MagicMock(), top_k=10)
     with pytest.raises(ValueError, match="non-empty"):

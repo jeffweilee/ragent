@@ -11,7 +11,7 @@ from opentelemetry import trace
 from pydantic import BaseModel, Field, field_validator
 
 from ragent.auth.deps import get_user_id
-from ragent.pipelines.chat import (
+from ragent.pipelines.retrieve import (
     DEFAULT_MIN_SCORE,
     DEFAULT_TOP_K,
     EXCERPT_MAX_CHARS_DEFAULT,

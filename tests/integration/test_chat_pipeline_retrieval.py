@@ -114,7 +114,7 @@ def _pipeline(es_store, mock_embedder, doc_repo, *, mode="legacy", join_mode="rr
     production composition root (`bootstrap/composition.py`) and instantiates
     `_DynamicFieldEmbeddingRetriever` — distinct filter path, must be
     integration-tested separately or it ships with zero ES coverage."""
-    from ragent.pipelines.chat import build_retrieval_pipeline
+    from ragent.pipelines.retrieve import build_retrieval_pipeline
 
     if mode == "registry":
         return build_retrieval_pipeline(
@@ -134,7 +134,7 @@ def _pipeline(es_store, mock_embedder, doc_repo, *, mode="legacy", join_mode="rr
 
 def _run(pipeline, query: str, filters: dict | None = None) -> list[Document]:
     """Run retrieval pipeline through the anyio bridge; returns hydrated documents."""
-    from ragent.pipelines.chat import run_retrieval
+    from ragent.pipelines.retrieve import run_retrieval
     from tests.conftest import run_in_threadpool
 
     return run_in_threadpool(lambda: run_retrieval(pipeline, query=query, filters=filters))
@@ -445,7 +445,7 @@ def test_production_wiring_with_filter_smoke(es_store) -> None:
         "doc-prod-wire-2": ("other_app", "src-prod-wire-2", "Prod Wire 2"),
     }
 
-    from ragent.pipelines.chat import build_es_filters, build_retrieval_pipeline
+    from ragent.pipelines.retrieve import build_es_filters, build_retrieval_pipeline
 
     pipeline = build_retrieval_pipeline(
         document_store=es_store,
