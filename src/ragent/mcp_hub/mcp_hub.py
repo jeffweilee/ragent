@@ -549,7 +549,7 @@ def _make_tool_callable(
                 system=spec.system, tool=spec.name, outcome="timeout", duration_seconds=duration
             )
             raise ToolError(json.dumps({"type": _ERR_TIMEOUT, "message": str(exc)})) from exc
-        except httpx.ConnectError as exc:
+        except (httpx.ConnectError, httpx.ProxyError) as exc:
             duration = time.perf_counter() - start
             logger.error(
                 "mcp_hub.connect_error",
