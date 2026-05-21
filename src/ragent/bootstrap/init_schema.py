@@ -123,6 +123,22 @@ def init_es(es_url: str) -> None:
         _es_request(index_url, method="PUT", body=body)
         logger.info("es.index_created", index=index)
 
+    # T-EM-R.2 — create read alias `{chunks_index_name}_active` if absent.
+    # The alias name is stable across promote/commit cycles; its target flips
+    # via lifecycle cutover/rollback (POST /_aliases swap), never by re-running
+    # this bootstrap. We only create it here for fresh installs and upgrades.
+    alias_name = f"{chunks_index_name}_active"
+    alias_check_url = f"{base}/_alias/{alias_name}"
+    if _es_request(alias_check_url, method="HEAD") is None:
+        _es_request(
+            f"{base}/_aliases",
+            method="POST",
+            body={"actions": [{"add": {"index": chunks_index_name, "alias": alias_name}}]},
+        )
+        logger.info("es.alias_created", alias=alias_name, index=chunks_index_name)
+    else:
+        logger.info("es.alias_exists", alias=alias_name)
+
 
 def init_minio_buckets() -> None:
     """Create the configured bucket on every site if missing. Idempotent."""

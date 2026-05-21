@@ -79,6 +79,18 @@ def test_second_boot_is_noop(mariadb_dsn: str, es_url: str) -> None:
     auto_init(mariadb_dsn, es_url)  # second call — must not raise
 
 
+def test_first_boot_creates_read_alias(mariadb_dsn: str, es_url: str) -> None:
+    """T-EM-R.2 — after auto_init, `chunks_v1_active` alias points to `chunks_v1`."""
+    auto_init(mariadb_dsn, es_url)
+    from ragent.bootstrap.init_schema import _es_request
+
+    result = _es_request(f"{es_url}/_alias/chunks_v1_active", method="HEAD")
+    assert result is not None, (
+        "chunks_v1_active alias should exist after auto_init — "
+        "ActiveModelRegistry.read_alias routes reads through this alias"
+    )
+
+
 def test_mariadb_tables_have_expected_columns(mariadb_dsn: str) -> None:
     import sqlalchemy
     from sqlalchemy import create_engine

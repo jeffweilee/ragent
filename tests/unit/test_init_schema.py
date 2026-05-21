@@ -233,7 +233,8 @@ def test_init_es_reads_resources_dir_env_override(tmp_path: Path) -> None:
     seen_indexes: list[str] = []
 
     def fake_request(url: str, method: str = "GET", body: dict | None = None):
-        if method == "HEAD":
+        # Track index HEAD checks only (not alias checks).
+        if method == "HEAD" and "/_alias/" not in url:
             seen_indexes.append(url.rsplit("/", 1)[-1])
             return None
         return {}
@@ -251,9 +252,9 @@ def test_init_es_falls_back_to_default_resources_when_env_unset() -> None:
     seen_indexes: list[str] = []
 
     def fake_request(url: str, method: str = "GET", body: dict | None = None):
-        if method == "HEAD":
+        # Track index HEAD checks only (not alias checks).
+        if method == "HEAD" and "/_alias/" not in url:
             seen_indexes.append(url.rsplit("/", 1)[-1])
-            return {}
         return {}
 
     env = {k: v for k, v in os.environ.items() if k != "RAGENT_ES_RESOURCES_DIR"}
@@ -472,3 +473,92 @@ def test_es_auth_headers_empty_when_no_credentials() -> None:
     with patch.dict(os.environ, {}, clear=True):
         headers = _es_auth_headers()
     assert headers == {}
+
+
+# ── T-EM-R.2 — read alias creation ──────────────────────────────────────────
+
+
+def test_init_es_creates_read_alias_after_index_creation(tmp_path: Path) -> None:
+    """When the physical index is absent, init_es creates `{index}_active` alias."""
+    custom_dir = tmp_path / "es"
+    custom_dir.mkdir()
+    (custom_dir / "chunks_v1.json").write_text('{"settings": {}}')
+
+    calls: list[tuple[str, str]] = []
+
+    def fake_request(url: str, method: str = "GET", body: dict | None = None):
+        calls.append((method, url))
+        if method == "HEAD":
+            return None  # both index and alias absent
+        return {}  # PUT / POST success
+
+    with (
+        patch.dict(os.environ, {"RAGENT_ES_RESOURCES_DIR": str(custom_dir)}),
+        patch("ragent.bootstrap.init_schema._es_request", side_effect=fake_request),
+    ):
+        init_es("http://es:9200")
+
+    alias_posts = [(m, u) for m, u in calls if m == "POST" and "_aliases" in u]
+    assert alias_posts, "expected POST /_aliases to create read alias"
+    # The POST must target the /_aliases endpoint.
+    assert all("/_aliases" in u for _, u in alias_posts)
+
+
+def test_init_es_read_alias_not_created_when_alias_exists(tmp_path: Path) -> None:
+    """When the alias already exists, init_es must not re-POST /_aliases."""
+    custom_dir = tmp_path / "es"
+    custom_dir.mkdir()
+    (custom_dir / "chunks_v1.json").write_text('{"settings": {}}')
+
+    def fake_request(url: str, method: str = "GET", body: dict | None = None):
+        # physical index exists; alias exists
+        if method == "HEAD":
+            return {}
+        return {}
+
+    alias_posts: list[str] = []
+
+    def tracking_request(url: str, method: str = "GET", body: dict | None = None):
+        if method == "POST" and "_aliases" in url:
+            alias_posts.append(url)
+        return fake_request(url, method, body)
+
+    with (
+        patch.dict(os.environ, {"RAGENT_ES_RESOURCES_DIR": str(custom_dir)}),
+        patch("ragent.bootstrap.init_schema._es_request", side_effect=tracking_request),
+    ):
+        init_es("http://es:9200")
+
+    assert not alias_posts, "alias POST should be skipped when alias already exists"
+
+
+def test_init_es_creates_alias_with_correct_name_for_custom_chunks_index(tmp_path: Path) -> None:
+    """When ES_CHUNKS_INDEX=foo, the alias created must be `foo_active`."""
+    custom_dir = tmp_path / "es"
+    custom_dir.mkdir()
+    (custom_dir / "chunks_v1.json").write_text('{"settings": {}}')
+
+    alias_post_bodies: list[dict] = []
+
+    def fake_request(url: str, method: str = "GET", body: dict | None = None):
+        if method == "POST" and "_aliases" in url:
+            alias_post_bodies.append(body or {})
+        if method == "HEAD":
+            return None  # absent → create
+        return {}
+
+    with (
+        patch.dict(
+            os.environ,
+            {"RAGENT_ES_RESOURCES_DIR": str(custom_dir), "ES_CHUNKS_INDEX": "foo"},
+        ),
+        patch("ragent.bootstrap.init_schema._es_request", side_effect=fake_request),
+    ):
+        init_es("http://es:9200")
+
+    assert alias_post_bodies, "expected an alias POST"
+    actions = alias_post_bodies[0].get("actions", [])
+    add_actions = [a["add"] for a in actions if "add" in a]
+    assert add_actions, "alias POST body must include add action"
+    assert add_actions[0]["alias"] == "foo_active"
+    assert add_actions[0]["index"] == "foo"
