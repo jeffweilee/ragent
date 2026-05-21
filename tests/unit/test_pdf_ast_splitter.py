@@ -85,56 +85,133 @@ def test_pdf_page_number_in_meta():
 
 
 # ---------------------------------------------------------------------------
+# _get_rapidocr_engine — lazy singleton
+# ---------------------------------------------------------------------------
+
+
+def test_get_rapidocr_engine_lazy_singleton(monkeypatch):
+    """Engine is constructed once and reused on subsequent calls."""
+    from unittest.mock import MagicMock, patch
+
+    import ragent.pipelines.ingest as ingest_mod
+
+    fake_engine = MagicMock()
+    fake_rapidocr_cls = MagicMock(return_value=fake_engine)
+
+    monkeypatch.setattr(ingest_mod, "_rapidocr_engine", None)
+    with patch.dict("sys.modules", {"rapidocr": MagicMock(RapidOCR=fake_rapidocr_cls)}):
+        e1 = ingest_mod._get_rapidocr_engine()
+        e2 = ingest_mod._get_rapidocr_engine()
+
+    assert e1 is e2
+    fake_rapidocr_cls.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # _pdf_page_text — OCR branch (image-bearing pages)
 # ---------------------------------------------------------------------------
 
 
-def test_pdf_page_text_no_images_uses_fast_path():
+def test_pdf_page_text_no_images_uses_fast_path(monkeypatch):
     """Pages without images return plain get_text without calling OCR."""
     from unittest.mock import MagicMock
 
-    from ragent.pipelines.ingest import _pdf_page_text
+    import ragent.pipelines.ingest as ingest_mod
 
     page = MagicMock()
     page.get_images.return_value = []
     page.get_text.return_value = "  Plain text  "
 
-    result = _pdf_page_text(page)
+    fake_engine = MagicMock()
+    monkeypatch.setattr(ingest_mod, "_get_rapidocr_engine", lambda: fake_engine)
+
+    result = ingest_mod._pdf_page_text(page)
     assert result == "Plain text"
-    page.get_textpage_ocr.assert_not_called()
+    fake_engine.assert_not_called()
 
 
-def test_pdf_page_text_ocr_success():
-    """Pages with images use OCR; result is the OCR-extracted text."""
+def test_pdf_page_text_ocr_success(monkeypatch):
+    """Pages with images render a pixmap and pass it to RapidOCR engine."""
     from unittest.mock import MagicMock
 
-    from ragent.pipelines.ingest import _pdf_page_text
+    import numpy as np
+
+    import ragent.pipelines.ingest as ingest_mod
 
     page = MagicMock()
     page.get_images.return_value = [("xref",)]
-    fake_tp = object()
-    page.get_textpage_ocr.return_value = fake_tp
-    page.get_text.return_value = "  OCR result  "
+    fake_pix = MagicMock()
+    fake_pix.h = 2
+    fake_pix.w = 2
+    fake_pix.n = 3
+    fake_pix.samples = b"\x00" * 12
+    page.get_pixmap.return_value = fake_pix
 
-    result = _pdf_page_text(page)
-    assert result == "OCR result"
-    page.get_text.assert_called_with(textpage=fake_tp)
+    fake_result = MagicMock()
+    fake_result.txts = ("Line one", "Line two")
+    fake_engine = MagicMock(return_value=fake_result)
+    monkeypatch.setattr(ingest_mod, "_get_rapidocr_engine", lambda: fake_engine)
+
+    result = ingest_mod._pdf_page_text(page)
+    assert result == "Line one\nLine two"
+    fake_engine.assert_called_once()
+    img_arg = fake_engine.call_args[0][0]
+    assert isinstance(img_arg, np.ndarray)
+    assert img_arg.shape == (2, 2, 3)
 
 
-def test_pdf_page_text_ocr_fallback_on_failure():
-    """When OCR raises (e.g. Tesseract not installed), falls back to plain get_text."""
+def test_pdf_page_text_ocr_engine_receives_pixmap(monkeypatch):
+    """Pixmap is rendered at 2x matrix before being fed to RapidOCR."""
     from unittest.mock import MagicMock
 
-    from ragent.pipelines.ingest import _pdf_page_text
+    import ragent.pipelines.ingest as ingest_mod
 
     page = MagicMock()
     page.get_images.return_value = [("xref",)]
-    page.get_textpage_ocr.side_effect = RuntimeError("tesseract not available")
+    fake_pix = MagicMock()
+    fake_pix.h = 4
+    fake_pix.w = 4
+    fake_pix.n = 3
+    fake_pix.samples = b"\x00" * 48
+    page.get_pixmap.return_value = fake_pix
+
+    fake_result = MagicMock()
+    fake_result.txts = ("text",)
+    monkeypatch.setattr(
+        ingest_mod, "_get_rapidocr_engine", lambda: MagicMock(return_value=fake_result)
+    )
+
+    ingest_mod._pdf_page_text(page)
+
+    call_kwargs = page.get_pixmap.call_args
+    mat = call_kwargs.kwargs.get("matrix") or call_kwargs.args[0]
+    assert mat.a == 2.0 and mat.d == 2.0  # fitz.Matrix(2,2): a=xscale, d=yscale
+
+
+def test_pdf_page_text_ocr_fallback_on_failure(monkeypatch):
+    """When RapidOCR raises, falls back to plain get_text."""
+    from unittest.mock import MagicMock
+
+    import ragent.pipelines.ingest as ingest_mod
+
+    page = MagicMock()
+    page.get_images.return_value = [("xref",)]
+    fake_pix = MagicMock()
+    fake_pix.h = 2
+    fake_pix.w = 2
+    fake_pix.n = 3
+    fake_pix.samples = b"\x00" * 12
+    page.get_pixmap.return_value = fake_pix
     page.get_text.return_value = "Fallback plain text"
 
-    result = _pdf_page_text(page)
+    monkeypatch.setattr(
+        ingest_mod,
+        "_get_rapidocr_engine",
+        lambda: MagicMock(side_effect=RuntimeError("rapidocr unavailable")),
+    )
+
+    result = ingest_mod._pdf_page_text(page)
     assert result == "Fallback plain text"
-    page.get_textpage_ocr.assert_called_once()
 
 
 def test_pdf_store_shrink_called_once_per_page(monkeypatch):

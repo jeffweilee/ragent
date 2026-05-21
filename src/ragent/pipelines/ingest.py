@@ -7,7 +7,7 @@ Splitter dispatches per ``meta["mime_type"]``:
 - ``text/plain``      → Haystack ``DocumentSplitter`` (passage)
 - ``text/markdown``   → ``_MarkdownASTSplitter`` (mistletoe)
 - ``text/html``       → ``_HtmlASTSplitter`` (selectolax)
-- ``application/pdf`` → ``_PdfASTSplitter`` (PyMuPDF + Tesseract OCR)
+- ``application/pdf`` → ``_PdfASTSplitter`` (PyMuPDF + RapidOCR)
 
 Each splitter emits atoms whose ``meta["raw_content"]`` is the original
 byte slice (markdown fences / HTML fragments preserved). ``_BudgetChunker``
@@ -34,7 +34,7 @@ from ragent.errors.codes import TaskErrorCode
 from ragent.pipelines.observability import IngestStepError, wrap_pipeline_component
 from ragent.schemas.ingest import IngestMime
 from ragent.security.archive_guard import INGEST_MAX_PDF_PAGES
-from ragent.utility.env import int_env, str_env
+from ragent.utility.env import int_env
 
 _logger = structlog.get_logger(__name__)
 
@@ -47,7 +47,16 @@ CHUNK_OVERLAP_CHARS = int_env("CHUNK_OVERLAP_CHARS", 100)
 # and can blow up to millions of chunks on a 1 MB atom).
 CHUNK_MAX_PIECES_PER_ATOM = int_env("CHUNK_MAX_PIECES_PER_ATOM", 10_000)
 
-PDF_OCR_LANGUAGES = str_env("PDF_OCR_LANGUAGES", "eng+chi_sim+chi_tra+jpn+deu")
+_rapidocr_engine: Any = None
+
+
+def _get_rapidocr_engine() -> Any:
+    global _rapidocr_engine
+    if _rapidocr_engine is None:
+        from rapidocr import RapidOCR
+
+        _rapidocr_engine = RapidOCR()
+    return _rapidocr_engine
 
 
 def validate_chunk_config() -> None:
@@ -403,15 +412,21 @@ class _PptxASTSplitter:
 def _pdf_page_text(page: Any) -> str:
     """Return extracted text for one fitz page.
 
-    Image-free pages skip Tesseract entirely. Image-bearing pages attempt OCR;
-    on any failure (Tesseract absent, language pack missing, etc.) falls back to
-    plain text extraction.
+    Image-free pages use fast MuPDF extraction (no OCR cost). Image-bearing
+    pages are rendered to a 2x pixmap and passed to RapidOCR; on any failure
+    falls back to plain MuPDF text extraction.
     """
     if not page.get_images(full=False):
         return page.get_text("text").strip()
+    import fitz
+    import numpy as np
+
+    mat = fitz.Matrix(2, 2)
+    pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+    img = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
     try:
-        tp = page.get_textpage_ocr(language=PDF_OCR_LANGUAGES, full=True)
-        return page.get_text(textpage=tp).strip()
+        result = _get_rapidocr_engine()(img)
+        return "\n".join(result.txts) if result.txts else ""
     except Exception:
         _logger.warning("pdf_ocr_fallback_to_plain_text", exc_info=True)
         return page.get_text("text").strip()
@@ -419,18 +434,18 @@ def _pdf_page_text(page: Any) -> str:
 
 @component
 class _PdfASTSplitter:
-    """PDF binary → one atom per page (PyMuPDF; Tesseract OCR for image pages).
+    """PDF binary → one atom per page (PyMuPDF; RapidOCR for image pages).
 
     Reads raw bytes from ``meta["raw_bytes"]``. Empty pages are skipped.
     ``meta["page_number"]`` carries the 1-based page index.
 
-    Text-based pages use fast MuPDF extraction (no Tesseract cost).
-    Image-bearing pages trigger OCR for that page only, capturing text
-    embedded in graphics without burning CPU on purely textual pages.
+    Text-based pages use fast MuPDF extraction (no OCR cost). Image-bearing
+    pages are rendered to a 2x pixmap and passed to the RapidOCR engine,
+    capturing text embedded in graphics without burning CPU on text-only pages.
 
     After each page ``fitz.TOOLS.store_shrink(100)`` evicts MuPDF's 256 MB
-    LRU cache (decompressed streams, OCR pixmaps, font data), bounding peak
-    RSS to roughly one page's worth of intermediate data at a time.
+    LRU cache (decompressed streams, pixmaps, font data), bounding peak RSS
+    to roughly one page's worth of intermediate data at a time.
     """
 
     @component.output_types(documents=list[Document])
