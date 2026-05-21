@@ -10,10 +10,11 @@
 - Streaming chat answers grounded in private documents.
 - Pluggable extractor architecture: graph reasoning (P3) without pipeline rewrite.
 
-### ⚠️ P1 OPEN Mode
-- Authentication **DISABLED** in P1. `X-User-Id` header trusted; recorded as `documents.create_user` (audit only, not authorization). JWT restored in **P2**.
-- Permission gating **DISABLED** in P1. The Permission Layer (§3.5) ships in **P2**, backed by OpenFGA, and stays out of the retrieval/ES path.
-- Startup guard refuses to start unless `RAGENT_AUTH_DISABLED=true AND RAGENT_ENV=dev`.
+### Auth Modes (switchable; enforced by startup guard)
+- **Mode A — open auth** (`RAGENT_AUTH_DISABLED=true`): no auth surface; `X-User-Id` header trusted; recorded as `documents.create_user` (audit only, not authorization). Guard requires `RAGENT_ENV=dev` AND `RAGENT_HOST=127.0.0.1` — loopback dev only.
+- **Mode B — trust-header** (`RAGENT_AUTH_DISABLED=false`, `RAGENT_TRUST_X_USER_ID_HEADER=true`): JWT middleware bypassed; `X-User-Id` header trusted directly. Guard requires `RAGENT_ENV=dev` — dev override only.
+- **Mode C — OIDC JWT** (both flags false): full JWKS-backed JWT verification (§3.5). Any env, any bind. Guard requires `OIDC_DOMAIN` and `OIDC_AUDIENCE`.
+- Permission gating remains **DISABLED**. The Permission Layer (§3.5) ships in **P2**, backed by OpenFGA, and stays out of the retrieval/ES path.
 
 ---
 
@@ -21,7 +22,7 @@
 
 | In P1 | Deferred |
 |---|---|
-| Ingest CRUD (Create / Read / List / Delete) with cascade | JWT → P2 |
+| Ingest CRUD (Create / Read / List / Delete) with cascade | Permission Layer (OpenFGA) → P2 |
 | Indexing Pipeline (§3.2) + Chat Pipeline (§3.4) | AsyncPipeline → P2 |
 | Plugin Protocol v1, VectorExtractor, StubGraphExtractor | GraphExtractor → P3 |
 | Third-party clients: Embedding, LLM, Rerank, TokenManager | Rerank wiring → P2 |
@@ -886,19 +887,19 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 
 | Variable | Default | Description |
 |---|---|---|
-| `RAGENT_ENV`                          | (required)       | `dev` \| `staging` \| `prod`. P1 startup guard refuses non-`dev`. |
-| `RAGENT_AUTH_DISABLED`                | `false`          | Must be `true` in P1; removed in P2 to enable JWT (§3.5). |
-| `RAGENT_TRUST_X_USER_ID_HEADER`       | `false`          | **P2 only.** When `true` and `RAGENT_ENV != prod`, JWT middleware is bypassed and `<RAGENT_USER_ID_HEADER>` is trusted as the user_id (§3.5). Strictly ignored in `prod`. |
+| `RAGENT_ENV`                          | (required)       | `dev` \| `staging` \| `prod`. Modes A & B require `dev`; Mode C tolerates any value (§1). |
+| `RAGENT_AUTH_DISABLED`                | `false`          | `true` selects Mode A (open auth — guard requires dev + loopback). `false` selects Mode B or C depending on `RAGENT_TRUST_X_USER_ID_HEADER` (§1, §3.5). |
+| `RAGENT_TRUST_X_USER_ID_HEADER`       | `false`          | When `true` (and `AUTH_DISABLED=false`), selects Mode B: JWT middleware bypassed, `<RAGENT_USER_ID_HEADER>` trusted as `user_id` (§3.5). Guard requires `RAGENT_ENV=dev`. |
 | `RAGENT_USER_ID_HEADER`               | `X-User-Id`      | Canonical header name carrying the downstream `user_id`. In trust mode this is the inbound header read directly; in JWT mode the extracted claim is injected into this header on the request scope. Routers consume the value via `Header(alias=...)` — currently hard-coded to the default, so changing this env var requires updating each router's alias. `RequestLoggingMiddleware` is header-name-agnostic: the auth middleware writes the resolved `user_id` into `request.scope["ragent.user_id"]` in both modes, and the logging layer reads from there, so customising this env var alone does not break `api.request` logging. |
-| `RAGENT_JWT_HEADER`                   | `X-Auth-Token`   | **P2 only.** Inbound header carrying the raw JWT (no `Bearer ` prefix). Read only when `RAGENT_AUTH_DISABLED=false` AND `RAGENT_TRUST_X_USER_ID_HEADER=false`. |
-| `RAGENT_JWT_CLAIM_USER_ID`            | `preferred_username` | **P2 only.** JWT payload claim path used as the downstream `user_id`. Verified value is non-empty string; missing/empty → 401 `AUTH_CLAIM_MISSING`. |
-| `OIDC_DOMAIN`                         | (required when `RAGENT_AUTH_DISABLED=false`) | **P2 only.** OIDC issuer domain. JWKS is fetched from `{scheme}://<OIDC_DOMAIN>/.well-known/jwks.json` (resolved via the OIDC discovery `jwks_uri`); the verifier validates `iss == discovery["issuer"]`. |
-| `OIDC_AUDIENCE`                       | (required when `RAGENT_AUTH_DISABLED=false`) | **P2 only.** Expected `aud` claim. Tokens with mismatched `aud` → 401 `AUTH_TOKEN_INVALID`. |
-| `OIDC_USE_HTTPS`                      | `true`           | **P2 only.** Scheme toggle for the OIDC discovery + JWKS URL. Set `false` ONLY for in-cluster discovery or local fixture; production deployments MUST keep `true`. |
-| `OIDC_VERIFY_SSL`                     | `true`           | **P2 only.** Verify the IdP's TLS certificate during OIDC discovery + JWKS fetch. Set `false` ONLY for dev/staging against self-signed Keycloak. For production with a private CA, leave `true` and mount the CA via `SSL_CERT_FILE` instead. |
+| `RAGENT_JWT_HEADER`                   | `X-Auth-Token`   | **Mode C only.** Inbound header carrying the raw JWT (no `Bearer ` prefix). Read only when `RAGENT_AUTH_DISABLED=false` AND `RAGENT_TRUST_X_USER_ID_HEADER=false`. |
+| `RAGENT_JWT_CLAIM_USER_ID`            | `preferred_username` | **Mode C only.** JWT payload claim path used as the downstream `user_id`. Verified value is non-empty string; missing/empty → 401 `AUTH_CLAIM_MISSING`. |
+| `OIDC_DOMAIN`                         | (required in Mode C) | OIDC issuer domain. JWKS is fetched from `{scheme}://<OIDC_DOMAIN>/.well-known/jwks.json` (resolved via the OIDC discovery `jwks_uri`); the verifier validates `iss == discovery["issuer"]`. Guard exits if unset when `AUTH_DISABLED=false` AND `TRUST_X_USER_ID_HEADER=false`. |
+| `OIDC_AUDIENCE`                       | (required in Mode C) | Expected `aud` claim. Tokens with mismatched `aud` → 401 `AUTH_TOKEN_INVALID`. |
+| `OIDC_USE_HTTPS`                      | `true`           | Scheme toggle for the OIDC discovery + JWKS URL. Set `false` ONLY for in-cluster discovery or local fixture; production deployments MUST keep `true`. |
+| `OIDC_VERIFY_SSL`                     | `true`           | Verify the IdP's TLS certificate during OIDC discovery + JWKS fetch. Set `false` ONLY for dev/staging against self-signed Keycloak. For production with a private CA, leave `true` and mount the CA via `SSL_CERT_FILE` instead. |
 | `RAGENT_PERMISSION_INGEST_ENABLED`    | `false`          | **P2 only.** When `true`, `GET/DELETE /ingest/v1/{id}` and `GET /ingest/v1` enforce `PermissionClient` (§3.5). Default off — gate is wired but inert until OpenFGA tuples exist. |
 | `RAGENT_PERMISSION_CHAT_ENABLED`      | `false`          | **P2 only.** When `true`, chat retrieval applies the `PermissionClient` post-filter (§3.5). Default off. |
-| `RAGENT_HOST`                         | `127.0.0.1`      | API bind address. P1 OPEN guard (§1) refuses any value other than `127.0.0.1` while `RAGENT_ENV=dev` & `RAGENT_AUTH_DISABLED=true`. |
+| `RAGENT_HOST`                         | `127.0.0.1`      | API bind address. Guard (§1) refuses any value other than `127.0.0.1` in Mode A (open auth — no auth surface, must bind loopback). Modes B/C tolerate any bind. |
 | `RAGENT_PORT`                         | `8000`           | API bind port. |
 | `LOG_LEVEL`                           | `INFO`           | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR`. Applies to app + TaskIQ + Reconciler. |
 | `CORS_ALLOW_ORIGINS`                  | *(unset)*        | Comma-separated list of allowed CORS origins (e.g. `https://app.example.com,https://admin.example.com`). When unset or empty, no `CORSMiddleware` is added and all cross-origin requests are denied. |

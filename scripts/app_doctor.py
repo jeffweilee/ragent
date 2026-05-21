@@ -137,23 +137,40 @@ def check_env() -> None:
     else:
         _ok("required vars present", f"{len(_REQUIRED_VARS)} checked")
 
-    # Phase-1 guard contract (matches src/ragent/bootstrap/guard.py).
-    env = os.environ.get("RAGENT_ENV", "")
-    if env != "dev":
-        _fail("RAGENT_ENV=dev (P1)", f"got {env!r}")
-    else:
-        _ok("RAGENT_ENV=dev (P1)")
+    # Auth-mode coherence (matches src/ragent/bootstrap/guard.py).
+    # Three modes: A=open-auth, B=trust-header, C=OIDC. Doctor reports the
+    # active mode + the safety preconditions enforced by guard.enforce().
+    from ragent.utility.env import bool_env
 
-    if os.environ.get("RAGENT_AUTH_DISABLED", "").lower() != "true":
-        _fail("RAGENT_AUTH_DISABLED=true (P1)")
-    else:
-        _ok("RAGENT_AUTH_DISABLED=true (P1)")
-
+    env = os.environ.get("RAGENT_ENV", "dev")
+    auth_disabled = bool_env("RAGENT_AUTH_DISABLED", False)
+    trust_header = bool_env("RAGENT_TRUST_X_USER_ID_HEADER", False)
     host = os.environ.get("RAGENT_HOST", "127.0.0.1")
-    if host != "127.0.0.1":
-        _fail("RAGENT_HOST=127.0.0.1 (P1)", f"got {host!r}")
+
+    if auth_disabled:
+        mode = "A: open auth (X-User-Id header trusted)"
+        if env != "dev":
+            _fail(f"auth mode {mode}", f"open auth requires RAGENT_ENV=dev, got {env!r}")
+        elif host != "127.0.0.1":
+            _fail(
+                f"auth mode {mode}",
+                f"open auth requires RAGENT_HOST=127.0.0.1, got {host!r}",
+            )
+        else:
+            _ok("auth mode", mode)
+    elif trust_header:
+        mode = "B: trust X-User-Id header (JWT bypassed, dev override)"
+        if env != "dev":
+            _fail(f"auth mode {mode}", f"trust-header requires RAGENT_ENV=dev, got {env!r}")
+        else:
+            _ok("auth mode", mode)
     else:
-        _ok("RAGENT_HOST=127.0.0.1 (P1)")
+        mode = "C: OIDC JWT verification"
+        miss = [v for v in ("OIDC_DOMAIN", "OIDC_AUDIENCE") if not os.environ.get(v)]
+        if miss:
+            _fail(f"auth mode {mode}", f"OIDC mode requires {miss}")
+        else:
+            _ok("auth mode", mode)
 
     # AI tokens — required unless K8s SA mode.
     if os.environ.get("AI_USE_K8S_SERVICE_ACCOUNT_TOKEN", "").lower() == "true":
