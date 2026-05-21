@@ -9,14 +9,13 @@ import base64
 import json
 import os
 import ssl
+from collections.abc import Iterator
 from pathlib import Path
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import structlog
 from sqlalchemy import text
-
-from ragent.utility.sql_script import iter_sql_statements
 
 logger = structlog.get_logger(__name__)
 
@@ -62,8 +61,24 @@ def _es_request(url: str, method: str = "GET", body: dict | None = None) -> dict
         raise
 
 
-def _iter_statements(sql: str):
-    return iter_sql_statements(sql)
+def _strip_comments(sql: str) -> str:
+    out: list[str] = []
+    for ln in sql.splitlines():
+        stripped = ln.lstrip()
+        if stripped.startswith("--"):
+            continue
+        idx = ln.find("--")
+        if idx >= 0:
+            ln = ln[:idx].rstrip()
+        out.append(ln)
+    return "\n".join(out).strip()
+
+
+def _iter_statements(sql: str) -> Iterator[str]:
+    for raw in _strip_comments(sql).split(";"):
+        stmt = raw.strip()
+        if stmt:
+            yield stmt
 
 
 def init_mariadb(engine) -> None:

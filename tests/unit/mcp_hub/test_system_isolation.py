@@ -76,15 +76,15 @@ async def test_per_tool_timeout_overrides_system_default(tmp_path: Path):
 
     seen: dict = {}
 
-    def handler(req: httpx.Request) -> httpx.Response:
-        seen["timeout"] = req.extensions.get("timeout")
-        return httpx.Response(200, json={})
+    async def fake_request(method: str, url: str, **kwargs):
+        seen["timeout"] = kwargs.get("timeout")
+        return httpx.Response(200, json={}, request=httpx.Request(method, url))
 
-    bundle.clients["api"]._transport = httpx.MockTransport(handler)
+    bundle.clients["api"].request = fake_request
     tool = await bundle.hub.get_tool("api.heavy")
     await tool.fn()
 
-    assert seen["timeout"]["read"] == 120.0
+    assert seen["timeout"] == 120.0
     for c in bundle.clients.values():
         await c.aclose()
 
