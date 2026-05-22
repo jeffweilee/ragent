@@ -35,7 +35,7 @@ from ragent.errors.codes import TaskErrorCode
 from ragent.pipelines.observability import IngestStepError, wrap_pipeline_component
 from ragent.schemas.ingest import IngestMime
 from ragent.security.archive_guard import INGEST_MAX_PDF_PAGES
-from ragent.utility.env import int_env
+from ragent.utility.env import float_env, int_env
 
 _logger = structlog.get_logger(__name__)
 
@@ -47,6 +47,12 @@ CHUNK_OVERLAP_CHARS = int_env("CHUNK_OVERLAP_CHARS", 100)
 # treated as misconfiguration (overlap ≥ target produces tiny advance steps
 # and can blow up to millions of chunks on a 1 MB atom).
 CHUNK_MAX_PIECES_PER_ATOM = int_env("CHUNK_MAX_PIECES_PER_ATOM", 10_000)
+# PDF page margin in points (1 pt ≈ 0.35 mm). Header/footer zones at the
+# top and bottom of each page are excluded from extraction when > 0.
+INGEST_PDF_MARGIN_PTS = float_env("INGEST_PDF_MARGIN_PTS", 0.0)
+# PPTX placeholder types to exclude (footer=15, date=16, slide_number=13).
+# Integer values used so python-pptx stays a lazy import inside run().
+_PPTX_SKIP_PH: frozenset[int] = frozenset({13, 15, 16})
 
 
 def validate_chunk_config() -> None:
@@ -371,6 +377,8 @@ class _PptxASTSplitter:
             for idx, slide in enumerate(prs.slides, start=1):
                 texts = []
                 for shape in slide.shapes:
+                    if shape.is_placeholder and shape.placeholder_format.type in _PPTX_SKIP_PH:
+                        continue
                     if shape.has_text_frame:
                         for para in shape.text_frame.paragraphs:
                             line = para.text.strip()
@@ -425,11 +433,14 @@ class _PdfASTSplitter:
             if not (raw_bytes := doc.meta.get("raw_bytes")):
                 continue
             base_meta = {k: v for k, v in doc.meta.items() if k != "raw_bytes"}
+            margins = (0, INGEST_PDF_MARGIN_PTS, 0, INGEST_PDF_MARGIN_PTS)
             with fitz.open(stream=raw_bytes, filetype="pdf") as pdf:
                 assert_safe_pdf_page_count(pdf.page_count, max_pages=INGEST_MAX_PDF_PAGES)
                 for page_idx in range(pdf.page_count):
                     try:
-                        md = pymupdf4llm.to_markdown(pdf, pages=[page_idx], use_ocr=True)
+                        md = pymupdf4llm.to_markdown(
+                            pdf, pages=[page_idx], use_ocr=True, margins=margins
+                        )
                     except Exception:
                         _logger.warning(
                             "pdf_to_markdown_fallback", page=page_idx + 1, exc_info=True

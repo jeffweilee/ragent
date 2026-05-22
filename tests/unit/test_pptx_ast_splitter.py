@@ -110,3 +110,69 @@ def test_pptx_multiple_text_boxes_merged():
     assert len(atoms) == 1
     for word in ["Alpha", "Beta", "Gamma"]:
         assert word in atoms[0].content
+
+
+# ---------------------------------------------------------------------------
+# T-HDR.2 — PPTX header/footer placeholder exclusion
+# ---------------------------------------------------------------------------
+
+
+def _footer_sp_xml(text: str) -> bytes:
+    """lxml element for a PPTX footer placeholder containing `text`."""
+    from lxml import etree
+
+    return etree.fromstring(
+        f"""<p:sp xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+                  xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+                  xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+          <p:nvSpPr>
+            <p:cNvPr id="99" name="Footer 99"/>
+            <p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr>
+            <p:nvPr><p:ph type="ftr" sz="quarter" idx="11"/></p:nvPr>
+          </p:nvSpPr>
+          <p:spPr/>
+          <p:txBody>
+            <a:bodyPr/>
+            <a:lstStyle/>
+            <a:p><a:r><a:t>{text}</a:t></a:r></a:p>
+          </p:txBody>
+        </p:sp>"""
+    )
+
+
+def _make_pptx_with_footer(body_text: str, footer_text: str) -> bytes:
+    """PPTX with one slide: a real text box + a footer placeholder."""
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    slide.shapes.add_textbox(Inches(1), Inches(1), Inches(6), Inches(1)).text_frame.text = body_text
+    slide.shapes._spTree.append(_footer_sp_xml(footer_text))
+
+    buf = io.BytesIO()
+    prs.save(buf)
+    return buf.getvalue()
+
+
+def test_pptx_footer_placeholder_excluded():
+    """Footer placeholder text must not appear in the atom content."""
+    data = _make_pptx_with_footer("Main content", "Confidential footer")
+    atoms = _run_splitter(data)
+    assert len(atoms) == 1
+    assert "Main content" in atoms[0].content
+    assert "Confidential footer" not in atoms[0].content
+
+
+def test_pptx_slide_with_only_footer_skipped():
+    """A slide whose only text is a footer placeholder yields no atom."""
+    from pptx import Presentation
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    slide.shapes._spTree.append(_footer_sp_xml("Footer only"))
+
+    buf = io.BytesIO()
+    prs.save(buf)
+    atoms = _run_splitter(buf.getvalue())
+    assert atoms == []

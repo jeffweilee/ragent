@@ -559,6 +559,13 @@ v2 replaces the underlying behavior in C2–C6):
 | T-OCR.3 | Refactor | `docs/00_spec.md` L843/848/1006 — replace Tesseract wording; remove `PDF_OCR_LANGUAGES` env-var row. `.env.example` — remove `PDF_OCR_LANGUAGES` line. | §4.6 | [x] | Dev |
 | T-OCR.4 | Refactor | Use `pymupdf4llm.to_markdown(pdf, pages=[i], use_ocr=True)` per page instead of custom `_pdf_page_text()`; feed result to `_MarkdownASTSplitter`; remove `_rapidocr_engine` singleton and `_pdf_page_text`; update tests and spec §4.2. | §4.2 | [x] | Dev |
 
+### Header/footer exclusion — PDF + PPTX (branch `claude/strip-header-footer-pdf-pptx`)
+
+| ID | Phase | Description | Spec | Status | Owner |
+|----|-------|-------------|------|--------|-------|
+| T-HDR.1 | Behavioral | PDF: add `INGEST_PDF_MARGIN_PTS` (float, default 0); pass as `margins=(0, v, 0, v)` to `pymupdf4llm.to_markdown`; update spec §4.2, `.env.example`. | §4.2 | [x] | Dev |
+| T-HDR.2 | Behavioral | PPTX: filter `PP_PLACEHOLDER.FOOTER / DATE / SLIDE_NUMBER` shapes from `_PptxASTSplitter`; update spec §4.2. | §4.2 | [x] | Dev |
+
 ### Embedding-model lifecycle (branch `claude/design-embedding-model-switch-5N3Uh`) — 2026-05-15
 
 > Source: B50. Multi-vector single-index swap with five admin APIs and a CANDIDATE/CUTOVER state machine. Design doc: `docs/team/2026_05_15_embedding_model_lifecycle.md`.

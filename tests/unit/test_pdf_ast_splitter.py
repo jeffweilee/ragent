@@ -192,3 +192,36 @@ def test_pdf_max_pages_module_default():
     from ragent.security.archive_guard import INGEST_MAX_PDF_PAGES
 
     assert INGEST_MAX_PDF_PAGES == 2000
+
+
+# ---------------------------------------------------------------------------
+# T-HDR.1 — PDF margins passed to to_markdown
+# ---------------------------------------------------------------------------
+
+
+def test_pdf_margins_passed_to_to_markdown(monkeypatch):
+    """INGEST_PDF_MARGIN_PTS is forwarded as margins=(0,v,0,v) to to_markdown."""
+    from unittest.mock import patch
+
+    from ragent.pipelines import ingest
+
+    monkeypatch.setattr(ingest, "INGEST_PDF_MARGIN_PTS", 50.0)
+    received = {}
+
+    def fake_to_markdown(pdf, *, pages, use_ocr, margins, **kwargs):
+        received["margins"] = margins
+        return "content\n"
+
+    with patch("ragent.pipelines.ingest.pymupdf4llm") as mock_module:
+        mock_module.to_markdown.side_effect = fake_to_markdown
+        data = _make_pdf_bytes(["text"])
+        _run_splitter(data)
+
+    assert received["margins"] == (0, 50.0, 0, 50.0)
+
+
+def test_pdf_margins_default_zero():
+    """Default INGEST_PDF_MARGIN_PTS is 0 (no clipping)."""
+    from ragent.pipelines import ingest
+
+    assert ingest.INGEST_PDF_MARGIN_PTS == 0.0
