@@ -113,10 +113,7 @@ class ExtractorPlugin(Protocol):
 - `fan_out(document_id)` → dispatch extract to all plugins concurrently; **per-plugin timeout 60 s** (overrun → `Result(error="timeout")`); `all_required_ok(results)` gates `READY`.
 - `fan_out_delete(document_id)` → dispatch delete to all plugins concurrently; **per-plugin timeout 60 s**; runs **outside any DB transaction** (no row locks held during plugin network calls — P-E).
 
-**BDD:**
-- **S4 Protocol conformance** — Object missing any of `name/required/queue/extract/delete/health` → `isinstance(obj, ExtractorPlugin)` returns `False`; `register()` raises.
-- **S5 stub no-op → READY** — `StubGraphExtractor` (`required=False`, no-op) → `fan_out` returns `Result(ok=True)`; `all_required_ok` unaffected.
-- **S11 duplicate registration** — Second `register()` with same `name` → `DuplicatePluginError`; existing instance unaffected.
+**BDD:** S4 Protocol conformance — missing `name/required/queue/extract/delete/health` → `isinstance` false, `register()` raises. S11 duplicate registration → `DuplicatePluginError`.
 
 ---
 
@@ -238,7 +235,6 @@ Two distinct concerns, kept architecturally separate from retrieval:
 **Design principle:** ES (`chunks_v1`) carries **no auth fields** in any phase — retrieval is permission-blind. The Permission Layer post-filters by `document_id`, keeping ES schema stable across phases.
 
 **P1 (current phase):** No JWT — `<RAGENT_USER_ID_HEADER>` trusted, written to `documents.create_user` (audit only, not authz). No permission gating — all chunks visible. `auth_mode=open` in audit logs. **TokenManager (J1→J2) is active** for Embedding/LLM/Rerank API auth (unrelated to user auth).
-
 **P2 additions:**
 - **JWT:** raw token in `<RAGENT_JWT_HEADER>` (no `Bearer` prefix). **joserfc** verifies signature against JWKS at `{https}://<OIDC_DOMAIN>/.well-known/jwks.json`, `iss`, `aud == OIDC_AUDIENCE`, `exp`, `nbf`. JWKS fetched at `build_container()` and cached in-process (T8.1a). Claim `RAGENT_JWT_CLAIM_USER_ID` (default `preferred_username`) → `user_id`. Errors: 401 `AUTH_TOKEN_INVALID` / `AUTH_TOKEN_EXPIRED` / `AUTH_CLAIM_MISSING`. `RAGENT_TRUST_X_USER_ID_HEADER=true` bypasses JWT (dev only).
 - **Public paths (no auth):** `/livez`, `/readyz`, `/startupz`, `/metrics`, `/docs`, `/docs/oauth2-redirect`, `/redoc`, `/openapi.json`. MCP Hub runs as a separate process, not covered by this middleware.
@@ -643,23 +639,23 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `CHAT_JOIN_MODE`                      | `rrf`            | `rrf` \| `concatenate` \| `vector_only` \| `bm25_only` (C6). |
 | `CHAT_RERANK_ENABLED`                 | `true`           | Insert `_Reranker` between joiner and `_SourceHydrator` (F1). |
 | `RETRIEVAL_TOP_K`                     | `20`             | Cap applied to retrievers, joiner, and reranker (F7). |
-| `RETRIEVAL_MIN_SCORE`                 | *(unset)*        | Global default score floor for `/retrieve/v1` and `/chat/v1`; unset = no filtering (`null`). Must be >= 0.0 if set; boot fails otherwise. |
+| `RETRIEVAL_MIN_SCORE`                 | *(unset)*        | Global score floor; null = no filtering. Must be >= 0.0 if set. |
 | `EXCERPT_MAX_CHARS`                   | `512`            | `_ExcerptTruncator` truncation length (B23). |
 | `RAGENT_DEFAULT_LLM_PROVIDER`         | `openai`         | Echoed when request omits `provider`. |
 | `RAGENT_DEFAULT_LLM_MODEL`            | `gptoss-120b`    | Echoed when request omits `model`. |
 | `RAGENT_DEFAULT_LLM_TEMPERATURE`      | `0.7`            | |
 | `RAGENT_DEFAULT_LLM_MAX_TOKENS`       | `4096`           | |
 | `RAGENT_DEFAULT_SYSTEM_PROMPT`        | `You are a helpful assistant` | Auto-prepended when `messages` lacks a `system` entry. |
-| `RAGENT_DEFAULT_RAG_SYSTEM_PROMPT`    | *(multi-intent template)*     | System prompt used when retrieval returns ≥1 doc and the caller has no `system` message. Contains grounding rules + QUESTION/SUMMARY/GENERATION intent styles with few-shot examples. No `{context}` placeholder — context is injected into the user message. |
-| `RAGENT_RAG_GROUNDING_RULES`          | *(rules-only variant)*        | Rules-only system prompt prepended when the caller supplies their own `system` message alongside retrieved docs. Preserves the caller's persona while enforcing context-only grounding. |
+| `RAGENT_DEFAULT_RAG_SYSTEM_PROMPT`    | *(multi-intent template)*     | Multi-intent template; injected when retrieval returns ≥1 doc and caller has no system message. |
+| `RAGENT_RAG_GROUNDING_RULES`          | *(rules-only variant)*        | Rules-only variant; prepended when caller supplies own system message with retrieved docs. |
 | `CHAT_RATE_LIMIT_PER_MINUTE`          | `30`             | Per-user request cap on `/chat/v1` + `/chat/v1/stream` within the rate-limit window (B31). Excess returns 429 `CHAT_RATE_LIMITED`. |
 | `CHAT_RATE_LIMIT_WINDOW_SECONDS`      | `60`             | Fixed-window length for `CHAT_RATE_LIMIT_PER_MINUTE` (B31). |
 | `MCP_REQUEST_MAX_BYTES`               | `262144` (256 KiB) | Defence-in-depth cap on `POST /mcp/v1` request bodies; over-limit returns HTTP 413 `application/problem+json` (§3.8.1). |
-| `CHAT_FEEDBACK_ENABLED`               | `false`          | Master switch for the feedback retrieval signal (B54). `true` enables `POST /feedback/v1`, the `_FeedbackMemoryRetriever` 3rd RRF input, and requires `FEEDBACK_HMAC_SECRET`. Default off — ship dark, observe write volume first (B57). |
-| `CHAT_FEEDBACK_RRF_WEIGHT`            | `0.5`            | Weight on the feedback retriever's contribution in `DocumentJoiner(weights=[1.0, 1.0, this])` (B54). Cap < 1.0 to prevent popularity-loop dominance. |
+| `CHAT_FEEDBACK_ENABLED`               | `false`          | Master switch (B54). When true: enables `/feedback/v1`, `_FeedbackMemoryRetriever`, requires `FEEDBACK_HMAC_SECRET`. Default off (B57). |
+| `CHAT_FEEDBACK_RRF_WEIGHT`            | `0.5`            | Weight on feedback retriever in `DocumentJoiner(weights=[1.0, 1.0, this])` (B54). |
 | `CHAT_FEEDBACK_MIN_VOTES`             | `3`              | `(likes + dislikes)` threshold below which a (source_app, source_id) is dropped from the retriever (B54). Defeats single-user signal poisoning. |
 | `CHAT_FEEDBACK_HALF_LIFE_DAYS`        | `14`             | Score decay half-life applied to the per-source Wilson score: `score × 0.5 ** (age_days / this)` (B54). |
-| `FEEDBACK_HMAC_SECRET`                | *(required when `CHAT_FEEDBACK_ENABLED=true`)* | HMAC key for signing `/chat` response tokens and verifying `POST /feedback/v1` payloads (B55). Boot fails when feedback is enabled but the secret is unset. |
+| `FEEDBACK_HMAC_SECRET`                | *(required when `CHAT_FEEDBACK_ENABLED=true`)* | HMAC key for `/feedback/v1` token sign/verify (B55). Boot fails when feedback enabled but unset. |
 
 > **MCP protocol pins are NOT env-driven** — `protocolVersion` (`2024-11-05`) and `serverInfo.name` (`ragent`) are **pinned in spec §3.8.1 / B47** and live as module-level constants in `src/ragent/routers/mcp.py`. Operators flipping the protocol version would silently break the contract; the pin is intentional. The only MCP env knob is the body cap above.
 
