@@ -134,7 +134,7 @@
 >    └ unclassified  → _RaiseUnroutable (worker → FAILED + PIPELINE_UNROUTABLE)
 > → DocumentJoiner → _IdempotencyClean (ES delete by document_id)
 > → _BudgetChunker (1000 target / 1500 max / 100 overlap, mime-agnostic)
-> → DocumentEmbedder (bge-m3 batched) → DocumentWriter (ES chunks_v1 only)
+> → DocumentEmbedder (bge-m3 batched, bulk-writes to physical index / indices via ES bulk API)
 > ```
 > Each splitter sets `meta["raw_content"]` = exact byte slice (byte-stable, R4/S25). `_BudgetChunker` is the sole budget enforcer. `chunks_v1` stores both `content` (normalized, BM25-analyzed) and `raw_content` (`index: false`); LLM context and citations use `raw_content`.
 

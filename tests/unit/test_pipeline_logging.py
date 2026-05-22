@@ -128,10 +128,6 @@ def test_wrap_failure_with_explicit_error_code_via_exception() -> None:
 
 def test_build_ingest_pipeline_wraps_steps_in_order(monkeypatch) -> None:
     """Run the v2 pipeline end-to-end with mocks; assert step events emitted in order."""
-    from unittest.mock import MagicMock
-
-    from haystack_integrations.document_stores.elasticsearch import ElasticsearchDocumentStore
-
     from ragent.pipelines.factory import DocumentEmbedder, build_ingest_pipeline
 
     class _StubEmbedder:
@@ -139,10 +135,7 @@ def test_build_ingest_pipeline_wraps_steps_in_order(monkeypatch) -> None:
             return [[0.1] * 4 for _ in texts]
 
     embedder = DocumentEmbedder(_StubEmbedder())
-    document_store = MagicMock(spec=ElasticsearchDocumentStore)
-    document_store.write_documents.return_value = 0
-
-    pipe = build_ingest_pipeline(embedder=embedder, document_store=document_store)
+    pipe = build_ingest_pipeline(embedder=embedder)
 
     with (
         structlog.testing.capture_logs() as logs,
@@ -164,8 +157,8 @@ def test_build_ingest_pipeline_wraps_steps_in_order(monkeypatch) -> None:
         pairs.append((ev["event"].split(".")[-1], ev["step"]))
     started_steps = [s for k, s in pairs if k == "started"]
     ok_steps = [s for k, s in pairs if k == "ok"]
-    # v2 graph: load → split → chunker → embedder → writer.
-    expected = ["load", "split", "chunker", "embedder", "writer"]
+    # v2 graph: load → split → chunker → embedder (embedder is sole ES writer).
+    expected = ["load", "split", "chunker", "embedder"]
     assert started_steps == expected
     assert ok_steps == expected
     for ev in step_events:

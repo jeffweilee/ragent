@@ -1,15 +1,15 @@
-"""V2 retry idempotency: re-running the pipeline overwrites prior chunks via
-Haystack ``DuplicatePolicy.OVERWRITE`` (chunks live only in ES; the v1
-``chunk_repo.delete_by_document_id`` was dropped in C6)."""
+"""V2 retry idempotency: re-running the pipeline produces the same chunk count.
 
-import dataclasses
+The pipeline's chunking is deterministic; the embedder bulk-writes to ES
+with ``_op_type: index`` (overwrite-by-id), so re-ingesting the same
+document is idempotent at the ES level (chunks live only in ES; the v1
+``chunk_repo.delete_by_document_id`` was dropped in C6)."""
 
 import pytest
 from haystack.core.component import component
 from haystack.dataclasses import Document
 
 from ragent.pipelines.factory import build_ingest_pipeline
-from tests.conftest import FakeDocumentStore as _FakeStore
 from tests.conftest import run_in_threadpool
 
 pytestmark = pytest.mark.docker
@@ -26,36 +26,39 @@ def _loader_input(text: str, document_id: str) -> dict:
 
 
 @component
-class _MockEmbedder:
+class _RecordingEmbedder:
+    """Stand-in embedder that records received chunks; returns [] (T-EM-R.6 contract)."""
+
+    def __init__(self) -> None:
+        self.received: list[Document] = []
+
     @component.output_types(documents=list[Document])
     def run(self, documents: list[Document]) -> dict:
-        return {"documents": [dataclasses.replace(d, embedding=[0.0] * 4) for d in documents]}
+        self.received.extend(documents)
+        return {"documents": []}
 
 
-def test_pipeline_runs_end_to_end_and_writes() -> None:
-    pipeline = build_ingest_pipeline(embedder=_MockEmbedder(), document_store=_FakeStore())
-    result = run_in_threadpool(
+def test_pipeline_runs_end_to_end_and_reaches_embedder() -> None:
+    embedder = _RecordingEmbedder()
+    pipeline = build_ingest_pipeline(embedder=embedder)
+    run_in_threadpool(
         lambda: pipeline.run(
             _loader_input("Hello world. Second sentence. Third sentence.", "DOC001"),
-            include_outputs_from={"embedder"},
         )
     )
-    assert len(result["embedder"]["documents"]) >= 1
+    assert len(embedder.received) >= 1
 
 
-def test_pipeline_retry_writes_same_document_count() -> None:
-    """Same input → same chunks; OVERWRITE policy avoids duplicates."""
-    store = _FakeStore()
-    pipeline = build_ingest_pipeline(embedder=_MockEmbedder(), document_store=store)
+def test_pipeline_retry_produces_same_chunk_count() -> None:
+    """Same input → same chunks; deterministic chunking ensures consistent count."""
+    embedder1 = _RecordingEmbedder()
+    pipeline1 = build_ingest_pipeline(embedder=embedder1)
 
     text = "One sentence. Two sentences. Three sentences."
-    run_in_threadpool(lambda: pipeline.run(_loader_input(text, "DOC001")))
-    first_count = len(store.written)
+    run_in_threadpool(lambda: pipeline1.run(_loader_input(text, "DOC001")))
+    first_count = len(embedder1.received)
 
-    # FakeStore appends naively (real ES store would dedupe by id); the
-    # invariant we assert is that the pipeline produces a deterministic
-    # chunk count for identical input.
-    store2 = _FakeStore()
-    pipeline2 = build_ingest_pipeline(embedder=_MockEmbedder(), document_store=store2)
+    embedder2 = _RecordingEmbedder()
+    pipeline2 = build_ingest_pipeline(embedder=embedder2)
     run_in_threadpool(lambda: pipeline2.run(_loader_input(text, "DOC001")))
-    assert len(store2.written) == first_count
+    assert len(embedder2.received) == first_count

@@ -288,8 +288,8 @@ def build_container() -> Container:
         embedder=DocumentEmbedder(
             registry=embedding_registry,
             embed_callable=partial(_embed, query=False),
+            es_client=es_client,
         ),
-        document_store=document_store,
     )
 
     unprotect_client = None

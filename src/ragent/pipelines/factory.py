@@ -1,7 +1,7 @@
 """C4 / T2v.30-T2v.39 — v2 ingest pipeline factory.
 
 Graph: ``_TextLoader → _MimeAwareSplitter → _BudgetChunker →
-DocumentEmbedder → DocumentWriter`` (ES only).
+DocumentEmbedder`` (ES only; embedder bulk-writes directly).
 
 Splitter dispatches per ``meta["mime_type"]``:
 - ``text/plain``      → Haystack ``DocumentSplitter`` (passage)
@@ -20,15 +20,14 @@ from __future__ import annotations
 import dataclasses
 import io
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 import structlog
 from haystack.components.preprocessors import DocumentSplitter
-from haystack.components.writers import DocumentWriter
 from haystack.core.component import component
 from haystack.core.pipeline import Pipeline
 from haystack.dataclasses import Document
-from haystack.document_stores.types import DuplicatePolicy
 
 from ragent.errors.codes import TaskErrorCode
 from ragent.pipelines.observability import IngestStepError, wrap_pipeline_component
@@ -665,20 +664,18 @@ def _pack_atoms(atoms: list[Document]) -> list[tuple[str, str]]:
 class DocumentEmbedder:
     """Wraps the project's external EmbeddingClient as a Haystack component.
 
-    Two construction modes (back-compat):
+    Two construction modes:
 
     - **Legacy single-model**: ``DocumentEmbedder(client)`` — embeds every
       chunk with the given client and stores the vector on ``doc.embedding``.
       Kept for tests and the pre-T-EM ingest path.
 
-    - **Dual-write (B50)**: ``DocumentEmbedder(registry, embed_callable)`` —
-      reads ``registry.write_models()`` on every ``run()``; calls
-      ``embed_callable(model, texts)`` once per model. The first model
-      (stable) lands on ``doc.embedding`` so the legacy ``embedding`` ES
-      field stays populated; every later model lands on
-      ``doc.meta[model.field]`` and is expanded to a top-level ES field by
-      the downstream Haystack writer. Empty ``write_models()`` is a bug —
-      raises ``RuntimeError`` rather than emitting unindexed chunks.
+    - **Registry mode (B50 T-EM-R.6)**: ``DocumentEmbedder(registry, embed_callable, es_client)``
+      — reads ``registry.write_models()`` on every ``run()``; bulk-writes to
+      ``registry.stable_index`` (and ``registry.candidate_index`` during
+      CANDIDATE/CUTOVER) using field ``"embedding"`` in each index. Returns
+      ``{"documents": []}`` — the embedder is the sole ES writer, no downstream
+      DocumentWriter needed. Empty ``write_models()`` raises ``RuntimeError``.
     """
 
     def __init__(
@@ -687,19 +684,24 @@ class DocumentEmbedder:
         *,
         registry: Any = None,
         embed_callable: Any = None,
+        es_client: Any = None,
     ) -> None:
         if registry is not None:
             if embed_callable is None:
                 raise ValueError("registry mode requires embed_callable")
+            if es_client is None:
+                raise ValueError("registry mode requires es_client")
             self._mode = "dual"
             self._registry = registry
             self._embed = embed_callable
+            self._es = es_client
             self._client = None
         else:
             self._mode = "legacy"
             self._client = client
             self._registry = None
             self._embed = None
+            self._es = None
 
     @component.output_types(documents=list[Document])
     def run(self, documents: list[Document]) -> dict:
@@ -725,31 +727,32 @@ class DocumentEmbedder:
             )
         texts = [d.content or "" for d in documents]
 
-        # IDLE state has exactly one write model — skip the thread-pool
-        # spin-up entirely on the hot path. Only fan out when there's
-        # actually a second model to embed against (CANDIDATE/CUTOVER).
         if len(models) == 1:
             results = [self._embed(models[0], texts)]
         else:
-            from concurrent.futures import ThreadPoolExecutor
-
             with ThreadPoolExecutor(max_workers=len(models)) as pool:
                 results = list(pool.map(lambda m: self._embed(m, texts), models))
 
-        stable_vectors = results[0]
-        stable_field = models[0].field
-        extra_vectors = [(m.field, vecs) for m, vecs in zip(models[1:], results[1:], strict=True)]
+        index_names = [self._registry.stable_index]
+        if len(models) > 1:
+            candidate_idx = self._registry.candidate_index
+            assert candidate_idx is not None, (
+                "write_models() returned 2 models but candidate_index is None — missing index_name"
+            )
+            index_names.append(candidate_idx)
 
-        out: list[Document] = []
-        for i, doc in enumerate(documents):
-            new_meta = dict(doc.meta or {})
-            # Also store in the model-specific meta field so _DynamicFieldEmbeddingRetriever
-            # can target it via kNN — the ES "embedding" field name doesn't match stable.field.
-            new_meta[stable_field] = stable_vectors[i]
-            for field, vectors in extra_vectors:
-                new_meta[field] = vectors[i]
-            out.append(dataclasses.replace(doc, embedding=stable_vectors[i], meta=new_meta))
-        return {"documents": out}
+        for vectors, index_name in zip(results, index_names, strict=True):
+            ops: list[dict] = []
+            for doc, vec in zip(documents, vectors, strict=True):
+                ops.append({"index": {"_id": doc.id}})
+                # meta is written first so that "embedding" and "content" always win.
+                body: dict = {**(doc.meta or {}), "embedding": vec}
+                if doc.content is not None:
+                    body["content"] = doc.content
+                ops.append(body)
+            self._es.bulk(index=index_name, operations=ops)
+
+        return {"documents": []}
 
 
 # ---------------------------------------------------------------------------
@@ -757,7 +760,7 @@ class DocumentEmbedder:
 # ---------------------------------------------------------------------------
 
 
-def build_ingest_pipeline(embedder: Any, document_store: Any) -> Pipeline:
+def build_ingest_pipeline(embedder: Any) -> Pipeline:
     """V2 ingest pipeline.
 
     Run input shape::
@@ -773,10 +776,10 @@ def build_ingest_pipeline(embedder: Any, document_store: Any) -> Pipeline:
             }
         }
 
-    Retry idempotency relies on Haystack ``DuplicatePolicy.OVERWRITE`` plus
-    deterministic chunk IDs (Haystack hashes content+meta). Chunks live
-    only in ES; the v1 ``chunks`` DB table and ``ChunkRepository`` were
-    dropped in C6.
+    Retry idempotency relies on ``_op_type: index`` (overwrite-by-id) in the
+    embedder's bulk writes and deterministic chunk IDs (Haystack hashes
+    content+meta). Chunks live only in ES; the v1 ``chunks`` DB table and
+    ``ChunkRepository`` were dropped in C6.
     """
     pipeline = Pipeline()
 
@@ -795,16 +798,9 @@ def build_ingest_pipeline(embedder: Any, document_store: Any) -> Pipeline:
     )
     _add("chunker", _BudgetChunker(), step="chunker")
     _add("embedder", embedder, step="embedder", error_code=TaskErrorCode.EMBEDDER_ERROR)
-    _add(
-        "writer",
-        DocumentWriter(document_store=document_store, policy=DuplicatePolicy.OVERWRITE),
-        step="writer",
-        error_code=TaskErrorCode.ES_WRITE_ERROR,
-    )
 
     pipeline.connect("loader.documents", "splitter.documents")
     pipeline.connect("splitter.documents", "chunker.documents")
     pipeline.connect("chunker.documents", "embedder.documents")
-    pipeline.connect("embedder.documents", "writer.documents")
 
     return pipeline
