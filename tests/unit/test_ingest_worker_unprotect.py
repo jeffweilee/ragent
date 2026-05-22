@@ -12,7 +12,7 @@ from tests.conftest import make_ingest_container
 
 
 def _doc(mime_type: str | None = None, ingest_type: str = "file") -> DocumentRow:
-    now = datetime.datetime.now(datetime.UTC)
+    now = datetime.datetime.now(datetime.timezone.utc)
     return DocumentRow(
         document_id="DOC-UP-1",
         create_user="user-42",
@@ -119,7 +119,7 @@ async def test_unprotect_filename_skips_duplicate_extension():
     """object_key already ending with the mime extension is passed through unchanged."""
     unprotect_mock = MagicMock()
     unprotect_mock.unprotect.return_value = b"clean"
-    now = datetime.datetime.now(datetime.UTC)
+    now = datetime.datetime.now(datetime.timezone.utc)
     doc = DocumentRow(
         document_id="DOC-UP-1",
         create_user="user-42",

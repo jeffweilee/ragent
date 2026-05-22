@@ -67,7 +67,7 @@ def test_chunk_write_populates_indexed_at_via_pipeline(mariadb_dsn: str, es_url:
     )
     # ES emits ISO-8601 with `Z` suffix; normalize to UTC offset for fromisoformat.
     parsed = _dt.datetime.fromisoformat(indexed_at.replace("Z", "+00:00"))
-    age = _dt.datetime.now(tz=_dt.UTC) - parsed
+    age = _dt.datetime.now(tz=_dt.timezone.utc) - parsed
     assert age.total_seconds() < 60, (
         f"`indexed_at`={indexed_at} is older than 60s — clock skew or stale write?"
     )

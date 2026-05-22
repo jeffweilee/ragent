@@ -16,7 +16,7 @@ from ragent.repositories.document_repository import (
 
 
 def _dt(s: str) -> datetime.datetime:
-    return datetime.datetime.fromisoformat(s).replace(tzinfo=datetime.UTC)
+    return datetime.datetime.fromisoformat(s).replace(tzinfo=datetime.timezone.utc)
 
 
 def _row(**kwargs) -> dict:

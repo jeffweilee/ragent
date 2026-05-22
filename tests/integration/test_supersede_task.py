@@ -11,7 +11,7 @@ pytestmark = pytest.mark.docker
 
 
 def _dt(offset_sec: int = 0) -> datetime.datetime:
-    return datetime.datetime(2026, 1, 1, tzinfo=datetime.UTC) + datetime.timedelta(
+    return datetime.datetime(2026, 1, 1, tzinfo=datetime.timezone.utc) + datetime.timedelta(
         seconds=offset_sec
     )
 

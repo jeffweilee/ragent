@@ -15,7 +15,7 @@ Soft gates (warn; bypassable via `force=True`):
 cutover or 409 based on the report.
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -61,7 +61,7 @@ async def test_preflight_passes_when_state_is_candidate_and_all_gates_ok() -> No
         registry=reg,
         es_client=es,
         index_name="chunks_v1",
-        promoted_at=datetime.now(UTC) - timedelta(seconds=60),
+        promoted_at=datetime.now(timezone.utc) - timedelta(seconds=60),
         cache_ttl_seconds=10,
     )
 
@@ -77,7 +77,7 @@ async def test_preflight_fails_when_state_is_not_candidate() -> None:
         registry=reg,
         es_client=AsyncMock(),
         index_name="chunks_v1",
-        promoted_at=datetime.now(UTC),
+        promoted_at=datetime.now(timezone.utc),
         cache_ttl_seconds=10,
     )
 
@@ -104,7 +104,7 @@ async def test_preflight_fails_when_field_dim_mismatch() -> None:
         registry=reg,
         es_client=es,
         index_name="chunks_v1",
-        promoted_at=datetime.now(UTC) - timedelta(seconds=60),
+        promoted_at=datetime.now(timezone.utc) - timedelta(seconds=60),
         cache_ttl_seconds=10,
     )
 
@@ -133,7 +133,7 @@ async def test_preflight_fails_when_candidate_coverage_below_threshold() -> None
         registry=reg,
         es_client=es,
         index_name="chunks_v1",
-        promoted_at=datetime.now(UTC) - timedelta(seconds=60),
+        promoted_at=datetime.now(timezone.utc) - timedelta(seconds=60),
         cache_ttl_seconds=10,
     )
 
@@ -156,7 +156,7 @@ async def test_preflight_coverage_treats_empty_index_as_pass() -> None:
         registry=reg,
         es_client=es,
         index_name="chunks_v1",
-        promoted_at=datetime.now(UTC) - timedelta(seconds=60),
+        promoted_at=datetime.now(timezone.utc) - timedelta(seconds=60),
         cache_ttl_seconds=10,
     )
 
@@ -181,7 +181,7 @@ async def test_preflight_fails_when_dual_write_warmup_too_short() -> None:
         registry=reg,
         es_client=es,
         index_name="chunks_v1",
-        promoted_at=datetime.now(UTC) - timedelta(seconds=5),  # < 2 × ttl(10) = 20
+        promoted_at=datetime.now(timezone.utc) - timedelta(seconds=5),  # < 2 × ttl(10) = 20
         cache_ttl_seconds=10,
     )
 
