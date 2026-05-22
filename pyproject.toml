@@ -43,6 +43,8 @@ dev = [
     "pytest-cov>=5",
     "ruff>=0.5",
     "safety>=3.7.0",
+    "pre-commit>=4.2.0",
+    "detect-secrets>=1.5.0",
 ]
 
 [build-system]
@@ -74,6 +76,8 @@ dev = [
     "pytest-cov>=7.1.0",
     "pytest-httpserver>=1.1.0",
     "ruff>=0.15.12",
+    "pre-commit>=4.2.0",
+    "detect-secrets>=1.5.0",
     "testcontainers[elasticsearch,mariadb,minio,redis]>=4.14.2",
     "fpdf2>=2.0",
 ]
