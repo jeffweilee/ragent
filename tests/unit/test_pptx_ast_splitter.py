@@ -117,8 +117,8 @@ def test_pptx_multiple_text_boxes_merged():
 # ---------------------------------------------------------------------------
 
 
-def _footer_sp_xml(text: str) -> bytes:
-    """lxml element for a PPTX footer placeholder containing `text`."""
+def _ph_sp_xml(text: str, ph_type: str, idx: int) -> bytes:
+    """lxml element for a PPTX placeholder of the given type."""
     from lxml import etree
 
     return etree.fromstring(
@@ -126,9 +126,9 @@ def _footer_sp_xml(text: str) -> bytes:
                   xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
                   xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
           <p:nvSpPr>
-            <p:cNvPr id="99" name="Footer 99"/>
+            <p:cNvPr id="99" name="Placeholder 99"/>
             <p:cNvSpPr><a:spLocks noGrp="1"/></p:cNvSpPr>
-            <p:nvPr><p:ph type="ftr" sz="quarter" idx="11"/></p:nvPr>
+            <p:nvPr><p:ph type="{ph_type}" sz="quarter" idx="{idx}"/></p:nvPr>
           </p:nvSpPr>
           <p:spPr/>
           <p:txBody>
@@ -138,6 +138,14 @@ def _footer_sp_xml(text: str) -> bytes:
           </p:txBody>
         </p:sp>"""
     )
+
+
+def _footer_sp_xml(text: str) -> bytes:
+    return _ph_sp_xml(text, "ftr", 11)
+
+
+def _header_sp_xml(text: str) -> bytes:
+    return _ph_sp_xml(text, "hdr", 12)
 
 
 def _make_pptx_with_footer(body_text: str, footer_text: str) -> bytes:
@@ -176,3 +184,21 @@ def test_pptx_slide_with_only_footer_skipped():
     prs.save(buf)
     atoms = _run_splitter(buf.getvalue())
     assert atoms == []
+
+
+def test_pptx_header_placeholder_excluded():
+    """Header placeholder text (type='hdr') must not appear in atom content."""
+    from pptx import Presentation
+    from pptx.util import Inches
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[6])
+    slide.shapes.add_textbox(Inches(1), Inches(1), Inches(6), Inches(1)).text_frame.text = "Body"
+    slide.shapes._spTree.append(_header_sp_xml("Page header text"))
+
+    buf = io.BytesIO()
+    prs.save(buf)
+    atoms = _run_splitter(buf.getvalue())
+    assert len(atoms) == 1
+    assert "Body" in atoms[0].content
+    assert "Page header text" not in atoms[0].content

@@ -50,9 +50,9 @@ CHUNK_MAX_PIECES_PER_ATOM = int_env("CHUNK_MAX_PIECES_PER_ATOM", 10_000)
 # PDF page margin in points (1 pt ≈ 0.35 mm). Header/footer zones at the
 # top and bottom of each page are excluded from extraction when > 0.
 INGEST_PDF_MARGIN_PTS = float_env("INGEST_PDF_MARGIN_PTS", 0.0)
-# PPTX placeholder types to exclude (footer=15, date=16, slide_number=13).
+# PPTX placeholder types to exclude (header=14, footer=15, date=16, slide_number=13).
 # Integer values used so python-pptx stays a lazy import inside run().
-_PPTX_SKIP_PH: frozenset[int] = frozenset({13, 15, 16})
+_PPTX_SKIP_PH: frozenset[int] = frozenset({13, 14, 15, 16})
 
 
 def validate_chunk_config() -> None:
