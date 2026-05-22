@@ -53,6 +53,7 @@ class Reconciler:
         await self._redispatch_uploaded()
         await self._resume_deleting()
         await self._repair_multi_ready()
+        await self._backfill_candidate_embeddings()
         await self._sweep_retired_embedding_indices()
         reconciler_tick_total.inc()
         logger.info("reconciler.tick")
@@ -135,6 +136,48 @@ class Reconciler:
                 logger.info("reconciler.delete_resumed", document_id=doc.document_id)
             except Exception:
                 logger.exception("reconciler.delete_resume_error", document_id=doc.document_id)
+
+    async def _backfill_candidate_embeddings(self) -> None:
+        """T-EM-R.9 — enqueue backfill task when candidate coverage < 0.99.
+
+        Reads embedding.candidate; if an index_name is set (CANDIDATE/CUTOVER
+        state), compares doc counts. Enqueues ingest.backfill_candidate when
+        ratio < 0.99. No-ops when IDLE or when settings/es are not wired.
+        """
+        if self._settings_repo is None or self._es_client is None:
+            return
+        try:
+            candidate = await self._settings_repo.get("embedding.candidate")
+        except Exception:
+            logger.exception("reconciler.backfill.read_error")
+            return
+        if not candidate or not candidate.get("index_name"):
+            return
+
+        candidate_index = candidate["index_name"]
+        stable_index = self._chunks_index
+        try:
+            stable_resp, candidate_resp = await asyncio.gather(
+                self._es_client.count(index=stable_index),
+                self._es_client.count(index=candidate_index),
+            )
+            stable_count = stable_resp["count"]
+            if stable_count == 0:
+                return
+            candidate_count = candidate_resp["count"]
+            if candidate_count / stable_count >= 0.99:
+                return
+            await self._broker.enqueue(
+                "ingest.backfill_candidate",
+                stable_index=stable_index,
+                candidate_index=candidate_index,
+            )
+            logger.info(
+                "reconciler.backfill_enqueued",
+                ratio=candidate_count / stable_count,
+            )
+        except Exception:
+            logger.exception("reconciler.backfill.es_error")
 
     async def _sweep_retired_embedding_indices(self) -> None:
         """T-EM-R.8 — delete physical ES indices for retired embedding models.

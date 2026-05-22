@@ -306,6 +306,7 @@ def create_app() -> FastAPI:
     # Importing the workers module triggers `@broker.task` decorator
     # registration so that `dispatcher.enqueue(label, ...)` can resolve
     # task labels at producer side (B25).
+    import ragent.workers.backfill  # noqa: F401
     import ragent.workers.ingest  # noqa: F401
     from ragent.bootstrap.broker import broker as taskiq_broker
     from ragent.bootstrap.composition import get_container
@@ -409,6 +410,7 @@ def create_app() -> FastAPI:
         create_admin_embedding_router(
             service=container.embedding_lifecycle_service,
             snapshot_provider=container.embedding_registry.snapshot,
+            broker=dispatcher,
         )
     )
     app.include_router(create_health_router(probes=_build_probes(container)))

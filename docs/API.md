@@ -485,6 +485,7 @@ drive a zero-downtime embedding-model swap (B50). Full design:
 | `POST /embedding/v1/rollback` | Revert reads to stable; dual-write stays open | 200 with `{state:"CANDIDATE", read:"stable", rolled_back_at}` | 409 `EMBEDDING_LIFECYCLE_INVALID_STATE` |
 | `POST /embedding/v1/commit` | Promote candidate to stable; retire old field | 200 with `{state:"IDLE", stable, committed_at}` | 409 `EMBEDDING_LIFECYCLE_INVALID_STATE` |
 | `POST /embedding/v1/abort` | Drop candidate (must rollback first if in CUTOVER) | 200 with `{state:"IDLE", aborted, aborted_at}` | 409 `EMBEDDING_LIFECYCLE_INVALID_STATE` |
+| `POST /embedding/v1/backfill` | Enqueue backfill task to embed missing chunks into candidate_index | 200 with `{state, queued, stable_index, candidate_index}` | 409 `EMBEDDING_LIFECYCLE_INVALID_STATE`; 503 when broker not wired |
 | `GET /embedding/v1/state` | Snapshot of stable / candidate / read / retired | 200 with snapshot dict | 503 `EMBEDDING_REGISTRY_NOT_READY` when first refresh has not completed |
 | `GET /embedding/v1/cutover/preflight` | Run hard/soft gates without taking action | 200 with `{pass, gates}` | — |
 

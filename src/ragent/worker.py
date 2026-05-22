@@ -19,6 +19,6 @@ if __name__ == "__main__":
     start_listen(
         WorkerArgs(
             broker="ragent.bootstrap.broker:broker",
-            modules=["ragent.workers.ingest"],
+            modules=["ragent.workers.ingest", "ragent.workers.backfill"],
         ),
     )

@@ -78,7 +78,9 @@ def _handle_exceptions(fn: Callable[..., Awaitable[Any]]) -> Callable[..., Await
     return wrapper
 
 
-def create_router(*, service: Any, snapshot_provider: Callable[[], dict]) -> APIRouter:
+def create_router(
+    *, service: Any, snapshot_provider: Callable[[], dict], broker: Any = None
+) -> APIRouter:
     router = APIRouter(prefix="/embedding/v1")
 
     @router.post("/promote")
@@ -107,6 +109,16 @@ def create_router(*, service: Any, snapshot_provider: Callable[[], dict]) -> API
     @_handle_exceptions
     async def abort():
         return await service.abort()
+
+    @router.post("/backfill")
+    @_handle_exceptions
+    async def backfill():
+        if broker is None:
+            return JSONResponse(
+                status_code=503,
+                content={"detail": "broker not wired"},
+            )
+        return await service.backfill(broker=broker)
 
     @router.get("/state")
     @_handle_exceptions

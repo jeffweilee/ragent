@@ -166,6 +166,11 @@ def record_ingest_rejection(reason: str) -> None:
     _ingest_rejected_total.labels(reason=reason).inc()
 
 
+ragent_backfill_chunks_total = Counter(
+    "ragent_backfill_chunks_total",
+    "Chunks written to candidate_index by the backfill worker.",
+)
+
 # Feedback dual-write ES leg failure (T-FB.6, B51).  Counter only — no labels —
 # because /feedback/v1 itself returns 204 on the MariaDB-leg success path
 # regardless of ES outcome; this lets an offline replay job target the gap.

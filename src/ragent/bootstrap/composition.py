@@ -38,6 +38,7 @@ class Container:
     embedding_registry: Any  # ActiveModelRegistry — refresh() in lifespan startup
     embedding_lifecycle_service: Any  # EmbeddingLifecycleService — admin router backend
     chunks_index_name: str  # physical ES index name (write path / VectorExtractor / lifecycle)
+    embed_fn: Any  # (EmbeddingModelConfig, list[str]) -> list[list[float]] — used by backfill worker
     # B54/B55 T-FB.8 — feedback retrieval signal (renumbered from B50/B51)
     feedback_repository: Any  # FeedbackRepository | None
     feedback_hmac_secret: str | None  # None when CHAT_FEEDBACK_ENABLED=false
@@ -344,6 +345,7 @@ def build_container() -> Container:
         embedding_registry=embedding_registry,
         embedding_lifecycle_service=embedding_lifecycle_service,
         chunks_index_name=chunks_index_name,
+        embed_fn=partial(_embed, query=False),
         feedback_repository=feedback_repository,
         feedback_hmac_secret=feedback_hmac_secret,
         ingest_inline_max_bytes=inline_max_bytes,

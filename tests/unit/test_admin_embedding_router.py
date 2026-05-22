@@ -19,12 +19,16 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 
-def _make_app(svc, snapshot=None):
+def _make_app(svc, snapshot=None, broker=None):
     from ragent.routers.admin_embedding import create_router
 
     app = FastAPI()
     app.include_router(
-        create_router(service=svc, snapshot_provider=snapshot or (lambda: {"state": "IDLE"}))
+        create_router(
+            service=svc,
+            snapshot_provider=snapshot or (lambda: {"state": "IDLE"}),
+            broker=broker,
+        )
     )
     return TestClient(app)
 
@@ -218,3 +222,48 @@ def test_preflight_endpoint_reports_pass() -> None:
     resp = client.get("/embedding/v1/cutover/preflight")
     assert resp.status_code == 200
     assert resp.json()["pass"] is True
+
+
+# ---------------------------------------------------------------------------
+# POST /backfill
+# ---------------------------------------------------------------------------
+
+
+def test_backfill_happy_path_returns_200() -> None:
+    svc = AsyncMock()
+    svc.backfill.return_value = {
+        "state": "CANDIDATE",
+        "queued": True,
+        "stable_index": "chunks_v1",
+        "candidate_index": "chunks_v2",
+    }
+    broker = AsyncMock()
+
+    client = _make_app(svc, broker=broker)
+    resp = client.post("/embedding/v1/backfill")
+
+    assert resp.status_code == 200
+    svc.backfill.assert_awaited_once_with(broker=broker)
+
+
+def test_backfill_409_when_wrong_state() -> None:
+    from ragent.utility.embedding_lifecycle import IllegalEmbeddingTransition
+
+    svc = AsyncMock()
+    svc.backfill.side_effect = IllegalEmbeddingTransition("not in candidate state")
+    broker = AsyncMock()
+
+    client = _make_app(svc, broker=broker)
+    resp = client.post("/embedding/v1/backfill")
+
+    assert resp.status_code == 409
+    assert resp.json()["error_code"] == "EMBEDDING_LIFECYCLE_INVALID_STATE"
+
+
+def test_backfill_503_when_broker_not_wired() -> None:
+    svc = AsyncMock()
+
+    client = _make_app(svc, broker=None)
+    resp = client.post("/embedding/v1/backfill")
+
+    assert resp.status_code == 503

@@ -1,23 +1,20 @@
-"""T-EM.20 — End-to-end embedding-model lifecycle (B50).
+"""T-EM.20 — End-to-end embedding-model lifecycle (B50 index-per-model).
 
 Real MariaDB + Elasticsearch testcontainers exercising the lifecycle from
 ``promote`` through ``cutover``, ``rollback``, ``abort`` and the reconciler
-``retired-field`` sweep. Asserts the invariants that the design doc
-(``docs/team/2026_05_15_embedding_model_lifecycle.md``) calls out:
+``retired-index`` sweep. Asserts the invariants the design doc calls out:
 
-- promote PUTs the new ES dense_vector field and records ``embedding.candidate``
-- cutover flips ``embedding.read`` to ``"candidate"`` only when preflight passes
-- rollback flips read back without touching ``embedding.candidate``
-  (dual-write window stays open)
-- doc upserts during the rollback window keep BOTH vector fields current
-  → rollback after the upsert finds the correct stable vector in ES
-- abort retires the candidate and the reconciler sweep zeroes out the
-  field values via ``_update_by_query``
+- promote creates a new physical ES index (``chunks_v2``) and records
+  ``embedding.candidate`` with ``index_name``
+- cutover swaps the read alias ``chunks_v1_active`` from ``chunks_v1`` to
+  ``chunks_v2``; rollback reverses it without touching the candidate index
+- dual-write during CUTOVER: ingest writes to BOTH physical indices so
+  rollback finds a current vector in the stable index via the alias
+- commit retires the old stable index; reconciler sweep deletes the physical
+  index and marks ``cleanup_done = true``
 
 The real ingest pipeline is bypassed; we exercise the settings + ES seams
-directly. Worker integration is covered by the existing
-``test_pipeline_*`` integration suite which now uses the same composition
-root (T-EM.21).
+directly.
 """
 
 from __future__ import annotations
@@ -26,6 +23,10 @@ import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
 
 pytestmark = [pytest.mark.docker, pytest.mark.asyncio]
+
+_STABLE_SEED = {"name": "bge-m3", "dim": 1024, "api_url": "", "model_arg": "bge-m3"}
+_STABLE_INDEX = "chunks_v1"
+_ALIAS = "chunks_v1_active"
 
 
 # ---------------------------------------------------------------------------
@@ -36,9 +37,7 @@ pytestmark = [pytest.mark.docker, pytest.mark.asyncio]
 @pytest.fixture(scope="module")
 def lifecycle_dsn():
     """Dedicated MariaDB container so this module's alembic upgrade is
-    isolated from the shared session-scoped DB (other tests may have
-    already applied ALTERs that alembic upgrade would conflict with —
-    same approach as `test_schema_drift.py`)."""
+    isolated from the shared session-scoped DB."""
     from testcontainers.mysql import MySqlContainer
 
     from tc_utils import tc_image
@@ -60,48 +59,50 @@ def lifecycle_dsn():
 
 @pytest.fixture
 async def lifecycle_engine(lifecycle_dsn):
-    """Async SQLAlchemy engine — function-scoped so each test's connections
-    bind to its own asyncio loop (`pytest-asyncio` default loop scope =
-    function). Sharing an AsyncEngine across event loops raises
-    ``RuntimeError('Event loop is closed')`` on the second test."""
     engine = create_async_engine(lifecycle_dsn, pool_pre_ping=True)
     yield engine
     await engine.dispose()
 
 
+def _stable_index_body(dim: int = 1024) -> dict:
+    return {
+        "mappings": {
+            "properties": {
+                "document_id": {"type": "keyword"},
+                "chunk_id": {"type": "keyword"},
+                "content": {"type": "text"},
+                "title": {"type": "text"},
+                "embedding": {
+                    "type": "dense_vector",
+                    "dims": dim,
+                    "index": True,
+                    "similarity": "cosine",
+                    "index_options": {"type": "flat"},
+                },
+            }
+        }
+    }
+
+
 @pytest.fixture
 async def chunks_index(es_url):
-    """Fresh chunks_v1 index per test with only the stable embedding field.
+    """Fresh ``chunks_v1`` index + ``chunks_v1_active`` alias per test.
 
-    Promote() adds the candidate field to this mapping at runtime.
+    Promote() creates ``chunks_v2``; teardown removes both.
     """
     from elasticsearch import AsyncElasticsearch
 
     es = AsyncElasticsearch(hosts=[es_url])
-    index = "chunks_v1"
-    if await es.indices.exists(index=index):
-        await es.indices.delete(index=index)
-    await es.indices.create(
-        index=index,
-        body={
-            "mappings": {
-                "properties": {
-                    "document_id": {"type": "keyword"},
-                    "chunk_id": {"type": "keyword"},
-                    "text": {"type": "text"},
-                    "embedding": {
-                        "type": "dense_vector",
-                        "dims": 1024,
-                        "index": True,
-                        "similarity": "cosine",
-                        "index_options": {"type": "flat"},
-                    },
-                }
-            }
-        },
-    )
-    yield es, index
-    await es.indices.delete(index=index, ignore_unavailable=True)
+    for idx in [_STABLE_INDEX, "chunks_v2"]:
+        await es.indices.delete(index=idx, ignore_unavailable=True)
+
+    await es.indices.create(index=_STABLE_INDEX, body=_stable_index_body())
+    await es.indices.put_alias(index=_STABLE_INDEX, name=_ALIAS)
+
+    yield es, _STABLE_INDEX, _ALIAS
+
+    for idx in [_STABLE_INDEX, "chunks_v2"]:
+        await es.indices.delete(index=idx, ignore_unavailable=True)
     await es.close()
 
 
@@ -113,20 +114,24 @@ async def lifecycle_setup(lifecycle_engine, chunks_index):
     from ragent.services.active_model_registry import ActiveModelRegistry
     from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
 
-    es, index = chunks_index
+    es, index, alias = chunks_index
 
-    # Reset settings to IDLE for each test (a prior test may have left the
-    # store in CUTOVER). One atomic transition is cheaper than three sets.
     settings = SystemSettingsRepository(engine=lifecycle_engine)
     await settings.transition(
         {
+            "embedding.stable": _STABLE_SEED,
             "embedding.candidate": None,
             "embedding.read": "stable",
             "embedding.retired": [],
         }
     )
 
-    registry = ActiveModelRegistry(settings_repo=settings, ttl_seconds=0)
+    registry = ActiveModelRegistry(
+        settings_repo=settings,
+        ttl_seconds=0,
+        chunks_read_alias=alias,
+        chunks_fallback_index=index,
+    )
     await registry.refresh(force=True)
 
     service = EmbeddingLifecycleService(
@@ -134,7 +139,7 @@ async def lifecycle_setup(lifecycle_engine, chunks_index):
         es_client=es,
         index_name=index,
         registry=registry,
-        cache_ttl_seconds=0,  # disable warmup gate for tests — no time advance
+        cache_ttl_seconds=0,
     )
     return {
         "settings": settings,
@@ -142,33 +147,47 @@ async def lifecycle_setup(lifecycle_engine, chunks_index):
         "service": service,
         "es": es,
         "index": index,
+        "alias": alias,
     }
 
 
+def _alias_target(alias_response: dict) -> set[str]:
+    """Return the set of index names the ``_ALIAS`` alias points to."""
+    return {idx for idx, meta in alias_response.items() if _ALIAS in meta.get("aliases", {})}
+
+
 # ---------------------------------------------------------------------------
-# Promote → mapping + settings
+# Promote → new physical index + settings
 # ---------------------------------------------------------------------------
 
 
-async def test_promote_adds_es_field_and_writes_candidate_setting(lifecycle_setup) -> None:
+async def test_promote_creates_new_es_index_and_writes_candidate_setting(
+    lifecycle_setup,
+) -> None:
     svc = lifecycle_setup["service"]
     es = lifecycle_setup["es"]
     settings = lifecycle_setup["settings"]
-    index = lifecycle_setup["index"]
 
     result = await svc.promote(
         name="bge-m3-v2", dim=768, api_url="http://e2", model_arg="bge-m3-v2"
     )
 
     assert result["state"] == "CANDIDATE"
-    mapping = await es.indices.get_mapping(index=index)
-    props = mapping[index]["mappings"]["properties"]
-    assert "embedding_bgem3v2_768" in props
-    assert props["embedding_bgem3v2_768"]["dims"] == 768
+
+    # A new physical index was created (not a new field on chunks_v1).
+    assert await es.indices.exists(index="chunks_v2")
+    mapping = await es.indices.get_mapping(index="chunks_v2")
+    props = mapping["chunks_v2"]["mappings"]["properties"]
+    assert "embedding" in props
+    assert props["embedding"]["dims"] == 768
+
+    # The old stable index is untouched.
+    assert await es.indices.exists(index=_STABLE_INDEX)
 
     stored = await settings.get("embedding.candidate")
     assert stored["name"] == "bge-m3-v2"
-    assert stored["field"] == "embedding_bgem3v2_768"
+    assert stored["index_name"] == "chunks_v2"
+    assert "field" not in stored
 
 
 # ---------------------------------------------------------------------------
@@ -180,49 +199,58 @@ async def test_full_lifecycle_promote_cutover_rollback_abort(lifecycle_setup) ->
     svc = lifecycle_setup["service"]
     settings = lifecycle_setup["settings"]
     registry = lifecycle_setup["registry"]
+    es = lifecycle_setup["es"]
+    alias = lifecycle_setup["alias"]
 
     await svc.promote(name="bge-m3-v2", dim=768, api_url="http://e2", model_arg="bge-m3-v2")
     await registry.refresh(force=True)
 
-    # Cutover — preflight passes for an empty index (coverage check escapes
-    # the threshold), warmup gate disabled via cache_ttl_seconds=0.
     cutover_result = await svc.cutover(force=True)
     assert cutover_result["state"] == "CUTOVER"
     assert await settings.get("embedding.read") == "candidate"
+
+    alias_info = await es.indices.get_alias(name=alias)
+    assert _alias_target(alias_info) == {"chunks_v2"}
 
     await registry.refresh(force=True)
     rollback_result = await svc.rollback()
     assert rollback_result["state"] == "CANDIDATE"
     assert await settings.get("embedding.read") == "stable"
-    # Dual-write window invariant: candidate is still set so future ingests
-    # keep updating both vector fields.
+
+    alias_info = await es.indices.get_alias(name=alias)
+    assert _alias_target(alias_info) == {_STABLE_INDEX}
+
     assert (await settings.get("embedding.candidate")) is not None
 
     await registry.refresh(force=True)
     abort_result = await svc.abort()
     assert abort_result["state"] == "IDLE"
     assert await settings.get("embedding.candidate") is None
+
     retired = await settings.get("embedding.retired")
     assert len(retired) == 1
     assert retired[0]["name"] == "bge-m3-v2"
+    assert retired[0]["index_name"] == "chunks_v2"
     assert retired[0]["cleanup_done"] is False
 
+    # abort() deletes the candidate index immediately.
+    assert not await es.indices.exists(index="chunks_v2")
+
 
 # ---------------------------------------------------------------------------
-# Rollback-window write safety
+# Rollback-window dual-write safety
 # ---------------------------------------------------------------------------
 
 
-async def test_doc_upsert_during_rollback_window_keeps_both_fields_current(
+async def test_doc_upsert_during_rollback_window_keeps_both_indices_current(
     lifecycle_setup,
 ) -> None:
-    """Core B50 safety claim: a chunk written while we're in CANDIDATE /
-    CUTOVER state must carry BOTH the stable and candidate vector. Then,
-    even after a rollback, the stable vector retrieved from ES matches
-    what the most-recent ingest computed."""
+    """Core B50 safety claim: a chunk written during CANDIDATE/CUTOVER state
+    must exist in BOTH physical indices so rollback leaves the stable alias
+    pointing at a valid, current vector."""
     svc = lifecycle_setup["service"]
     es = lifecycle_setup["es"]
-    index = lifecycle_setup["index"]
+    alias = lifecycle_setup["alias"]
     registry = lifecycle_setup["registry"]
 
     await svc.promote(name="bge-m3-v2", dim=768, api_url="http://e2", model_arg="bge-m3-v2")
@@ -230,29 +258,32 @@ async def test_doc_upsert_during_rollback_window_keeps_both_fields_current(
     await svc.cutover(force=True)
     await registry.refresh(force=True)
 
-    # Simulate an ingest landing during CUTOVER: a chunk with BOTH vectors.
     stable_vec = [0.1] * 1024
     cand_vec = [0.9] * 768
+    doc = {
+        "document_id": "DOC-XYZ",
+        "chunk_id": "chunk-during-cutover",
+        "content": "hello",
+        "embedding": stable_vec,
+    }
+    # Simulate DocumentEmbedder dual-write: stable index + candidate index.
+    await es.index(index=_STABLE_INDEX, id="chunk-during-cutover", document=doc, refresh=True)
     await es.index(
-        index=index,
+        index="chunks_v2",
         id="chunk-during-cutover",
-        document={
-            "document_id": "DOC-XYZ",
-            "chunk_id": "chunk-during-cutover",
-            "text": "hello",
-            "embedding": stable_vec,
-            "embedding_bgem3v2_768": cand_vec,
-        },
+        document={**doc, "embedding": cand_vec},
         refresh=True,
     )
 
     await svc.rollback()
 
-    # After rollback, queries read the stable field. ES 9 dense_vector
-    # excludes vectors from `_source` by default; verify the dual-write
-    # via kNN on each field instead — both must return the chunk.
+    # After rollback, alias points back to chunks_v1.
+    alias_info = await es.indices.get_alias(name=alias)
+    assert _alias_target(alias_info) == {_STABLE_INDEX}
+
+    # Query via the alias finds the chunk in the stable index.
     stable_hit = await es.search(
-        index=index,
+        index=alias,
         body={
             "knn": {
                 "field": "embedding",
@@ -262,58 +293,54 @@ async def test_doc_upsert_during_rollback_window_keeps_both_fields_current(
             }
         },
     )
+    assert stable_hit["hits"]["hits"][0]["_id"] == "chunk-during-cutover"
+
+    # Candidate index also retains the dual-written chunk.
     cand_hit = await es.search(
-        index=index,
+        index="chunks_v2",
         body={
             "knn": {
-                "field": "embedding_bgem3v2_768",
+                "field": "embedding",
                 "query_vector": cand_vec,
                 "k": 1,
                 "num_candidates": 10,
             }
         },
     )
-    assert stable_hit["hits"]["hits"][0]["_id"] == "chunk-during-cutover"
     assert cand_hit["hits"]["hits"][0]["_id"] == "chunk-during-cutover"
 
 
 # ---------------------------------------------------------------------------
-# Reconciler retired-field sweep
+# Reconciler retired-index sweep
 # ---------------------------------------------------------------------------
 
 
-async def test_reconciler_sweep_clears_retired_field_values(lifecycle_setup) -> None:
+async def test_reconciler_sweep_deletes_retired_stable_index(lifecycle_setup) -> None:
+    """commit() retires the old stable index. The reconciler sweep must
+    DELETE the physical index and mark cleanup_done = true."""
+    from unittest.mock import MagicMock
+
     from ragent.reconciler import Reconciler
 
     svc = lifecycle_setup["service"]
     settings = lifecycle_setup["settings"]
     es = lifecycle_setup["es"]
-    index = lifecycle_setup["index"]
     registry = lifecycle_setup["registry"]
 
-    # Stage some chunks with the candidate field populated.
     await svc.promote(name="bge-m3-v2", dim=768, api_url="http://e2", model_arg="bge-m3-v2")
     await registry.refresh(force=True)
-    for i in range(3):
-        await es.index(
-            index=index,
-            id=f"chunk-{i}",
-            document={
-                "document_id": f"DOC-{i}",
-                "chunk_id": f"chunk-{i}",
-                "text": f"chunk {i}",
-                "embedding": [0.1] * 1024,
-                "embedding_bgem3v2_768": [0.5] * 768,
-            },
-            refresh=True,
-        )
-
-    # Abort — candidate enters retired list, cleanup_done=false.
+    await svc.cutover(force=True)
     await registry.refresh(force=True)
-    await svc.abort()
+    await svc.commit()
 
-    # Build a reconciler wired with the settings repo + es client.
-    from unittest.mock import MagicMock
+    # After commit, old stable (chunks_v1) is in retired list; chunks_v2 is new stable.
+    retired = await settings.get("embedding.retired")
+    assert len(retired) == 1
+    assert retired[0]["index_name"] == _STABLE_INDEX
+    assert retired[0]["cleanup_done"] is False
+
+    # The physical index still exists before the sweep.
+    assert await es.indices.exists(index=_STABLE_INDEX)
 
     rec = Reconciler(
         repo=MagicMock(),
@@ -321,41 +348,12 @@ async def test_reconciler_sweep_clears_retired_field_values(lifecycle_setup) -> 
         registry=None,
         settings_repo=settings,
         es_client=es,
-        chunks_index=index,
+        chunks_index=_STABLE_INDEX,
     )
-    await rec._sweep_retired_embedding_fields()
+    await rec._sweep_retired_embedding_indices()
 
-    # Wait briefly for _update_by_query refresh (the sweep does not refresh
-    # by default — force it via a no-op refresh call).
-    await es.indices.refresh(index=index)
-
-    # Every chunk's candidate field is gone; stable still searchable.
-    # ES dense_vector hides values from `_source`; verify via kNN
-    # (no hits on the retired field; hits on the stable field).
-    cand_hits = await es.search(
-        index=index,
-        body={
-            "knn": {
-                "field": "embedding_bgem3v2_768",
-                "query_vector": [0.5] * 768,
-                "k": 10,
-                "num_candidates": 50,
-            }
-        },
-    )
-    assert cand_hits["hits"]["total"]["value"] == 0
-    stable_hits = await es.search(
-        index=index,
-        body={
-            "knn": {
-                "field": "embedding",
-                "query_vector": [0.1] * 1024,
-                "k": 10,
-                "num_candidates": 50,
-            }
-        },
-    )
-    assert stable_hits["hits"]["total"]["value"] == 3
+    # Physical index deleted.
+    assert not await es.indices.exists(index=_STABLE_INDEX)
 
     # Retired entry marked done.
     retired_after = await settings.get("embedding.retired")
