@@ -35,6 +35,9 @@ pytestmark = [
 ]
 
 RECOVERY_DEADLINE_SECONDS = 600
+# Worker startup (init_schema + TaskIQ bootstrap) takes ~10-30s in CI;
+# 60s gives comfortable headroom before the SIGKILL.
+PENDING_TRANSITION_TIMEOUT_SECONDS = 60
 
 
 def _post_doc() -> str:
@@ -111,7 +114,7 @@ def test_C1_worker_sigkill_recovers_to_ready(
     worker = spawn_module("ragent.worker")
     wait_api_ready()
     doc_id = _post_doc()
-    assert _wait_for_status(doc_id, "PENDING", timeout=30), "doc never reached PENDING"
+    assert _wait_for_status(doc_id, "PENDING", timeout=PENDING_TRANSITION_TIMEOUT_SECONDS), "doc never reached PENDING"
 
     worker.send_signal(signal.SIGKILL)
     worker.wait(timeout=5)
