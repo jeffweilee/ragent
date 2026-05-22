@@ -107,6 +107,7 @@ class ChatRequest(BaseModel):
     source_meta: str | None = None
     top_k: int = Field(default=_DEFAULT_TOP_K, ge=1, le=200)
     min_score: float | None = Field(default=_DEFAULT_MIN_SCORE, ge=0.0)
+    dedupe: bool = False
 
     @field_validator("provider")
     @classmethod

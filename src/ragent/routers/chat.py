@@ -20,6 +20,7 @@ from ragent.errors.problem import problem
 from ragent.pipelines.retrieve import (
     EXCERPT_MAX_CHARS_DEFAULT,
     build_es_filters,
+    dedupe_by_document,
     doc_to_source_entry,
     run_retrieval,
 )
@@ -146,6 +147,8 @@ def create_chat_router(
             with _tracer.start_as_current_span("chat.retrieval") as r_span:
                 r_span.set_attribute("query_len", len(last_user))
                 docs = await run_in_threadpool(_run_retrieval, retrieval_pipeline, body)
+                if body.dedupe:
+                    docs = dedupe_by_document(docs)
                 r_span.set_attribute("result_count", len(docs))
                 logger.info(
                     "chat.retrieval",
@@ -207,6 +210,8 @@ def create_chat_router(
             with _tracer.start_as_current_span("chat.retrieval") as r_span:
                 r_span.set_attribute("query_len", len(last_user))
                 docs = await run_in_threadpool(_run_retrieval, retrieval_pipeline, body)
+                if body.dedupe:
+                    docs = dedupe_by_document(docs)
                 r_span.set_attribute("result_count", len(docs))
                 logger.info(
                     "chat.retrieval",
