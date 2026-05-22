@@ -195,8 +195,8 @@ def test_get_ingest_unchanged():
         object_key="key",
         status="READY",
         attempt=1,
-        created_at=datetime.datetime.now(datetime.UTC),
-        updated_at=datetime.datetime.now(datetime.UTC),
+        created_at=datetime.datetime.now(datetime.timezone.utc),
+        updated_at=datetime.datetime.now(datetime.timezone.utc),
     )
     svc = AsyncMock()
     svc.get.return_value = doc
@@ -260,8 +260,8 @@ def test_list_response_schema_has_items_and_next_cursor():
         object_key="key",
         status="READY",
         attempt=1,
-        created_at=datetime.datetime.now(datetime.UTC),
-        updated_at=datetime.datetime.now(datetime.UTC),
+        created_at=datetime.datetime.now(datetime.timezone.utc),
+        updated_at=datetime.datetime.now(datetime.timezone.utc),
     )
     svc = AsyncMock()
     svc.list.return_value = IngestListResult(items=[doc], next_cursor=None)
@@ -291,8 +291,8 @@ def test_get_document_response_includes_source_meta():
         object_key="key",
         status="READY",
         attempt=1,
-        created_at=datetime.datetime.now(datetime.UTC),
-        updated_at=datetime.datetime.now(datetime.UTC),
+        created_at=datetime.datetime.now(datetime.timezone.utc),
+        updated_at=datetime.datetime.now(datetime.timezone.utc),
     )
     svc = AsyncMock()
     svc.get.return_value = doc

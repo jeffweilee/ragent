@@ -8,7 +8,7 @@ from ragent.services.ingest_service import IngestService
 
 
 def _dt():
-    return datetime.datetime.now(datetime.UTC)
+    return datetime.datetime.now(datetime.timezone.utc)
 
 
 def _make_doc(**kwargs):

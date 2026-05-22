@@ -18,8 +18,8 @@ def _make_doc(doc_status: str = "UPLOADED", ingest_type: str = "inline") -> Docu
         object_key="confluence_S1_DOC001",
         status=doc_status,
         attempt=1,
-        created_at=datetime.datetime.now(datetime.UTC),
-        updated_at=datetime.datetime.now(datetime.UTC),
+        created_at=datetime.datetime.now(datetime.timezone.utc),
+        updated_at=datetime.datetime.now(datetime.timezone.utc),
         ingest_type=ingest_type,
         minio_site="caller-site" if ingest_type == "file" else None,
     )

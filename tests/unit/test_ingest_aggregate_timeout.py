@@ -13,7 +13,7 @@ from tests.conftest import make_ingest_container
 
 
 def _doc() -> DocumentRow:
-    now = datetime.datetime.now(datetime.UTC)
+    now = datetime.datetime.now(datetime.timezone.utc)
     return DocumentRow(
         document_id="DOC001",
         create_user="alice",

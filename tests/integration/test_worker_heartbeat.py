@@ -55,7 +55,7 @@ def test_heartbeat_stops_when_event_set():
 def test_stale_sweep_skips_fresh_heartbeat_row():
     """list_pending_stale does not return rows whose updated_at is within the threshold."""
     repo = MagicMock()
-    now = datetime.datetime.now(datetime.UTC)
+    now = datetime.datetime.now(datetime.timezone.utc)
     threshold = now - datetime.timedelta(minutes=5)
 
     # Row whose updated_at is 1 minute ago — NOT stale
