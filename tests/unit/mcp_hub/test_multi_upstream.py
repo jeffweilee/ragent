@@ -137,13 +137,13 @@ async def test_forward_template_wraps_with_prefix():
         return httpx.Response(200, json={})
 
     fn = _make_tool_callable(spec, _client(handler), "https://api.example.com")
-    token = _INCOMING_HEADERS.set({"x-jwt-token": "eyJabc"})
+    token = _INCOMING_HEADERS.set({"x-jwt-token": "xxx"})
     try:
         await fn()
     finally:
         _INCOMING_HEADERS.reset(token)
 
-    assert seen["headers"]["authorization"] == "Bearer eyJabc"
+    assert seen["headers"]["authorization"] == "Bearer xxx"
 
 
 @pytest.mark.asyncio

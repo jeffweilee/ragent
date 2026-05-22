@@ -158,13 +158,13 @@ def test_authorization_header_is_redacted() -> None:
         client.post(
             "/embed",
             json={"texts": ["x"]},
-            headers={"Authorization": "Bearer secret-j2"},
+            headers={"Authorization": "Bearer j2"},
         )
     rec = _find_error_log(logs)
     assert rec is not None
     headers = {k.lower(): v for k, v in rec["headers"].items()}
     assert headers.get("authorization") == "***"
-    assert "secret-j2" not in json.dumps(rec["headers"])
+    assert "j2" not in json.dumps(rec["headers"])
 
 
 def test_apikey_and_cookie_headers_are_redacted() -> None:
