@@ -148,7 +148,7 @@ class _QueryEmbedder:
         return {
             "query": query,
             "query_embedding": embedding,
-            "embedding_field": model.field,
+            "embedding_field": "embedding",
         }
 
 

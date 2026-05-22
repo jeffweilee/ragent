@@ -143,9 +143,10 @@ def test_composition_threads_es_chunks_index_to_feedback_retriever(
 
     feedback_spy.assert_called_once()
     kwargs = feedback_spy.call_args.kwargs
-    assert kwargs.get("chunks_index") == _CUSTOM_INDEX, (
+    expected_alias = f"{_CUSTOM_INDEX}_active"
+    assert kwargs.get("chunks_index") == expected_alias, (
         f"_FeedbackMemoryRetriever received chunks_index={kwargs.get('chunks_index')!r}; "
-        f"expected {_CUSTOM_INDEX!r} (env ES_CHUNKS_INDEX). composition.py "
-        "must pass `chunks_index=chunks_index_name` — falling back to the "
-        "default `'chunks_v1'` corrupts feedback retrieval in overridden envs."
+        f"expected {expected_alias!r} (read alias of ES_CHUNKS_INDEX). composition.py "
+        "must pass `chunks_index=chunks_read_alias` so feedback retrieval targets the "
+        "live physical index transparently via alias."
     )

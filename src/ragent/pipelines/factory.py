@@ -736,9 +736,10 @@ class DocumentEmbedder:
         index_names = [self._registry.stable_index]
         if len(models) > 1:
             candidate_idx = self._registry.candidate_index
-            assert candidate_idx is not None, (
-                "write_models() returned 2 models but candidate_index is None — missing index_name"
-            )
+            if candidate_idx is None:
+                raise RuntimeError(
+                    "write_models() returned 2 models but candidate_index is None"
+                )
             index_names.append(candidate_idx)
 
         for vectors, index_name in zip(results, index_names, strict=True):

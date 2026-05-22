@@ -9,11 +9,13 @@ All methods are async; the sync entrypoint wraps via asyncio.run().
 from __future__ import annotations
 
 import asyncio
+import copy
 import datetime
 import os
 from typing import Any
 
 import structlog
+from elasticsearch import NotFoundError
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from ragent.errors.codes import TaskErrorCode
@@ -51,7 +53,7 @@ class Reconciler:
         await self._redispatch_uploaded()
         await self._resume_deleting()
         await self._repair_multi_ready()
-        await self._sweep_retired_embedding_fields()
+        await self._sweep_retired_embedding_indices()
         reconciler_tick_total.inc()
         logger.info("reconciler.tick")
 
@@ -134,15 +136,14 @@ class Reconciler:
             except Exception:
                 logger.exception("reconciler.delete_resume_error", document_id=doc.document_id)
 
-    async def _sweep_retired_embedding_fields(self) -> None:
-        """B50 §9 — clear embedding fields marked retired by /commit or /abort.
+    async def _sweep_retired_embedding_indices(self) -> None:
+        """T-EM-R.8 — delete physical ES indices for retired embedding models.
 
-        ES disallows dropping a field from a mapping; we can only remove its
-        *values*. For each ``embedding.retired`` entry with
-        ``cleanup_done=false``, fire one ``_update_by_query`` that runs a
-        Painless script removing the field, then mark the entry done via
-        an optimistic-locked transition. A failed entry stays pending and
-        is retried on the next tick — entries are independent.
+        For each ``embedding.retired`` entry with ``cleanup_done=false`` and
+        ``index_name`` set, calls DELETE /index_name (404 treated as success),
+        then marks the entry done via an optimistic-locked transition. Legacy
+        entries without ``index_name`` are skipped silently. Errors on a single
+        entry do not abort the sweep for remaining entries.
         """
         if self._settings_repo is None or self._es_client is None:
             return
@@ -153,40 +154,25 @@ class Reconciler:
             return
         if not retired:
             return
-        pending = [e for e in retired if not e.get("cleanup_done")]
+        pending = [e for e in retired if not e.get("cleanup_done") and e.get("index_name")]
         if not pending:
             return
 
-        # Snapshot for the optimistic lock; mutate a local copy and only
-        # commit fields we successfully swept.
-        import copy
-
         original = copy.deepcopy(retired)
         for entry in pending:
-            field = entry["field"]
+            index_name = entry["index_name"]
             try:
-                await self._es_client.update_by_query(
-                    index=self._chunks_index,
-                    body={
-                        # Pass `field` via Painless params (not f-string
-                        # interpolation) — defence in depth even though
-                        # `EmbeddingModelConfig._normalize` already restricts
-                        # the field name to `[a-z0-9_]`.
-                        "script": {
-                            "source": "ctx._source.remove(params.field)",
-                            "params": {"field": field},
-                        },
-                        "query": {"exists": {"field": field}},
-                    },
-                    conflicts="proceed",
-                    slices="auto",
-                )
+                await self._es_client.indices.delete(index=index_name)
                 entry["cleanup_done"] = True
-                logger.info("reconciler.retired_field_cleared", field=field)
+                logger.info("reconciler.retired_index_deleted", index_name=index_name)
+            except NotFoundError:
+                entry["cleanup_done"] = True
+                logger.info("reconciler.retired_index_already_gone", index_name=index_name)
             except Exception:
-                logger.exception("reconciler.retired_sweep.es_error", field=field)
-                # leave cleanup_done=false; next tick retries.
+                logger.exception("reconciler.retired_sweep.es_error", index_name=index_name)
 
+        if not any(e.get("cleanup_done") for e in pending):
+            return
         try:
             await self._settings_repo.transition(
                 {"embedding.retired": retired},
@@ -251,6 +237,8 @@ class _PerTickRunner:
                     repo=DocumentRepository(engine=engine),
                     broker=TaskiqDispatcher(taskiq_broker),
                     registry=container.registry,
+                    settings_repo=container.system_settings_repo,
+                    es_client=container.es_client,
                     chunks_index=container.chunks_index_name,
                 )
                 await rec._run_async()

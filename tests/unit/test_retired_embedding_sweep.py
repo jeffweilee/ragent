@@ -1,19 +1,15 @@
-"""T-EM.18 — Reconciler arm: retired-embedding-field sweep (B50 §9).
+"""T-EM.18 / T-EM-R.8 — Reconciler arm: retired-embedding-index sweep.
 
-ES does not let you drop a field from a mapping (only reindex can). After
-``/embedding/v1/commit`` or ``/abort`` adds an entry to ``embedding.retired``,
+After /commit or /abort adds an entry to embedding.retired (with index_name),
 this arm:
 
-1. Reads ``embedding.retired`` from ``system_settings``.
-2. For each entry with ``cleanup_done=false``, fires
-   ``POST <chunks_index>/_update_by_query`` with a Painless script that
-   removes the retired vector field from every doc that still has it.
-3. Marks the entry ``cleanup_done=true`` via an optimistic-locked
-   ``transition({embedding.retired: …})`` so concurrent ticks / admin
-   actions don't clobber each other.
+1. Reads embedding.retired from system_settings.
+2. For each entry with cleanup_done=false and index_name set, calls
+   DELETE /index_name on ES (idempotent — 404 treated as success).
+3. Marks the entry cleanup_done=true via an optimistic-locked transition.
 
-Errors on a single entry are logged and do not poison the sweep for
-the remaining entries (next tick retries the failed one).
+Entries without index_name (legacy field-based entries) are skipped.
+Errors on a single entry do not poison the sweep for remaining entries.
 """
 
 from unittest.mock import AsyncMock, MagicMock
@@ -21,7 +17,18 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 
-def _entry(field: str, cleanup_done: bool = False) -> dict:
+def _entry(index_name: str, cleanup_done: bool = False) -> dict:
+    return {
+        "name": "bge-m3",
+        "dim": 1024,
+        "index_name": index_name,
+        "retired_at": "2026-05-15T12:00:00Z",
+        "cleanup_done": cleanup_done,
+    }
+
+
+def _legacy_entry(field: str, cleanup_done: bool = False) -> dict:
+    """Pre-T-EM-R.8 retired entry that uses 'field' instead of 'index_name'."""
     return {
         "name": field.split("_")[1],
         "dim": int(field.rsplit("_", 1)[-1]),
@@ -37,10 +44,9 @@ def _reconciler(
     es_client: AsyncMock | None = None,
     chunks_index: str = "chunks_v1",
 ):
-    """Build a Reconciler whose only-used dependencies are these three."""
     from ragent.reconciler import Reconciler
 
-    repo = MagicMock()  # DocumentRepository — not used by this arm
+    repo = MagicMock()
     broker = MagicMock()
     return Reconciler(
         repo=repo,
@@ -57,46 +63,80 @@ def _reconciler(
 # ---------------------------------------------------------------------------
 
 
-async def test_sweep_clears_uncleaned_field_via_update_by_query() -> None:
+async def test_sweep_deletes_retired_index() -> None:
+    """T-EM-R.8 — sweep calls DELETE /index_name, not update_by_query."""
     settings = AsyncMock()
-    settings.get.return_value = [_entry("embedding_bgem3v2_768", cleanup_done=False)]
+    settings.get.return_value = [_entry("chunks_v1", cleanup_done=False)]
     es = AsyncMock()
 
     rec = _reconciler(settings_repo=settings, es_client=es)
-    await rec._sweep_retired_embedding_fields()
+    await rec._sweep_retired_embedding_indices()
 
-    es.update_by_query.assert_awaited_once()
-    kwargs = es.update_by_query.call_args.kwargs
+    es.indices.delete.assert_awaited_once()
+    kwargs = es.indices.delete.call_args.kwargs
     assert kwargs["index"] == "chunks_v1"
-    body = kwargs["body"]
-    # Field passed via Painless `params` (not f-string-interpolated into
-    # the script source) per PR #78 Gemini security review.
-    assert body["script"]["params"] == {"field": "embedding_bgem3v2_768"}
-    assert body["script"]["source"] == "ctx._source.remove(params.field)"
-    assert body["query"]["exists"]["field"] == "embedding_bgem3v2_768"
+    es.update_by_query.assert_not_awaited()
 
 
-async def test_sweep_marks_entry_cleanup_done_after_es_call() -> None:
+async def test_sweep_marks_entry_cleanup_done_after_delete() -> None:
     import copy
 
     settings = AsyncMock()
-    live = [_entry("embedding_bgem3v2_768", cleanup_done=False)]
+    live = [_entry("chunks_v1", cleanup_done=False)]
     pre_mutation_snapshot = copy.deepcopy(live)
     settings.get.return_value = live
     es = AsyncMock()
 
     rec = _reconciler(settings_repo=settings, es_client=es)
-    await rec._sweep_retired_embedding_fields()
+    await rec._sweep_retired_embedding_indices()
 
     settings.transition.assert_awaited_once()
     args, kwargs = settings.transition.call_args
     updates = args[0] if args else kwargs.get("updates", {})
     written = updates["embedding.retired"]
     assert written[0]["cleanup_done"] is True
-    # Optimistic-lock guard captures the PRE-sweep state so a concurrent
-    # admin write (e.g. another retire entry appended) aborts the txn.
     expect = kwargs.get("expect")
     assert expect == {"embedding.retired": pre_mutation_snapshot}
+
+
+async def test_sweep_treats_404_as_success() -> None:
+    """Index already deleted (404) → cleanup_done=True, not an error."""
+    from elasticsearch import NotFoundError
+
+    settings = AsyncMock()
+    settings.get.return_value = [_entry("chunks_v1", cleanup_done=False)]
+    es = AsyncMock()
+    es.indices.delete.side_effect = NotFoundError(
+        message="index_not_found_exception",
+        meta=MagicMock(status=404),
+        body={"error": "index_not_found_exception"},
+    )
+
+    rec = _reconciler(settings_repo=settings, es_client=es)
+    await rec._sweep_retired_embedding_indices()
+
+    settings.transition.assert_awaited_once()
+    args = settings.transition.call_args.args
+    written = args[0]["embedding.retired"]
+    assert written[0]["cleanup_done"] is True
+
+
+# ---------------------------------------------------------------------------
+# Legacy entries without index_name are skipped
+# ---------------------------------------------------------------------------
+
+
+async def test_sweep_skips_entries_without_index_name() -> None:
+    """Legacy field-based entries have no index to delete — skip silently."""
+    settings = AsyncMock()
+    settings.get.return_value = [_legacy_entry("embedding_bgem3v2_768", cleanup_done=False)]
+    es = AsyncMock()
+
+    rec = _reconciler(settings_repo=settings, es_client=es)
+    await rec._sweep_retired_embedding_indices()
+
+    es.indices.delete.assert_not_awaited()
+    settings.transition.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -106,32 +146,31 @@ async def test_sweep_marks_entry_cleanup_done_after_es_call() -> None:
 
 async def test_sweep_skips_entries_already_cleanup_done() -> None:
     settings = AsyncMock()
-    settings.get.return_value = [_entry("embedding_bgem3_1024", cleanup_done=True)]
+    settings.get.return_value = [_entry("chunks_v1", cleanup_done=True)]
     es = AsyncMock()
 
     rec = _reconciler(settings_repo=settings, es_client=es)
-    await rec._sweep_retired_embedding_fields()
+    await rec._sweep_retired_embedding_indices()
 
-    es.update_by_query.assert_not_awaited()
+    es.indices.delete.assert_not_awaited()
     settings.transition.assert_not_awaited()
 
 
 async def test_sweep_processes_only_pending_entries_in_mixed_list() -> None:
     settings = AsyncMock()
     settings.get.return_value = [
-        _entry("embedding_old1_1024", cleanup_done=True),
-        _entry("embedding_old2_512", cleanup_done=False),
-        _entry("embedding_old3_1024", cleanup_done=True),
+        _entry("chunks_v1", cleanup_done=True),
+        _entry("chunks_v2", cleanup_done=False),
+        _entry("chunks_v3", cleanup_done=True),
     ]
     es = AsyncMock()
 
     rec = _reconciler(settings_repo=settings, es_client=es)
-    await rec._sweep_retired_embedding_fields()
+    await rec._sweep_retired_embedding_indices()
 
-    # Only the one pending entry was swept.
-    assert es.update_by_query.await_count == 1
-    body = es.update_by_query.call_args.kwargs["body"]
-    assert body["script"]["params"] == {"field": "embedding_old2_512"}
+    assert es.indices.delete.await_count == 1
+    kwargs = es.indices.delete.call_args.kwargs
+    assert kwargs["index"] == "chunks_v2"
 
 
 # ---------------------------------------------------------------------------
@@ -145,22 +184,20 @@ async def test_sweep_noop_when_retired_list_empty() -> None:
     es = AsyncMock()
 
     rec = _reconciler(settings_repo=settings, es_client=es)
-    await rec._sweep_retired_embedding_fields()
+    await rec._sweep_retired_embedding_indices()
 
-    es.update_by_query.assert_not_awaited()
+    es.indices.delete.assert_not_awaited()
     settings.transition.assert_not_awaited()
 
 
 async def test_sweep_noop_when_settings_repo_not_wired() -> None:
-    """Reconciler running pre-T-EM (no settings repo injected) must not
-    crash — the arm just no-ops."""
     rec = _reconciler(settings_repo=None, es_client=AsyncMock())
-    await rec._sweep_retired_embedding_fields()  # should not raise
+    await rec._sweep_retired_embedding_indices()
 
 
 async def test_sweep_noop_when_es_client_not_wired() -> None:
     rec = _reconciler(settings_repo=AsyncMock(), es_client=None)
-    await rec._sweep_retired_embedding_fields()
+    await rec._sweep_retired_embedding_indices()
 
 
 # ---------------------------------------------------------------------------
@@ -169,50 +206,53 @@ async def test_sweep_noop_when_es_client_not_wired() -> None:
 
 
 async def test_sweep_logs_and_continues_when_single_entry_fails() -> None:
-    """A flaky ES update on entry 1 must not stop the sweep from trying
-    entry 2 — they're independent. Entry 1 stays cleanup_done=false so the
-    next tick retries it."""
     settings = AsyncMock()
     settings.get.return_value = [
-        _entry("embedding_bad_768", cleanup_done=False),
-        _entry("embedding_good_512", cleanup_done=False),
+        _entry("chunks_v1", cleanup_done=False),
+        _entry("chunks_v2", cleanup_done=False),
     ]
     es = AsyncMock()
-    es.update_by_query.side_effect = [RuntimeError("ES blip"), {"updated": 100}]
+    es.indices.delete.side_effect = [RuntimeError("ES blip"), None]
 
     rec = _reconciler(settings_repo=settings, es_client=es)
-    await rec._sweep_retired_embedding_fields()  # must not raise
+    await rec._sweep_retired_embedding_indices()
 
-    assert es.update_by_query.await_count == 2
-    # Settings write happened: good marked done, bad stayed pending.
+    assert es.indices.delete.await_count == 2
     settings.transition.assert_awaited_once()
     args = settings.transition.call_args.args
     written = args[0]["embedding.retired"]
-    by_field = {e["field"]: e for e in written}
-    assert by_field["embedding_bad_768"]["cleanup_done"] is False
-    assert by_field["embedding_good_512"]["cleanup_done"] is True
+    by_index = {e["index_name"]: e for e in written}
+    assert by_index["chunks_v1"]["cleanup_done"] is False
+    assert by_index["chunks_v2"]["cleanup_done"] is True
 
 
 # ---------------------------------------------------------------------------
-# Integration with the existing tick (regression smoke)
+# Integration with the existing tick
 # ---------------------------------------------------------------------------
 
 
-async def test_run_async_invokes_retired_sweep_when_wired() -> None:
-    """The new arm runs as part of the standard tick — it's not a separate
-    cron job. Skipped silently when settings/es are not wired (pre-T-EM
-    reconciler invocations stay unchanged)."""
+async def test_run_async_invokes_retired_index_sweep_when_wired() -> None:
     settings = AsyncMock()
     settings.get.return_value = []
     es = AsyncMock()
 
     rec = _reconciler(settings_repo=settings, es_client=es)
-    # Don't run the whole tick (the other arms need a real repo); just
-    # confirm the arm method exists and is wired into _run_async by name.
     import inspect
 
     source = inspect.getsource(type(rec)._run_async)
-    assert "_sweep_retired_embedding_fields" in source
+    assert "_sweep_retired_embedding_indices" in source
+
+
+def test_per_tick_runner_wires_settings_repo_and_es_client() -> None:
+    """_PerTickRunner._tick() must pass settings_repo and es_client to Reconciler
+    so _sweep_retired_embedding_indices is active in production, not silently skipped."""
+    import inspect
+
+    from ragent.reconciler import _PerTickRunner
+
+    source = inspect.getsource(_PerTickRunner._tick)
+    assert "settings_repo=container.system_settings_repo" in source
+    assert "es_client=container.es_client" in source
 
 
 if __name__ == "__main__":  # pragma: no cover

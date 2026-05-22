@@ -219,7 +219,7 @@ def test_two_models_with_no_candidate_index_raises() -> None:
         es_client=_es(),
     )
 
-    with pytest.raises(AssertionError, match="candidate_index is None"):
+    with pytest.raises(RuntimeError, match="candidate_index is None"):
         embedder.run([Document(content="hello")])
 
 
