@@ -9,7 +9,7 @@ Each public method:
 4. Returns a snapshot dict for the router to echo.
 """
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -32,7 +32,7 @@ def _bgem3v2_with_promoted_at(secs_ago: int = 60) -> dict:
         "api_url": "http://e2",
         "model_arg": "bge-m3-v2",
         "field": "embedding_bgem3v2_768",
-        "promoted_at": (datetime.now(UTC) - timedelta(seconds=secs_ago)).isoformat(),
+        "promoted_at": (datetime.now(timezone.utc) - timedelta(seconds=secs_ago)).isoformat(),
     }
 
 

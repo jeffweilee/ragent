@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 from ragent.pipelines.retrieve import _FeedbackMemoryRetriever
@@ -47,7 +47,7 @@ def _make_retriever(
 
 
 def _fresh_ts(days_ago: int = 0) -> datetime:
-    return datetime.now(UTC) - timedelta(days=days_ago)
+    return datetime.now(timezone.utc) - timedelta(days=days_ago)
 
 
 @patch("anyio.from_thread.run")

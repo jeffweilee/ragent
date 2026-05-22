@@ -10,7 +10,7 @@ import pytest
 from ragent.errors.codes import TaskErrorCode
 from ragent.repositories.document_repository import DocumentRow
 
-_BASE = datetime.datetime(2026, 1, 1, 12, 0, 0, tzinfo=datetime.UTC)
+_BASE = datetime.datetime(2026, 1, 1, 12, 0, 0, tzinfo=datetime.timezone.utc)
 
 
 def _dt(seconds_ago: int = 0) -> datetime.datetime:

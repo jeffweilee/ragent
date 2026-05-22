@@ -1,14 +1,14 @@
 """UTC datetime helpers (spec §DateTime Handling)."""
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 
 def utcnow() -> datetime:
-    return datetime.now(UTC)
+    return datetime.now(timezone.utc)
 
 
 def to_iso(dt: datetime) -> str:
-    return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
 def from_iso(s: str) -> datetime:
@@ -21,11 +21,11 @@ def from_iso(s: str) -> datetime:
     if s.endswith("Z"):
         s = s[:-1] + "+00:00"
     dt = datetime.fromisoformat(s)
-    return dt if dt.tzinfo else dt.replace(tzinfo=UTC)
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
 
 def from_db(dt: datetime) -> datetime:
     """Attach UTC to naive datetimes returned by the MariaDB driver."""
     if dt.tzinfo is None:
-        return dt.replace(tzinfo=UTC)
+        return dt.replace(tzinfo=timezone.utc)
     return dt

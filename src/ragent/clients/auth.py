@@ -3,7 +3,6 @@
 import threading
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -53,8 +52,8 @@ class TokenManager:
             data = resp.json()
         except Exception as exc:
             raise RuntimeError("Token refresh failed") from exc
-        dt = datetime.fromisoformat(data["expiresAt"])
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=UTC)
+        from ragent.utility.datetime import from_iso
+
+        dt = from_iso(data["expiresAt"])
         self._expires_at = dt.timestamp()
         return data["token"]

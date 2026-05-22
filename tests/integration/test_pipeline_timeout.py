@@ -18,8 +18,8 @@ def _make_doc() -> DocumentRow:
         object_key="confluence_S1_DOC001",
         status="UPLOADED",
         attempt=0,
-        created_at=datetime.datetime.now(datetime.UTC),
-        updated_at=datetime.datetime.now(datetime.UTC),
+        created_at=datetime.datetime.now(datetime.timezone.utc),
+        updated_at=datetime.datetime.now(datetime.timezone.utc),
     )
 
 
