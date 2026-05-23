@@ -1,4 +1,4 @@
-.PHONY: check format lint test test-gate test-e2e-golden bootstrap doctor mcp-hub-doctor
+.PHONY: check format lint test test-gate test-e2e-golden test-chaos bootstrap doctor mcp-hub-doctor
 
 bootstrap:
 	uv sync --extra dev
@@ -42,6 +42,12 @@ test-e2e-golden:
 	RAGENT_E2E_GOLDEN_SET=1 uv run pytest \
 	  tests/e2e/test_golden_set.py::test_golden_set_top3_accuracy_at_least_70pct \
 	  -v --tb=short
+
+# Run the full chaos drill suite (C1–C6) against local Docker containers.
+# Requires Docker daemon running.  The nightly CI lane also uses this target;
+# see .github/workflows/chaos-nightly.yml.
+test-chaos:
+	uv run pytest tests/e2e/test_chaos -m docker -v --tb=short
 
 # Pre-flight readiness check — env, datastores, AI endpoints, alembic head.
 # Add PROBE_LIVE=1 to additionally hit /livez and /readyz on a running API.

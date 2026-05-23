@@ -1,0 +1,55 @@
+name: Chaos Drill Suite (Nightly)
+
+on:
+  schedule:
+    # 03:00 UTC every day
+    - cron: '0 3 * * *'
+  workflow_dispatch: {}
+
+jobs:
+  chaos:
+    name: Chaos Drills (C1–C6)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          version: "0.8.17"
+
+      - name: Setup Python
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Run chaos drill suite
+        # T-CHAOS.7 — runs the full C1–C6 suite (C4 is still [ ] pending P2.3
+        # reranker wiring; its test file does not exist yet so no collection
+        # error occurs).  `make test-chaos` is the canonical local alias.
+        run: uv run pytest tests/e2e/test_chaos -m docker -v --tb=short --log-cli-level=INFO 2>&1 | tee chaos-test-output.txt
+        continue-on-error: true
+
+      - name: Upload chaos test logs
+        # Retain logs for 30 days regardless of pass/fail so nightly drill
+        # history can be reviewed for intermittent failures (spec §3.6.1).
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: chaos-drill-logs-${{ github.run_id }}
+          path: chaos-test-output.txt
+          retention-days: 30
+
+      - name: Fail job if chaos tests failed
+        # Re-check exit status — the `continue-on-error` above ensures the
+        # upload step always runs, but we still want the job to be marked red.
+        run: |
+          if grep -qE "^(FAILED|ERROR) " chaos-test-output.txt; then
+            echo "One or more chaos drills failed — see uploaded log for details."
+            exit 1
+          fi
