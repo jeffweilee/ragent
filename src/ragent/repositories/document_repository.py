@@ -400,7 +400,7 @@ class DocumentRepository:
                         WHERE source_id = :src
                           AND source_app = :app
                           AND document_id != :id
-                          AND status = 'READY'
+                          AND status IN ('PENDING', 'READY')
                         """
                     ),
                     {"src": source_id, "app": source_app, "id": document_id},

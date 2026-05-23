@@ -451,6 +451,72 @@ async def test_list_ready_by_source_returns_rows():
 
 
 # ---------------------------------------------------------------------------
+# elect_winner (_promote_or_demote via public elect_winner wrapper)
+# ---------------------------------------------------------------------------
+
+
+async def test_elect_winner_demotes_pending_siblings_not_only_ready():
+    """Winner promotion must set PENDING siblings to DELETING, not only READY ones.
+
+    Regression for: loser doc remaining READY because it was still PENDING when
+    the winner's demote UPDATE ran with `status = 'READY'` instead of
+    `status IN ('PENDING', 'READY')`.
+    """
+    # First execute() call → promoted.rowcount = 1  (winner promoted)
+    # Second execute() call → demote siblings (we just verify it runs)
+    promoted_result = MagicMock()
+    promoted_result.rowcount = 1
+    demote_result = MagicMock()
+    demote_result.rowcount = 2  # 1 PENDING + 1 READY sibling demoted
+
+    conn = AsyncMock()
+    conn.execute = AsyncMock(side_effect=[promoted_result, demote_result])
+
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=conn)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+
+    engine = MagicMock()
+    engine.begin = MagicMock(return_value=ctx)
+
+    repo = DocumentRepository(engine)
+    result = await repo._promote_or_demote("WIN-ID", "src-1", "app-1")
+
+    assert result is True, "winner should be promoted"
+    assert conn.execute.call_count == 2, "must execute both promote and demote queries"
+
+    # The demote query (second call) must include PENDING in its status filter
+    demote_sql = str(conn.execute.call_args_list[1].args[0])
+    assert "PENDING" in demote_sql, (
+        "demote query must target PENDING siblings; "
+        "status = 'READY' only would leave PENDING losers alive"
+    )
+
+
+async def test_elect_winner_returns_false_and_demotes_self_when_losing():
+    """Loser document gets demoted to DELETING, returns False."""
+    lost_result = MagicMock()
+    lost_result.rowcount = 0  # did not win election
+    demote_result = MagicMock()
+    demote_result.rowcount = 1
+
+    conn = AsyncMock()
+    conn.execute = AsyncMock(side_effect=[lost_result, demote_result])
+
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=conn)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+
+    engine = MagicMock()
+    engine.begin = MagicMock(return_value=ctx)
+
+    repo = DocumentRepository(engine)
+    result = await repo._promote_or_demote("LOSE-ID", "src-1", "app-1")
+
+    assert result is False
+
+
+# ---------------------------------------------------------------------------
 # pop_oldest_loser_for_supersede
 # ---------------------------------------------------------------------------
 
