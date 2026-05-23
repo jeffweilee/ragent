@@ -3,7 +3,7 @@
 import re
 from pathlib import Path
 
-SPEC = Path(__file__).parents[2] / "docs" / "00_spec.md"
+SPEC = Path(__file__).parents[2] / "docs" / "spec" / "env_vars.md"
 EXAMPLE = Path(__file__).parents[2] / ".env.example"
 
 

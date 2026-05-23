@@ -4,7 +4,7 @@ import json
 import re
 from pathlib import Path
 
-SPEC = Path(__file__).parents[2] / "docs" / "00_spec.md"
+SPEC = Path(__file__).parents[2] / "docs" / "spec" / "data_structures.md"
 RES_DIR = Path(__file__).parents[2] / "resources" / "es"
 PIPELINES_DIR = RES_DIR / "pipelines"
 
