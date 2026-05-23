@@ -87,7 +87,7 @@
 - The pipeline's first step is `ChunkRepository.delete_by_document_id` + `PluginRegistry.fan_out_delete` (idempotency for retry — see §3.1; sweeps every plugin, not just `VectorExtractor`).
 - `EmbeddingClient` is invoked in **batches of 32 chunks** per HTTP call (configurable; never 1-by-1).
 - Every external call carries an explicit timeout: Embedder 30 s/batch (ingest), ES bulk 60 s, MinIO get 30 s, plugin `extract()` 60 s overall (enforced by `PluginRegistry.fan_out`).
-- **Overall pipeline ceiling:** `PIPELINE_TIMEOUT_SECONDS` (default 1800 s, B18). Overrun ⇒ `FAILED` with `error_code=PIPELINE_TIMEOUT`.
+- **Overall pipeline ceiling:** `INGEST_PIPELINE_TIMEOUT_SECONDS` (default 300 s, B18). Overrun ⇒ `FAILED` with `error_code=PIPELINE_TIMEOUT_AGGREGATE`.
 - The pipeline body runs with no DB transaction open (see §3.1 locking discipline).
 
 ---
@@ -342,6 +342,14 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 
 | `error_code` | HTTP / Surface | When | Origin |
 |---|---|---|---|
+| `INTERNAL_ERROR`                     | 500         | Global handler fallback — exception carries no `error_code` | Global exception handler |
+| `UPSTREAM_ERROR`                     | 502         | Generic upstream service failure (base-class default; production callers pass a service-specific code below) | `UpstreamServiceError` base |
+| `UPSTREAM_TIMEOUT`                   | 504         | Generic upstream timeout (base-class default) | `UpstreamTimeoutError` base |
+| `EMBEDDER_ERROR`                     | 502         | Embedding service raised during an HTTP call | Embedder client |
+| `EMBEDDER_TIMEOUT`                   | 504         | Embedding service timed out | Embedder client |
+| `LLM_TIMEOUT`                        | 504         | LLM service timed out (pre-stream or mid-stream) | Router T3.10/T3.12 |
+| `RERANK_ERROR`                       | 502         | Rerank service raised | Rerank client |
+| `RERANK_TIMEOUT`                     | 504         | Rerank service timed out | Rerank client |
 | `INGEST_MIME_UNSUPPORTED`            | 415         | MIME outside the §4.2 P1 allow-list | Router T2.13 |
 | `INGEST_FILE_TOO_LARGE`              | 413         | Multipart body > 50 MB | Router T2.13 |
 | `INGEST_ARCHIVE_UNSAFE`              | 413 via `documents.error_code` | DOCX/PPTX zip preflight rejected the archive — `reason ∈ {invalid, members, ratio, expanded, per_member, traversal}` (T-SEC.3/.4) | Splitter T-SEC.4 |
@@ -351,16 +359,18 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 | `INGEST_OBJECT_NOT_FOUND`            | 422         | `(minio_site, object_key)` HEAD-probe miss | Router T2.13 |
 | `INGEST_NOT_FOUND`                   | 404         | `GET /ingest/v1/{id}` / `DELETE /ingest/v1/{id}` / `POST /ingest/v1/{id}/rerun` on unknown id | Service T2.10 |
 | `INGEST_NOT_RERUNNABLE`              | 409         | `POST /ingest/v1/{id}/rerun` on a document whose status is `READY` or `DELETING` (re-POST is the supersede path for READY; DELETING is mid-cascade) | Router (rerun endpoint) |
-| `CHAT_MESSAGES_MISSING`              | 422         | `messages` absent or empty | Schema T3.3 |
-| `CHAT_PROVIDER_UNSUPPORTED`          | 422         | `provider` outside `{"openai"}` allow-list (B22) | Schema T3.3 |
-| `CHAT_FILTER_INVALID`                | 422         | `source_app` empty / > 64 chars, or `source_meta` empty / > 1024 chars (B29 → B35) | Schema T3.3 |
+| `MISSING_USER_ID`                    | 422         | User-id header absent or empty after JWT verification (identity middleware) | Identity middleware |
 | `CHAT_RATE_LIMITED`                  | 429 + `Retry-After` | Per-user fixed-window quota exceeded on `/chat/v1` or `/chat/v1/stream` (B31, S37) | Router-level Depends T3.16 |
+| `EMBEDDING_LIFECYCLE_INVALID_STATE`  | 409         | Embedding model state-machine transition rejected (B50) | Embedding lifecycle router |
+| `EMBEDDING_CUTOVER_PREFLIGHT_FAILED` | 409         | Cutover preflight (warmup / similarity gate) failed (B50) | Embedding lifecycle router |
+| `EMBEDDING_INVALID_CONFIG`           | 422         | Invalid promote payload (B50) | Embedding lifecycle router |
+| `EMBEDDING_FIELD_NAME_COLLISION`     | 422         | Field name collision with a still-mapped retired field (B50) | Embedding lifecycle router |
+| `EMBEDDING_REGISTRY_NOT_READY`       | 503         | Embedding registry not ready for queries | Embedding lifecycle router |
 | `FEEDBACK_TOKEN_INVALID`             | 401         | HMAC mismatch, malformed token, or `shown_source_ids` doesn't match the signed `sources_hash` (T-FB.6, B55) | Router (feedback) |
 | `FEEDBACK_TOKEN_EXPIRED`             | 410         | Token `ts` outside the 7-day window (T-FB.6, B55) | Router (feedback) |
 | `FEEDBACK_SOURCE_INVALID`            | 422         | `source_id ∉ shown_source_ids` (T-FB.6) | Router (feedback) |
 | `FEEDBACK_VALIDATION`                | 422         | Schema violations: vote ∉ {±1}, reason outside B56 enum, missing required field | Schema (feedback) |
-| `CHAT_LLM_ERROR`                     | 502 / SSE-error | Pre-stream LLM failure (problem+json) or mid-stream LLM failure (`data: {type:error}`, B6) | Router T3.10/T3.12 |
-| `CHAT_RETRIEVER_ERROR`               | 502 / SSE-error | ES vector / BM25 retriever failure | Router T3.10/T3.12 |
+| `LLM_ERROR`                          | 502 / SSE-error | Pre-stream LLM failure (problem+json) or mid-stream LLM failure (`data: {type:error}`, B6) | Router T3.10/T3.12 |
 | `MCP_PARSE_ERROR`                    | JSON-RPC `-32700` | Request body is not valid JSON (S64) | Router P2.5 |
 | `MCP_INVALID_REQUEST`                | JSON-RPC `-32600` | Missing `jsonrpc:"2.0"` / `method`; malformed envelope | Router P2.5 |
 | `MCP_METHOD_NOT_FOUND`               | JSON-RPC `-32601` | Method outside §3.8.2 allow-list (S61) | Router P2.5 |
@@ -370,12 +380,28 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 | `ES_PLUGIN_MISSING`                  | 503 (`/readyz`) | ES cluster missing `analysis-icu` plugin (B26, T0.8g) | Bootstrap / readyz |
 | `ES_INDEX_MISSING`                   | 503 (`/readyz`) | A `resources/es/*.json` index is absent at boot | Bootstrap / readyz |
 | `SCHEMA_DRIFT`                       | 503 (`/readyz`) + log `event=schema.drift` | Live schema differs from `schema.sql` / `resources/es/` | Bootstrap |
-| `PIPELINE_TIMEOUT`                   | log `event=ingest.failed reason=pipeline_timeout` | Pipeline body exceeds `PIPELINE_TIMEOUT_SECONDS` (B18, S34) | Worker T3.2j |
-| `ES_BBQ_UNSUPPORTED`                 | log `event=es.bbq_unsupported` | Cluster rejected `bbq_hnsw`; bootstrap retried with standard HNSW (B26) | Bootstrap |
-| `RECONCILER_TICK_MISSING`            | Prometheus alert | `reconciler_tick_total` flat > 10 min (R8, S30) | Alerting rule T7.1a |
+| `PIPELINE_TIMEOUT_AGGREGATE`         | `documents.error_code` (TaskErrorCode) | 300 s wall-clock timeout on the full pipeline run; written by the worker and polled via `GET /ingest/v1/{id}` (B18, S34) | Worker T3.2j |
+| `PIPELINE_UNROUTABLE`                | `documents.error_code` (TaskErrorCode) | MIME → splitter has no registered route | Worker pipeline |
+| `CHUNK_BUDGET_EXCEEDED`              | `documents.error_code` (TaskErrorCode) | `CHUNK_MAX_PIECES_PER_ATOM` exceeded during chunking | `_BudgetChunker` |
+| `ES_WRITE_ERROR`                     | `documents.error_code` (TaskErrorCode) | `DocumentWriter` raised during ES bulk write | Worker pipeline |
+| `EMBEDDER_ERROR`                     | `documents.error_code` (TaskErrorCode) | Embedder client raised inside the pipeline step | Worker pipeline |
+| `PIPELINE_UNEXPECTED_ERROR`          | `documents.error_code` (TaskErrorCode) | Catch-all for any unexpected exception in a pipeline step not tagged with a specific code | Worker pipeline |
+| `PIPELINE_MAX_ATTEMPTS_EXCEEDED`     | `documents.error_code` (TaskErrorCode) | Reconciler swept a document stuck in `PENDING` past max retry attempts | Reconciler |
+| `PROBE_TIMEOUT`                      | 503 (`/readyz`) | Per-component probe timed out | Bootstrap / readyz |
+| `DEPENDENCY_DOWN`                    | 503 (`/readyz`) | A required dependency is unreachable | Bootstrap / readyz |
+| `METRICS_DB_UNAVAILABLE`             | 503 (`/readyz`) | Metrics DB unavailable | Bootstrap / readyz |
 | `AUTH_TOKEN_EXPIRED`                 | 401             | JWT `exp` claim is in the past (raised through joserfc's verification path, T8.1a) | Auth middleware T8.2a |
 | `AUTH_CLAIM_MISSING`                 | 401             | `<RAGENT_JWT_CLAIM_USER_ID>` claim absent or empty after JWKS verification (T8.1a) | Auth middleware T8.2a |
 | `AUTH_TOKEN_INVALID`                 | 401             | JWT header absent, token malformed, signature mismatch, wrong `iss`, wrong `aud`, or any other JWKS verification failure outside expiry/missing-claim (T8.1a) | Auth middleware T8.2a |
+
+**Operational events (not `error_code` values — never appear in API responses):**
+
+| Signal | Surface | When |
+|---|---|---|
+| `es.bbq_unsupported` | structured log `event=es.bbq_unsupported` | Cluster rejected `bbq_hnsw`; bootstrap retried with standard HNSW (B26) |
+| `reconciler_tick_total` stale | Prometheus alert | `reconciler_tick_total` flat > 10 min (R8, S30) — alerting rule T7.1a |
+
+> **Chat validation (422 without custom `error_code`):** `messages` absent/empty, `provider` outside allow-list, and `source_app`/`source_meta` filter constraint violations are rejected by Pydantic schema validation and return a standard 422 `problem+json` with `errors[]` field details — they do not emit a named `error_code` and are not listed in `HttpErrorCode`.
 
 ### 4.2 Supported Formats
 
