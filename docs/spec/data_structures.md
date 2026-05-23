@@ -12,11 +12,11 @@ CREATE TABLE documents (
   source_app       VARCHAR(64)  NOT NULL,
   source_title     VARCHAR(256) NOT NULL,
   source_meta      VARCHAR(1024) NULL,
-  ingest_type      ENUM('inline','file')  NOT NULL DEFAULT 'inline',
+  ingest_type      ENUM('inline','file','upload')  NOT NULL DEFAULT 'inline',
   minio_site       VARCHAR(64)   NULL,          -- NULL for inline (uses __default__ site)
   source_url       VARCHAR(2048) NULL,
   mime_type        VARCHAR(256)  NOT NULL,
-  object_key       VARCHAR(256) NOT NULL,  -- MinIO key only (B10 format); bucket is config-driven (`MINIO_BUCKET`), not stored per-row (C3).
+  object_key       VARCHAR(256) NOT NULL,  -- MinIO key only (B10 format); bucket is site-specific (MINIO_SITES), not stored per-row (C3).
   status           ENUM('UPLOADED','PENDING','READY','FAILED','DELETING') NOT NULL,
   attempt          INT          NOT NULL DEFAULT 0,
   created_at       DATETIME(6)  NOT NULL,
