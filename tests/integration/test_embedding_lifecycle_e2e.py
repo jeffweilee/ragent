@@ -20,8 +20,9 @@ directly.
 from __future__ import annotations
 
 import pytest
-from ragent.bootstrap.init_schema import patch_aiomysql_ping
 from sqlalchemy.ext.asyncio import create_async_engine
+
+from ragent.bootstrap.init_schema import patch_aiomysql_ping
 
 pytestmark = [pytest.mark.docker, pytest.mark.asyncio]
 
