@@ -140,7 +140,9 @@ def test_chat_stream_injects_retrieved_context_into_llm_messages():
     assert "SUMMARY" in system_content
     assert "GENERATION" in system_content
     last_user = next(m for m in reversed(sent_messages) if m["role"] == "user")
-    assert "=== CONTEXT START ===" in last_user["content"]
-    assert "source_title=Stream Wiki" in last_user["content"]
+    assert "<context>" in last_user["content"]
+    assert "</context>" in last_user["content"]
     assert "Stream answer here" in last_user["content"]
     assert "stream question" in last_user["content"]
+    # Raw metadata is hidden from the model — only the index label is emitted
+    assert "source_title=Stream Wiki" not in last_user["content"]

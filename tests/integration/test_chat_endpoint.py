@@ -132,13 +132,17 @@ def test_chat_injects_retrieved_context_into_llm_messages():
     assert "SUMMARY" in system_content
     assert "GENERATION" in system_content
     last_user = next(m for m in reversed(sent_messages) if m["role"] == "user")
-    assert "=== CONTEXT START ===" in last_user["content"]
-    assert "source_title=Deep Thought" in last_user["content"]
+    assert "<context>" in last_user["content"]
+    assert "</context>" in last_user["content"]
     assert "The answer is 42" in last_user["content"]
     assert "What is the answer?" in last_user["content"]
+    # Raw metadata is hidden from the model — only the index label is emitted
+    assert "source_title=Deep Thought" not in last_user["content"]
 
 
-def test_chat_no_docs_uses_default_system_prompt_unchanged_and_does_not_wrap_user_message():
+def test_chat_no_docs_uses_rag_system_prompt_and_injects_empty_context():
+    """Even when retrieval returns no docs, the RAG system prompt is used and an empty-context
+    sentinel is injected — the boundary is never silently removed."""
     app, llm_client = _make_app(retrieval_docs=[], llm_content="I don't know")
 
     with TestClient(app) as client:
@@ -150,7 +154,7 @@ def test_chat_no_docs_uses_default_system_prompt_unchanged_and_does_not_wrap_use
 
     sent_messages = llm_client.chat.call_args.kwargs["messages"]
     assert sent_messages[0]["role"] == "system"
-    assert sent_messages[0]["content"].startswith("You are a helpful assistant")
-    assert "markdown" in sent_messages[0]["content"].lower()
+    # RAG system prompt (not the generic default) is used even with empty retrieval
+    assert "QUESTION" in sent_messages[0]["content"]
     last_user = next(m for m in reversed(sent_messages) if m["role"] == "user")
-    assert "=== CONTEXT START ===" not in last_user["content"]
+    assert "(The context is empty.)" in last_user["content"]

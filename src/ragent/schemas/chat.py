@@ -24,74 +24,72 @@ _DEFAULT_SYSTEM_PROMPT = os.environ.get(
     "RAGENT_DEFAULT_SYSTEM_PROMPT",
     f"You are a helpful assistant. {_MARKDOWN_OUTPUT_RULE}",
 )
+
+# =====================================================================
+# Shared RAG grounding rules — injected into both system prompt variants.
+# IMPORTANT: any literal { } in this string that must NOT be treated as
+# f-string placeholders must be doubled: {{ }}.
+# =====================================================================
+_RAG_COMMON_INSTRUCTIONS = """\
+[CRITICAL GROUNDING RULES]
+1. CHITCHAT & GREETINGS: If the user turn is conceptually a greeting, conversational
+   pleasantry, short casual acknowledgement, or emotional expression (including slang
+   like "嗨嗨", "安安", "Hi there", "Thanks!"), reply warmly and naturally. Mirror the
+   user's language and script perfectly. Do NOT apply context restrictions for these.
+2. FACTUAL QUESTIONS: Use ONLY facts directly mentioned inside <context>...</context>.
+   Do not rely on prior knowledge or external assumptions.
+3. CITATION RULE (GEMINI STYLE): Cite using ONLY the exact numeric format `[1]`, `[2]`
+   based on the corresponding [資料來源 #X] index. Place citations at the paragraph end.
+   CRITICAL BAN: NEVER use `【1】`, `(1)`, `[#1]`, `1.` or document titles as citations.
+4. NATURAL REFUSAL: If context lacks the answer to a factual question, reply
+   empathetically in the user's language and script:
+   - Traditional Chinese → "我理解您的問題，但從目前提供的資料中找不到相關資訊。"
+   - Simplified Chinese  → "我理解您的问题，但从目前提供的资料中找不到相关信息。"
+   - English             → "I understand your question, but the provided context does not
+                           contain the relevant information."
+   - Japanese            → "ご質問の趣旨は理解いたしました。しかしながら、提供された資料の中には
+                           関連する情報が見つかりません。"
+   NEVER use robotic phrases like "I don't know based on the provided context."
+5. STRUCTURE GUARD: NEVER repeat or echo delimiter tokens like `<context>` or
+   `</context>` in your response.
+6. STRICT LANGUAGE MIRRORING: Mirror the script/language of the user's prompt exactly.
+   If the user writes in Traditional Chinese, respond entirely in Traditional Chinese —
+   even if the text inside <context> is in Simplified Chinese or English.
+"""
+
 _DEFAULT_RAG_SYSTEM_PROMPT = os.environ.get("RAGENT_DEFAULT_RAG_SYSTEM_PROMPT") or (
-    """\
-You are a retrieval-grounded assistant. Every user turn contains an \
-isolated `=== CONTEXT START === ... === CONTEXT END ===` block followed \
-by the user's request. Use ONLY facts from that block; do not rely on \
-prior knowledge. If the context is insufficient, reply exactly: \
-"I don't know based on the provided context."
+    f"""\
+You are a helpful, intelligent, and retrieval-grounded assistant.
 
-At most one citation per paragraph, placed at the paragraph end as \
-[source_title] (or [document_id] if title is missing). Do not cite \
-mid-sentence. Citations must refer only to entries in the context block.
-
+{_RAG_COMMON_INSTRUCTIONS}
 ---
-Detect the user's intent and respond in the matching style:
-
-1. QUESTION  — the user asks something answerable from the context.
-   Style: direct, 1–4 sentences, lead with the answer. One citation at \
-the end of the paragraph.
-   Example:
-     User: "When did Acme launch v2?"
-     Context: [#1] source_title=Acme Wiki "...Acme v2 shipped on 2024-03-12..."
-     Assistant: "Acme v2 shipped on 2024-03-12. [Acme Wiki]"
-
-2. SUMMARY  — the user asks to summarise / overview / "tl;dr" the context.
-   Style: 3–6 bullet points. Each bullet is one fact; place the citation \
-at the end of the bullet if the source differs from the previous bullet, \
-otherwise omit to avoid repetition. No preamble.
-   Example:
-     User: "Summarise the onboarding doc."
-     Context: [#1] source_title=Onboarding "...step1...step2...step3..."
-     Assistant:
-       - Account provisioning is the first step. [Onboarding]
-       - SSO enrolment follows provisioning.
-       - First-login walkthrough completes onboarding.
-
-3. GENERATION — the user asks to draft / write / compose new text grounded \
-in the context (e.g. "draft a release note from these tickets").
-   Style: produce the requested artefact in natural prose or the format \
-requested. Place at most one citation at the end of each paragraph. \
-Do not invent facts absent from the context.
-   Example:
-     User: "Draft a one-line changelog entry."
-     Context: [#1] source_title=PR-482 "...fixes login retry loop..."
-     Assistant: "Fixed an infinite retry loop on failed logins. [PR-482]"
-
-If the request fits none of the above, default to QUESTION style.
+Detect the user's intent and respond in the matching style
+(always mirror the user's language/script):
+1. GREETING / CHITCHAT — Warm, friendly, concise. No context restriction applies.
+2. QUESTION  — Answerable from context. Direct, 1–4 sentences. One `[N]` citation at paragraph end.
+   Example (Traditional Chinese prompt):
+   User: "Acme 什麼時候推出 v2?"
+   Context: <context>[資料來源 #1] "...Acme v2 已经在 2024-03-12 正式发布..."</context>
+   Assistant: "Acme v2 已於 2024-03-12 正式發佈。[1]"
+3. SUMMARY   — 3–6 bullet points. No preamble.
+4. GENERATION— Draft text grounded in context. Do not invent facts.
 
 """
     + _MARKDOWN_OUTPUT_RULE
 )
+
 _RAG_GROUNDING_RULES = os.environ.get("RAGENT_RAG_GROUNDING_RULES") or (
-    """\
-Use ONLY facts from the `=== CONTEXT START === ... === CONTEXT END ===` \
-block in the user turn; do not rely on prior knowledge. If the context \
-is insufficient, reply exactly: \
-"I don't know based on the provided context."
+    f"""\
+You are a retrieval-grounded assistant under strict constraints.
 
-At most one citation per paragraph, placed at the paragraph end as \
-[source_title] (or [document_id] if title is missing). Do not cite \
-mid-sentence. Citations must refer only to entries in the context block.
-
-Detect the user's intent (QUESTION / SUMMARY / GENERATION) and apply \
-the matching response style: direct answer, bullet-point summary, or \
-drafted artefact. Default to QUESTION style when intent is unclear.
+{_RAG_COMMON_INSTRUCTIONS}
+Detect the user's intent (GREETING / QUESTION / SUMMARY / GENERATION) and apply the
+matching response style. Default to QUESTION style when intent is unclear.
 
 """
     + _MARKDOWN_OUTPUT_RULE
 )
+
 _PROVIDER_ALLOWLIST = frozenset({"openai"})
 _FILTER_MAX_LEN = 64
 _FILTER_META_MAX_LEN = SOURCE_META_MAX
@@ -142,48 +140,60 @@ def normalize_messages(req: ChatRequest) -> list[dict[str, Any]]:
     return [{"role": "system", "content": _DEFAULT_SYSTEM_PROMPT}] + list(req.messages)
 
 
-def _render_context(docs: list[Any]) -> str:
+def _render_context(docs: list[Any] | None) -> str:
+    """Render retrieved docs as a clean numbered list for the LLM.
+
+    Metadata (source_app, document_id, etc.) is intentionally hidden from the model
+    to prevent format confusion; only the numeric index and body are emitted.
+    Returns a sentinel string when the context is empty so the RAG boundary is
+    always enforced — never silently removed.
+    """
+    if not docs:
+        return "(The context is empty.)"
     parts = []
     for i, doc in enumerate(docs, start=1):
         meta = getattr(doc, "meta", None) or {}
         # Prefer the original byte-faithful slice for LLM display; fall back
         # to normalized content when chunks predate the raw_content field.
         body = meta.get("raw_content") or (getattr(doc, "content", "") or "")
-        parts.append(
-            f"[#{i}] source_app={meta.get('source_app', 'unknown')} "
-            f"source_title={meta.get('source_title', 'unknown')} "
-            f"document_id={meta.get('document_id', 'unknown')}\n"
-            f"{body}\n---"
-        )
+        parts.append(f"[資料來源 #{i}]\n{body}\n---")
     return "\n".join(parts)
 
 
 def _wrap_last_user(messages: list[dict[str, Any]], context_block: str) -> list[dict[str, Any]]:
+    """Inject the context block into the last user message using XML-style tags.
+
+    XML tags (<context>/</context>) have higher LLM recognition than plain
+    ASCII fence markers and make it unambiguous where retrieved context ends.
+    """
     for i in range(len(messages) - 1, -1, -1):
         if messages[i].get("role") == "user":
             original = messages[i].get("content", "") or ""
             messages[i] = {
                 **messages[i],
-                "content": (
-                    f"=== CONTEXT START ===\n{context_block}\n=== CONTEXT END ===\n\n{original}"
-                ),
+                "content": f"<context>\n{context_block}\n</context>\n\n{original}",
             }
             return messages
     return messages
 
 
 def build_rag_messages(req: ChatRequest, docs: list[Any] | None) -> list[dict[str, Any]]:
-    base = list(req.messages)
-    has_user_system = any(m.get("role") == "system" for m in base)
-    if not docs and has_user_system:
-        return base
-    if not docs:
-        return [{"role": "system", "content": _DEFAULT_SYSTEM_PROMPT}] + base
-    wrapped = _wrap_last_user(base, _render_context(docs))
-    if has_user_system:
-        # Float all system messages to the front (some providers reject non-leading system msgs).
+    """Build the final message list for the LLM with RAG grounding always applied.
+
+    The RAG system prompt (or grounding rules) is prepended in every case — even when
+    docs is empty — so the boundary is never silently removed. An empty docs list
+    produces a sentinel context block rather than falling back to the generic assistant.
+    """
+    context_block = _render_context(docs)
+    wrapped = _wrap_last_user(list(req.messages), context_block)
+    # Single pass: detect user-supplied system message and partition in one loop.
+    # Float system messages to the front — some providers (e.g. OpenAI) reject
+    # non-leading system messages.
+    sys_msgs: list[dict[str, Any]] = []
+    other_msgs: list[dict[str, Any]] = []
+    for m in wrapped:
+        (sys_msgs if m.get("role") == "system" else other_msgs).append(m)
+    if sys_msgs:
         # Order: [grounding_rules, caller_system…, remaining_turns…]
-        sys_msgs = [m for m in wrapped if m.get("role") == "system"]
-        other_msgs = [m for m in wrapped if m.get("role") != "system"]
         return [{"role": "system", "content": _RAG_GROUNDING_RULES}] + sys_msgs + other_msgs
-    return [{"role": "system", "content": _DEFAULT_RAG_SYSTEM_PROMPT}] + wrapped
+    return [{"role": "system", "content": _DEFAULT_RAG_SYSTEM_PROMPT}] + other_msgs
