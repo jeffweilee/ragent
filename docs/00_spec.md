@@ -351,16 +351,12 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 | `INGEST_OBJECT_NOT_FOUND`            | 422         | `(minio_site, object_key)` HEAD-probe miss | Router T2.13 |
 | `INGEST_NOT_FOUND`                   | 404         | `GET /ingest/v1/{id}` / `DELETE /ingest/v1/{id}` / `POST /ingest/v1/{id}/rerun` on unknown id | Service T2.10 |
 | `INGEST_NOT_RERUNNABLE`              | 409         | `POST /ingest/v1/{id}/rerun` on a document whose status is `READY` or `DELETING` (re-POST is the supersede path for READY; DELETING is mid-cascade) | Router (rerun endpoint) |
-| `CHAT_MESSAGES_MISSING`              | 422         | `messages` absent or empty | Schema T3.3 |
-| `CHAT_PROVIDER_UNSUPPORTED`          | 422         | `provider` outside `{"openai"}` allow-list (B22) | Schema T3.3 |
-| `CHAT_FILTER_INVALID`                | 422         | `source_app` empty / > 64 chars, or `source_meta` empty / > 1024 chars (B29 → B35) | Schema T3.3 |
 | `CHAT_RATE_LIMITED`                  | 429 + `Retry-After` | Per-user fixed-window quota exceeded on `/chat/v1` or `/chat/v1/stream` (B31, S37) | Router-level Depends T3.16 |
 | `FEEDBACK_TOKEN_INVALID`             | 401         | HMAC mismatch, malformed token, or `shown_source_ids` doesn't match the signed `sources_hash` (T-FB.6, B55) | Router (feedback) |
 | `FEEDBACK_TOKEN_EXPIRED`             | 410         | Token `ts` outside the 7-day window (T-FB.6, B55) | Router (feedback) |
 | `FEEDBACK_SOURCE_INVALID`            | 422         | `source_id ∉ shown_source_ids` (T-FB.6) | Router (feedback) |
 | `FEEDBACK_VALIDATION`                | 422         | Schema violations: vote ∉ {±1}, reason outside B56 enum, missing required field | Schema (feedback) |
-| `CHAT_LLM_ERROR`                     | 502 / SSE-error | Pre-stream LLM failure (problem+json) or mid-stream LLM failure (`data: {type:error}`, B6) | Router T3.10/T3.12 |
-| `CHAT_RETRIEVER_ERROR`               | 502 / SSE-error | ES vector / BM25 retriever failure | Router T3.10/T3.12 |
+| `LLM_ERROR`                          | 502 / SSE-error | Pre-stream LLM failure (problem+json) or mid-stream LLM failure (`data: {type:error}`, B6) | Router T3.10/T3.12 |
 | `MCP_PARSE_ERROR`                    | JSON-RPC `-32700` | Request body is not valid JSON (S64) | Router P2.5 |
 | `MCP_INVALID_REQUEST`                | JSON-RPC `-32600` | Missing `jsonrpc:"2.0"` / `method`; malformed envelope | Router P2.5 |
 | `MCP_METHOD_NOT_FOUND`               | JSON-RPC `-32601` | Method outside §3.8.2 allow-list (S61) | Router P2.5 |
@@ -370,12 +366,19 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 | `ES_PLUGIN_MISSING`                  | 503 (`/readyz`) | ES cluster missing `analysis-icu` plugin (B26, T0.8g) | Bootstrap / readyz |
 | `ES_INDEX_MISSING`                   | 503 (`/readyz`) | A `resources/es/*.json` index is absent at boot | Bootstrap / readyz |
 | `SCHEMA_DRIFT`                       | 503 (`/readyz`) + log `event=schema.drift` | Live schema differs from `schema.sql` / `resources/es/` | Bootstrap |
-| `PIPELINE_TIMEOUT`                   | log `event=ingest.failed reason=pipeline_timeout` | Pipeline body exceeds `PIPELINE_TIMEOUT_SECONDS` (B18, S34) | Worker T3.2j |
-| `ES_BBQ_UNSUPPORTED`                 | log `event=es.bbq_unsupported` | Cluster rejected `bbq_hnsw`; bootstrap retried with standard HNSW (B26) | Bootstrap |
-| `RECONCILER_TICK_MISSING`            | Prometheus alert | `reconciler_tick_total` flat > 10 min (R8, S30) | Alerting rule T7.1a |
+| `PIPELINE_TIMEOUT_AGGREGATE`         | `documents.error_code` (TaskErrorCode) | 300 s wall-clock timeout on the full pipeline run; written by the worker and polled via `GET /ingest/v1/{id}` (B18, S34) | Worker T3.2j |
 | `AUTH_TOKEN_EXPIRED`                 | 401             | JWT `exp` claim is in the past (raised through joserfc's verification path, T8.1a) | Auth middleware T8.2a |
 | `AUTH_CLAIM_MISSING`                 | 401             | `<RAGENT_JWT_CLAIM_USER_ID>` claim absent or empty after JWKS verification (T8.1a) | Auth middleware T8.2a |
 | `AUTH_TOKEN_INVALID`                 | 401             | JWT header absent, token malformed, signature mismatch, wrong `iss`, wrong `aud`, or any other JWKS verification failure outside expiry/missing-claim (T8.1a) | Auth middleware T8.2a |
+
+**Operational events (not `error_code` values — never appear in API responses):**
+
+| Signal | Surface | When |
+|---|---|---|
+| `es.bbq_unsupported` | structured log `event=es.bbq_unsupported` | Cluster rejected `bbq_hnsw`; bootstrap retried with standard HNSW (B26) |
+| `reconciler_tick_total` stale | Prometheus alert | `reconciler_tick_total` flat > 10 min (R8, S30) — alerting rule T7.1a |
+
+> **Chat validation (422 without custom `error_code`):** `messages` absent/empty, `provider` outside allow-list, and `source_app`/`source_meta` filter constraint violations are rejected by Pydantic schema validation and return a standard 422 `problem+json` with `errors[]` field details — they do not emit a named `error_code` and are not listed in `HttpErrorCode`.
 
 ### 4.2 Supported Formats
 
