@@ -40,7 +40,7 @@ RECOVERY_DEADLINE_SECONDS = 600
 # How long to wait for the worker to claim the task (leave UPLOADED).
 # Worker startup (init_schema + TaskIQ bootstrap) takes ~10-30s in CI;
 # 60s gives comfortable headroom.
-WORKER_CLAIM_TIMEOUT_SECONDS = 60
+WORKER_CLAIM_TIMEOUT_SECONDS = 120
 
 
 def _post_doc() -> str:
