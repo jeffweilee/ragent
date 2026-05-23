@@ -20,11 +20,6 @@ _MARKDOWN_OUTPUT_RULE = (
     "emphasis as appropriate). Output Markdown only — no surrounding code "
     "fence wrapping the entire reply."
 )
-_DEFAULT_SYSTEM_PROMPT = os.environ.get(
-    "RAGENT_DEFAULT_SYSTEM_PROMPT",
-    f"You are a helpful assistant. {_MARKDOWN_OUTPUT_RULE}",
-)
-
 # =====================================================================
 # Shared RAG grounding rules — injected into both system prompt variants.
 # IMPORTANT: any literal { } in this string that must NOT be treated as
@@ -131,13 +126,6 @@ class ChatRequest(BaseModel):
         if v == "" or len(v) > _FILTER_META_MAX_LEN:
             raise ValueError(f"source_meta must be 1–{_FILTER_META_MAX_LEN} chars")
         return v
-
-
-def normalize_messages(req: ChatRequest) -> list[dict[str, Any]]:
-    has_system = any(m.get("role") == "system" for m in req.messages)
-    if has_system:
-        return list(req.messages)
-    return [{"role": "system", "content": _DEFAULT_SYSTEM_PROMPT}] + list(req.messages)
 
 
 def _render_context(docs: list[Any] | None) -> str:

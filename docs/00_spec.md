@@ -993,7 +993,6 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 | `RAGENT_DEFAULT_LLM_MODEL`            | `gptoss-120b`    | Echoed when request omits `model`. |
 | `RAGENT_DEFAULT_LLM_TEMPERATURE`      | `0.7`            | |
 | `RAGENT_DEFAULT_LLM_MAX_TOKENS`       | `4096`           | |
-| `RAGENT_DEFAULT_SYSTEM_PROMPT`        | `You are a helpful assistant` | Auto-prepended when `messages` lacks a `system` entry. |
 | `RAGENT_DEFAULT_RAG_SYSTEM_PROMPT`    | *(multi-intent template)*     | System prompt used when the caller has no `system` message (regardless of retrieval result). Contains grounding rules + GREETING/QUESTION/SUMMARY/GENERATION intent styles with few-shot examples. No `{context}` placeholder — context is injected into the user message (empty retrieval injects `"(The context is empty.)"` sentinel). |
 | `RAGENT_RAG_GROUNDING_RULES`          | *(rules-only variant)*        | Rules-only system prompt prepended when the caller supplies their own `system` message (regardless of retrieval result). Preserves the caller's persona while enforcing context-only grounding. Empty retrieval injects `"(The context is empty.)"` sentinel into the user message. |
 | `CHAT_RATE_LIMIT_PER_MINUTE`          | `30`             | Per-user request cap on `/chat/v1` + `/chat/v1/stream` within the rate-limit window (B31). Excess returns 429 `CHAT_RATE_LIMITED`. |
