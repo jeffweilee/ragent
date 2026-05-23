@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(make test *)",
+      "Bash(RAGENT_SKILL_INVOCATION_TOKEN=1 bash .claude/hooks/stamp_pre_commit_approved.sh simplify:fast)",
+      "Bash(RAGENT_SKILL_INVOCATION_TOKEN=1 bash .claude/hooks/stamp_pre_commit_approved.sh review:fast)",
+      "Bash(where make *)",
+      "PowerShell(if \\(-not $?\\) { \"make not found via where.exe\" })"
+    ]
+  }
+}
