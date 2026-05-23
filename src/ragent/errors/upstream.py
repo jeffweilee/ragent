@@ -43,6 +43,16 @@ class UpstreamTimeoutError(UpstreamServiceError):
     error_code: str = HttpErrorCode.UPSTREAM_TIMEOUT
 
 
+class LLMStreamInterruptedError(UpstreamServiceError):
+    """LLM stream closed before [DONE] sentinel was received."""
+
+    http_status: int = 502
+    error_code: str = HttpErrorCode.LLM_STREAM_INTERRUPTED
+
+    def __init__(self, message: str, *, service: str = "llm") -> None:
+        super().__init__(message, service=service, error_code=HttpErrorCode.LLM_STREAM_INTERRUPTED)
+
+
 def classify_upstream_error(
     exc: Exception | None,
     *,

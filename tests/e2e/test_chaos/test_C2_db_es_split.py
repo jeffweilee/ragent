@@ -167,8 +167,7 @@ def test_C2_db_es_split_brain_recovers_to_ready(
     # means retried bulk writes do not duplicate or fail, they overwrite).
     chunk_count = _es_chunk_count(es_url, doc_id)
     assert chunk_count >= 1, (
-        f"READY document has {chunk_count} ES chunks — "
-        "idempotency/OVERWRITE invariant violated"
+        f"READY document has {chunk_count} ES chunks — idempotency/OVERWRITE invariant violated"
     )
     _logger.info("chaos.c2.es_chunks", document_id=doc_id, chunk_count=chunk_count)
 

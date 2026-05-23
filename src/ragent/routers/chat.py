@@ -267,14 +267,15 @@ def create_chat_router(
                     )
                 except Exception as exc:
                     l_span.record_exception(exc)
-                    logger.exception(
-                        "chat.llm.error",
+                    logger.warning(
+                        "chat.llm.stream_interrupted",
                         model=body.model,
                         error_type=type(exc).__name__,
                     )
+                    error_code = getattr(exc, "error_code", HttpErrorCode.LLM_ERROR)
                     err_payload = {
                         "type": "error",
-                        "error_code": "LLM_ERROR",
+                        "error_code": str(error_code),
                         "message": str(exc),
                     }
                     yield f"data: {json.dumps(err_payload)}\n\n"

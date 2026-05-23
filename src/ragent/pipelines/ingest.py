@@ -730,6 +730,7 @@ class DocumentEmbedder:
 
         for vectors, index_name in zip(results, index_names, strict=True):
             ops: list[dict] = []
+            op_docs: list[tuple[Document, list[float]]] = []
             for doc, vec in zip(documents, vectors, strict=True):
                 ops.append({"index": {"_id": doc.id}})
                 # meta is written first so that "embedding" and "content" always win.
@@ -737,9 +738,48 @@ class DocumentEmbedder:
                 if doc.content is not None:
                     body["content"] = doc.content
                 ops.append(body)
-            self._es.bulk(index=index_name, operations=ops)
+                op_docs.append((doc, vec))
+            response = self._es.bulk(index=index_name, operations=ops)
+            self._handle_bulk_response(response, op_docs, index_name)
 
         return {"documents": []}
+
+    def _handle_bulk_response(
+        self,
+        response: dict,
+        op_docs: list[tuple[Document, list[float]]],
+        index_name: str,
+    ) -> None:
+        """Check bulk response for partial failures and retry failed items."""
+        if not response.get("errors"):
+            return
+
+        items = response.get("items", [])
+        retry_op_docs: list[tuple[Document, list[float]]] = []
+        for item, (doc, vec) in zip(items, op_docs, strict=False):
+            action = item.get("index", {})
+            status = action.get("status", 200)
+            if status >= 400:
+                _logger.warning(
+                    "es.bulk_partial_failure",
+                    index=index_name,
+                    doc_id=action.get("_id"),
+                    status=status,
+                    error=action.get("error"),
+                )
+                retry_op_docs.append((doc, vec))
+
+        if not retry_op_docs:
+            return
+
+        retry_ops: list[dict] = []
+        for doc, vec in retry_op_docs:
+            retry_ops.append({"index": {"_id": doc.id}})
+            body: dict = {**(doc.meta or {}), "embedding": vec}
+            if doc.content is not None:
+                body["content"] = doc.content
+            retry_ops.append(body)
+        self._es.bulk(index=index_name, operations=retry_ops)
 
 
 # ---------------------------------------------------------------------------

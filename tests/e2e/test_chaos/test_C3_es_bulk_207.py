@@ -83,9 +83,7 @@ def test_C3_es_bulk_partial_failure_retries_failed_items(dev_env) -> None:
                 # Second call (retry of 5 failed items): all succeed
                 return {
                     "errors": False,
-                    "items": [
-                        {"index": {"_id": f"doc-{i}", "status": 200}} for i in range(5)
-                    ],
+                    "items": [{"index": {"_id": f"doc-{i}", "status": 200}} for i in range(5)],
                 }
 
     mock_es = MockES()
@@ -100,9 +98,7 @@ def test_C3_es_bulk_partial_failure_retries_failed_items(dev_env) -> None:
         result = embedder.run(documents=docs)
 
     # Assert: bulk was called twice (initial + retry for failed items)
-    assert call_count[0] == 2, (
-        f"expected 2 bulk calls (initial + retry), got {call_count[0]}"
-    )
+    assert call_count[0] == 2, f"expected 2 bulk calls (initial + retry), got {call_count[0]}"
 
     # Assert: partial failure event logged
     log_events = [entry.get("event") for entry in cap]

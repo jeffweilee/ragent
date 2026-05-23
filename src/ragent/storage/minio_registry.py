@@ -11,13 +11,18 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import re
+import time as _time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+import structlog
 from minio import Minio
 from minio.error import S3Error
+
+_logger = structlog.get_logger(__name__)
 
 DEFAULT_SITE = "__default__"
 _REQUIRED = ("name", "endpoint", "access_key", "secret_key", "bucket")
@@ -197,20 +202,51 @@ class MinioSiteRegistry:
 
     def get_object(self, site: str, object_key: str, *, expected_size: int | None = None) -> bytes:
         rec = self.get(site)
-        resp = rec.client.get_object(rec.bucket, object_key)
-        try:
-            data = resp.read()
-        finally:
-            resp.close()
-            resp.release_conn()
-        if expected_size is not None and len(data) != expected_size:
-            # Network abort mid-stream silently truncates resp.read() — refuse
-            # to feed a partial document into the chunker / embedder.
-            raise OSError(
-                f"MinIO get_object size mismatch for {object_key!r}: "
-                f"expected={expected_size}, got={len(data)}"
-            )
-        return data
+        max_retries = int(os.environ.get("MINIO_GET_RETRIES", "3"))
+        retry_delay = float(os.environ.get("MINIO_GET_RETRY_DELAY_SECONDS", "2.0"))
+
+        last_exc: Exception | None = None
+        for attempt in range(max_retries):
+            if attempt:
+                _logger.warning(
+                    "minio.transient_error",
+                    site=site,
+                    object_key=object_key,
+                    attempt=attempt,
+                    error=str(last_exc),
+                )
+                _time.sleep(retry_delay)
+            try:
+                resp = rec.client.get_object(rec.bucket, object_key)
+                try:
+                    data = resp.read()
+                finally:
+                    resp.close()
+                    resp.release_conn()
+                if expected_size is not None and len(data) != expected_size:
+                    # Network abort mid-stream silently truncates resp.read() — refuse
+                    # to feed a partial document into the chunker / embedder.
+                    raise OSError(
+                        f"MinIO get_object size mismatch for {object_key!r}: "
+                        f"expected={expected_size}, got={len(data)}"
+                    )
+                return data
+            except (S3Error, ConnectionError, OSError) as exc:
+                # Retry transient connection and server errors; re-raise client errors.
+                if isinstance(exc, S3Error) and exc.code in {
+                    "NoSuchKey",
+                    "NoSuchBucket",
+                    "AccessDenied",
+                }:
+                    raise
+                last_exc = exc
+        _logger.error(
+            "minio.get_object_failed",
+            site=site,
+            object_key=object_key,
+            attempts=max_retries,
+        )
+        raise last_exc  # type: ignore[misc]
 
 
 def _build_minio(*, endpoint: str, access_key: str, secret_key: str, secure: bool) -> Minio:

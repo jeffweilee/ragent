@@ -67,6 +67,9 @@ class HttpErrorCode(StrEnum):
     # Chat (429).
     CHAT_RATE_LIMITED = "CHAT_RATE_LIMITED"
 
+    # LLM stream interrupt (502) — stream closed before [DONE] sentinel.
+    LLM_STREAM_INTERRUPTED = "LLM_STREAM_INTERRUPTED"
+
     # Embedding-model lifecycle (B50, main). 409 on state-machine rejection;
     # 409 on cutover preflight failure; 422 on invalid promote payload;
     # 422 on field-name collision with a still-mapped retired field.

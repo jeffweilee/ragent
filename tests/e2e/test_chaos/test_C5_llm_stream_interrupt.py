@@ -17,6 +17,7 @@ Spec §3.6.1 common acceptance asserts:
 
 from __future__ import annotations
 
+import contextlib
 import json
 import urllib.request
 
@@ -70,11 +71,9 @@ def _parse_sse_events(body: str) -> list[dict]:
     for line in body.splitlines():
         line = line.strip()
         if line.startswith("data:"):
-            data_str = line[len("data:"):].strip()
-            try:
+            data_str = line[len("data:") :].strip()
+            with contextlib.suppress(json.JSONDecodeError):
                 events.append(json.loads(data_str))
-            except json.JSONDecodeError:
-                pass
     return events
 
 
@@ -111,8 +110,7 @@ def test_C5_llm_stream_interrupt_emits_error_frame(
     # Assert 2: last event is error with LLM_STREAM_INTERRUPTED
     last_event = events[-1]
     assert last_event.get("type") == "error", (
-        f"Last event type expected 'error', got {last_event.get('type')!r}. "
-        f"All events: {events}"
+        f"Last event type expected 'error', got {last_event.get('type')!r}. All events: {events}"
     )
     assert last_event.get("error_code") == "LLM_STREAM_INTERRUPTED", (
         f"Expected error_code='LLM_STREAM_INTERRUPTED', got {last_event.get('error_code')!r}"

@@ -18,7 +18,7 @@ Spec §3.6.1 common acceptance asserts:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 import structlog
@@ -36,8 +36,6 @@ def _make_mock_response(data: bytes) -> MagicMock:
 
 def test_C6_minio_transient_503_retries_and_succeeds(dev_env, monkeypatch) -> None:
     """get_object retries ConnectionError twice then returns data on third attempt."""
-    import os
-
     from ragent.bootstrap.metrics import chaos_drill_outcome_total
     from ragent.storage.minio_registry import DEFAULT_SITE, MinioSiteRegistry, SiteRecord
 
