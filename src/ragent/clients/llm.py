@@ -91,7 +91,7 @@ class LLMClient:
 
         seen_done = False
         any_content = False
-        with self._http.post(
+        resp = self._http.post(
             self._url,
             json={
                 "model": model,
@@ -103,26 +103,27 @@ class LLMClient:
             },
             headers={self._auth_header_name: self._get_token()},
             timeout=self._timeout,
-        ) as resp:
-            for line in resp.iter_lines():
-                if not line or not line.startswith("data:"):
-                    continue
-                data_str = line[len("data:") :].strip()
-                if data_str == "[DONE]":
-                    seen_done = True
-                    break
-                try:
-                    payload = json.loads(data_str)
-                except json.JSONDecodeError:
-                    continue
-                choices = payload.get("choices", [])
-                if choices:
-                    content = choices[0].get("delta", {}).get("content")
-                    if content:
-                        any_content = True
-                        yield content
-                if usage_out is not None and "usage" in payload:
-                    usage_out.append(payload["usage"])
+        )
+        resp.raise_for_status()
+        for line in resp.iter_lines():
+            if not line or not line.startswith("data:"):
+                continue
+            data_str = line[len("data:") :].strip()
+            if data_str == "[DONE]":
+                seen_done = True
+                break
+            try:
+                payload = json.loads(data_str)
+            except json.JSONDecodeError:
+                continue
+            choices = payload.get("choices", [])
+            if choices:
+                content = choices[0].get("delta", {}).get("content")
+                if content:
+                    any_content = True
+                    yield content
+            if usage_out is not None and "usage" in payload:
+                usage_out.append(payload["usage"])
         if not seen_done and any_content:
             raise LLMStreamInterruptedError("LLM stream closed before [DONE]")
 

@@ -34,10 +34,7 @@ def _mock_streaming_http(deltas, usage=None):
         def __init__(self):
             self._lines = lines
 
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
+        def raise_for_status(self):
             pass
 
         def iter_lines(self):
@@ -114,10 +111,7 @@ def test_stream_retries_3_times_on_error():
     call_count = [0]
 
     class _FakeStreamOk:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
+        def raise_for_status(self):
             pass
 
         def iter_lines(self):
