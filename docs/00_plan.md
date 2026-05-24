@@ -50,7 +50,7 @@
 
 ---
 
-## Phase 2 — Production Quality (+3 weeks) — *not started*
+## Phase 2 — Production Quality (+3 weeks) — *complete (delivered items [x]; descoped items [~])*
 
 | # | Category | Task | Status | Owner |
 |---|---|---|:---:|---|
@@ -61,7 +61,7 @@
 | P2.5 | Behavioral | • **Achieve:** Replace P1 501 stub with real MCP JSON-RPC 2.0 server exposing the `retrieve` tool (B47, §3.8).<br>• **Deliver:** decomposed into Track T-MCP rows; flips `[x]` when T-MCP.1–T-MCP.12 are all `[x]`. | [x] | Dev |
 | P2.6 | Quality | • **Achieve:** Continuous answer-quality + load resilience evidence.<br>• **Deliver:** RAGAS eval in CI; large-file streaming; chaos drills (軌三 decomposed into Track T-CHAOS, B49). | [~] | QA |
 | P2.7 | Behavioral | • **Achieve:** Concurrent component execution for ingest/chat.<br>• **Deliver:** Switch ingest/chat to Haystack `AsyncPipeline`. | [~] | Dev |
-| P2.8 | Closure | • **Achieve:** Close P2 with synced docs and lessons.<br>• **Deliver:** Updated `00_spec.md` / `00_plan.md` + new entries in `00_journal.md`. | [ ] | Master |
+| P2.8 | Closure | • **Achieve:** Close P2 with synced docs and lessons.<br>• **Deliver:** Updated `00_spec.md` (C4 pinned, alert table extended, P2.7 deferred note, §3.4 P-A ref removed) / `00_plan.md` (descope pass) + new entries in `00_journal.md` (P2.3 reranker fail-open design, P2/P3 descope audit). | [x] | Master |
 | P2.9 | Stability | • **Achieve:** Close prior MinIO orphan-sweeper idea as not-doing.<br>• **Deliver:** MinIO objects are retained for audit/replay; no TTL sweeper is installed. | [x] | SRE |
 
 ## Phase 3 — Graph Enhancement (conditional, +4–6 weeks) — *gated*
