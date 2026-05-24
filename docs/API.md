@@ -21,8 +21,9 @@ Supported MIME types (`mime_type`):
 | `text/html` | HTML | Script/nav/aside stripped |
 | `application/vnd.openxmlformats-officedocument.wordprocessingml.document` | DOCX | One atom per paragraph/table |
 | `application/vnd.openxmlformats-officedocument.presentationml.presentation` | PPTX | One atom per slide |
+| `application/pdf` | PDF | Per-page markdown via pymupdf4llm; RapidOCR for image-bearing pages |
 
-CSV is no longer accepted.
+CSV is not accepted.
 
 
 ### `POST /ingest/v1` — `ingest_type=inline` (content in body)

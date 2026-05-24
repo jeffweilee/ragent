@@ -71,23 +71,23 @@ stores such as ES chunks; they do not delete MinIO bytes.
 
 ### 3.2 Indexing Pipeline
 
-> **v2 Pipeline:**
+> **v2 Pipeline (actual Haystack graph):**
 > ```
-> _TextLoader → FileTypeRouter
+> _TextLoader → _MimeAwareSplitter (single component; dispatches on meta["mime_type"])
 >    ├ text/plain    → DocumentSplitter (Haystack stock, by passage)
->    ├ text/markdown → _MarkdownASTSplitter (mistletoe AST; atomic units = heading/code/list/table/blockquote; never splits inside fenced code)
->    ├ text/html     → _HtmlASTSplitter (selectolax; drops script/style/nav/aside/footer/header; atoms = heading/pre/table/article-paragraphs)
+>    ├ text/markdown → _MarkdownASTSplitter (mistletoe AST; heading/code/list/table/blockquote atoms)
+>    ├ text/html     → _HtmlASTSplitter (selectolax; drops script/style/nav/aside/footer/header)
 >    ├ docx          → _DocxASTSplitter (python-docx; paragraphs + tables)
 >    ├ pptx          → _PptxASTSplitter (python-pptx; one atom per slide)
->    └ unclassified  → _RaiseUnroutable (worker → FAILED + PIPELINE_UNROUTABLE)
-> → DocumentJoiner → _IdempotencyClean (ES delete by document_id)
+>    ├ pdf           → _PdfASTSplitter (pymupdf4llm; per-page markdown; RapidOCR for image pages)
+>    └ else          → _RaiseUnroutable (worker → FAILED + PIPELINE_UNROUTABLE)
 > → _BudgetChunker (1000 target / 1500 max / 100 overlap, mime-agnostic)
-> → DocumentEmbedder (bge-m3 batched, bulk-writes to physical index / indices via ES bulk API)
+> → DocumentEmbedder (bge-m3 batched; embeds + bulk-writes to ES via DuplicatePolicy.OVERWRITE)
 > ```
-> Each splitter sets `meta["raw_content"]` = exact byte slice (byte-stable, R4/S25). `_BudgetChunker` is the sole budget enforcer. `chunks_v1` stores both `content` (normalized, BM25-analyzed) and `raw_content` (`index: false`); LLM context and citations use `raw_content`.
+> Each splitter sets `meta["raw_content"]` = exact byte slice (byte-stable, R4/S25). `_BudgetChunker` is the sole budget enforcer. `chunks_v1` stores both `content` (normalized, BM25-analyzed) and `raw_content` (`index: false`); LLM context and citations use `raw_content`. Retry idempotency: `DuplicatePolicy.OVERWRITE` on ES write replaces existing chunks by `chunk_id` — no `_IdempotencyClean` step exists in the Haystack graph.
 
 **Performance & timeout discipline:**
-- The pipeline's first step is `ChunkRepository.delete_by_document_id` + `PluginRegistry.fan_out_delete` (idempotency for retry — see §3.1; sweeps every plugin, not just `VectorExtractor`).
+- Retry idempotency is handled entirely by `DuplicatePolicy.OVERWRITE` in `DocumentEmbedder` — the worker calls `container.ingest_pipeline.run()` directly with no pre-pipeline `fan_out_delete` step. `fan_out_delete` is used only on the delete/DELETING path (service layer + reconciler), not on the ingest-retry path.
 - `EmbeddingClient` is invoked in **batches of 32 chunks** per HTTP call (configurable; never 1-by-1).
 - Every external call carries an explicit timeout: Embedder 30 s/batch (ingest), ES bulk 60 s, MinIO get 30 s, plugin `extract()` 60 s overall (enforced by `PluginRegistry.fan_out`).
 - **Overall pipeline ceiling:** `INGEST_PIPELINE_TIMEOUT_SECONDS` (default 300 s, B18). Overrun ⇒ `FAILED` with `error_code=PIPELINE_TIMEOUT_AGGREGATE`.
@@ -301,7 +301,7 @@ Standalone FastMCP service that federates arbitrary third-party REST APIs as MCP
 
 | Method | Path | P1 Auth | Request | Response |
 |---|---|---|---|---|
-| POST   | `/ingest/v1`               | `X-User-Id` | **JSON** (v2, see override above) | `202 { task_id }` — `task_id` **is** the `document_id`. |
+| POST   | `/ingest/v1`               | `X-User-Id` | **JSON** (v2, see override above) | `202 { document_id }` |
 | GET    | `/ingest/v1/{id}`          | `X-User-Id` | — | `200 { status, attempt, updated_at }` |
 | GET    | `/ingest/v1?after=&limit=&source_id=&source_app=` | `X-User-Id` | — | `200 { items, next_cursor }` (limit ≤ 100; ordered `document_id DESC`; `source_id`/`source_app` are optional exact-match filters) |
 | DELETE | `/ingest/v1/{id}`          | `X-User-Id` | — | `204` idempotent |
@@ -414,7 +414,7 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 | `.txt`  | `TextFileToDocument`     | `text/plain`              | UTF-8 text | **P1** |
 | `.md`   | `MarkdownToDocument`     | `text/markdown`           | front-matter stripped | **P1** |
 | `.html` | `HTMLToDocument`         | `text/html`               | visible text, script/style stripped | **P1** |
-| `.csv`  | `CSVToDocument`          | `text/csv`                | row-as-document; rows packed by `RowMerger` to ~2 000 chars (B24); bounded by global 50 MB file limit (B2) | **P1** |
+| `.csv`  | `CSVToDocument`          | `text/csv`                | row-as-document; rows packed by `RowMerger` to ~2 000 chars (B24); removed from P1 allow-list (§3.1) — deferred | Deferred |
 | `.pdf`  | `_PdfASTSplitter`        | `application/pdf`         | per-page `pymupdf4llm.to_markdown` → `_MarkdownASTSplitter`; RapidOCR auto-selected for image-bearing pages; structured atoms (headings, tables, paragraphs); `INGEST_PDF_MARGIN_PTS` clips header/footer zones | **P1** |
 | `.docx` | `_DocxASTSplitter`       | `application/vnd.openxmlformats-officedocument.wordprocessingml.document` | paragraphs + tables (python-docx) | **P1** |
 | `.pptx` | `_PptxASTSplitter`       | `application/vnd.openxmlformats-officedocument.presentationml.presentation` | one atom per slide (python-pptx); footer/date/slide-number placeholders excluded | **P1** |

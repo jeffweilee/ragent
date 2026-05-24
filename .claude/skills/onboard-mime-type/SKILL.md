@@ -39,11 +39,11 @@ side-by-side while you work; every step is one real line.
 [ Worker ]
   workers/ingest.py:35       @broker.task("ingest.pipeline") ingest_pipeline_task
   workers/ingest.py:44       repo.claim_for_processing  (TX-A, NOWAIT, status=PENDING)
-  workers/ingest.py:55       head = registry.head_object(site, object_key)   ← runtime mime source
-  workers/ingest.py:56-58    mime = (head[1] or DEFAULT_MIME).split(";",1)[0].strip()
-                               ↳ "text/markdown; charset=utf-8" → "text/markdown"
-                               ↳ NOTE: this is what _MimeAwareSplitter sees.
-                                       documents.mime_type column is NOT consulted here.
+  workers/ingest.py:83       head = registry.head_object(site, doc.object_key)
+  workers/ingest.py:82-88    mime = doc.mime_type or minio_content_type or DEFAULT_MIME
+                               ↳ doc.mime_type (DB column) is AUTHORITATIVE — MinIO head is fallback only for legacy NULL rows
+                               ↳ strip charset suffix: "text/markdown; charset=utf-8" → "text/markdown"
+                               ↳ This is what _MimeAwareSplitter sees (journal rule 2026-05-12 Binary MIME Guard)
   workers/ingest.py:63-80    data = registry.get_object(...); content = data.decode("utf-8")
                                ↳ binary MIMEs need an upstream branch — see Step 1a
   workers/ingest.py:91       container.ingest_pipeline.run({"loader": {content, mime_type, ...}})
@@ -90,22 +90,18 @@ recommendations for likely next-onboard targets:
 | `application/pdf` | `pymupdf4llm` | **Already onboarded** (`_PdfASTSplitter`). Pages→Markdown via RapidOCR; binary decode done in pipeline already. |
 | `…openxmlformats…wordprocessingml.document` | `python-docx` | Binary — Step 1a |
 
-**Two MIME sources of truth** — important to internalize before changing
-anything:
+**MIME routing priority (Binary MIME Guard — journal 2026-05-12):**
 
-| Edge | Variable | Used for |
+| Priority | Source | Used for |
 |---|---|---|
-| API insert | `request.mime_type.value` → `documents.mime_type` column | Metric label at terminal-status emission (`record_pipeline_outcome`, `observe_pipeline_duration`); read by `DocumentStatsCollector` |
-| Runtime route | `head[1]` from MinIO `head_object` | What `_MimeAwareSplitter` actually dispatches on |
+| 1st | `doc.mime_type` (DB column, set at API ingest time) | Authoritative routing key for `_MimeAwareSplitter`; always present for new rows |
+| 2nd | `head[1]` from MinIO `head_object` | Fallback for legacy NULL rows only |
+| 3rd | `DEFAULT_MIME` | Last-resort default |
 
-For inline ingests these always agree (`_stage_inline` sets MinIO
-`content-type` from the same enum value). For **file** ingests the caller
-controls the MinIO put — a missing/wrong `content-type` makes the worker
-silently fall back to `text/plain`. If your new MIME has a hard
-parse-shape (binary, JSON, anything where mis-routing produces garbage
-embeddings rather than an obvious error), add a defensive equality check
-between `doc.mime_type` (DB) and the recovered `mime` (HEAD) at
-`workers/ingest.py:58` and fail with `PIPELINE_UNROUTABLE` on mismatch.
+`documents.mime_type` IS consulted by the worker and takes precedence over MinIO's content-type.
+This prevents mis-routing when a caller's MinIO client defaults to `application/octet-stream`.
+Binary MIMEs (DOCX/PPTX/PDF) are rejected at the schema boundary for `ingest_type=inline`
+via `model_validator(mode="after")` in `schemas/ingest.py`.
 
 ---
 
