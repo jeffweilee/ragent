@@ -8,7 +8,7 @@
 ## Status legend
 - `[x]` delivered
 - `[ ]` TODO
-- `[~]` scaffolded-but-disabled (P1 OPEN mode — auth track deferred to P2)
+- `[~]` descoped / deferred (not doing in this cycle)
 
 ---
 
@@ -23,8 +23,8 @@
 
 | # | Category | Task | Depends On | Status | Owner | Phase |
 |---|---|---|---|:---:|---|:---:|
-| T7.3.x | Acceptance | • **Achieve:** Wire the T7.3 retrieval-recall SLO to a real automated gate against live embedder/rerank/LLM endpoints (closes the gap noted in `docs/00_journal.md::E2E gate integrity`).<br>• **Deliver:** (a) Scheduled / label-triggered CI job that exports real `EMBEDDING_API_URL` / `LLM_API_URL` / `RERANK_API_URL` + tokens via secrets, runs `make test-e2e-golden`; (b) decision-log row pinning which endpoint identity is used + cost expectation per run; (c) `tests/e2e/test_golden_set.py::test_golden_set_top3_accuracy_at_least_70pct` xfail flips to a hard assertion on that job. Default WireMock e2e remains the per-PR gate. | T7.3 | [ ] | QA | P2 |
-| T7.4.x | Acceptance | • **Achieve:** Replace the single happy-path chaos test (currently xfail run=False, `tests/e2e/test_chaos_worker_kill.py`) with a partial-failure suite covering the cross-storage failure modes that motivated the test.<br>• **Deliver:** decomposed into Track T-CHAOS rows C1–C6 below; this row stays for traceability and flips `[x]` when all six are green. | T5.6, T7.4 | [ ] | SRE | P2 |
+| T7.3.x | Acceptance | • **Achieve:** Wire the T7.3 retrieval-recall SLO to a real automated gate against live embedder/rerank/LLM endpoints (closes the gap noted in `docs/00_journal.md::E2E gate integrity`).<br>• **Deliver:** (a) Scheduled / label-triggered CI job that exports real `EMBEDDING_API_URL` / `LLM_API_URL` / `RERANK_API_URL` + tokens via secrets, runs `make test-e2e-golden`; (b) decision-log row pinning which endpoint identity is used + cost expectation per run; (c) `tests/e2e/test_golden_set.py::test_golden_set_top3_accuracy_at_least_70pct` xfail flips to a hard assertion on that job. Default WireMock e2e remains the per-PR gate. | T7.3 | [~] | QA | P2 |
+| T7.4.x | Acceptance | • **Achieve:** Replace the single happy-path chaos test (currently xfail run=False, `tests/e2e/test_chaos_worker_kill.py`) with a partial-failure suite covering the cross-storage failure modes that motivated the test.<br>• **Deliver:** decomposed into Track T-CHAOS rows C1–C6 below; this row stays for traceability and flips `[x]` when all six are green. | T5.6, T7.4 | [~] | SRE | P2 |
 
 ---
 
@@ -42,7 +42,7 @@
 | T-CHAOS.C5 | Red+Green | • **Achieve:** Validate LLM stream interrupt emits `data: {type:"error",...}` per B6.<br>• **Deliver:** `tests/e2e/test_chaos/test_C5_llm_stream_interrupt.py` — `LLMStreamInterruptedError` added; `_do_stream` tracks `seen_done`; raises on EOF without `[DONE]`; `stream()` never retries on interrupt; chat router reads `error_code` dynamically from exc. WireMock injects 3 deltas no `[DONE]`; last SSE frame `error_code==LLM_STREAM_INTERRUPTED`. | T-CHAOS.0 | [x] | SRE |
 | T-CHAOS.C6 | Red+Green | • **Achieve:** Validate MinIO transient 503 is retried (3×@2s built-in).<br>• **Deliver:** `tests/e2e/test_chaos/test_C6_minio_503.py` — `get_object` retries `ConnectionError`/`S3Error` transients up to `MINIO_GET_RETRIES` (default 3); logs `minio.transient_error` on each retry; re-raises client errors (`NoSuchKey`/`AccessDenied`) immediately. Mock test verifies 2 warnings + 3 call attempts. | T-CHAOS.0 | [x] | SRE |
 | T-CHAOS.7 | Structural | • **Achieve:** Wire nightly CI lane for chaos suite.<br>• **Deliver:** `.github/workflows/chaos-nightly.yml` runs `pytest tests/e2e/test_chaos -m docker` on a `cron: '0 3 * * *'` schedule (03:00 UTC); `Makefile` target `make test-chaos`; nightly artefact retains test logs for 30 days via `actions/upload-artifact`. | T-CHAOS.C1–C6 | [x] | SRE |
-| T7.4.x | Closure | • **Achieve:** Flip the spillover row when all six cases green for ≥ 3 consecutive nightly runs.<br>• **Deliver:** plan.md row `T7.4.x` → `[x]` with evidence (nightly run links). | T-CHAOS.7 | [ ] | SRE |
+| T7.4.x | Closure | • **Achieve:** Flip the spillover row when all six cases green for ≥ 3 consecutive nightly runs.<br>• **Deliver:** plan.md row `T7.4.x` → `[x]` with evidence (nightly run links). | T-CHAOS.7 | [~] | SRE |
 
 ---
 
@@ -55,12 +55,12 @@
 | # | Category | Task | Status | Owner |
 |---|---|---|:---:|---|
 | P2.1 | Stability | • **Achieve:** Production-grade HA + observability.<br>• **Deliver:** SRE HA verification report, monitoring dashboards, alerting rules. | [ ] | SRE |
-| P2.2 | Security | • **Achieve:** Activate JWT + Permission layer per Track T8; B14 invariant (ES carries no auth fields).<br>• **Deliver:** All `[~]` rows in T8 → `[ ]` → `[x]`; remove `RAGENT_AUTH_DISABLED`; introduce `RAGENT_TRUST_X_USER_ID_HEADER` (default `false`) and per-surface `RAGENT_PERMISSION_INGEST_ENABLED` / `RAGENT_PERMISSION_CHAT_ENABLED` (both default `false`) — wiring lands but enforcement stays opt-in. | [ ] | Dev |
+| P2.2 | Security | • **Achieve:** Activate JWT + Permission layer per Track T8; B14 invariant (ES carries no auth fields).<br>• **Deliver:** All `[~]` rows in T8 → `[ ]` → `[x]`; remove `RAGENT_AUTH_DISABLED`; introduce `RAGENT_TRUST_X_USER_ID_HEADER` (default `false`) and per-surface `RAGENT_PERMISSION_INGEST_ENABLED` / `RAGENT_PERMISSION_CHAT_ENABLED` (both default `false`) — wiring lands but enforcement stays opt-in. | [~] | Dev |
 | P2.3 | Behavioral | • **Achieve:** Improve chat ranking via reranker.<br>• **Deliver:** `RerankClient` wired into chat pipeline as `HybridRetrieverWithRerank` SuperComponent. Reranker wiring was completed in P1; P2.3 delivers fail-open resilience: `UpstreamServiceError` / `UpstreamTimeoutError` → log `rerank.degraded` + increment `rerank_degraded_total{reason}` + return RRF-ordered docs[:top_k]. | [x] | Dev |
-| P2.4 | Behavioral | • **Achieve:** Route translate/summarize intents to direct LLM, bypassing retrieval.<br>• **Deliver:** `ConditionalRouter` intent split. | [ ] | Dev |
+| P2.4 | Behavioral | • **Achieve:** Route translate/summarize intents to direct LLM, bypassing retrieval.<br>• **Deliver:** `ConditionalRouter` intent split. | [~] | Dev |
 | P2.5 | Behavioral | • **Achieve:** Replace P1 501 stub with real MCP JSON-RPC 2.0 server exposing the `retrieve` tool (B47, §3.8).<br>• **Deliver:** decomposed into Track T-MCP rows; flips `[x]` when T-MCP.1–T-MCP.12 are all `[x]`. | [x] | Dev |
-| P2.6 | Quality | • **Achieve:** Continuous answer-quality + load resilience evidence.<br>• **Deliver:** RAGAS eval in CI; large-file streaming; chaos drills (軌三 decomposed into Track T-CHAOS, B49). | [ ] | QA |
-| P2.7 | Behavioral | • **Achieve:** Concurrent component execution for ingest/chat.<br>• **Deliver:** Switch ingest/chat to Haystack `AsyncPipeline`. | [ ] | Dev |
+| P2.6 | Quality | • **Achieve:** Continuous answer-quality + load resilience evidence.<br>• **Deliver:** RAGAS eval in CI; large-file streaming; chaos drills (軌三 decomposed into Track T-CHAOS, B49). | [~] | QA |
+| P2.7 | Behavioral | • **Achieve:** Concurrent component execution for ingest/chat.<br>• **Deliver:** Switch ingest/chat to Haystack `AsyncPipeline`. | [~] | Dev |
 | P2.8 | Closure | • **Achieve:** Close P2 with synced docs and lessons.<br>• **Deliver:** Updated `00_spec.md` / `00_plan.md` + new entries in `00_journal.md`. | [ ] | Master |
 | P2.9 | Stability | • **Achieve:** Close prior MinIO orphan-sweeper idea as not-doing.<br>• **Deliver:** MinIO objects are retained for audit/replay; no TTL sweeper is installed. | [x] | SRE |
 
@@ -68,11 +68,11 @@
 
 | # | Category | Task | Status | Owner |
 |---|---|---|:---:|---|
-| P3.1 | Decision | • **Achieve:** Lock graph DB choice with a written rationale.<br>• **Deliver:** ADR for Graph DB selection (Neo4j Community / ArcadeDB / Memgraph). | [ ] | Architect |
-| P3.2 | Behavioral | • **Achieve:** Replace stub with a real graph extractor on the same Protocol.<br>• **Deliver:** `GraphExtractor` implementation replacing `StubGraphExtractor`. | [ ] | Dev |
-| P3.3 | Behavioral | • **Achieve:** Add graph retrieval branch to chat pipeline.<br>• **Deliver:** `HybridRetrieverWithGraph` SuperComponent + `LightRAGRetriever` (200 ms TO → []). | [ ] | Dev |
-| P3.4 | Governance | • **Achieve:** Govern entity lifecycle in the graph store.<br>• **Deliver:** Entity soft-delete + ref_count + GC + reconciliation cron. | [ ] | Dev |
-| P3.5 | Gate | • **Achieve:** Confirm graph track is justified before spend.<br>• **Deliver:** Gate decision: P2 stable ≥ 4 weeks AND hybrid alone underperforms on relational queries. | [ ] | PM |
+| P3.1 | Decision | • **Achieve:** Lock graph DB choice with a written rationale.<br>• **Deliver:** ADR for Graph DB selection (Neo4j Community / ArcadeDB / Memgraph). | [~] | Architect |
+| P3.2 | Behavioral | • **Achieve:** Replace stub with a real graph extractor on the same Protocol.<br>• **Deliver:** `GraphExtractor` implementation replacing `StubGraphExtractor`. | [~] | Dev |
+| P3.3 | Behavioral | • **Achieve:** Add graph retrieval branch to chat pipeline.<br>• **Deliver:** `HybridRetrieverWithGraph` SuperComponent + `LightRAGRetriever` (200 ms TO → []). | [~] | Dev |
+| P3.4 | Governance | • **Achieve:** Govern entity lifecycle in the graph store.<br>• **Deliver:** Entity soft-delete + ref_count + GC + reconciliation cron. | [~] | Dev |
+| P3.5 | Gate | • **Achieve:** Confirm graph track is justified before spend.<br>• **Deliver:** Gate decision: P2 stable ≥ 4 weeks AND hybrid alone underperforms on relational queries. | [~] | PM |
 
 ---
 
