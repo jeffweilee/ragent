@@ -88,4 +88,9 @@ jobs:
         # WireMock vectors would not give a meaningful 70% number. Run
         # `make test-e2e-golden` against real endpoints to enforce that
         # SLO (T7.3.x plan track).
-        run: uv run pytest tests/e2e -v --tb=short
+        #
+        # Chaos drills (tests/e2e/test_chaos) are excluded: C1/C2 have
+        # WORKER_CLAIM_TIMEOUT_SECONDS=120 and RECOVERY_DEADLINE_SECONDS=600
+        # which are incompatible with the smoke gate's ~73s wall-clock budget.
+        # They run nightly via .github/workflows/chaos-nightly.yml (T-CHAOS.7).
+        run: uv run pytest tests/e2e --ignore=tests/e2e/test_chaos -v --tb=short
