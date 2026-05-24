@@ -133,6 +133,7 @@ def install_error_logging(
     original_send = client.send
 
     def wrapped_send(request: httpx.Request, **kwargs: Any) -> httpx.Response:
+        is_stream = bool(kwargs.get("stream", False))
         try:
             response = original_send(request, **kwargs)
         except httpx.HTTPError as exc:
@@ -141,7 +142,7 @@ def install_error_logging(
                 request=request,
                 response=None,
                 exception=exc,
-                is_stream=bool(kwargs.get("stream", False)),
+                is_stream=is_stream,
                 redact_auth_body=redact_auth_body,
             )
             raise
@@ -151,7 +152,7 @@ def install_error_logging(
                 request=request,
                 response=response,
                 exception=None,
-                is_stream=bool(kwargs.get("stream", False)),
+                is_stream=is_stream,
                 redact_auth_body=redact_auth_body,
             )
         return response
