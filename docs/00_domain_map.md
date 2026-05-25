@@ -1,0 +1,535 @@
+# 00_domain_map.md — 模組領域邊界與 AI 任務護欄
+
+> **用途**：此文件是 AI（Claude）在本專案執行任務的**主要導航地圖**。  
+> 每次開始一個 Task 前，先定位「你要動哪個 Domain」，然後查閱該 Domain 的  
+> 責任邊界、允許依賴、以及禁止跨越的規則。  
+> 本文件與 `docs/00_rule.md`、`docs/00_spec.md` 共同構成行為契約；三者矛盾時以 `00_spec.md` 為準。
+
+---
+
+## 一、Domain 總覽
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                         HTTP 邊界                                    │
+│  ┌─────────────┐  ┌──────────────┐  ┌───────────────────────────┐  │
+│  │  Middleware  │  │   Routers    │  │  Schemas (Pydantic I/O)   │  │
+│  └──────┬──────┘  └──────┬───────┘  └────────────┬──────────────┘  │
+│         │                │                        │                  │
+│  ┌──────▼────────────────▼────────────────────────▼──────────────┐  │
+│  │                     Services                                   │  │
+│  └──────────────────────────┬───────────────────────────────────┘  │
+│                              │                                       │
+│        ┌─────────────────────┼──────────────────────┐               │
+│        ▼                     ▼                       ▼               │
+│  ┌──────────┐   ┌─────────────────────┐   ┌──────────────────┐     │
+│  │Repositories│  │     Pipelines       │   │     Plugins       │     │
+│  └──────────┘   └────────┬────────────┘   └──────────────────┘     │
+│                           │                                          │
+│        ┌──────────────────┼─────────────┐                          │
+│        ▼                  ▼             ▼                            │
+│  ┌──────────┐  ┌──────────────┐  ┌──────────┐                      │
+│  │  Storage  │  │   Clients    │  │  Errors   │                      │
+│  └──────────┘  └──────────────┘  └──────────┘                      │
+│                                                                       │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │              Bootstrap (Composition Root)                     │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌───────────────────┐   │
+│  │  Auth     │  │ Utility  │  │ Security │  │  MCP Hub (process)│   │
+│  └──────────┘  └──────────┘  └──────────┘  └───────────────────┘   │
+└─────────────────────────────────────────────────────────────────────┘
+
+  Reconciler (獨立 process — python -m ragent.reconciler)
+```
+
+---
+
+## 二、Domain 詳細邊界
+
+### 2.1 Bootstrap（組合根）
+
+| 項目 | 說明 |
+|---|---|
+| **路徑** | `src/ragent/bootstrap/` |
+| **責任** | 唯一 DI 接縫；讀取 env vars、構建所有外部依賴、組裝 Container dataclass、注入 Routers/Services/Workers。 |
+| **對外暴露** | `Container` dataclass（供 `app.py`、worker、reconciler 使用）；`create_app()`。 |
+| **允許依賴** | `utility/`、`clients/`、`repositories/`、`pipelines/`、`plugins/`、`services/`、`storage/`、`auth/`、`errors/`、`middleware/`。幾乎可引用所有 Domain，因為這裡是組裝層。 |
+| **禁止事項** | ❌ Routers 不得反向依賴 bootstrap（循環）。❌ 除 `composition.py` 外，任何其他檔案不得直接讀取 env vars（`os.environ`）。❌ 不得持有長生命週期的 `AsyncConnection`。 |
+
+**模組清單：**
+
+| 檔案 | 用途 |
+|---|---|
+| `composition.py` | `build_container()` — 唯一 env 讀取點；構建所有 singleton |
+| `app.py` | `create_app()` — 掛載 routers、lifespan、middleware |
+| `broker.py` | TaskIQ broker 工廠（standalone / sentinel）|
+| `dispatcher.py` | 同步封裝層，讓同步呼叫能 enqueue async task |
+| `guard.py` | 啟動時環境約束驗證（auth mode 合法性）|
+| `http_logging.py` | httpx event hooks — error log 安裝 |
+| `init_schema.py` | ES index 初始化（BBQ / standard HNSW 回退）|
+| `logging_config.py` | structlog 設定、privacy denylist processor |
+| `metrics.py` | Prometheus counter/histogram 定義 |
+| `openapi.py` | Swagger security scheme 動態注入 |
+| `telemetry.py` | OTEL TracerProvider setup/shutdown |
+
+---
+
+### 2.2 Routers（表示層）
+
+| 項目 | 說明 |
+|---|---|
+| **路徑** | `src/ragent/routers/` |
+| **責任** | HTTP 請求解析、Pydantic 校驗、呼叫 Services/Pipelines、回傳 HTTP 回應。**只做 I/O 轉換**。 |
+| **對外暴露** | `APIRouter` 實例，由 `bootstrap/app.py` 掛載。 |
+| **允許依賴** | `schemas/`、`services/`、`errors/`、`auth/deps.py`、`clients/rate_limiter.py`（rate limit）、`middleware/`（間接，透過 request.scope）。 |
+| **禁止事項** | ❌ 不得直接呼叫 `repositories/`（繞過 service 層）。❌ 不得含業務邏輯（計算、狀態判斷）。❌ 不得讀取 `os.environ`。❌ 不得用 `Header(alias="X-User-Id")` — 必須用 `Depends(get_user_id)`。❌ 不得在 decorator 上寫完整路徑（版本必須在 `APIRouter(prefix=...)` 上宣告）。 |
+
+**模組清單：**
+
+| 檔案 | 路由前綴 | 核心職責 |
+|---|---|---|
+| `ingest.py` | `/ingest/v1` | Create / Read / List / Delete / Rerun / Upload |
+| `chat.py` | `/chat/v1` | 同步聊天、SSE 串流 |
+| `retrieve.py` | `/retrieve/v1` | 無 LLM 純檢索 |
+| `feedback.py` | `/feedback/v1` | 使用者回饋 HMAC token 驗證與雙寫 |
+| `mcp.py` | `/mcp/v1` | JSON-RPC 2.0 MCP Tool Server（P2.5）|
+| `admin_embedding.py` | `/admin/embedding/v1` | embedding model 生命週期管理 |
+| `admin_ingest.py` | `/admin/ingest/v1` | 手動 backfill 觸發 |
+| `health.py` | `/livez`, `/readyz`, `/startupz`, `/metrics` | 健康探針、Prometheus 指標 |
+| `health_probes.py` | — | `/readyz` 子探針邏輯（MariaDB/ES/Redis/MinIO）|
+
+---
+
+### 2.3 Services（業務邏輯層）
+
+| 項目 | 說明 |
+|---|---|
+| **路徑** | `src/ragent/services/` |
+| **責任** | 封裝業務流程協調；不直接操作 DB，透過 Repositories；不處理 HTTP 細節。 |
+| **允許依賴** | `repositories/`、`storage/`、`clients/`、`errors/`、`schemas/`（輸入 DTO）、`utility/`。 |
+| **禁止事項** | ❌ 不得直接操作 HTTP request/response 物件。❌ 不得直接執行 SQL（必須透過 repositories）。❌ 不得讀取 `os.environ`。 |
+
+**模組清單：**
+
+| 檔案 | 職責 |
+|---|---|
+| `ingest_service.py` | inline / file / upload ingest 流程協調；supersede 觸發；delete cascade 協調 |
+| `active_model_registry.py` | 活躍 embedding model config 快取（從 DB 讀取；`refresh()` 在 lifespan 呼叫）|
+| `embedding_lifecycle_service.py` | embedding model 狀態機：draft → staging → active → retired（B50）|
+| `cutover_preflight.py` | embedding cutover 前置檢查：warmup + similarity gate |
+
+---
+
+### 2.4 Repositories（資料持久層）
+
+| 項目 | 說明 |
+|---|---|
+| **路徑** | `src/ragent/repositories/` |
+| **責任** | 專職 DB CRUD。每個 public method 接受 `AsyncEngine` 或 `AsyncConnection`（每次呼叫自行 checkout）。 |
+| **允許依賴** | `utility/datetime.py`（UTC 補丁）、`errors/`（自定義 exception）、`schemas/`（映射 DTO）。 |
+| **禁止事項** | ❌ 不得含業務邏輯（只做 CRUD + 簡單 WHERE 條件）。❌ 不得持有長生命週期 `Connection`（module / class 層級）。❌ 不得定義 FK constraint（應用層維護關聯性）。❌ 不得跨 Domain 依賴 `services/` 或 `pipelines/`。 |
+
+**模組清單：**
+
+| 檔案 | 管理的資料 |
+|---|---|
+| `document_repository.py` | `documents` 表 — CRUD、status 轉換、選舉（supersede）|
+| `feedback_repository.py` | `feedback` 表 — 投票記錄寫入 |
+| `system_settings_repository.py` | `system_settings` 表 — embedding model config 讀寫 |
+
+---
+
+### 2.5 Pipelines（Haystack 管線）
+
+| 項目 | 說明 |
+|---|---|
+| **路徑** | `src/ragent/pipelines/` |
+| **責任** | 定義並建構 Haystack Pipeline 物件；不主動觸發執行（執行由 worker task 呼叫 `pipeline.run()`）。 |
+| **允許依賴** | `clients/`（EmbeddingClient）、`utility/`、`errors/`、`schemas/`。**不得依賴** `repositories/`、`services/`、`routers/`。 |
+| **禁止事項** | ❌ 不得在 `pipeline.run()` 外執行 DB 操作。❌ 不得假設 Haystack component kwargs 存在 — 必須用 `inspect.signature` 驗證並加 `# verified against haystack-elasticsearch X.Y.Z` 注解。❌ 不得在 pipeline 內直接讀取 env vars。 |
+
+**模組清單：**
+
+| 檔案 | 職責 |
+|---|---|
+| `ingest.py` | `build_ingest_pipeline()` — TextLoader → MimeAwareSplitter → BudgetChunker → DocumentEmbedder |
+| `retrieve.py` | `build_retrieval_pipeline()` — QueryEmbedder → ESVector+BM25 → RRF Joiner → SourceHydrator |
+| `observability.py` | `wrap_pipeline_component()` — 每個 Haystack component 的 structlog + OTEL 雙發射封裝 |
+
+---
+
+### 2.6 Plugins（可插拔萃取器）
+
+| 項目 | 說明 |
+|---|---|
+| **路徑** | `src/ragent/plugins/` |
+| **責任** | 實作 `ExtractorPlugin` Protocol；`PluginRegistry` 管理 fan-out 生命週期。 |
+| **允許依賴** | `repositories/`（透過 constructor injection）、`clients/`（透過 constructor injection）、`errors/`。 |
+| **禁止事項** | ❌ Plugins **不得** `import` `pipelines/` 或任何 HTTP 層。❌ 不得在 `extract()` 或 `delete()` 內持有 DB transaction（fan_out 在 TX 外執行）。❌ `registry.register()` 之後不得修改 plugin 實例。 |
+
+**模組清單：**
+
+| 檔案 | 職責 |
+|---|---|
+| `protocol.py` | `ExtractorPlugin` Protocol 定義（frozen v1）|
+| `registry.py` | `PluginRegistry` — register、fan_out（60s timeout）、fan_out_delete |
+| `vector.py` | `VectorExtractor` — ES bulk write（required plugin）|
+| `stub_graph.py` | `StubGraphExtractor` — no-op（optional，P3 佔位）|
+
+---
+
+### 2.7 Clients（外部服務客戶端）
+
+| 項目 | 說明 |
+|---|---|
+| **路徑** | `src/ragent/clients/` |
+| **責任** | 封裝對 Embedding / LLM / Rerank / Redis rate-limiter 的 HTTP 呼叫；retry、timeout、error mapping。 |
+| **允許依賴** | `errors/`、`utility/`；shared `httpx.Client`（由 bootstrap 注入）。 |
+| **禁止事項** | ❌ 不得硬編碼 URL（由 bootstrap 讀取 env 注入）。❌ 不得持有多個 `httpx.Client` 實例（共用 bootstrap 的 `http`）。❌ `httpx.Response` 非 context manager — 禁止 `with self._http.post(...) as resp:`。❌ 不得讀取 `os.environ`。 |
+
+**模組清單：**
+
+| 檔案 | 對應外部服務 |
+|---|---|
+| `auth.py` | `TokenManager` — J1/J2 token exchange，single-flight refresh |
+| `embedding.py` | `EmbeddingClient` — batch embed（32 chunks/call），30s timeout |
+| `embedding_model_config.py` | `EmbeddingModelConfig` — model metadata（field name, dimension, api_url）|
+| `llm.py` | `LLMClient` — chat + stream，token budget |
+| `rerank.py` | `RerankClient` — 重排，fail-open on 5xx（C4）|
+| `rate_limiter.py` | `RateLimiter` — Redis fixed-window per user |
+| `unprotect.py` | `UnprotectClient` — 選填，worker 前置解保護 |
+
+---
+
+### 2.8 Schemas（I/O DTO）
+
+| 項目 | 說明 |
+|---|---|
+| **路徑** | `src/ragent/schemas/` |
+| **責任** | Pydantic v2 model：HTTP request / response 的形狀定義與欄位驗證。純資料結構，無業務邏輯。 |
+| **允許依賴** | Python stdlib、Pydantic。**不得** import 任何 ragent 業務模組。 |
+| **禁止事項** | ❌ Schemas 不得含業務判斷（if/else 邏輯）。❌ 不得直接操作 DB 或外部服務。❌ 不得讀取 `os.environ`。 |
+
+**模組清單：**
+
+| 檔案 | 涵蓋 DTO |
+|---|---|
+| `ingest.py` | `InlineIngestRequest`、`FileIngestRequest`、`UploadIngestRequest`、`IngestResponse`、`IngestStatus`、`IngestListResponse`、`IngestMime` enum |
+| `chat.py` | `ChatRequest`、`ChatResponse`、`Source`、`StreamDelta`、`StreamDone`、`StreamError` |
+| `feedback.py` | `FeedbackRequest`、vote enum、reason enum |
+
+---
+
+### 2.9 Storage（物件儲存）
+
+| 項目 | 說明 |
+|---|---|
+| **路徑** | `src/ragent/storage/` |
+| **責任** | MinIO 操作封裝（GET / PUT / HEAD / DELETE）與多站點注冊表。 |
+| **允許依賴** | `errors/`、`utility/`。 |
+| **禁止事項** | ❌ MinIO 物件在 READY / DELETE 後不得刪除（audit/replay 保留）— 規則在 `00_spec.md §3.1`。❌ 不得讀取 `os.environ`（site config 由 bootstrap 注入）。 |
+
+**模組清單：**
+
+| 檔案 | 職責 |
+|---|---|
+| `minio_client.py` | `MinioClient` — 單一 site 的 S3 操作封裝 |
+| `minio_registry.py` | `MinioSiteRegistry` — 多 site 查詢；`UnknownMinioSite` 異常 |
+
+---
+
+### 2.10 Auth（認證）
+
+| 項目 | 說明 |
+|---|---|
+| **路徑** | `src/ragent/auth/` |
+| **責任** | JWT 驗證（joserfc）、`user_id` 解析、FastAPI `Depends` 注入。 |
+| **允許依賴** | `errors/`、`utility/`。 |
+| **禁止事項** | ❌ 不得在 auth 層做授權（permission check）— 授權屬 OpenFGA P2 範疇。❌ 不得在 route handler 中直接讀 `Header(alias="X-User-Id")` — 必須 `Depends(get_user_id)`。❌ `VerifyingTokenManager`（JWT 驗證）與 `TokenManager`（J1/J2 API token）是完全不同的類別，不得混用。 |
+
+**模組清單：**
+
+| 檔案 | 職責 |
+|---|---|
+| `jwt.py` | `VerifyingTokenManager` — JWKS 快取 + joserfc 驗簽；啟動時 OIDC discovery |
+| `deps.py` | `get_user_id(request)` — FastAPI Depends，從 request.scope 讀取 middleware 寫入的 user_id |
+
+---
+
+### 2.11 Middleware（HTTP 中介層）
+
+| 項目 | 說明 |
+|---|---|
+| **路徑** | `src/ragent/middleware/` |
+| **責任** | 每個 HTTP 請求的橫切關注（logging、user_id 注入）；TaskIQ context 傳遞。 |
+| **允許依賴** | `errors/`、`utility/`。 |
+| **禁止事項** | ❌ 不得含業務邏輯。❌ Middleware 不得依賴 `services/` 或 `repositories/`。 |
+
+**模組清單：**
+
+| 檔案 | 職責 |
+|---|---|
+| `logging.py` | `RequestLoggingMiddleware` — `api.request` / `api.error`；privacy denylist；user_id 寫入 request.scope |
+| `taskiq_context.py` | `StructlogContextMiddleware` — `request_id` / `user_id` 跨 kiq enqueue/execute 邊界傳遞 |
+
+---
+
+### 2.12 Errors（錯誤類型）
+
+| 項目 | 說明 |
+|---|---|
+| **路徑** | `src/ragent/errors/` |
+| **責任** | 所有業務異常的定義（`error_code` + `http_status`）；RFC 9457 Problem Details 格式化。 |
+| **允許依賴** | Python stdlib 只。 |
+| **禁止事項** | ❌ 新增錯誤碼必須同時更新 `docs/00_spec.md §4.1.2`。❌ 不得在 errors/ 內 import 任何 ragent 業務模組。 |
+
+**模組清單：**
+
+| 檔案 | 職責 |
+|---|---|
+| `codes.py` | 所有 `error_code` 字串常數 |
+| `problem.py` | RFC 9457 Problem Details 格式化、`error_code` → `type` URI mapping |
+| `upstream.py` | `UpstreamServiceError`（502）、`UpstreamTimeoutError`（504）基礎類別 |
+
+---
+
+### 2.13 Utility（橫切工具）
+
+| 項目 | 說明 |
+|---|---|
+| **路徑** | `src/ragent/utility/` |
+| **責任** | 純函數工具；無狀態；無外部依賴。 |
+| **允許依賴** | Python stdlib 只。 |
+| **禁止事項** | ❌ 不得放業務邏輯（只放可被任何 domain 引用的純工具）。❌ 不得讀取 `os.environ`（env 工具除外，本身就是封裝 env 讀取）。 |
+
+**模組清單：**
+
+| 檔案 | 職責 |
+|---|---|
+| `env.py` | `require()`, `int_env()`, `bool_env()`, `optional_str_env()` — env 讀取工具；空字串 `""` 視同 `None` |
+| `datetime.py` | UTC datetime 工具、naive datetime → aware 補丁 |
+| `compat.py` | Python 版本相容性 shim |
+| `embedding_lifecycle.py` | embedding model 生命週期工具函數（純計算）|
+| `feedback_token.py` | HMAC feedback token 生成與驗證 |
+
+---
+
+### 2.14 Security（安全工具）
+
+| 項目 | 說明 |
+|---|---|
+| **路徑** | `src/ragent/security/` |
+| **責任** | 檔案安全校驗（zip bomb / path traversal）。 |
+| **允許依賴** | Python stdlib 只。 |
+
+**模組清單：**
+
+| 檔案 | 職責 |
+|---|---|
+| `archive_guard.py` | DOCX / PPTX zip preflight — members、ratio、expanded bytes 檢查（`INGEST_MAX_ARCHIVE_MEMBERS` / `_RATIO` / `_EXPANDED_BYTES`）|
+
+---
+
+### 2.15 Reconciler（獨立 Process）
+
+| 項目 | 說明 |
+|---|---|
+| **路徑** | `src/ragent/reconciler.py` |
+| **責任** | K8s CronJob；掃描 stale UPLOADED / PENDING / DELETING，re-kiq 或 FAILED；multi-READY 修復（R3）。 |
+| **允許依賴** | `repositories/`、`bootstrap/`（共用 Container）、`errors/`、`utility/`。 |
+| **禁止事項** | ❌ 不得引入 TaskIQ `@broker.task` 定義（只呼叫 `kiq()`）。❌ 不得持有 DB transaction 跨 plugin / external call 邊界。❌ 必須以 `SELECT … FOR UPDATE SKIP LOCKED` 避免多 instance 競爭。 |
+
+---
+
+### 2.16 MCP Hub（獨立 Process）
+
+| 項目 | 說明 |
+|---|---|
+| **路徑** | `src/ragent/mcp_hub/` |
+| **責任** | 獨立 FastMCP 服務；從 `tools.yaml` 動態載入第三方 REST API 工具。 |
+| **允許依賴** | `utility/`、`errors/`。**完全獨立**於 ragent 主服務。 |
+| **禁止事項** | ❌ 不得與 ragent main process 共用任何 singleton。❌ 不得依賴 `bootstrap/composition.py`。 |
+
+---
+
+## 三、依賴方向規則（AI 操作前必讀）
+
+```
+允許的依賴方向（→ 表示「可以 import」）：
+
+Routers     → Services, Schemas, Errors, auth/deps, clients/rate_limiter
+Services    → Repositories, Storage, Clients, Errors, Schemas, Utility
+Repositories→ Utility, Errors, Schemas
+Pipelines   → Clients, Utility, Errors, Schemas
+Plugins     → Repositories(注入), Clients(注入), Errors
+Clients     → Errors, Utility
+Storage     → Errors, Utility
+Auth        → Errors, Utility
+Middleware  → Errors, Utility
+Schemas     → (stdlib + Pydantic only)
+Errors      → (stdlib only)
+Utility     → (stdlib only)
+Security    → (stdlib only)
+Bootstrap   → 全部（唯一可以組裝所有層的地方）
+Reconciler  → Repositories, Bootstrap(Container), Errors, Utility
+MCP Hub     → Utility, Errors（完全獨立 subprocess）
+
+❌ 禁止反向依賴：
+  Repositories → Services（❌）
+  Pipelines    → Services 或 Repositories（❌）
+  Plugins      → Pipelines 或 Routers（❌）
+  Clients      → Repositories 或 Services（❌）
+  Schemas      → 任何 ragent 業務模組（❌）
+  Errors       → 任何 ragent 業務模組（❌）
+  Utility      → 任何 ragent 業務模組（❌）
+```
+
+---
+
+## 四、AI 任務執行護欄（Harness Rules）
+
+### R1：Task 定位 — 先問「我在哪個 Domain？」
+
+在開始任何修改前，回答以下問題：
+
+1. **我要改的行為屬於哪個 Domain？**（參考第二節）
+2. **這個 Domain 允許依賴哪些模組？**（參考第三節）
+3. **有沒有任何 `docs/00_rule.md` 中的規則適用於這個 Domain？**
+
+如果不確定，先查 `docs/00_spec.md` 確認行為規格，再動手。
+
+---
+
+### R2：新檔案 — 放到正確 Domain
+
+| 要新增的類型 | 放在哪裡 |
+|---|---|
+| 新 API endpoint | `routers/` + `schemas/` + unit test in `tests/unit/` |
+| 新業務邏輯（非 CRUD） | `services/` |
+| 新 DB 操作 | `repositories/` |
+| 新 Haystack component | `pipelines/` |
+| 新外部 API 客戶端 | `clients/` |
+| 新純工具函數 | `utility/` |
+| 新 env var 讀取 | 只在 `bootstrap/composition.py` |
+| 新錯誤碼 | `errors/codes.py` + `docs/00_spec.md §4.1.2` 同 commit |
+| 新 Prometheus metric | `bootstrap/metrics.py` |
+| 新 MinIO site | `storage/minio_registry.py` |
+
+---
+
+### R3：禁止清單（任何 Domain 通用）
+
+| ❌ 禁止行為 | 正確做法 |
+|---|---|
+| 在 `routers/` 寫業務邏輯 | 移到 `services/` |
+| 在 `services/` 直接執行 SQL | 透過 `repositories/` |
+| 在 `repositories/` 含業務判斷 | 移到 `services/` |
+| 在 `pipelines/` import `repositories/` | pipeline 透過 constructor injection 接受依賴 |
+| 在 router handler 讀 `Header(alias="X-User-Id")` | `Depends(get_user_id)` |
+| 任意地方讀 `os.environ`（除了 `utility/env.py` 和 `bootstrap/composition.py`）| 全部集中到 `bootstrap/composition.py` |
+| 在非 `bootstrap/` 模組持有長生命週期 DB connection | 改為 engine.begin()/connect() per call |
+| 新 error_code 不加到 spec | 同 commit 更新 `docs/00_spec.md §4.1.2` |
+| mock Haystack component 不用 `autospec=True` | 加 `spec=ComponentClass` 或 `autospec=True` |
+| `structlog` 測試用 `caplog` bridge | 改用 `structlog.testing.capture_logs()` |
+| 在測試中 `asyncio.create_task(server.serve())` | 改用 `subprocess.Popen` 隔離進程 |
+| `with self._http.post(...) as resp:` | `resp = self._http.post(...); resp.raise_for_status()` |
+
+---
+
+### R4：狀態機規則（Ingest Domain 特有）
+
+```
+合法轉換：
+  UPLOADED → PENDING  （worker atomic claim）
+  PENDING  → READY    （pipeline 成功，含 supersede 選舉）
+  PENDING  → FAILED   （pipeline 失敗 / reconciler > 5 attempts）
+  READY    → DELETING （DELETE API）
+  PENDING  → DELETING （DELETE API 搶先）
+  DELETING → (row deleted) （cascade 完成）
+
+禁止轉換：
+  ❌ READY → PENDING（READY 只能重新 POST 觸發 supersede）
+  ❌ FAILED → 任何（只能重新 POST 或用 /rerun）
+  ❌ DELETING → 任何（DELETING 是 terminal 前的 transient）
+```
+
+Supersede 選舉規則：**同一 `(source_id, source_app)` 最多一個 READY**。轉為 READY 前，用 `SELECT MAX(created_at) FOR UPDATE` 選出 survivor；落敗者自降 PENDING → DELETING。
+
+---
+
+### R5：日誌規則摘要（所有 Domain）
+
+每個 public service method、每個 task、每個跨進程邊界，**必須有進出日誌**：
+
+```python
+# 進入
+log.info("ingest.started", document_id=doc_id, user_id=user_id)
+
+# 成功退出
+log.info("ingest.ready", document_id=doc_id, duration_ms=elapsed, chunks_total=n)
+
+# 失敗退出
+log.error("ingest.failed", document_id=doc_id, error_code="EMBEDDER_ERROR")
+```
+
+**禁止記錄**：`query`、`prompt`、`messages`、`completion`、`chunks`、`embedding`、`documents`、`body`、`authorization`、`cookie`、`password`、`token`、`secret`。
+
+---
+
+### R6：測試層級規則
+
+| 測試類型 | 放在哪 | 規則 |
+|---|---|---|
+| Unit（< 1s，mock 外部） | `tests/unit/` | 必須用 `autospec=True`；structlog 用 `capture_logs()` |
+| Integration（testcontainers）| `tests/integration/` | 必須標記 `@pytest.mark.docker`；不得 skip |
+| E2E（完整 stack）| `tests/e2e/` | Release step only；不在 per-commit gate |
+
+**新 behavior 必須先有 failing test（Red）才能寫 production code（Green）— TDD 強制。**
+
+---
+
+### R7：Commit 前置條件
+
+1. `make format` ✅  
+2. `make lint` ✅  
+3. `make test-gate`（含 `@pytest.mark.docker`）✅ — 0 skipped  
+4. `uv run bandit -r src/ --severity-level high` ✅  
+5. `/simplify` skill 已執行 ✅  
+6. `/review` skill 已執行 ✅  
+7. `.claude/.pre_commit_approved` 由 hook 寫入（非手動）✅  
+
+---
+
+## 五、快速查詢索引
+
+### 「我要加一個新功能，從哪開始？」
+
+```
+1. 查 docs/00_spec.md — 確認行為規格和 BDD scenario
+2. 查 docs/00_plan.md — 找到對應的 Task item
+3. 確定涉及哪些 Domain（本文件第二節）
+4. 在 tests/ 寫 failing test（Red phase）
+5. 在對應 Domain 的 src/ 寫最小實作（Green phase）
+6. Refactor + /simplify + /review + commit
+```
+
+### 「我改動了 X，可能影響哪些 Domain？」
+
+| 改動 X | 可能影響的 Domain |
+|---|---|
+| `repositories/document_repository.py` | Services（ingest_service）、Plugins（VectorExtractor）、Reconciler |
+| `clients/embedding.py` | Pipelines（ingest）、Plugins（VectorExtractor） |
+| `bootstrap/composition.py` | 所有 Domain（DI 變更）|
+| `schemas/ingest.py` | Routers（ingest）、Services（ingest_service）|
+| `errors/codes.py` | 所有 Domain + `docs/00_spec.md §4.1.2` |
+| `pipelines/retrieve.py` | Routers（chat、retrieve）、integration tests |
+| `bootstrap/metrics.py` | 所有有 metric emit 的 Domain |
+
+---
+
+## 六、更新記錄
+
+| 日期 | 變更 | 作者 |
+|---|---|---|
+| 2026-05-25 | 初版：梳理 16 個 Domain 邊界、依賴方向、AI 護欄規則 R1–R7 | Architect |

@@ -1,6 +1,7 @@
 # CLAUDE.md - Project Guidelines & TDD Workflow
 
-* Read `docs/00_rule.md` and follow development standards and mandatory workflow for this project. 
+* Read `docs/00_rule.md` and follow development standards and mandatory workflow for this project.
+* Read `docs/00_domain_map.md` **before every task** — it defines the module domain boundaries, allowed dependency directions, and AI harness rules (R1–R7) that govern all code changes.
 * Strict adherence to **TDD (Test-Driven Development)** and **Minimalism** and **Integrity** are required.
 ---
 
