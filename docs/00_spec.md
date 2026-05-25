@@ -487,5 +487,5 @@ Schema migrations (Alembic + `schema.sql` snapshot), module layout, boot auto-in
 
 > Full log: [`docs/spec/decision_log.md`](spec/decision_log.md)
 
-Append-only design decisions (B1–B60). Each row: ID · Date · Domain · Question · Decision · Alternatives rejected · Affects.  
+Append-only design decisions (B1–B61). Each row: ID · Date · Domain · Question · Decision · Alternatives rejected · Affects.  
 New decisions require a **new dated row**; never edit in place.

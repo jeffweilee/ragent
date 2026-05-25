@@ -13,12 +13,11 @@ pytestmark = pytest.mark.docker
 _EMBEDDING_DIM = 1024
 _FIXED_EMBEDDING = [0.1] * _EMBEDDING_DIM
 
-# B50 registry-mode field for the parametrized filter test. Production wires
-# `_DynamicFieldEmbeddingRetriever` against a per-model dense_vector field
-# computed from `EmbeddingModelConfig.field`; the fixture installs the
-# matching mapping so registry-mode kNN has a field to query.
+# Registry-mode test: the model name is arbitrary — registry mode always
+# queries the ``"embedding"`` dense_vector field (index-per-model design;
+# T-EM.11).  The index already has ``"embedding"`` via init_es(). No extra
+# PUT /_mapping is needed.
 _REGISTRY_MODEL_NAME = "testmodel"
-_REGISTRY_MODEL_FIELD = f"embedding_{_REGISTRY_MODEL_NAME}_{_EMBEDDING_DIM}"
 
 
 @pytest.fixture(scope="module")
@@ -38,29 +37,6 @@ def es_store(es_url: str):
         health = json.loads(resp.read())
         if health.get("status") not in ("yellow", "green"):
             raise RuntimeError(f"chunks_v1 index not ready: {health}")
-    # Install the registry-mode dense_vector field used by the parametrized
-    # filter test. Mirrors what EmbeddingLifecycleService.promote() does in
-    # production when a new model is added.
-    put_mapping = urllib.request.Request(
-        f"{es_url}/chunks_v1/_mapping",
-        method="PUT",
-        data=json.dumps(
-            {
-                "properties": {
-                    _REGISTRY_MODEL_FIELD: {
-                        "type": "dense_vector",
-                        "dims": _EMBEDDING_DIM,
-                        "index": True,
-                        "similarity": "cosine",
-                        "index_options": {"type": "flat"},
-                    }
-                }
-            }
-        ).encode(),
-        headers={"Content-Type": "application/json"},
-    )
-    with urllib.request.urlopen(put_mapping, timeout=30) as resp:
-        resp.read()
     store = ElasticsearchDocumentStore(
         hosts=es_url,
         index="chunks_v1",
@@ -88,9 +64,12 @@ def mock_embedder():
 
 
 def _stub_registry():
-    """Registry stub for the B50 registry-mode pipeline branch — returns a
-    single model whose `.field` matches the dense_vector field installed by
-    the `es_store` fixture so kNN has a real field to target."""
+    """Registry stub for the B50 registry-mode pipeline branch.
+
+    Registry mode always emits ``embedding_field="embedding"``; the kNN
+    query targets the ``"embedding"`` dense_vector that init_es() installs
+    on every index (index-per-model lifecycle, T-EM.11).
+    """
     from ragent.clients.embedding_model_config import EmbeddingModelConfig
 
     model = EmbeddingModelConfig(
@@ -383,7 +362,6 @@ def test_filter_source_app_vector_path(es_store, mock_embedder, mode: str) -> No
                     "chunk_id": f"vfilter-alpha-1-{mode}",
                     "document_id": alpha_doc_id,
                     "source_app": alpha_app,
-                    _REGISTRY_MODEL_FIELD: _FIXED_EMBEDDING,
                 },
                 embedding=_FIXED_EMBEDDING,
             ),
@@ -394,7 +372,6 @@ def test_filter_source_app_vector_path(es_store, mock_embedder, mode: str) -> No
                     "chunk_id": f"vfilter-beta-1-{mode}",
                     "document_id": beta_doc_id,
                     "source_app": beta_app,
-                    _REGISTRY_MODEL_FIELD: _FIXED_EMBEDDING,
                 },
                 embedding=_FIXED_EMBEDDING,
             ),
@@ -436,7 +413,6 @@ def test_production_wiring_with_filter_smoke(es_store) -> None:
                     "document_id": "doc-prod-wire-1",
                     "source_app": "prod_wire_app",
                     "source_meta": "prod_wire_space",
-                    _REGISTRY_MODEL_FIELD: _FIXED_EMBEDDING,
                 },
                 embedding=_FIXED_EMBEDDING,
             ),
@@ -448,7 +424,6 @@ def test_production_wiring_with_filter_smoke(es_store) -> None:
                     "document_id": "doc-prod-wire-2",
                     "source_app": "other_app",
                     "source_meta": "other_space",
-                    _REGISTRY_MODEL_FIELD: _FIXED_EMBEDDING,
                 },
                 embedding=_FIXED_EMBEDDING,
             ),

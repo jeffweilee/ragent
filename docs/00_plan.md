@@ -106,6 +106,16 @@
 
 ## Open items in partially-complete tracks
 
+### ES embedding field name clarification — T-EF-CLEAN (complete)
+
+| # | Category | Task | Spec | Status | Owner |
+|---|---|---|:-:|:-:|---|
+| T-EF-CLEAN.1 | Structural | • **Achieve:** Fix misleading `_QueryEmbedder` docstring that claimed registry mode targets `embedding_<m>_<d>` fields. Correct to: always emits `embedding_field="embedding"`; alias flip handles lifecycle cutover (B61). | B61 | [x] | Dev |
+| T-EF-CLEAN.2 | Structural | • **Achieve:** Remove dead `_REGISTRY_MODEL_FIELD` constant and the `PUT /_mapping` block from `tests/integration/test_chat_pipeline_retrieval.py::es_store`. That setup installed `embedding_testmodel_1024` on `chunks_v1` under the abandoned field-per-model design (B50); it was never queried because `_QueryEmbedder` hardcodes `"embedding"`. Update `_stub_registry` docstring to reflect the correct index-per-model design. | B61 | [x] | Dev |
+| T-EF-CLEAN.3 | Structural | • **Achieve:** Document index-per-model design supersession of B50 in `docs/spec/decision_log.md` (B61). Also backfill missing B60 entry (`ES_CHUNKS_INDEX` overridability). Update `docs/00_spec.md` §7 range marker to B1–B61. | B61 / B60 | [x] | Dev |
+
+---
+
 ### ICU analyzer convergence — T-ICU.4 (remaining)
 
 | # | Category | Task | Commit | Status | Owner |

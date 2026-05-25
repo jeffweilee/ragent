@@ -100,6 +100,11 @@ def doc_to_source_entry(doc: Any, *, max_chars: int = EXCERPT_MAX_CHARS_DEFAULT)
 
 _HAYSTACK_JOIN_MODE = {"rrf": "reciprocal_rank_fusion", "concatenate": "concatenate"}
 
+# Every ES index in the index-per-model lifecycle (chunks_v1, chunks_v2, …)
+# uses this single dense_vector field name.  Lifecycle cutover flips the read
+# alias, not the field name (B61).
+_ES_EMBEDDING_FIELD = "embedding"
+
 
 @component
 class _QueryEmbedder:
@@ -113,12 +118,14 @@ class _QueryEmbedder:
 
     - **Registry mode**: ``_QueryEmbedder(registry=, embed_callable=)`` calls
       ``registry.read_model()`` per request, embeds with that one model via
-      ``embed_callable(model, texts)``, and emits the matching ES field name
-      as ``embedding_field`` so a downstream dynamic-field retriever can
-      target the right ``embedding_<m>_<d>`` dense_vector instead of the
-      legacy hardcoded ``embedding`` field. The fresh ``read_model()``
-      lookup on every run is intentional — a cutover (settings flip) takes
-      effect on the next query without restarting the App.
+      ``embed_callable(model, texts)``, and always emits
+      ``embedding_field="embedding"``.  Every index in the index-per-model
+      lifecycle (``chunks_v1``, ``chunks_v2``, …) uses the same
+      ``"embedding"`` dense_vector field name; lifecycle cutover works by
+      flipping the read alias (``chunks_v1_active``), not by switching field
+      names.  The fresh ``read_model()`` lookup on every run is intentional
+      — a cutover (alias flip) takes effect on the next query without
+      restarting the App.
     """
 
     def __init__(
@@ -151,7 +158,7 @@ class _QueryEmbedder:
         return {
             "query": query,
             "query_embedding": embedding,
-            "embedding_field": "embedding",
+            "embedding_field": _ES_EMBEDDING_FIELD,
         }
 
 
@@ -162,8 +169,8 @@ class _DynamicFieldEmbeddingRetriever:
     Replaces ``ElasticsearchEmbeddingRetriever`` when the embedding field
     name is determined per-query by the ``ActiveModelRegistry`` (B50).
     Without it, the upstream `_QueryEmbedder`'s `embedding_field` output
-    would have no consumer and the kNN query would still hit the legacy
-    hardcoded ``embedding`` field.
+    would have no consumer and the kNN query would fall back to
+    ``_ES_EMBEDDING_FIELD`` (``"embedding"``).
 
     Reaches into ``document_store._search_documents(**body)`` to bypass the
     haystack-elasticsearch retriever's hardcoded ``"field": "embedding"``.
@@ -187,7 +194,7 @@ class _DynamicFieldEmbeddingRetriever:
     def run(
         self,
         query_embedding: list[float],
-        embedding_field: str = "embedding",
+        embedding_field: str = _ES_EMBEDDING_FIELD,
         filters: dict | None = None,
         top_k: int | None = None,
     ) -> dict:
