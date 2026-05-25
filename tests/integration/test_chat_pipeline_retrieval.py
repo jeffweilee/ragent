@@ -225,17 +225,32 @@ def test_vector_retrieves_document_by_embedding(es_store, mock_embedder) -> None
 # ── source hydration ──────────────────────────────────────────────────────────
 
 
-def test_source_hydrator_enriches_documents(es_store, mock_embedder) -> None:
+@pytest.mark.parametrize("mode", ["legacy", "registry"])
+def test_source_hydrator_enriches_documents(es_store, mock_embedder, mode: str) -> None:
+    """Source hydration must work for both pipeline construction modes.
+
+    `legacy` exercises Haystack's ``ElasticsearchEmbeddingRetriever``; `registry`
+    exercises ``_DynamicFieldEmbeddingRetriever`` — ensuring that hydration is not
+    silently broken by a change to the registry-mode retriever filter path.
+    Both documents include the registry-mode dense_vector field so that the kNN
+    query finds the chunk regardless of which field the retriever targets.
+    """
+    # Mode-suffix document IDs so the module-scoped es_store does not mix chunks
+    # across the two parametrize iterations.
+    doc_id = f"doc-hydrate-{mode}"
+    chunk_id = f"hydrate-doc-{mode}"
+    source_app = f"app_h_{mode}"
     _write_and_refresh(
         es_store,
         [
             Document(
-                id="hydrate-doc-1",
+                id=chunk_id,
                 content="hydration enrichment test",
                 meta={
-                    "chunk_id": "hydrate-doc-1",
-                    "document_id": "doc-hydrate",
-                    "source_app": "app_h",
+                    "chunk_id": chunk_id,
+                    "document_id": doc_id,
+                    "source_app": source_app,
+                    _REGISTRY_MODEL_FIELD: _FIXED_EMBEDDING,
                 },
                 embedding=_FIXED_EMBEDDING,
             )
@@ -243,13 +258,13 @@ def test_source_hydrator_enriches_documents(es_store, mock_embedder) -> None:
     )
     doc_repo = AsyncMock()
     doc_repo.get_sources_by_document_ids.return_value = {
-        "doc-hydrate": ("app_h", "src-xyz", "Hydrated Title")
+        doc_id: (source_app, "src-xyz", "Hydrated Title")
     }
 
-    pipeline = _pipeline(es_store, mock_embedder, doc_repo, join_mode="vector_only")
+    pipeline = _pipeline(es_store, mock_embedder, doc_repo, mode=mode, join_mode="vector_only")
     docs = _run(pipeline, "hydration enrichment")
 
-    hydrated = [d for d in docs if d.meta.get("document_id") == "doc-hydrate"]
+    hydrated = [d for d in docs if d.meta.get("document_id") == doc_id]
     assert len(hydrated) >= 1
     assert hydrated[0].meta["source_id"] == "src-xyz"
     assert hydrated[0].meta["source_title"] == "Hydrated Title"

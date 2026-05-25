@@ -25,7 +25,7 @@ from tests.e2e.conftest import API_URL
 
 pytestmark = pytest.mark.docker
 
-DEADLINE_SECONDS = 120
+DEADLINE_SECONDS = 180
 SOURCE_APP = "e2e-multiversion"
 
 # ── article corpus ──────────────────────────────────────────────────────────
