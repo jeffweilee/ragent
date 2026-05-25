@@ -43,11 +43,14 @@ Existing routers to read as living references:
 
 | Router | File | Prefix | Routes |
 |---|---|---|---|
-| Ingest | `src/ragent/routers/ingest.py` | `/ingest/v1` | `""`, `/{document_id}` (GET+DELETE), `""` (GET list) |
+| Ingest | `src/ragent/routers/ingest.py` | `/ingest/v1` | `""`, `/{document_id}` (GET+DELETE), `""` (GET list), `/{id}/rerun` |
 | Chat | `src/ragent/routers/chat.py` | `/chat/v1` | `""`, `/stream` |
 | Retrieve | `src/ragent/routers/retrieve.py` | `/retrieve/v1` | `""` |
-| MCP | `src/ragent/routers/mcp.py` | `/mcp/v1` | `""` (JSON-RPC 2.0 dispatch: `initialize`, `tools/list`, `tools/call`, `ping`) |
-| Health | `src/ragent/routers/health.py` | *(none)* | `/livez`, `/readyz`, `/startupz` |
+| Feedback | `src/ragent/routers/feedback.py` | `/feedback/v1` | `""` |
+| MCP | `src/ragent/routers/mcp.py` | `/mcp/v1` | `""` (JSON-RPC 2.0 dispatch) |
+| Embedding lifecycle | `src/ragent/routers/admin_embedding.py` | `/embedding/v1` | `/promote`, `/cutover`, `/rollback`, `/commit`, `/abort`, `/backfill`, `/state`, `/cutover/preflight` |
+| Upload (direct route) | `src/ragent/routers/admin_ingest.py` | `/ingest/v1/upload` | *(no APIRouter prefix — full path in decorator)* |
+| Health | `src/ragent/routers/health.py` | *(none)* | `/livez`, `/readyz`, `/startupz`, `/metrics` |
 
 ---
 

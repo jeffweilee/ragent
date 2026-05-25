@@ -65,12 +65,9 @@
 | `app.py` | `create_app()` — 掛載 routers、lifespan、middleware |
 | `broker.py` | TaskIQ broker 工廠（standalone / sentinel）|
 | `dispatcher.py` | 同步封裝層，讓同步呼叫能 enqueue async task |
-| `guard.py` | 啟動時環境約束驗證（auth mode 合法性）|
-| `http_logging.py` | httpx event hooks — error log 安裝 |
-| `init_schema.py` | ES index 初始化（BBQ / standard HNSW 回退）|
+| `init_schema.py` | DB + ES schema 初始化；`_iter_statements` strip-then-split SQL parser |
 | `logging_config.py` | structlog 設定、privacy denylist processor |
 | `metrics.py` | Prometheus counter/histogram 定義 |
-| `openapi.py` | Swagger security scheme 動態注入 |
 | `telemetry.py` | OTEL TracerProvider setup/shutdown |
 
 ---
@@ -94,10 +91,9 @@
 | `retrieve.py` | `/retrieve/v1` | 無 LLM 純檢索 |
 | `feedback.py` | `/feedback/v1` | 使用者回饋 HMAC token 驗證與雙寫 |
 | `mcp.py` | `/mcp/v1` | JSON-RPC 2.0 MCP Tool Server（P2.5）|
-| `admin_embedding.py` | `/admin/embedding/v1` | embedding model 生命週期管理 |
-| `admin_ingest.py` | `/admin/ingest/v1` | 手動 backfill 觸發 |
+| `admin_embedding.py` | `/embedding/v1` | embedding model 生命週期管理（B50；promote/cutover/rollback/commit/abort/state）|
+| `admin_ingest.py` | `/ingest/v1/upload` | multipart 上傳路由（direct route；no `APIRouter` prefix）|
 | `health.py` | `/livez`, `/readyz`, `/startupz`, `/metrics` | 健康探針、Prometheus 指標 |
-| `health_probes.py` | — | `/readyz` 子探針邏輯（MariaDB/ES/Redis/MinIO）|
 
 ---
 
@@ -194,11 +190,9 @@
 |---|---|
 | `auth.py` | `TokenManager` — J1/J2 token exchange，single-flight refresh |
 | `embedding.py` | `EmbeddingClient` — batch embed（32 chunks/call），30s timeout |
-| `embedding_model_config.py` | `EmbeddingModelConfig` — model metadata（field name, dimension, api_url）|
 | `llm.py` | `LLMClient` — chat + stream，token budget |
 | `rerank.py` | `RerankClient` — 重排，fail-open on 5xx（C4）|
 | `rate_limiter.py` | `RateLimiter` — Redis fixed-window per user |
-| `unprotect.py` | `UnprotectClient` — 選填，worker 前置解保護 |
 
 ---
 
@@ -211,13 +205,7 @@
 | **允許依賴** | Python stdlib、Pydantic。**不得** import 任何 ragent 業務模組。 |
 | **禁止事項** | ❌ Schemas 不得含業務判斷（if/else 邏輯）。❌ 不得直接操作 DB 或外部服務。❌ 不得讀取 `os.environ`。 |
 
-**模組清單：**
-
-| 檔案 | 涵蓋 DTO |
-|---|---|
-| `ingest.py` | `InlineIngestRequest`、`FileIngestRequest`、`UploadIngestRequest`、`IngestResponse`、`IngestStatus`、`IngestListResponse`、`IngestMime` enum |
-| `chat.py` | `ChatRequest`、`ChatResponse`、`Source`、`StreamDelta`、`StreamDone`、`StreamError` |
-| `feedback.py` | `FeedbackRequest`、vote enum、reason enum |
+主要檔案：`ingest.py`（InlineIngestRequest / FileIngestRequest / UploadIngestRequest / IngestStatus / IngestListResponse）、`chat.py`（ChatRequest / ChatResponse / Source / StreamDelta/Done/Error）、`feedback.py`（FeedbackRequest / vote / reason enum）。
 
 ---
 
@@ -230,12 +218,7 @@
 | **允許依賴** | `errors/`、`utility/`。 |
 | **禁止事項** | ❌ MinIO 物件在 READY / DELETE 後不得刪除（audit/replay 保留）— 規則在 `00_spec.md §3.1`。❌ 不得讀取 `os.environ`（site config 由 bootstrap 注入）。 |
 
-**模組清單：**
-
-| 檔案 | 職責 |
-|---|---|
-| `minio_client.py` | `MinioClient` — 單一 site 的 S3 操作封裝 |
-| `minio_registry.py` | `MinioSiteRegistry` — 多 site 查詢；`UnknownMinioSite` 異常 |
+主要檔案：`minio_client.py`（MinioClient — S3 操作封裝）、`minio_registry.py`（MinioSiteRegistry — 多 site 查詢）。
 
 ---
 
@@ -248,12 +231,7 @@
 | **允許依賴** | `errors/`、`utility/`。 |
 | **禁止事項** | ❌ 不得在 auth 層做授權（permission check）— 授權屬 OpenFGA P2 範疇。❌ 不得在 route handler 中直接讀 `Header(alias="X-User-Id")` — 必須 `Depends(get_user_id)`。❌ `VerifyingTokenManager`（JWT 驗證）與 `TokenManager`（J1/J2 API token）是完全不同的類別，不得混用。 |
 
-**模組清單：**
-
-| 檔案 | 職責 |
-|---|---|
-| `jwt.py` | `VerifyingTokenManager` — JWKS 快取 + joserfc 驗簽；啟動時 OIDC discovery |
-| `deps.py` | `get_user_id(request)` — FastAPI Depends，從 request.scope 讀取 middleware 寫入的 user_id |
+主要檔案：`jwt.py`（VerifyingTokenManager — JWKS + joserfc 驗簽）、`deps.py`（get_user_id FastAPI Depends）。
 
 ---
 
@@ -266,12 +244,7 @@
 | **允許依賴** | `errors/`、`utility/`。 |
 | **禁止事項** | ❌ 不得含業務邏輯。❌ Middleware 不得依賴 `services/` 或 `repositories/`。 |
 
-**模組清單：**
-
-| 檔案 | 職責 |
-|---|---|
-| `logging.py` | `RequestLoggingMiddleware` — `api.request` / `api.error`；privacy denylist；user_id 寫入 request.scope |
-| `taskiq_context.py` | `StructlogContextMiddleware` — `request_id` / `user_id` 跨 kiq enqueue/execute 邊界傳遞 |
+主要檔案：`logging.py`（RequestLoggingMiddleware — api.request/error；user_id 寫入 scope）、`taskiq_context.py`（StructlogContextMiddleware）。
 
 ---
 
@@ -503,16 +476,7 @@ log.error("ingest.failed", document_id=doc_id, error_code="EMBEDDER_ERROR")
 
 ## 五、快速查詢索引
 
-### 「我要加一個新功能，從哪開始？」
-
-```
-1. 查 docs/00_spec.md — 確認行為規格和 BDD scenario
-2. 查 docs/00_plan.md — 找到對應的 Task item
-3. 確定涉及哪些 Domain（本文件第二節）
-4. 在 tests/ 寫 failing test（Red phase）
-5. 在對應 Domain 的 src/ 寫最小實作（Green phase）
-6. Refactor + /simplify + /review + commit
-```
+> 新功能：查 `docs/00_spec.md` → `docs/00_plan.md` → 定位 Domain（§二）→ Red test → Green impl → `/simplify` + `/review` + commit。
 
 ### 「我改動了 X，可能影響哪些 Domain？」
 
@@ -526,10 +490,3 @@ log.error("ingest.failed", document_id=doc_id, error_code="EMBEDDER_ERROR")
 | `pipelines/retrieve.py` | Routers（chat、retrieve）、integration tests |
 | `bootstrap/metrics.py` | 所有有 metric emit 的 Domain |
 
----
-
-## 六、更新記錄
-
-| 日期 | 變更 | 作者 |
-|---|---|---|
-| 2026-05-25 | 初版：梳理 16 個 Domain 邊界、依賴方向、AI 護欄規則 R1–R7 | Architect |
