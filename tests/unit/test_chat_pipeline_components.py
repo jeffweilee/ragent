@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 from haystack.dataclasses import Document
 from haystack_integrations.document_stores.elasticsearch import ElasticsearchDocumentStore
@@ -207,3 +208,27 @@ def test_reranker_fail_open_increments_degraded_metric_timeout() -> None:
     _Reranker(rerank_client, top_k=1).run(query="q", documents=[Document(id="B")])
     after = REGISTRY.get_sample_value("rerank_degraded_total", {"reason": "timeout"}) or 0.0
     assert after == before + 1.0
+
+
+def test_reranker_reraises_on_4xx_reranker_error() -> None:
+    """4xx HTTP errors (auth/config failures) must propagate — not silently fail-open.
+
+    A reranker 401/403/422 means the operator has misconfigured credentials or the
+    request contract is broken; treating it as fail-open would mask the defect.
+    Only 5xx / timeout warrant RRF fallback (spec §3.6.1 C4).
+    """
+    from ragent.errors.upstream import UpstreamServiceError
+
+    rerank_client = MagicMock()
+    # Build a realistic UpstreamServiceError wrapping an httpx 401 response.
+    mock_request = MagicMock(spec=httpx.Request)
+    mock_response = MagicMock(spec=httpx.Response)
+    mock_response.status_code = 401
+    http_exc = httpx.HTTPStatusError("401 Unauthorized", request=mock_request, response=mock_response)
+    upstream_exc = UpstreamServiceError("rerank auth failure", service="rerank")
+    upstream_exc.__cause__ = http_exc
+    rerank_client.rerank.side_effect = upstream_exc
+
+    docs = [Document(id="A")]
+    with pytest.raises(UpstreamServiceError):
+        _Reranker(rerank_client, top_k=1).run(query="q", documents=docs)

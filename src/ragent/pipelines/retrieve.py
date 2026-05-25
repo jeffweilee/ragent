@@ -6,6 +6,7 @@ import dataclasses
 from datetime import datetime
 from typing import Any
 
+import httpx
 import anyio.from_thread
 import structlog
 from haystack.components.joiners import DocumentJoiner
@@ -271,6 +272,12 @@ class _Reranker:
         try:
             results = self._client.rerank(query=query, texts=texts, top_k=k)
         except UpstreamServiceError as exc:
+            # 4xx responses (auth failures, bad-request config errors) are NOT
+            # transient — re-raise so they surface as hard errors instead of
+            # silently degrading ranking. Only 5xx / timeout warrant fail-open.
+            cause = exc.__cause__
+            if isinstance(cause, httpx.HTTPStatusError) and cause.response.status_code < 500:
+                raise
             # UpstreamTimeoutError is a subclass of UpstreamServiceError; check
             # it first so the reason label discriminates timeout from 5xx errors.
             reason = "timeout" if isinstance(exc, UpstreamTimeoutError) else "5xx"

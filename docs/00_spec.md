@@ -247,7 +247,7 @@ The chaos suite asserts the resilience claims of §3.6 (reconciler recovery, ide
 | **C1** | Worker `SIGKILL` after `PENDING` transition | `os.kill(worker_pid, SIGKILL)` once status flips to `PENDING` | Reconciler re-dispatch → `READY` ≤ `RECONCILER_PENDING_STALE_SECONDS + RECONCILER_TICK_INTERVAL_SECONDS + worker_pipeline_p99 + slack`; `reconciler_tick_total` increments; no orphan ES chunks |
 | **C2** | MariaDB commit ↔ ES bulk crash | Monkeypatch worker to raise `ConnectionError` between DB `commit` and ES `bulk` | Worker retries idempotently; final state `READY` with ES chunks present; `multi_ready_repaired_total` unchanged (no demote needed) |
 | **C3** | ES bulk 207 partial failure | WireMock returns ES `_bulk` response with `errors:true` and 5/50 items failed | Worker retries failed items only (idempotent OVERWRITE); `READY` with all 50 chunks; `event=es.bulk_partial_failure` log emitted |
-| **C4** | Rerank 5xx during chat | WireMock `/rerank` returns 500 for 3 consecutive calls | Chat returns `200` with RRF-ordered sources (fail-open: `_Reranker.run()` catches `UpstreamServiceError`, logs `rerank.degraded`, increments `rerank_degraded_total{reason="5xx"}`, returns `documents[:top_k]` — P2.3); `rerank_degraded_total{reason="5xx"}+=3` |
+| **C4** | Rerank 5xx during chat | WireMock `/rerank` returns 500 for 3 consecutive calls | Chat returns `200` with RRF-ordered sources (fail-open: `_Reranker.run()` catches `UpstreamServiceError` **whose cause is a 5xx or timeout** — 4xx causes re-raise, logs `rerank.degraded`, increments `rerank_degraded_total{reason="5xx"}`, returns `documents[:top_k]` — P2.3); `rerank_degraded_total{reason="5xx"}+=3` |
 | **C5** | LLM stream interrupt mid-response | WireMock streams 3 `delta` events then drops TCP connection | Server emits `data: {"type":"error","error_code":"LLM_STREAM_INTERRUPTED",...}` per B6; client connection closes cleanly; no 500 in API logs |
 | **C6** | MinIO 503 during worker download | WireMock proxy injects 503 on `GET /staging/{key}` for 2/3 attempts | Worker retries (3×@2s built-in); succeeds on attempt 3; `READY`; `minio.transient_error` log count = 2 |
 
@@ -405,7 +405,7 @@ Inventory of every `error_code` emitted by P1 (API responses + log events). New 
 | `es.bbq_unsupported` | structured log `event=es.bbq_unsupported` | Cluster rejected `bbq_hnsw`; bootstrap retried with standard HNSW (B26) |
 | `reconciler_tick_total` stale | Prometheus alert | `reconciler_tick_total` flat > 10 min (R8, S30) — `ReconcilerTickStalled` alert |
 | Ingest pipeline failure rate > 10 % | Prometheus alert | `ragent_pipeline_runs_total{outcome="failed"}` rate / total rate > 0.10 for 2 min — `IngestHighFailureRate` alert (P2.1) |
-| Reranker degraded for > 5 min | Prometheus alert | `rerank_degraded_total` rate > 0 sustained 5 min — `RerankerDegradedPersistent` alert (P2.3 fail-open) |
+| Reranker degraded for > 5 min | Prometheus alert | `rerank_degraded_total` rate (2m window) > 0 sustained 5 min — `RerankerDegradedPersistent` alert (P2.3 fail-open; 2m window prevents a single transient event from firing the alert) |
 | Worker pipeline p99 > 5 min | Prometheus alert | `worker_pipeline_duration_seconds` histogram_quantile(0.99) > 300 s for 5 min — `WorkerPipelineSlow` alert |
 | `/readyz` probe stuck failing | Prometheus alert | `ragent_readyz_probe_status == 0` for 2 min — `ReadyzProbeFailing` alert (critical; signals hard infra dependency down) |
 

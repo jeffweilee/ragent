@@ -41,9 +41,11 @@ groups:
       - alert: RerankerDegradedPersistent
         # rerank_degraded_total increments once per request when the reranker
         # returns 5xx or times out and the pipeline falls back to RRF order.
-        # A non-zero rate sustained for 5 min means the reranker is effectively
-        # down; investigate RERANK_API_URL availability.
-        expr: rate(rerank_degraded_total[10m]) > 0
+        # 2m window: a single event makes rate([2m])>0 for ~2 min only, so
+        # for:5m requires continuous degradation activity — not just one blip.
+        # (A 10m window would keep rate positive for ~10 min after one event,
+        # falsely promoting a transient fail-open into a "persistent" alert.)
+        expr: rate(rerank_degraded_total[2m]) > 0
         for: 5m
         labels:
           severity: warning
