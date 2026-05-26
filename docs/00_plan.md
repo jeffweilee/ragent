@@ -152,3 +152,28 @@
 | T-MH.10 | Behavioral | • **Achieve:** Expose the project's own `POST /retrieve/v1` as an MCP tool by default. | — | [x] | Dev |
 | T-MH.11 | Behavioral | • **Achieve:** Operability triple — per-system `verify_ssl`, Hub serves `GET /metrics`, `LoadFailure` carries structured fields. | — | [x] | Dev |
 
+---
+
+## Track T-CH — Chat Intent Detection + `retrieve` Flag
+
+> Source: 2026-05-26 feature request.
+> Adds LLM-based intent classification before retrieval and an explicit `retrieve` flag.
+> Intent → `requires_retrieve` mapping lives in `src/ragent/routers/chat.py`; system prompt gains a "根據資料" opener rule for retrieval-grounded intents.
+
+| # | Category | Task | Status | Owner |
+|---|---|---|:---:|---|
+| T-CH.D1 | Red+Green | • **Achieve:** `_requires_retrieve()` maps all known intents correctly.<br>• **Deliver:** `tests/unit/test_chat_intent.py::test_requires_retrieve_known_intents` — GREETING/CHITCHAT → False; QUESTION/SUMMARY/GENERATION → True. | [x] | Dev |
+| T-CH.D2 | Red+Green | • **Achieve:** `_requires_retrieve()` defaults unknown labels to True (fail-safe).<br>• **Deliver:** `tests/unit/test_chat_intent.py::test_requires_retrieve_unknown_defaults_true`. | [x] | Dev |
+| T-CH.D3 | Red+Green | • **Achieve:** `_detect_intent()` returns correct label when LLM returns exact match.<br>• **Deliver:** `tests/unit/test_chat_intent.py::test_detect_intent_known_label` — mock LLM returns "GREETING" → "GREETING". | [x] | Dev |
+| T-CH.D4 | Red+Green | • **Achieve:** `_detect_intent()` falls back to QUESTION for unrecognised LLM output.<br>• **Deliver:** `tests/unit/test_chat_intent.py::test_detect_intent_unknown_label_fallback`. | [x] | Dev |
+| T-CH.D5 | Red+Green | • **Achieve:** `_detect_intent()` falls back to QUESTION on LLM exception.<br>• **Deliver:** `tests/unit/test_chat_intent.py::test_detect_intent_exception_fallback`. | [x] | Dev |
+| T-CH.D6 | Red+Green | • **Achieve:** `_detect_intent()` uses only the first word of multi-word LLM output.<br>• **Deliver:** `tests/unit/test_chat_intent.py::test_detect_intent_multiword_uses_first_word`. | [x] | Dev |
+| T-CH.R1 | Red+Green | • **Achieve:** `build_rag_messages(inject_context=False)` passes messages through without `<context>` wrapping.<br>• **Deliver:** `tests/unit/test_build_rag_messages.py::test_inject_context_false_no_context_tag` — system prompt still prepended. | [x] | Dev |
+| T-CH.R2 | Red+Green | • **Achieve:** `build_rag_messages(inject_context=False)` still floats caller system messages to front.<br>• **Deliver:** `tests/unit/test_build_rag_messages.py::test_inject_context_false_system_floated`. | [x] | Dev |
+| T-CH.R3 | Red+Green | • **Achieve:** `ChatRequest.retrieve` field defaults True and accepts False.<br>• **Deliver:** `tests/unit/test_build_rag_messages.py::test_chat_request_retrieve_field`. | [x] | Dev |
+| T-CH.P1 | Red+Green | • **Achieve:** `_RAG_COMMON_INSTRUCTIONS` contains the GROUNDED RESPONSE OPENER rule.<br>• **Deliver:** `tests/unit/test_build_rag_messages.py::test_system_prompt_contains_grounded_opener_rule`. | [x] | Dev |
+| T-CH.I1 | Red+Green | • **Achieve:** `POST /chat/v1 {retrieve:false}` skips intent detection + pipeline; `sources=[]`.<br>• **Deliver:** `tests/integration/test_chat_endpoint.py::test_retrieve_false_skips_pipeline`. | [x] | Dev |
+| T-CH.I2 | Red+Green | • **Achieve:** `POST /chat/v1/stream {retrieve:false}` done frame has `sources=[]`.<br>• **Deliver:** `tests/integration/test_chat_endpoint.py::test_stream_retrieve_false_sources_empty`. | [x] | Dev |
+| T-CH.I3 | Red+Green | • **Achieve:** `POST /chat/v1` with intent=GREETING skips retrieval pipeline; `sources=[]`.<br>• **Deliver:** `tests/integration/test_chat_endpoint.py::test_greeting_intent_skips_retrieval`. | [x] | Dev |
+| T-CH.I4 | Red+Green | • **Achieve:** `POST /chat/v1` with intent=QUESTION still runs retrieval pipeline.<br>• **Deliver:** `tests/integration/test_chat_endpoint.py::test_question_intent_runs_retrieval`. | [x] | Dev |
+

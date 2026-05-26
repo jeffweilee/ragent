@@ -50,6 +50,12 @@ _RAG_COMMON_INSTRUCTIONS = """\
 6. STRICT LANGUAGE MIRRORING: Mirror the script/language of the user's prompt exactly.
    If the user writes in Traditional Chinese, respond entirely in Traditional Chinese —
    even if the text inside <context> is in Simplified Chinese or English.
+7. GROUNDED RESPONSE OPENER: For QUESTION, SUMMARY, and GENERATION responses, always
+   begin your answer with a natural opener that grounds the reply in the retrieved
+   material. Mirror the user's language/script for this opener. Examples:
+   - Traditional/Simplified Chinese → "根據所提供的資料，…" / "依據相關資料，…"
+   - English → "Based on the provided materials, …"
+   - Japanese → "提供された資料によると、…"
 """
 
 _DEFAULT_RAG_SYSTEM_PROMPT = os.environ.get("RAGENT_DEFAULT_RAG_SYSTEM_PROMPT") or (
@@ -101,6 +107,7 @@ class ChatRequest(BaseModel):
     top_k: int = Field(default=_DEFAULT_TOP_K, ge=1, le=200)
     min_score: float | None = Field(default=_DEFAULT_MIN_SCORE, ge=0.0)
     dedupe: bool = False
+    retrieve: bool = True  # False = skip intent detection + retrieval; caller supplies <context>
 
     @field_validator("provider")
     @classmethod
@@ -170,21 +177,32 @@ def _wrap_last_user(messages: list[dict[str, Any]], context_block: str) -> list[
     return messages
 
 
-def build_rag_messages(req: ChatRequest, docs: list[Any] | None) -> list[dict[str, Any]]:
+def build_rag_messages(
+    req: ChatRequest,
+    docs: list[Any] | None,
+    *,
+    inject_context: bool = True,
+) -> list[dict[str, Any]]:
     """Build the final message list for the LLM with RAG grounding always applied.
 
     The RAG system prompt (or grounding rules) is prepended in every case — even when
     docs is empty — so the boundary is never silently removed. An empty docs list
     produces a sentinel context block rather than falling back to the generic assistant.
+
+    When inject_context=False the caller's message list is passed through verbatim
+    (no <context> wrapping); use this when the caller has already embedded their own
+    <context>…</context> block and retrieval was intentionally skipped.
     """
-    context_block = _render_context(docs)
-    wrapped = _wrap_last_user(list(req.messages), context_block)
+    messages = list(req.messages)
+    if inject_context:
+        context_block = _render_context(docs)
+        messages = _wrap_last_user(messages, context_block)
     # Single pass: detect user-supplied system message and partition in one loop.
     # Float system messages to the front — some providers (e.g. OpenAI) reject
     # non-leading system messages.
     sys_msgs: list[dict[str, Any]] = []
     other_msgs: list[dict[str, Any]] = []
-    for m in wrapped:
+    for m in messages:
         (sys_msgs if m.get("role") == "system" else other_msgs).append(m)
     if sys_msgs:
         # Order: [grounding_rules, caller_system…, remaining_turns…]

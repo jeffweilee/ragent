@@ -30,8 +30,103 @@ from ragent.utility.feedback_token import compute_sources_hash
 from ragent.utility.feedback_token import sign as sign_feedback_token
 from ragent.utility.id_gen import new_id
 
+# ---------------------------------------------------------------------------
+# Intent taxonomy —維護點：只改此表即可新增/移除 intent
+# ---------------------------------------------------------------------------
+_INTENT_REQUIRES_RETRIEVE: dict[str, bool] = {
+    "GREETING": False,  # 打招呼、再見
+    "CHITCHAT": False,  # 閒聊、情緒表達、笑話
+    "QUESTION": True,  # 需從文件查找事實
+    "SUMMARY": True,  # 摘要文件內容
+    "GENERATION": True,  # 根據文件草擬文字
+}
+_INTENT_DEFAULT = "QUESTION"  # fallback when LLM returns unrecognised label
+
+_INTENT_SYSTEM_PROMPT = (
+    "Classify the user message into exactly one intent label:\n"
+    "  GREETING   — greetings, farewells, pleasantries\n"
+    "  CHITCHAT   — casual conversation, emotional expression, small talk\n"
+    "  QUESTION   — factual question to be answered from documents\n"
+    "  SUMMARY    — request to summarise document content\n"
+    "  GENERATION — request to draft or write content grounded in documents\n"
+    "Reply with only the intent label. No punctuation, no explanation."
+)
+
+
 logger = structlog.get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
+
+
+def _requires_retrieve(intent: str) -> bool:
+    """Return True when the given intent requires retrieval.
+
+    Unknown intents default to True (fail-safe: better to over-retrieve
+    than to silently skip useful context).
+    """
+    return _INTENT_REQUIRES_RETRIEVE.get(intent, True)
+
+
+def _detect_intent(llm_client: Any, query: str, model: str) -> str:
+    """Call LLM to classify the user query intent.
+
+    Uses temperature=0 and max_tokens=10 for a fast, deterministic
+    single-word response. The first word of the response is used so
+    the function is robust to LLM explanations appended after the label.
+    Returns _INTENT_DEFAULT on any error or unrecognised label (fail-safe).
+    """
+    messages = [
+        {"role": "system", "content": _INTENT_SYSTEM_PROMPT},
+        {"role": "user", "content": query},
+    ]
+    try:
+        result = llm_client.chat(messages=messages, model=model, temperature=0, max_tokens=10)
+        words = result.get("content", "").strip().upper().split()
+        label = words[0] if words else ""
+        return label if label in _INTENT_REQUIRES_RETRIEVE else _INTENT_DEFAULT
+    except Exception:
+        logger.warning("chat.intent.error", exc_info=True)
+        return _INTENT_DEFAULT  # fail-safe: assume QUESTION → retrieval still runs
+
+
+async def _resolve_docs(
+    body: ChatRequest,
+    last_user: str,
+    llm_client: Any,
+    retrieval_pipeline: Any,
+) -> tuple[list[Any], bool]:
+    """Detect intent (when body.retrieve=True) and conditionally run retrieval.
+
+    Returns (docs, skip_retrieve).  Sequential by design: intent detection
+    must complete before we decide whether to run the ES pipeline, so we pay
+    only the intent call cost for GREETING/CHITCHAT instead of always running
+    retrieval.
+    """
+    intent = _INTENT_DEFAULT
+    if body.retrieve:
+        with _tracer.start_as_current_span("chat.intent") as i_span:
+            intent = await run_in_threadpool(_detect_intent, llm_client, last_user, body.model)
+            i_span.set_attribute("intent", intent)
+            logger.info("chat.intent", intent=intent, query_len=len(last_user))
+
+    skip_retrieve = not body.retrieve or not _requires_retrieve(intent)
+    docs: list[Any] = []
+
+    if not skip_retrieve:
+        with _tracer.start_as_current_span("chat.retrieval") as r_span:
+            r_span.set_attribute("query_len", len(last_user))
+            docs = await run_in_threadpool(_run_retrieval, retrieval_pipeline, body)
+            if body.dedupe:
+                docs = dedupe_by_document(docs)
+            r_span.set_attribute("result_count", len(docs))
+            logger.info("chat.retrieval", query_len=len(last_user), result_count=len(docs))
+    else:
+        logger.info(
+            "chat.retrieval.skipped",
+            reason="retrieve=false" if not body.retrieve else f"intent={intent}",
+            query_len=len(last_user),
+        )
+
+    return docs, skip_retrieve
 
 
 def _extract_token_counts(usage: dict) -> tuple[int | None, int | None]:
@@ -145,19 +240,11 @@ def create_chat_router(
                 (m["content"] for m in reversed(body.messages) if m.get("role") == "user"),
                 "",
             )
-            with _tracer.start_as_current_span("chat.retrieval") as r_span:
-                r_span.set_attribute("query_len", len(last_user))
-                docs = await run_in_threadpool(_run_retrieval, retrieval_pipeline, body)
-                if body.dedupe:
-                    docs = dedupe_by_document(docs)
-                r_span.set_attribute("result_count", len(docs))
-                logger.info(
-                    "chat.retrieval",
-                    query_len=len(last_user),
-                    result_count=len(docs),
-                )
+            docs, skip_retrieve = await _resolve_docs(
+                body, last_user, llm_client, retrieval_pipeline
+            )
             with _tracer.start_as_current_span("chat.build_messages"):
-                messages = build_rag_messages(body, docs)
+                messages = build_rag_messages(body, docs, inject_context=body.retrieve)
             with _tracer.start_as_current_span("chat.llm") as l_span:
                 l_span.set_attribute("model", body.model)
                 result = await run_in_threadpool(
@@ -179,7 +266,8 @@ def create_chat_router(
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                 )
-            sources = _build_sources(docs, max_chars=excerpt_max_chars)
+            # Explicit [] (not None) when retrieval was intentionally skipped.
+            sources = [] if skip_retrieve else _build_sources(docs, max_chars=excerpt_max_chars)
             return JSONResponse(
                 {
                     "content": result["content"],
@@ -208,20 +296,13 @@ def create_chat_router(
                 (m["content"] for m in reversed(body.messages) if m.get("role") == "user"),
                 "",
             )
-            with _tracer.start_as_current_span("chat.retrieval") as r_span:
-                r_span.set_attribute("query_len", len(last_user))
-                docs = await run_in_threadpool(_run_retrieval, retrieval_pipeline, body)
-                if body.dedupe:
-                    docs = dedupe_by_document(docs)
-                r_span.set_attribute("result_count", len(docs))
-                logger.info(
-                    "chat.retrieval",
-                    query_len=len(last_user),
-                    result_count=len(docs),
-                )
+            docs, skip_retrieve = await _resolve_docs(
+                body, last_user, llm_client, retrieval_pipeline
+            )
             with _tracer.start_as_current_span("chat.build_messages"):
-                messages = build_rag_messages(body, docs)
-            sources = _build_sources(docs, max_chars=excerpt_max_chars)
+                messages = build_rag_messages(body, docs, inject_context=body.retrieve)
+            # Explicit [] (not None) when retrieval was intentionally skipped.
+            sources = [] if skip_retrieve else _build_sources(docs, max_chars=excerpt_max_chars)
             # Capture the chat.request context so chat.llm (started later inside the
             # StreamingResponse generator, in a different async context) still nests
             # under chat.request via explicit parent reference rather than via the

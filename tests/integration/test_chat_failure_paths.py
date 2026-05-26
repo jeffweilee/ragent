@@ -254,11 +254,23 @@ def test_chat_stream_rate_limit_precedes_upstream():
 
 
 def test_chat_embedder_fails_before_llm_called():
-    """When the retrieval pipeline raises, the LLM client is never invoked
-    — verify the failure surface is the retrieval error, not a downstream
-    LLM error."""
+    """When the retrieval pipeline raises, the main LLM inference is never invoked
+    — verify the failure surface is the retrieval error, not a downstream LLM error.
+
+    The intent-detection pre-call (max_tokens=10, temperature=0) still fires before
+    retrieval; only the main inference call (max_tokens>10) is disallowed.
+    """
+    main_called: list[bool] = []
+
+    def _llm_side_effect(**kwargs):
+        if kwargs.get("max_tokens") == 10:  # intent detection — allowed
+            return {"content": "QUESTION"}
+        # main inference must never reach this point
+        main_called.append(True)
+        raise AssertionError("Main LLM inference should not be called when retrieval fails")
+
     llm = MagicMock()
-    llm.chat.side_effect = AssertionError("LLM should not be called when retrieval fails")
+    llm.chat.side_effect = _llm_side_effect
     rp = MagicMock()
     rp.run.side_effect = UpstreamTimeoutError(
         "embedding timeout", service="embedding", error_code=HttpErrorCode.EMBEDDER_TIMEOUT
@@ -267,4 +279,4 @@ def test_chat_embedder_fails_before_llm_called():
     resp = _post_chat(_client(app))
     assert resp.status_code == 504
     assert resp.json()["error_code"] == HttpErrorCode.EMBEDDER_TIMEOUT
-    llm.chat.assert_not_called()
+    assert not main_called, "Main LLM inference was called even though retrieval failed"

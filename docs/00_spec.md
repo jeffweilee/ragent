@@ -145,10 +145,30 @@ QueryEmbedder → { ESVectorRetriever (kNN on embedding, optional filter)
 ```json
 { "messages":[{"role":"user","content":"…"}], "provider":"openai", "model":"gptoss-120b",
   "temperature":0.7, "max_tokens":4096,
-  "source_app":"confluence", "source_meta":"eng", "top_k":20, "min_score":null, "dedupe":false }
+  "source_app":"confluence", "source_meta":"eng", "top_k":20, "min_score":null,
+  "dedupe":false, "retrieve":true }
 ```
 
 `messages` required; `provider` validated against `{"openai"}` (B22); `top_k` 1–200; server prepends default system message when `role:"system"` absent.
+
+`retrieve` (default `true`): when `false`, both intent detection and retrieval pipeline are
+skipped entirely; caller is expected to embed `<context>…</context>` in the user message.
+When `true`, intent detection runs first (`temperature=0`, `max_tokens=10` LLM call);
+if intent ∈ `{GREETING, CHITCHAT}` retrieval is also skipped. In both skip cases
+`sources` returns `[]` (empty array, not `null`).
+
+**Intent taxonomy** (maintained in `src/ragent/routers/chat.py::_INTENT_REQUIRES_RETRIEVE`):
+
+| Intent | Retrieval | Description |
+|--------|-----------|-------------|
+| `GREETING` | ✗ | Greetings, farewells, pleasantries |
+| `CHITCHAT` | ✗ | Casual conversation, emotional expression, small talk |
+| `QUESTION` | ✓ | Factual question to answer from documents |
+| `SUMMARY` | ✓ | Request to summarise document content |
+| `GENERATION` | ✓ | Request to draft/write content grounded in documents |
+
+Unknown intent labels default to `QUESTION` (fail-safe). System prompt instructs the LLM
+to begin retrieval-grounded responses with an opener such as "根據所提供的資料，…".
 
 #### 3.4.2 Response schema
 
@@ -161,7 +181,10 @@ QueryEmbedder → { ESVectorRetriever (kNN on embedding, optional filter)
   "request_id":"…", "feedback_token":"<base64url>.<hmac>" }
 ```
 
-`sources` null when empty; `excerpt` truncated to `EXCERPT_MAX_CHARS` (512) in router, LLM gets full text (B23). `feedback_token`+`request_id` only when `CHAT_FEEDBACK_ENABLED=true` AND `X-User-Id` present.
+`sources` null when retrieval ran but returned nothing; `[]` (empty array) when retrieval
+was intentionally skipped (`retrieve=false` or intent ∈ `{GREETING, CHITCHAT}`).
+`excerpt` truncated to `EXCERPT_MAX_CHARS` (512) in router, LLM gets full text (B23).
+`feedback_token`+`request_id` only when `CHAT_FEEDBACK_ENABLED=true` AND `X-User-Id` present.
 
 #### 3.4.3 Streaming (`/chat/v1/stream`)
 

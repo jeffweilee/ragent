@@ -269,3 +269,74 @@ def test_chunk_containing_opening_context_tag_is_escaped():
     # Only the outer wrapper tag appears as a literal; corpus occurrences are encoded.
     assert user_content.count("<context>") == 1
     assert "&lt;context&gt;" in user_content
+
+
+# ---------------------------------------------------------------------------
+# T-CH.R1 — build_rag_messages(inject_context=False): no <context> injected
+# ---------------------------------------------------------------------------
+
+
+def test_inject_context_false_no_context_tag():
+    """When inject_context=False the user message must not be wrapped with <context>
+    tags — the caller is expected to supply their own context block already embedded
+    in the message content."""
+    doc = _doc("excerpt", source_title="T", document_id="d", source_app="a")
+    req = _req({"role": "user", "content": "tell me about X"})
+    result = build_rag_messages(req, [doc], inject_context=False)
+
+    # System prompt still prepended
+    assert result[0]["role"] == "system"
+    # User message content is passed through verbatim — no <context> wrapper
+    user_msg = next(m for m in result if m["role"] == "user")
+    assert "<context>" not in user_msg["content"]
+    assert "</context>" not in user_msg["content"]
+    assert user_msg["content"] == "tell me about X"
+
+
+# ---------------------------------------------------------------------------
+# T-CH.R2 — build_rag_messages(inject_context=False): system messages still floated
+# ---------------------------------------------------------------------------
+
+
+def test_inject_context_false_system_floated():
+    """Caller-supplied system messages must still be floated to the front even
+    when inject_context=False."""
+    from ragent.schemas.chat import _RAG_GROUNDING_RULES
+
+    req = _req(
+        {"role": "system", "content": "Custom persona"},
+        {"role": "user", "content": "query"},
+    )
+    result = build_rag_messages(req, [], inject_context=False)
+
+    assert result[0]["content"] == _RAG_GROUNDING_RULES
+    assert result[1]["role"] == "system"
+    assert result[1]["content"] == "Custom persona"
+
+
+# ---------------------------------------------------------------------------
+# T-CH.R3 — ChatRequest.retrieve field
+# ---------------------------------------------------------------------------
+
+
+def test_chat_request_retrieve_field():
+    """ChatRequest.retrieve defaults to True and accepts False."""
+    req_default = ChatRequest(messages=[{"role": "user", "content": "hi"}])
+    assert req_default.retrieve is True
+
+    req_false = ChatRequest(messages=[{"role": "user", "content": "hi"}], retrieve=False)
+    assert req_false.retrieve is False
+
+
+# ---------------------------------------------------------------------------
+# T-CH.P1 — _RAG_COMMON_INSTRUCTIONS contains GROUNDED RESPONSE OPENER rule
+# ---------------------------------------------------------------------------
+
+
+def test_system_prompt_contains_grounded_opener_rule():
+    """System prompt must instruct the LLM to ground retrieval-based responses
+    with an opener like '根據所提供的資料'."""
+    from ragent.schemas.chat import _RAG_COMMON_INSTRUCTIONS
+
+    assert "GROUNDED RESPONSE OPENER" in _RAG_COMMON_INSTRUCTIONS
+    assert "根據" in _RAG_COMMON_INSTRUCTIONS

@@ -241,6 +241,36 @@ Request schema is shared by both endpoints. Only `messages` is required.
 
 ### `POST /chat/v1` — Non-streaming chat
 
+**Request fields** (all optional except `messages`):
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `messages` | array | — | Required. Conversation turns (`role`/`content`). |
+| `provider` | string | `"openai"` | LLM provider (validated against `{"openai"}`). |
+| `model` | string | env default | Model name forwarded to provider. |
+| `temperature` | float | `0.7` | Sampling temperature. |
+| `max_tokens` | int | `4096` | Max completion tokens. |
+| `source_app` | string | `null` | ES filter: restrict chunks to this source app. |
+| `source_meta` | string | `null` | ES filter: restrict chunks to this source meta tag. |
+| `top_k` | int | `20` | Max chunks to retrieve (1–200). |
+| `min_score` | float | `null` | Minimum chunk score threshold. |
+| `dedupe` | bool | `false` | Keep only the top-scored chunk per `document_id`. |
+| `retrieve` | bool | `true` | When `false`, intent detection and retrieval are both skipped; caller must embed `<context>…</context>` in the user message. |
+
+**Intent detection** (when `retrieve=true`): before retrieval, a lightweight LLM call
+(temperature=0, max_tokens=10) classifies the last user turn into one of five intents:
+
+| Intent | Retrieval | Notes |
+|--------|-----------|-------|
+| `GREETING` | skipped | Greetings, farewells, pleasantries |
+| `CHITCHAT` | skipped | Casual conversation, small talk |
+| `QUESTION` | runs | Factual question answered from documents |
+| `SUMMARY` | runs | Summarise document content |
+| `GENERATION` | runs | Draft/write content grounded in documents |
+
+Unknown intent labels default to `QUESTION` (fail-safe). `sources` is `[]` (empty
+array, not `null`) when retrieval is skipped; `null` when retrieval ran but found nothing.
+
 ```bash
 curl -X POST http://localhost:8000/chat/v1 \
   -H "Content-Type: application/json" \
@@ -254,7 +284,7 @@ curl -X POST http://localhost:8000/chat/v1 \
 ```json
 // 200 OK
 {
-  "content": "Based on the Q3 OKR Planning document, your objectives are...",
+  "content": "根據所提供的資料，Q3 OKRs 包含...",
   "usage": { "promptTokens": 512, "completionTokens": 128, "totalTokens": 640 },
   "model": "gptoss-120b",
   "provider": "openai",

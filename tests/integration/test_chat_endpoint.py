@@ -158,3 +158,182 @@ def test_chat_no_docs_uses_rag_system_prompt_and_injects_empty_context():
     assert "QUESTION" in sent_messages[0]["content"]
     last_user = next(m for m in reversed(sent_messages) if m["role"] == "user")
     assert "(The context is empty.)" in last_user["content"]
+
+
+# ---------------------------------------------------------------------------
+# T-CH.I1 — POST /chat/v1 {retrieve:false}: intent+pipeline skipped, sources=[]
+# ---------------------------------------------------------------------------
+
+
+def test_retrieve_false_skips_pipeline():
+    """When retrieve=false the intent-detection LLM call and retrieval pipeline are both
+    skipped; the response sources field is an empty list (not null)."""
+    retrieval_docs = []
+    llm_usage = {"promptTokens": 5, "completionTokens": 3, "totalTokens": 8}
+
+    retrieval_pipeline = MagicMock()
+    retrieval_pipeline.run.return_value = {"excerpt_truncator": {"documents": retrieval_docs}}
+
+    llm_client = MagicMock()
+    llm_client.chat.return_value = {"content": "Sure, here you go!", "usage": llm_usage}
+
+    app = FastAPI()
+    router = create_chat_router(retrieval_pipeline=retrieval_pipeline, llm_client=llm_client)
+    app.include_router(router)
+
+    user_msg = "<context>\n[資料來源 #1]\nsome context\n---\n</context>\n\nWhat does this say?"
+    with TestClient(app) as client:
+        resp = client.post(
+            "/chat/v1",
+            json={"messages": [{"role": "user", "content": user_msg}], "retrieve": False},
+            headers={"X-User-Id": "alice"},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    # sources must be an empty list, not null
+    assert body["sources"] == []
+    # retrieval pipeline must not have been called
+    retrieval_pipeline.run.assert_not_called()
+    # only ONE llm call: the main chat (not intent detection)
+    assert llm_client.chat.call_count == 1
+    # user message is NOT double-wrapped with a second <context> block
+    sent_messages = llm_client.chat.call_args.kwargs["messages"]
+    last_user = next(m for m in reversed(sent_messages) if m["role"] == "user")
+    assert last_user["content"].count("<context>") == 1
+
+
+# ---------------------------------------------------------------------------
+# T-CH.I2 — POST /chat/v1/stream {retrieve:false}: done frame sources=[]
+# ---------------------------------------------------------------------------
+
+
+def test_stream_retrieve_false_sources_empty():
+    """Streaming: retrieve=false skips pipeline; done frame has sources=[]."""
+    retrieval_pipeline = MagicMock()
+
+    llm_client = MagicMock()
+    llm_usage = {"promptTokens": 5, "completionTokens": 3, "totalTokens": 8}
+    llm_client.stream.return_value = iter(["Hello", " world"])
+
+    # stream call pulls usage from usage_out list; set it via side_effect on stream
+    def _stream_side_effect(messages, model, temperature, max_tokens, usage_out):
+        usage_out.append(llm_usage)
+        return iter(["Hello", " world"])
+
+    llm_client.stream.side_effect = _stream_side_effect
+
+    app = FastAPI()
+    router = create_chat_router(retrieval_pipeline=retrieval_pipeline, llm_client=llm_client)
+    app.include_router(router)
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/chat/v1/stream",
+            json={
+                "messages": [{"role": "user", "content": "hi"}],
+                "retrieve": False,
+            },
+            headers={"X-User-Id": "alice"},
+        )
+
+    assert resp.status_code == 200
+    # parse SSE frames
+    import json as _json
+
+    frames = [
+        _json.loads(line.removeprefix("data: "))
+        for line in resp.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    done_frame = next(f for f in frames if f.get("type") == "done")
+    assert done_frame["sources"] == []
+    retrieval_pipeline.run.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# T-CH.I3 — POST /chat/v1 intent=GREETING: pipeline skipped, sources=[]
+# ---------------------------------------------------------------------------
+
+
+def test_greeting_intent_skips_retrieval():
+    """When intent detection returns GREETING, retrieval is skipped and sources=[]."""
+    retrieval_pipeline = MagicMock()
+    retrieval_pipeline.run.return_value = {"excerpt_truncator": {"documents": []}}
+
+    llm_usage = {"promptTokens": 5, "completionTokens": 3, "totalTokens": 8}
+
+    def _llm_side_effect(**kwargs):
+        if kwargs.get("max_tokens") == 10:  # intent detection call
+            return {"content": "GREETING"}
+        return {"content": "Hi there!", "usage": llm_usage}
+
+    llm_client = MagicMock()
+    llm_client.chat.side_effect = _llm_side_effect
+
+    app = FastAPI()
+    router = create_chat_router(retrieval_pipeline=retrieval_pipeline, llm_client=llm_client)
+    app.include_router(router)
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/chat/v1",
+            json={"messages": [{"role": "user", "content": "你好！"}]},
+            headers={"X-User-Id": "alice"},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["sources"] == []
+    retrieval_pipeline.run.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# T-CH.I4 — POST /chat/v1 intent=QUESTION: retrieval runs
+# ---------------------------------------------------------------------------
+
+
+def test_question_intent_runs_retrieval():
+    """When intent detection returns QUESTION, retrieval pipeline is executed."""
+    from haystack.dataclasses import Document
+
+    doc = Document(
+        content="The answer is 42",
+        meta={
+            "document_id": "DOC1",
+            "source_app": "confluence",
+            "source_id": "S1",
+            "source_title": "Deep Thought",
+            "source_meta": None,
+        },
+    )
+    retrieval_pipeline = MagicMock()
+    retrieval_pipeline.run.return_value = {"excerpt_truncator": {"documents": [doc]}}
+
+    llm_usage = {"promptTokens": 20, "completionTokens": 10, "totalTokens": 30}
+
+    def _llm_side_effect(**kwargs):
+        if kwargs.get("max_tokens") == 10:  # intent detection call
+            return {"content": "QUESTION"}
+        return {"content": "The answer is 42 [1]", "usage": llm_usage}
+
+    llm_client = MagicMock()
+    llm_client.chat.side_effect = _llm_side_effect
+
+    app = FastAPI()
+    router = create_chat_router(retrieval_pipeline=retrieval_pipeline, llm_client=llm_client)
+    app.include_router(router)
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/chat/v1",
+            json={"messages": [{"role": "user", "content": "what is the answer?"}]},
+            headers={"X-User-Id": "alice"},
+        )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    # retrieval ran and populated sources
+    assert body["sources"] is not None
+    assert len(body["sources"]) == 1
+    retrieval_pipeline.run.assert_called_once()
