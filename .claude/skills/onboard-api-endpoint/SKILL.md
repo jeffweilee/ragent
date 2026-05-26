@@ -90,10 +90,10 @@ If the endpoint is infrastructure-style (health probe, internal ping), it goes i
 
 Before writing tests, update two documents:
 
-1. **`docs/00_spec.md`** — add a row to the endpoint table (§4.1.2 or the
-   relevant section) with method, path, auth header, request schema ref,
-   response schema ref, and notes. Add a scenario (`S-XX`) if there is a
-   behaviour contract worth pinning (happy path, error codes, edge cases).
+1. **`docs/00_spec.md`** — add a row to the endpoint table (§4.1) with
+   method, path, auth header, request schema ref, response schema ref, and
+   notes. Add a scenario (`S-XX`) if there is a behaviour contract worth
+   pinning (happy path, error codes, edge cases).
 
 2. **`docs/00_plan.md`** — append a new task row under the active track:
    ```
@@ -181,7 +181,7 @@ Every non-2xx response needs a stable `error_code`. Before adding a new one:
 
 1. Check `src/ragent/errors/codes.py::HttpErrorCode` — reuse an existing code if semantics match.
 2. Add a new `SCREAMING_SNAKE` member only for genuinely distinct failure modes.
-3. Add the new code to the error catalog table in `docs/00_spec.md §4.1.2` with status, path, and owning task.
+3. Add the new code to the error catalog table in `docs/spec/error_codes.md` with status, path, and owning task.
 4. Add a test asserting `resp.json()["error_code"] == HttpErrorCode.<CODE>`.
 
 ---
@@ -225,12 +225,12 @@ endpoints (any path under `/<resource>/v<N>`) must NOT be in this list.
 
 - [ ] Situation classified: new route on existing router / new resource / v2 bump
 - [ ] Path follows `/<resource>/v<N>[/<rest>]` naming convention; version in router prefix only
-- [ ] `docs/00_spec.md` endpoint table row + scenario(s) added
+- [ ] `docs/00_spec.md §4.1` endpoint table row + scenario(s) added
 - [ ] `docs/00_plan.md` Red + Green task rows added
 - [ ] Failing test written first; confirmed to fail with 404 or assertion before any production code
 - [ ] `response_model=` annotation on every new route decorator
 - [ ] Non-2xx paths covered by tests asserting `error_code` in response body
-- [ ] New `HttpErrorCode` members (if any) added to `src/ragent/errors/codes.py` and spec error catalog
+- [ ] New `HttpErrorCode` members (if any) added to `src/ragent/errors/codes.py` and `docs/spec/error_codes.md`
 - [ ] For new resource: `create_<resource>_router()` wired in `bootstrap/app.py`
 - [ ] `tests/unit/test_api_versioning.py` still passes after wiring
 - [ ] For v2: old version still mounted; deprecation timeline in spec; decommission task in plan

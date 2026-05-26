@@ -342,6 +342,19 @@ Standalone FastMCP service that federates arbitrary third-party REST APIs as MCP
 
 Future-phase auth: JWT verify (auth) + `PermissionClient` post-retrieval gate (permission, OpenFGA-backed) — see §3.5. ES queries remain permission-blind in every phase.
 
+**Embedding lifecycle admin routes (B50)** — zero-downtime model swap; full detail in [`docs/API.md §Embedding Model Lifecycle`](API.md):
+
+| Method | Path | Auth | Purpose |
+|---|---|---|---|
+| POST | `/embedding/v1/promote` | `X-User-Id` | Open migration; PUT ES mapping + enable dual-write → `200 {state:"CANDIDATE"}` |
+| POST | `/embedding/v1/cutover` | `X-User-Id` | Switch reads to candidate (subject to preflight) → `200 {state:"CUTOVER"}` |
+| POST | `/embedding/v1/rollback` | `X-User-Id` | Revert reads to stable → `200 {state:"CANDIDATE"}` |
+| POST | `/embedding/v1/commit` | `X-User-Id` | Promote candidate to stable; retire old field → `200 {state:"IDLE"}` |
+| POST | `/embedding/v1/abort` | `X-User-Id` | Drop candidate → `200 {state:"IDLE"}` |
+| POST | `/embedding/v1/backfill` | `X-User-Id` | Enqueue backfill task → `200 {state, queued}` |
+| GET  | `/embedding/v1/state` | `X-User-Id` | Registry snapshot → `200 {stable, candidate, read, retired}` |
+| GET  | `/embedding/v1/cutover/preflight` | `X-User-Id` | Run gates without action → `200 {pass, gates}` |
+
 ### 4.1.1 Error Response Schema (B5)
 
 All non-2xx responses use **RFC 9457 Problem Details** (`Content-Type: application/problem+json`), extended with a business-semantic `error_code`:
@@ -365,75 +378,8 @@ All non-2xx responses use **RFC 9457 Problem Details** (`Content-Type: applicati
 
 ### 4.1.2 Error Code Catalog (I6)
 
-Inventory of every `error_code` emitted by P1 (API responses + log events). New codes MUST be added here in the same commit that introduces them.
-
-| `error_code` | HTTP / Surface | When | Origin |
-|---|---|---|---|
-| `INTERNAL_ERROR`                     | 500         | Global handler fallback — exception carries no `error_code` | Global exception handler |
-| `UPSTREAM_ERROR`                     | 502         | Generic upstream service failure (base-class default; production callers pass a service-specific code below) | `UpstreamServiceError` base |
-| `UPSTREAM_TIMEOUT`                   | 504         | Generic upstream timeout (base-class default) | `UpstreamTimeoutError` base |
-| `EMBEDDER_ERROR`                     | 502         | Embedding service raised during an HTTP call | Embedder client |
-| `EMBEDDER_TIMEOUT`                   | 504         | Embedding service timed out | Embedder client |
-| `LLM_TIMEOUT`                        | 504         | LLM service timed out (pre-stream or mid-stream) | Router T3.10/T3.12 |
-| `RERANK_ERROR`                       | 502         | Rerank service raised | Rerank client |
-| `RERANK_TIMEOUT`                     | 504         | Rerank service timed out | Rerank client |
-| `INGEST_MIME_UNSUPPORTED`            | 415         | MIME outside the §4.2 P1 allow-list | Router T2.13 |
-| `INGEST_FILE_TOO_LARGE`              | 413         | Multipart body > 50 MB | Router T2.13 |
-| `INGEST_ARCHIVE_UNSAFE`              | 413 via `documents.error_code` | DOCX/PPTX zip preflight rejected the archive — `reason ∈ {invalid, members, ratio, expanded, per_member, traversal}` (T-SEC.3/.4) | Splitter T-SEC.4 |
-| `INGEST_PDF_TOO_MANY_PAGES`          | 413 via `documents.error_code` | PDF page count exceeds `INGEST_MAX_PDF_PAGES` (T-SEC.5/.6) | Splitter T-SEC.6 |
-| `INGEST_VALIDATION`                  | 422         | Missing/empty `source_id` / `source_app` / `source_title` (S23) — `errors[]` lists offending fields | Router T2.13 |
-| `INGEST_MINIO_SITE_UNKNOWN`          | 422         | `minio_site` not in `MinioSiteRegistry` | Router T2.13 |
-| `INGEST_OBJECT_NOT_FOUND`            | 422         | `(minio_site, object_key)` HEAD-probe miss | Router T2.13 |
-| `INGEST_NOT_FOUND`                   | 404         | `GET /ingest/v1/{id}` / `DELETE /ingest/v1/{id}` / `POST /ingest/v1/{id}/rerun` on unknown id | Service T2.10 |
-| `INGEST_NOT_RERUNNABLE`              | 409         | `POST /ingest/v1/{id}/rerun` on a document whose status is `READY` or `DELETING` (re-POST is the supersede path for READY; DELETING is mid-cascade) | Router (rerun endpoint) |
-| `MISSING_USER_ID`                    | 422         | User-id header absent or empty after JWT verification (identity middleware) | Identity middleware |
-| `CHAT_RATE_LIMITED`                  | 429 + `Retry-After` | Per-user fixed-window quota exceeded on `/chat/v1` or `/chat/v1/stream` (B31, S37) | Router-level Depends T3.16 |
-| `EMBEDDING_LIFECYCLE_INVALID_STATE`  | 409         | Embedding model state-machine transition rejected (B50) | Embedding lifecycle router |
-| `EMBEDDING_CUTOVER_PREFLIGHT_FAILED` | 409         | Cutover preflight (warmup / similarity gate) failed (B50) | Embedding lifecycle router |
-| `EMBEDDING_INVALID_CONFIG`           | 422         | Invalid promote payload (B50) | Embedding lifecycle router |
-| `EMBEDDING_FIELD_NAME_COLLISION`     | 422         | Field name collision with a still-mapped retired field (B50) | Embedding lifecycle router |
-| `EMBEDDING_REGISTRY_NOT_READY`       | 503         | Embedding registry not ready for queries | Embedding lifecycle router |
-| `FEEDBACK_TOKEN_INVALID`             | 401         | HMAC mismatch, malformed token, or `shown_source_ids` doesn't match the signed `sources_hash` (T-FB.6, B55) | Router (feedback) |
-| `FEEDBACK_TOKEN_EXPIRED`             | 410         | Token `ts` outside the 7-day window (T-FB.6, B55) | Router (feedback) |
-| `FEEDBACK_SOURCE_INVALID`            | 422         | `source_id ∉ shown_source_ids` (T-FB.6) | Router (feedback) |
-| `FEEDBACK_VALIDATION`                | 422         | Schema violations: vote ∉ {±1}, reason outside B56 enum, missing required field | Schema (feedback) |
-| `LLM_STREAM_INTERRUPTED`             | SSE-error only  | LLM SSE stream closed before `[DONE]` sentinel after at least one content delta was yielded; `stream()` never retries (partial content already sent); chat router emits `data: {type:error, error_code:LLM_STREAM_INTERRUPTED}` (B6, T-CHAOS.C5) | Router T3.12 |
-| `LLM_ERROR`                          | 502 / SSE-error | Pre-stream LLM failure (problem+json) or mid-stream LLM failure after retries exhausted (`data: {type:error}`, B6) | Router T3.10/T3.12 |
-| `MCP_PARSE_ERROR`                    | JSON-RPC `-32700` | Request body is not valid JSON (S64) | Router P2.5 |
-| `MCP_INVALID_REQUEST`                | JSON-RPC `-32600` | Missing `jsonrpc:"2.0"` / `method`; malformed envelope | Router P2.5 |
-| `MCP_METHOD_NOT_FOUND`               | JSON-RPC `-32601` | Method outside §3.8.2 allow-list (S61) | Router P2.5 |
-| `MCP_TOOL_NOT_FOUND`                 | JSON-RPC `-32602` (data.error_code) | `tools/call` with unknown `name` (S62) | Router P2.5 |
-| `MCP_TOOL_INPUT_INVALID`             | JSON-RPC `-32602` (data.error_code) | `tools/call` arguments fail `inputSchema` validation (S63) | Router P2.5 |
-| `MCP_TOOL_EXECUTION_FAILED`          | JSON-RPC `-32001` (data.error_code) | Underlying retrieval pipeline raises (S67) | Router P2.5 |
-| `ES_PLUGIN_MISSING`                  | 503 (`/readyz`) | ES cluster missing `analysis-icu` plugin (B26, T0.8g) | Bootstrap / readyz |
-| `ES_INDEX_MISSING`                   | 503 (`/readyz`) | A `resources/es/*.json` index is absent at boot | Bootstrap / readyz |
-| `SCHEMA_DRIFT`                       | 503 (`/readyz`) + log `event=schema.drift` | Live schema differs from `schema.sql` / `resources/es/` | Bootstrap |
-| `PIPELINE_TIMEOUT_AGGREGATE`         | `documents.error_code` (TaskErrorCode) | 300 s wall-clock timeout on the full pipeline run; written by the worker and polled via `GET /ingest/v1/{id}` (B18, S34) | Worker T3.2j |
-| `PIPELINE_UNROUTABLE`                | `documents.error_code` (TaskErrorCode) | MIME → splitter has no registered route | Worker pipeline |
-| `CHUNK_BUDGET_EXCEEDED`              | `documents.error_code` (TaskErrorCode) | `CHUNK_MAX_PIECES_PER_ATOM` exceeded during chunking | `_BudgetChunker` |
-| `ES_WRITE_ERROR`                     | `documents.error_code` (TaskErrorCode) | `DocumentWriter` raised during ES bulk write | Worker pipeline |
-| `EMBEDDER_ERROR`                     | `documents.error_code` (TaskErrorCode) | Embedder client raised inside the pipeline step | Worker pipeline |
-| `PIPELINE_UNEXPECTED_ERROR`          | `documents.error_code` (TaskErrorCode) | Catch-all for any unexpected exception in a pipeline step not tagged with a specific code | Worker pipeline |
-| `PIPELINE_MAX_ATTEMPTS_EXCEEDED`     | `documents.error_code` (TaskErrorCode) | Reconciler swept a document stuck in `PENDING` past max retry attempts | Reconciler |
-| `PROBE_TIMEOUT`                      | 503 (`/readyz`) | Per-component probe timed out | Bootstrap / readyz |
-| `DEPENDENCY_DOWN`                    | 503 (`/readyz`) | A required dependency is unreachable | Bootstrap / readyz |
-| `METRICS_DB_UNAVAILABLE`             | 503 (`/readyz`) | Metrics DB unavailable | Bootstrap / readyz |
-| `AUTH_TOKEN_EXPIRED`                 | 401             | JWT `exp` claim is in the past (raised through joserfc's verification path, T8.1a) | Auth middleware T8.2a |
-| `AUTH_CLAIM_MISSING`                 | 401             | `<RAGENT_JWT_CLAIM_USER_ID>` claim absent or empty after JWKS verification (T8.1a) | Auth middleware T8.2a |
-| `AUTH_TOKEN_INVALID`                 | 401             | JWT header absent, token malformed, signature mismatch, wrong `iss`, wrong `aud`, or any other JWKS verification failure outside expiry/missing-claim (T8.1a) | Auth middleware T8.2a |
-
-**Operational events (not `error_code` values — never appear in API responses):**
-
-| Signal | Surface | When |
-|---|---|---|
-| `es.bbq_unsupported` | structured log `event=es.bbq_unsupported` | Cluster rejected `bbq_hnsw`; bootstrap retried with standard HNSW (B26) |
-| `reconciler_tick_total` stale | Prometheus alert | `reconciler_tick_total` flat > 10 min (R8, S30) — `ReconcilerTickStalled` alert |
-| Ingest pipeline failure rate > 10 % | Prometheus alert | `ragent_pipeline_runs_total{outcome="failed"}` rate / total rate > 0.10 for 2 min — `IngestHighFailureRate` alert (P2.1) |
-| Reranker degraded for > 5 min | Prometheus alert | `rerank_degraded_total` rate (2m window) > 0 sustained 5 min — `RerankerDegradedPersistent` alert (P2.3 fail-open; 2m window prevents a single transient event from firing the alert) |
-| Worker pipeline p99 > 5 min | Prometheus alert | `worker_pipeline_duration_seconds` histogram_quantile(0.99) > 300 s for 5 min — `WorkerPipelineSlow` alert |
-| `/readyz` probe stuck failing | Prometheus alert | `ragent_readyz_probe_status == 0` for 2 min — `ReadyzProbeFailing` alert (critical; signals hard infra dependency down) |
-
-> **Chat validation (422 without custom `error_code`):** `messages` absent/empty, `provider` outside allow-list, and `source_app`/`source_meta` filter constraint violations are rejected by Pydantic schema validation and return a standard 422 `problem+json` with `errors[]` field details — they do not emit a named `error_code` and are not listed in `HttpErrorCode`.
+> Full catalog: [`docs/spec/error_codes.md`](spec/error_codes.md) — API error codes, TaskErrorCodes, operational signals.  
+> **Rule:** every new `error_code` added to `src/ragent/errors/codes.py` **MUST** have a row in that file in the same commit.
 
 ### 4.2 Supported Formats
 
