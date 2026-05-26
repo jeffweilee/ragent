@@ -80,8 +80,10 @@ def _detect_intent(llm_client: Any, query: str, model: str) -> str:
     ]
     try:
         result = llm_client.chat(messages=messages, model=model, temperature=0, max_tokens=10)
-        words = result.get("content", "").strip().upper().split()
-        label = words[0] if words else ""
+        raw = ((result or {}).get("content") or "").strip().upper()
+        words = raw.split()
+        # Strip non-alpha chars (e.g. trailing punctuation "GREETING.") before lookup.
+        label = "".join(c for c in (words[0] if words else "") if c.isalpha())
         return label if label in _INTENT_REQUIRES_RETRIEVE else _INTENT_DEFAULT
     except Exception:
         logger.warning("chat.intent.error", exc_info=True)
@@ -102,7 +104,7 @@ async def _resolve_docs(
     retrieval.
     """
     intent = _INTENT_DEFAULT
-    if body.retrieve:
+    if body.retrieve and last_user.strip():
         with _tracer.start_as_current_span("chat.intent") as i_span:
             intent = await run_in_threadpool(_detect_intent, llm_client, last_user, body.model)
             i_span.set_attribute("intent", intent)

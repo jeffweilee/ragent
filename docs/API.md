@@ -268,8 +268,11 @@ Request schema is shared by both endpoints. Only `messages` is required.
 | `SUMMARY` | runs | Summarise document content |
 | `GENERATION` | runs | Draft/write content grounded in documents |
 
-Unknown intent labels default to `QUESTION` (fail-safe). `sources` is `[]` (empty
-array, not `null`) when retrieval is skipped; `null` when retrieval ran but found nothing.
+Unknown intent labels default to `QUESTION` (fail-safe). Intent tokens are normalized
+(non-alpha chars stripped) before lookup, so `"GREETING."` is treated as `"GREETING"`.
+Empty or whitespace-only user turns skip intent detection and default to `QUESTION`.
+`sources` is `[]` (empty array, not `null`) when retrieval is skipped; `null` when
+retrieval ran but found nothing.
 
 ```bash
 curl -X POST http://localhost:8000/chat/v1 \

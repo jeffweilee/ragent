@@ -72,7 +72,7 @@ Detect the user's intent and respond in the matching style
    User: "Acme 什麼時候推出 v2?"
    Context: <context>[資料來源 #1] "...Acme v2 已经在 2024-03-12 正式发布..."</context>
    Assistant: "Acme v2 已於 2024-03-12 正式發佈。[1]"
-3. SUMMARY   — 3–6 bullet points. No preamble.
+3. SUMMARY   — 3–6 bullet points. Begin with the grounded opener (Rule 7).
 4. GENERATION— Draft text grounded in context. Do not invent facts.
 
 """
