@@ -243,7 +243,7 @@ def create_chat_router(
                 body, last_user, llm_client, retrieval_pipeline
             )
             with _tracer.start_as_current_span("chat.build_messages"):
-                messages = build_rag_messages(body, docs, inject_context=body.retrieve)
+                messages = build_rag_messages(body, docs, inject_context=not skip_retrieve)
             with _tracer.start_as_current_span("chat.llm") as l_span:
                 l_span.set_attribute("model", body.model)
                 result = await run_in_threadpool(
@@ -299,7 +299,7 @@ def create_chat_router(
                 body, last_user, llm_client, retrieval_pipeline
             )
             with _tracer.start_as_current_span("chat.build_messages"):
-                messages = build_rag_messages(body, docs, inject_context=body.retrieve)
+                messages = build_rag_messages(body, docs, inject_context=not skip_retrieve)
             # Explicit [] (not None) when retrieval was intentionally skipped.
             sources = [] if skip_retrieve else _build_sources(docs, max_chars=excerpt_max_chars)
             # Capture the chat.request context so chat.llm (started later inside the
