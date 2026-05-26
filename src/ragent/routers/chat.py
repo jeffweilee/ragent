@@ -114,7 +114,7 @@ async def _resolve_docs(
     if not skip_retrieve:
         with _tracer.start_as_current_span("chat.retrieval") as r_span:
             r_span.set_attribute("query_len", len(last_user))
-            docs = await run_in_threadpool(_run_retrieval, retrieval_pipeline, body)
+            docs = await run_in_threadpool(_run_retrieval, retrieval_pipeline, body, last_user)
             if body.dedupe:
                 docs = dedupe_by_document(docs)
             r_span.set_attribute("result_count", len(docs))
@@ -176,8 +176,7 @@ def _maybe_mint_feedback_envelope(
     return {"request_id": request_id, "feedback_token": token}
 
 
-def _run_retrieval(retrieval_pipeline: Any, req: ChatRequest) -> list[Any]:
-    last_user = next((m["content"] for m in reversed(req.messages) if m.get("role") == "user"), "")
+def _run_retrieval(retrieval_pipeline: Any, req: ChatRequest, last_user: str) -> list[Any]:
     return run_retrieval(
         retrieval_pipeline,
         query=last_user,
