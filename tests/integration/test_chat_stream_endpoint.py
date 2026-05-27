@@ -154,14 +154,17 @@ def test_chat_stream_injects_retrieved_context_into_llm_messages():
 def test_stream_delta_fullwidth_citation_normalized():
     """Full-width citations 【N】 in streaming deltas must be normalized to [N]
     in each delta frame (best-effort per-chunk), not only in the done frame."""
-    app, _ = _make_app(llm_chunks=["Answer: 【1】", " more text", "【2】"])
+    app = _make_app(stream_deltas=["Answer: 【1】", " more text", "【2】"])
 
     events = []
-    with TestClient(app) as client, client.stream(
-        "POST",
-        "/chat/v1/stream",
-        json={"messages": [{"role": "user", "content": "what?"}]},
-    ) as resp:
+    with (
+        TestClient(app) as client,
+        client.stream(
+            "POST",
+            "/chat/v1/stream",
+            json={"messages": [{"role": "user", "content": "what?"}]},
+        ) as resp,
+    ):
         for line in resp.iter_lines():
             if line.startswith("data: "):
                 events.append(json.loads(line[6:]))
