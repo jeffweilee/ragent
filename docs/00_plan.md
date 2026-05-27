@@ -177,3 +177,46 @@
 | T-CH.I3 | Red+Green | • **Achieve:** `POST /chat/v1` with intent=GREETING skips retrieval pipeline; `sources=[]`.<br>• **Deliver:** `tests/integration/test_chat_endpoint.py::test_greeting_intent_skips_retrieval`. | [x] | Dev |
 | T-CH.I4 | Red+Green | • **Achieve:** `POST /chat/v1` with intent=QUESTION still runs retrieval pipeline.<br>• **Deliver:** `tests/integration/test_chat_endpoint.py::test_question_intent_runs_retrieval`. | [x] | Dev |
 
+---
+
+## Track T-CH2 — context_mode, per-intent temperature, prompt selection by intent
+
+> Source: 2026-05-26 design session (follows T-CH).
+> Replaces `retrieve: bool` with `context_mode: Literal["auto","caller","force"]`;
+> adds per-intent temperature (`_INTENT_TEMPERATURE`); decouples citation rules from system
+> prompt so `[N]` references only appear when the system injected the context.
+
+**Design matrix** (`context_mode` × `intent`):
+
+| context_mode | intent | retrieve | inject_context | prompt | sources |
+|---|---|---|---|---|---|
+| auto | GREETING/CHITCHAT | skip | False | _PLAIN_ASSISTANT | null |
+| auto | QUESTION/SUMMARY/GENERATION | run | True | _DEFAULT_RAG (with [N]) | []/[{...}] |
+| caller | GREETING/CHITCHAT | skip | False | _PLAIN_ASSISTANT | null |
+| caller | QUESTION/SUMMARY/GENERATION | skip | False | _RAG_NO_CITATION (no [N]) | null |
+| force | any intent | run | True | _DEFAULT_RAG (with [N]) | []/[{...}] |
+
+**Temperature** (intent-based, used when `body.temperature is None`):
+`GREETING/CHITCHAT → 0.8`, `QUESTION/SUMMARY → 0.2`, `GENERATION → 0.7`
+
+| # | Category | Task | Status | Owner |
+|---|---|---|:---:|---|
+| T-CH2.S1 | Red+Green | • **Achieve:** `ChatRequest.context_mode` replaces `retrieve: bool`.<br>• **Deliver:** `tests/unit/test_chat_request_schema.py::test_context_mode_*` — defaults "auto", accepts "caller"/"force", rejects invalid; update T-CH.R3 test. | [x] | Dev |
+| T-CH2.S2 | Red+Green | • **Achieve:** `ChatRequest.temperature` becomes `float \| None = None` (None = use intent-based auto).<br>• **Deliver:** `tests/unit/test_chat_request_schema.py::test_temperature_none_accepted`. | [x] | Dev |
+| T-CH2.S3 | Red+Green | • **Achieve:** `build_rag_messages(intent=GREETING, inject_context=False)` uses `_PLAIN_ASSISTANT_PROMPT`.<br>• **Deliver:** `tests/unit/test_build_rag_messages.py::test_plain_prompt_for_greeting_no_context`. | [x] | Dev |
+| T-CH2.S4 | Red+Green | • **Achieve:** `build_rag_messages(intent=QUESTION, inject_context=True)` prompt contains `[N]` citation rules.<br>• **Deliver:** `tests/unit/test_build_rag_messages.py::test_rag_prompt_has_citation_when_inject_context`. | [x] | Dev |
+| T-CH2.S5 | Red+Green | • **Achieve:** `build_rag_messages(intent=QUESTION, inject_context=False)` prompt has NO `[N]` citation rules.<br>• **Deliver:** `tests/unit/test_build_rag_messages.py::test_no_citation_prompt_when_caller_context`. | [x] | Dev |
+| T-CH2.R1 | Red+Green | • **Achieve:** `_INTENT_TEMPERATURE` maps all intents; unknown defaults to `_DEFAULT_TEMPERATURE`.<br>• **Deliver:** `tests/unit/test_chat_intent.py::test_intent_temperature_mapping`. | [x] | Dev |
+| T-CH2.R2 | Red+Green | • **Achieve:** `context_mode="caller"` always skips retrieval regardless of intent.<br>• **Deliver:** `tests/unit/test_chat_intent.py::test_caller_mode_always_skips_retrieval`. | [x] | Dev |
+| T-CH2.R3 | Red+Green | • **Achieve:** `context_mode="force"` always runs retrieval regardless of intent (even GREETING).<br>• **Deliver:** `tests/unit/test_chat_intent.py::test_force_mode_always_runs_retrieval`. | [x] | Dev |
+| T-CH2.R4 | Red+Green | • **Achieve:** Intent detection always runs regardless of `context_mode`.<br>• **Deliver:** `tests/integration/test_chat_endpoint.py::test_intent_detection_runs_for_all_context_modes`. | [x] | Dev |
+| T-CH2.I1 | Red+Green | • **Achieve:** `context_mode="caller"` + QUESTION intent: `sources=null`, no `<context>` injection, no `[N]` in outgoing system prompt.<br>• **Deliver:** `tests/integration/test_chat_endpoint.py::test_caller_mode_no_citation_in_prompt`. | [x] | Dev |
+| T-CH2.I2 | Red+Green | • **Achieve:** `temperature=null` + GREETING intent: LLM called with `_INTENT_TEMPERATURE["GREETING"]`.<br>• **Deliver:** `tests/integration/test_chat_endpoint.py::test_auto_temperature_greeting`. | [x] | Dev |
+| T-CH2.I3 | Red+Green | • **Achieve:** `context_mode="force"` + GREETING intent: retrieval runs, sources populated.<br>• **Deliver:** `tests/integration/test_chat_endpoint.py::test_force_mode_retrieval_runs`. | [x] | Dev |
+
+### Post-merge fix — PR #130 review (2026-05-27)
+
+| # | Category | Fix |
+|---|----------|-----|
+| PR130.F1 | Defensive | `result.get("content") or ""` in sync handler — guard against null/missing LLM content field (KeyError on safety-filtered responses). Gemini review comment. |
+

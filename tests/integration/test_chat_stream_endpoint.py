@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 pytestmark = pytest.mark.docker
 
 
-def _make_app(stream_deltas=None, retrieval_docs=None, llm_error=None):
+def _make_app(stream_deltas=None, retrieval_docs=None, llm_error=None, intent="QUESTION"):
     from ragent.routers.chat import create_chat_router
 
     retrieval_docs = retrieval_docs or []
@@ -20,6 +20,8 @@ def _make_app(stream_deltas=None, retrieval_docs=None, llm_error=None):
     retrieval_pipeline.run.return_value = {"excerpt_truncator": {"documents": retrieval_docs}}
 
     llm_client = MagicMock()
+    # Intent detection uses llm_client.chat (max_tokens=10); always mock it.
+    llm_client.chat.return_value = {"content": intent}
     if llm_error:
         llm_client.stream.side_effect = llm_error
     else:
@@ -95,7 +97,8 @@ def test_stream_sources_null_on_empty_retrieval():
         )
     events = _parse_sse(resp.text)
     done = next(e for e in events if e.get("type") == "done")
-    assert done["sources"] is None
+    # retrieval ran but returned no documents → sources=[] (not null, which means skipped)
+    assert done["sources"] == []
 
 
 def test_chat_stream_injects_retrieved_context_into_llm_messages():
@@ -146,3 +149,37 @@ def test_chat_stream_injects_retrieved_context_into_llm_messages():
     assert "stream question" in last_user["content"]
     # Raw metadata is hidden from the model — only the index label is emitted
     assert "source_title=Stream Wiki" not in last_user["content"]
+
+
+def test_stream_delta_fullwidth_citation_normalized():
+    """Full-width citations 【N】 in streaming deltas must be normalized to [N]
+    in each delta frame (best-effort per-chunk), not only in the done frame."""
+    app = _make_app(stream_deltas=["Answer: 【1】", " more text", "【2】"])
+
+    events = []
+    with (
+        TestClient(app) as client,
+        client.stream(
+            "POST",
+            "/chat/v1/stream",
+            json={"messages": [{"role": "user", "content": "what?"}]},
+        ) as resp,
+    ):
+        for line in resp.iter_lines():
+            if line.startswith("data: "):
+                events.append(json.loads(line[6:]))
+
+    deltas = [e for e in events if e.get("type") == "delta"]
+    done = next(e for e in events if e.get("type") == "done")
+
+    # Each delta must have ASCII brackets — no full-width
+    for d in deltas:
+        assert "【" not in d["content"]
+        assert "】" not in d["content"]
+
+    # done.content also normalized
+    assert "【" not in done["content"]
+    assert "】" not in done["content"]
+    # Citations are present as ASCII
+    assert "[1]" in done["content"]
+    assert "[2]" in done["content"]

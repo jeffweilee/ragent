@@ -25,30 +25,43 @@ from ragent.pipelines.retrieve import (
     doc_to_source_entry,
     run_retrieval,
 )
-from ragent.schemas.chat import ChatRequest, build_rag_messages
+from ragent.schemas.chat import ChatRequest, build_rag_messages, normalize_citations
 from ragent.utility.feedback_token import compute_sources_hash
 from ragent.utility.feedback_token import sign as sign_feedback_token
 from ragent.utility.id_gen import new_id
 
 # ---------------------------------------------------------------------------
-# Intent taxonomy —維護點：只改此表即可新增/移除 intent
+# Intent taxonomy — 維護點：只改此表即可新增/移除 intent
 # ---------------------------------------------------------------------------
 _INTENT_REQUIRES_RETRIEVE: dict[str, bool] = {
     "GREETING": False,  # 打招呼、再見
-    "CHITCHAT": False,  # 閒聊、情緒表達、笑話
+    "CHITCHAT": False,  # 閒聊、情緒表達、開放式創作（詩/故事）
     "QUESTION": True,  # 需從文件查找事實
     "SUMMARY": True,  # 摘要文件內容
-    "GENERATION": True,  # 根據文件草擬文字
+    "GENERATION": True,  # 根據文件草擬文字（必須依賴文件；純創作 → CHITCHAT）
 }
 _INTENT_DEFAULT = "QUESTION"  # fallback when LLM returns unrecognised label
+
+# Per-intent temperature used when body.temperature is None.
+_DEFAULT_TEMPERATURE = 0.7
+_INTENT_TEMPERATURE: dict[str, float] = {
+    "GREETING": 0.8,  # warm, natural conversation
+    "CHITCHAT": 0.8,  # creative, varied
+    "QUESTION": 0.2,  # factual, low variance
+    "SUMMARY": 0.2,  # faithful to source
+    "GENERATION": 0.7,  # fluent yet grounded
+}
 
 _INTENT_SYSTEM_PROMPT = (
     "Classify the user message into exactly one intent label:\n"
     "  GREETING   — greetings, farewells, pleasantries\n"
-    "  CHITCHAT   — casual conversation, emotional expression, small talk\n"
+    "  CHITCHAT   — casual conversation, emotional expression, small talk, "
+    "open-ended creative requests (poems, stories, jokes) NOT tied to documents\n"
     "  QUESTION   — factual question to be answered from documents\n"
     "  SUMMARY    — request to summarise document content\n"
-    "  GENERATION — request to draft or write content grounded in documents\n"
+    "  GENERATION — request to draft or write content that MUST be grounded in "
+    "documents (e.g. 'write a reply based on this contract'); "
+    "pure creative writing with no document dependency → CHITCHAT\n"
     "Reply with only the intent label. No punctuation, no explanation."
 )
 
@@ -64,6 +77,34 @@ def _requires_retrieve(intent: str) -> bool:
     than to silently skip useful context).
     """
     return _INTENT_REQUIRES_RETRIEVE.get(intent, True)
+
+
+def _compute_skip_retrieve(context_mode: str, intent: str) -> bool:
+    """Determine whether retrieval should be skipped.
+
+    context_mode='force'  → always retrieve (skip=False)
+    context_mode='caller' → always skip (skip=True); caller embeds own <context>
+    context_mode='auto'   → delegate to intent taxonomy
+    """
+    if context_mode == "force":
+        return False
+    if context_mode == "caller":
+        return True
+    # auto: delegate to intent
+    return not _requires_retrieve(intent)
+
+
+def _resolve_temperature(body_temperature: float | None, intent: str) -> float:
+    """Return the effective LLM temperature.
+
+    Caller-supplied temperature takes precedence; None triggers intent-based auto-selection
+    from _INTENT_TEMPERATURE. Unknown intents fall back to _DEFAULT_TEMPERATURE.
+    """
+    return (
+        body_temperature
+        if body_temperature is not None
+        else _INTENT_TEMPERATURE.get(intent, _DEFAULT_TEMPERATURE)
+    )
 
 
 def _detect_intent(llm_client: Any, query: str, model: str) -> str:
@@ -95,22 +136,23 @@ async def _resolve_docs(
     last_user: str,
     llm_client: Any,
     retrieval_pipeline: Any,
-) -> tuple[list[Any], bool]:
-    """Detect intent (when body.retrieve=True) and conditionally run retrieval.
+) -> tuple[list[Any], bool, str]:
+    """Detect intent (always) and conditionally run retrieval.
 
-    Returns (docs, skip_retrieve).  Sequential by design: intent detection
-    must complete before we decide whether to run the ES pipeline, so we pay
-    only the intent call cost for GREETING/CHITCHAT instead of always running
-    retrieval.
+    Returns (docs, skip_retrieve, intent).
+
+    Intent detection always runs regardless of context_mode — it drives both
+    prompt selection and temperature. Retrieval is then gated by
+    _compute_skip_retrieve(context_mode, intent).
     """
     intent = _INTENT_DEFAULT
-    if body.retrieve and last_user.strip():
+    if last_user.strip():
         with _tracer.start_as_current_span("chat.intent") as i_span:
             intent = await run_in_threadpool(_detect_intent, llm_client, last_user, body.model)
             i_span.set_attribute("intent", intent)
             logger.info("chat.intent", intent=intent, query_len=len(last_user))
 
-    skip_retrieve = not body.retrieve or not _requires_retrieve(intent)
+    skip_retrieve = _compute_skip_retrieve(body.context_mode, intent)
     docs: list[Any] = []
 
     if not skip_retrieve:
@@ -124,11 +166,12 @@ async def _resolve_docs(
     else:
         logger.info(
             "chat.retrieval.skipped",
-            reason="retrieve=false" if not body.retrieve else f"intent={intent}",
+            context_mode=body.context_mode,
+            intent=intent if body.context_mode == "auto" else None,
             query_len=len(last_user),
         )
 
-    return docs, skip_retrieve
+    return docs, skip_retrieve, intent
 
 
 def _extract_token_counts(usage: dict) -> tuple[int | None, int | None]:
@@ -141,9 +184,12 @@ def _extract_token_counts(usage: dict) -> tuple[int | None, int | None]:
     )
 
 
-def _build_sources(documents: list[Any], max_chars: int) -> list[dict] | None:
-    if not documents:
-        return None
+def _build_sources(documents: list[Any], max_chars: int) -> list[dict]:
+    """Build source entries from retrieved documents.
+
+    Returns [] when documents is empty — distinct from None (retrieval skipped).
+    sources semantics: None=skipped, []=ran+no hits, [{...}]=ran+found
+    """
     return [doc_to_source_entry(d, max_chars=max_chars) for d in documents]
 
 
@@ -241,18 +287,21 @@ def create_chat_router(
                 (m["content"] for m in reversed(body.messages) if m.get("role") == "user"),
                 "",
             )
-            docs, skip_retrieve = await _resolve_docs(
+            docs, skip_retrieve, intent = await _resolve_docs(
                 body, last_user, llm_client, retrieval_pipeline
             )
             with _tracer.start_as_current_span("chat.build_messages"):
-                messages = build_rag_messages(body, docs, inject_context=not skip_retrieve)
+                messages = build_rag_messages(
+                    body, docs, inject_context=not skip_retrieve, intent=intent
+                )
+            effective_temperature = _resolve_temperature(body.temperature, intent)
             with _tracer.start_as_current_span("chat.llm") as l_span:
                 l_span.set_attribute("model", body.model)
                 result = await run_in_threadpool(
                     llm_client.chat,
                     messages=messages,
                     model=body.model,
-                    temperature=body.temperature,
+                    temperature=effective_temperature,
                     max_tokens=body.max_tokens,
                 )
                 usage = result.get("usage") or {}
@@ -267,11 +316,12 @@ def create_chat_router(
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
                 )
-            # Explicit [] (not None) when retrieval was intentionally skipped.
-            sources = [] if skip_retrieve else _build_sources(docs, max_chars=excerpt_max_chars)
+            # sources semantics: None=skipped, []=ran+no hits, [{...}]=ran+found
+            sources = None if skip_retrieve else _build_sources(docs, max_chars=excerpt_max_chars)
+            content = normalize_citations(result.get("content") or "")
             return JSONResponse(
                 {
-                    "content": result["content"],
+                    "content": content,
                     "usage": result["usage"],
                     "model": body.model,
                     "provider": body.provider,
@@ -297,13 +347,16 @@ def create_chat_router(
                 (m["content"] for m in reversed(body.messages) if m.get("role") == "user"),
                 "",
             )
-            docs, skip_retrieve = await _resolve_docs(
+            docs, skip_retrieve, intent = await _resolve_docs(
                 body, last_user, llm_client, retrieval_pipeline
             )
             with _tracer.start_as_current_span("chat.build_messages"):
-                messages = build_rag_messages(body, docs, inject_context=not skip_retrieve)
-            # Explicit [] (not None) when retrieval was intentionally skipped.
-            sources = [] if skip_retrieve else _build_sources(docs, max_chars=excerpt_max_chars)
+                messages = build_rag_messages(
+                    body, docs, inject_context=not skip_retrieve, intent=intent
+                )
+            effective_temperature = _resolve_temperature(body.temperature, intent)
+            # sources semantics: None=skipped, []=ran+no hits, [{...}]=ran+found
+            sources = None if skip_retrieve else _build_sources(docs, max_chars=excerpt_max_chars)
             # Capture the chat.request context so chat.llm (started later inside the
             # StreamingResponse generator, in a different async context) still nests
             # under chat.request via explicit parent reference rather than via the
@@ -319,15 +372,22 @@ def create_chat_router(
                     for delta in llm_client.stream(
                         messages=messages,
                         model=body.model,
-                        temperature=body.temperature,
+                        temperature=effective_temperature,
                         max_tokens=body.max_tokens,
                         usage_out=usage_out,
                     ):
-                        full_content.append(delta)
-                        yield f"data: {json.dumps({'type': 'delta', 'content': delta})}\n\n"
+                        # Best-effort per-delta normalization: catches full-width brackets
+                        # emitted as a single token (the common case). Brackets split across
+                        # chunk boundaries will not be caught here but ARE normalized in
+                        # the assembled done.content below.
+                        normalized_delta = normalize_citations(delta)
+                        full_content.append(normalized_delta)
+                        delta_payload = {"type": "delta", "content": normalized_delta}
+                        yield f"data: {json.dumps(delta_payload)}\n\n"
+                    assembled = normalize_citations("".join(full_content))
                     done_payload = {
                         "type": "done",
-                        "content": "".join(full_content),
+                        "content": assembled,
                         "model": body.model,
                         "provider": body.provider,
                         "sources": sources,
@@ -344,7 +404,7 @@ def create_chat_router(
                     logger.info(
                         "chat.llm",
                         model=body.model,
-                        completion_chars=sum(len(c) for c in full_content),
+                        completion_chars=len(assembled),
                         prompt_tokens=prompt_tokens,
                         completion_tokens=completion_tokens,
                     )

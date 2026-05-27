@@ -34,7 +34,8 @@ def test_no_docs_no_user_system_still_uses_rag_system_prompt():
 
 def test_no_docs_with_user_system_still_uses_grounding_rules():
     """Even with no docs and a caller-supplied system message, grounding rules must be prepended
-    — the RAG boundary must not be removed when the context happens to be empty."""
+    into the caller's system message — the RAG boundary must not be removed when context is empty.
+    The prefix is merged into the caller's sys-msg (single system turn, not two separate ones)."""
     from ragent.schemas.chat import _RAG_GROUNDING_RULES
 
     req = _req(
@@ -43,7 +44,11 @@ def test_no_docs_with_user_system_still_uses_grounding_rules():
     )
     for docs in (None, []):
         result = build_rag_messages(req, docs)
-        assert result[0]["content"] == _RAG_GROUNDING_RULES
+        # Prefix merged into caller's sys-msg; exactly one system message.
+        assert result[0]["role"] == "system"
+        assert result[0]["content"].startswith(_RAG_GROUNDING_RULES)
+        assert "Custom persona" in result[0]["content"]
+        assert not any(m["role"] == "system" for m in result[1:])
 
 
 def test_empty_docs_injects_empty_context_placeholder():
@@ -70,7 +75,10 @@ def test_docs_present_prepends_rag_system_at_index_0_and_wraps_last_user():
     assert "</context>" in last_user["content"]
 
 
-def test_docs_present_with_user_system_uses_rules_only_variant_at_index_0_user_system_at_index_1():
+def test_docs_present_with_user_system_merges_grounding_rules_into_caller_sys_msg():
+    """When docs are present and the caller provides a system message, the grounding-rules
+    prefix is merged into the caller's sys-msg (single system turn). The caller's persona
+    is preserved at the end of the merged content."""
     from ragent.schemas.chat import _RAG_GROUNDING_RULES
 
     doc = _doc("e", source_title="T", document_id="d", source_app="a")
@@ -81,9 +89,10 @@ def test_docs_present_with_user_system_uses_rules_only_variant_at_index_0_user_s
     result = build_rag_messages(req, [doc])
 
     assert result[0]["role"] == "system"
-    assert result[0]["content"] == _RAG_GROUNDING_RULES
-    assert result[1]["role"] == "system"
-    assert result[1]["content"] == "You are a pirate"
+    assert result[0]["content"].startswith(_RAG_GROUNDING_RULES)
+    assert "You are a pirate" in result[0]["content"]
+    # No second system message — merged into one.
+    assert result[1]["role"] != "system"
 
 
 # --- docs present: user message wrapping ---
@@ -299,33 +308,104 @@ def test_inject_context_false_no_context_tag():
 
 
 def test_inject_context_false_system_floated():
-    """Caller-supplied system messages must still be floated to the front even
-    when inject_context=False."""
-    from ragent.schemas.chat import _RAG_GROUNDING_RULES
+    """Caller-supplied system messages are merged with the grounding prefix (single sys turn).
+    With QUESTION intent + inject_context=False, prefix is _RAG_GROUNDING_NO_CITATION.
+    The caller's persona is preserved in the merged content."""
+    from ragent.schemas.chat import _RAG_GROUNDING_NO_CITATION
 
     req = _req(
         {"role": "system", "content": "Custom persona"},
         {"role": "user", "content": "query"},
     )
-    result = build_rag_messages(req, [], inject_context=False)
+    result = build_rag_messages(req, [], inject_context=False, intent="QUESTION")
 
-    assert result[0]["content"] == _RAG_GROUNDING_RULES
-    assert result[1]["role"] == "system"
-    assert result[1]["content"] == "Custom persona"
+    assert result[0]["role"] == "system"
+    assert result[0]["content"].startswith(_RAG_GROUNDING_NO_CITATION)
+    assert "Custom persona" in result[0]["content"]
+    # No second system message — merged into one.
+    assert result[1]["role"] == "user"
 
 
 # ---------------------------------------------------------------------------
-# T-CH.R3 — ChatRequest.retrieve field
+# T-CH.R3 (updated for T-CH2.S1) — ChatRequest.context_mode replaces retrieve
 # ---------------------------------------------------------------------------
 
 
-def test_chat_request_retrieve_field():
-    """ChatRequest.retrieve defaults to True and accepts False."""
+def test_context_mode_field():
+    """ChatRequest.context_mode defaults to 'auto', accepts 'caller' and 'force'."""
     req_default = ChatRequest(messages=[{"role": "user", "content": "hi"}])
-    assert req_default.retrieve is True
+    assert req_default.context_mode == "auto"
 
-    req_false = ChatRequest(messages=[{"role": "user", "content": "hi"}], retrieve=False)
-    assert req_false.retrieve is False
+    req_caller = ChatRequest(messages=[{"role": "user", "content": "hi"}], context_mode="caller")
+    assert req_caller.context_mode == "caller"
+
+    req_force = ChatRequest(messages=[{"role": "user", "content": "hi"}], context_mode="force")
+    assert req_force.context_mode == "force"
+
+
+# ---------------------------------------------------------------------------
+# T-CH2.S3 — build_rag_messages: GREETING + inject_context=False → plain prompt
+# ---------------------------------------------------------------------------
+
+
+def test_plain_prompt_for_greeting_no_context():
+    """GREETING intent with inject_context=False must use _PLAIN_ASSISTANT_PROMPT
+    — no RAG grounding rules, no [N] citation rules."""
+    from ragent.schemas.chat import _PLAIN_ASSISTANT_PROMPT
+
+    req = _req({"role": "user", "content": "你好！"})
+    result = build_rag_messages(req, [], inject_context=False, intent="GREETING")
+    assert result[0]["role"] == "system"
+    assert result[0]["content"] == _PLAIN_ASSISTANT_PROMPT
+    # plain prompt must NOT contain citation formatting rules
+    assert "[1]" not in result[0]["content"] or "FORBIDDEN" in result[0]["content"]
+    assert "資料來源" not in result[0]["content"]
+
+
+def test_plain_prompt_for_chitchat_no_context():
+    """CHITCHAT intent behaves identically to GREETING when inject_context=False."""
+    from ragent.schemas.chat import _PLAIN_ASSISTANT_PROMPT
+
+    req = _req({"role": "user", "content": "今天心情不好"})
+    result = build_rag_messages(req, [], inject_context=False, intent="CHITCHAT")
+    assert result[0]["content"] == _PLAIN_ASSISTANT_PROMPT
+
+
+# ---------------------------------------------------------------------------
+# T-CH2.S4 — build_rag_messages: QUESTION + inject_context=True → citation rules
+# ---------------------------------------------------------------------------
+
+
+def test_rag_prompt_has_citation_when_inject_context():
+    """inject_context=True + QUESTION must use a prompt that includes [N] citation rules."""
+    req = _req({"role": "user", "content": "what is RAG?"})
+    docs = [_doc("RAG stands for Retrieval-Augmented Generation")]
+    result = build_rag_messages(req, docs, inject_context=True, intent="QUESTION")
+    sys_content = result[0]["content"]
+    # citation rule text must be present
+    assert "CITATION" in sys_content or "[1]" in sys_content
+    # context block injected into user message
+    last_user = next(m for m in reversed(result) if m["role"] == "user")
+    assert "<context>" in last_user["content"]
+
+
+# ---------------------------------------------------------------------------
+# T-CH2.S5 — build_rag_messages: QUESTION + inject_context=False → no [N] citation rules
+# ---------------------------------------------------------------------------
+
+
+def test_no_citation_prompt_when_caller_context():
+    """inject_context=False + QUESTION must use a prompt WITHOUT [N] citation rules.
+    This prevents the LLM from emitting [1] citations when sources=null."""
+    from ragent.schemas.chat import _RAG_GROUNDING_NO_CITATION
+
+    req = _req({"role": "user", "content": "what is RAG?"})
+    result = build_rag_messages(req, [], inject_context=False, intent="QUESTION")
+    sys_content = result[0]["content"]
+    assert sys_content == _RAG_GROUNDING_NO_CITATION
+    # no <context> block injected
+    last_user = next(m for m in reversed(result) if m["role"] == "user")
+    assert "<context>" not in last_user["content"]
 
 
 # ---------------------------------------------------------------------------
