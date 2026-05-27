@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+import re
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -13,7 +14,6 @@ from ragent.schemas.ingest import SOURCE_META_MAX
 
 _DEFAULT_PROVIDER = os.environ.get("RAGENT_DEFAULT_LLM_PROVIDER", "openai")
 _DEFAULT_MODEL = os.environ.get("RAGENT_DEFAULT_LLM_MODEL", "gptoss-120b")
-_DEFAULT_TEMPERATURE = float(os.environ.get("RAGENT_DEFAULT_TEMPERATURE", "0.7"))
 _DEFAULT_MAX_TOKENS = int(os.environ.get("RAGENT_DEFAULT_MAX_TOKENS", "4096"))
 _MARKDOWN_OUTPUT_RULE = (
     "Always format your response in Markdown (headings, lists, code fences, "
@@ -33,9 +33,11 @@ _RAG_COMMON_INSTRUCTIONS = """\
    user's language and script perfectly. Do NOT apply context restrictions for these.
 2. FACTUAL QUESTIONS: Use ONLY facts directly mentioned inside <context>...</context>.
    Do not rely on prior knowledge or external assumptions.
-3. CITATION RULE (GEMINI STYLE): Cite using ONLY the exact numeric format `[1]`, `[2]`
-   based on the corresponding [資料來源 #X] index. Place citations at the paragraph end.
-   CRITICAL BAN: NEVER use `【1】`, `(1)`, `[#1]`, `1.` or document titles as citations.
+3. CITATION FORMAT (STRICT): Use ONLY ASCII half-width brackets: [1], [2], [3].
+   ONE citation per paragraph, at the paragraph end, based on [資料來源 #X] index.
+   ✅ CORRECT:   "...根據相關規定。[1]"
+   ❌ FORBIDDEN: 【1】 (full-width)  (1) (parentheses)  [#1] (hash)  1. (numeral)
+   Re-check every citation before output. If you used 【 】, replace with [ ].
 4. NATURAL REFUSAL: If context lacks the answer to a factual question, reply
    empathetically in the user's language and script:
    - Traditional Chinese → "我理解您的問題，但從目前提供的資料中找不到相關資訊。"
@@ -91,23 +93,76 @@ matching response style. Default to QUESTION style when intent is unclear.
     + _MARKDOWN_OUTPUT_RULE
 )
 
+# Used when context_mode='caller': caller manages their own context, so [N] citation
+# rules must NOT be applied — sources=null means there's nothing for the user to look up.
+_RAG_GROUNDING_NO_CITATION = os.environ.get("RAGENT_RAG_GROUNDING_NO_CITATION") or (
+    """\
+You are a retrieval-grounded assistant. The context has been provided by the caller
+and is embedded in the user message.
+
+[CRITICAL GROUNDING RULES]
+1. CHITCHAT & GREETINGS: Reply warmly and naturally. Mirror the user's language and
+   script perfectly. Do NOT apply context restrictions for these.
+2. FACTUAL QUESTIONS: Use ONLY facts from the <context> block in the user message.
+   Do not rely on prior knowledge or external assumptions.
+3. NO CITATION MARKS: The context is caller-managed. Do NOT emit [N] citation
+   references. Refer to information naturally without numeric brackets.
+4. NATURAL REFUSAL: If context lacks the answer, reply empathetically in the user's
+   language and script. Never say "I don't know based on the provided context."
+5. STRUCTURE GUARD: NEVER echo delimiter tokens like `<context>` or `</context>`.
+6. STRICT LANGUAGE MIRRORING: Mirror the script/language of the user's prompt exactly.
+7. GROUNDED RESPONSE OPENER: Begin factual answers with a natural opener grounded in
+   the material (e.g. "根據所提供的資料，…" / "Based on the provided materials, …").
+
+"""
+    + _MARKDOWN_OUTPUT_RULE
+)
+
+# Used when inject_context=False and intent is GREETING or CHITCHAT.
+_PLAIN_ASSISTANT_PROMPT = (
+    """\
+You are a helpful, warm, and friendly conversational assistant.
+Respond naturally to greetings, casual conversation, and emotional expressions.
+Mirror the user's language and script exactly.
+Do not reference documents, context blocks, or citations in your reply.
+
+"""
+    + _MARKDOWN_OUTPUT_RULE
+)
+
 _PROVIDER_ALLOWLIST = frozenset({"openai"})
 _FILTER_MAX_LEN = 64
 _FILTER_META_MAX_LEN = SOURCE_META_MAX
+
+# Regex for post-processing: normalize full-width citation brackets 【N】→[N].
+_CITATION_FULLWIDTH_RE = re.compile(r"【(\d+)】")
+
+
+def normalize_citations(text: str) -> str:
+    """Normalize full-width citation brackets 【N】→[N].
+
+    LLMs fine-tuned on Chinese text have a strong prior toward 【N】 even when
+    the system prompt bans it. This deterministic post-processing pass is the
+    safety net that guarantees consistent ASCII citation format in the response.
+    Note: (N) parenthesis-form is intentionally not normalized to avoid breaking
+    legitimate ordered-list syntax in prose.
+    """
+    return _CITATION_FULLWIDTH_RE.sub(r"[\1]", text)
 
 
 class ChatRequest(BaseModel):
     messages: list[dict[str, Any]] = Field(..., min_length=1)
     provider: str = _DEFAULT_PROVIDER
     model: str = _DEFAULT_MODEL
-    temperature: float = _DEFAULT_TEMPERATURE
+    temperature: float | None = None  # None = use intent-based auto (_INTENT_TEMPERATURE)
     max_tokens: int = _DEFAULT_MAX_TOKENS
     source_app: str | None = None
     source_meta: str | None = None
     top_k: int = Field(default=_DEFAULT_TOP_K, ge=1, le=200)
     min_score: float | None = Field(default=_DEFAULT_MIN_SCORE, ge=0.0)
     dedupe: bool = False
-    retrieve: bool = True  # False = skip intent detection + retrieval; caller supplies <context>
+    context_mode: Literal["auto", "caller", "force"] = "auto"
+    # See _compute_skip_retrieve() in routers/chat.py for per-mode retrieval semantics.
 
     @field_validator("provider")
     @classmethod
@@ -177,34 +232,60 @@ def _wrap_last_user(messages: list[dict[str, Any]], context_block: str) -> list[
     return messages
 
 
+def _select_system_prompt(intent: str, inject_context: bool) -> str:
+    """Select the appropriate system prompt based on intent and context injection state.
+
+    Three cases:
+    - GREETING/CHITCHAT without context → plain assistant (no RAG rules, no citations)
+    - Any intent with context injected  → _DEFAULT_RAG_SYSTEM_PROMPT with [N] citation rules
+      (caller-supplied sys-msg override to _RAG_GROUNDING_RULES is applied in build_rag_messages)
+    - QUESTION/SUMMARY/GENERATION without context (caller mode) → RAG grounding, no [N]
+    """
+    if not inject_context and intent in {"GREETING", "CHITCHAT"}:
+        return _PLAIN_ASSISTANT_PROMPT
+    if inject_context:
+        return _DEFAULT_RAG_SYSTEM_PROMPT
+    # inject_context=False + QUESTION/SUMMARY/GENERATION: caller manages context.
+    # Suppress [N] citation rules — sources=null means user can't look up references.
+    return _RAG_GROUNDING_NO_CITATION
+
+
 def build_rag_messages(
-    req: ChatRequest,
+    req: "ChatRequest",
     docs: list[Any] | None,
     *,
     inject_context: bool = True,
+    intent: str = "QUESTION",
 ) -> list[dict[str, Any]]:
-    """Build the final message list for the LLM with RAG grounding always applied.
+    """Build the final message list for the LLM with appropriate system prompt.
 
-    The RAG system prompt (or grounding rules) is prepended in every case — even when
-    docs is empty — so the boundary is never silently removed. An empty docs list
-    produces a sentinel context block rather than falling back to the generic assistant.
+    System prompt is selected by (inject_context, intent):
+    - GREETING/CHITCHAT + no context   → _PLAIN_ASSISTANT_PROMPT
+    - Any intent + context injected    → _DEFAULT_RAG_SYSTEM_PROMPT (or _RAG_GROUNDING_RULES
+                                         when the caller supplies a system message)
+    - QUESTION/SUMMARY/GENERATION + no context → _RAG_GROUNDING_NO_CITATION
 
-    When inject_context=False the caller's message list is passed through verbatim
-    (no <context> wrapping); use this when the caller has already embedded their own
-    <context>…</context> block and retrieval was intentionally skipped.
+    When inject_context=True the last user message is wrapped with <context>…</context>.
+    When inject_context=False the caller's message list is passed through verbatim.
     """
     messages = list(req.messages)
     if inject_context:
         context_block = _render_context(docs)
         messages = _wrap_last_user(messages, context_block)
-    # Single pass: detect user-supplied system message and partition in one loop.
+
+    # Single pass: detect user-supplied system message and partition.
     # Float system messages to the front — some providers (e.g. OpenAI) reject
     # non-leading system messages.
     sys_msgs: list[dict[str, Any]] = []
     other_msgs: list[dict[str, Any]] = []
     for m in messages:
         (sys_msgs if m.get("role") == "system" else other_msgs).append(m)
-    if sys_msgs:
-        # Order: [grounding_rules, caller_system…, remaining_turns…]
-        return [{"role": "system", "content": _RAG_GROUNDING_RULES}] + sys_msgs + other_msgs
-    return [{"role": "system", "content": _DEFAULT_RAG_SYSTEM_PROMPT}] + other_msgs
+
+    # When caller provides a system message and context is injected, use the grounding
+    # rules variant (shorter, avoids conflicting style instructions with caller's prompt).
+    prefix = (
+        _RAG_GROUNDING_RULES
+        if inject_context and sys_msgs
+        else _select_system_prompt(intent, inject_context)
+    )
+    return [{"role": "system", "content": prefix}] + sys_msgs + other_msgs

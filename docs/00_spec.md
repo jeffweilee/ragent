@@ -144,18 +144,19 @@ QueryEmbedder → { ESVectorRetriever (kNN on embedding, optional filter)
 
 ```json
 { "messages":[{"role":"user","content":"…"}], "provider":"openai", "model":"gptoss-120b",
-  "temperature":0.7, "max_tokens":4096,
+  "temperature":null, "max_tokens":4096,
   "source_app":"confluence", "source_meta":"eng", "top_k":20, "min_score":null,
-  "dedupe":false, "retrieve":true }
+  "dedupe":false, "context_mode":"auto" }
 ```
 
 `messages` required; `provider` validated against `{"openai"}` (B22); `top_k` 1–200; server prepends default system message when `role:"system"` absent.
 
-`retrieve` (default `true`): when `false`, both intent detection and retrieval pipeline are
-skipped entirely; caller is expected to embed `<context>…</context>` in the user message.
-When `true`, intent detection runs first (`temperature=0`, `max_tokens=10` LLM call);
-if intent ∈ `{GREETING, CHITCHAT}` retrieval is also skipped. In both skip cases
-`sources` returns `[]` (empty array, not `null`).
+`temperature` (default `null`): when `null`, intent-based auto-selection applies — GREETING/CHITCHAT → 0.8, QUESTION/SUMMARY → 0.2, GENERATION → 0.7; when a float, overrides intent-based default.
+
+`context_mode` (default `"auto"`): controls retrieval and context-injection behaviour:
+- `"auto"` — intent detection runs first (`temperature=0`, `max_tokens=10` LLM call); if intent ∈ `{GREETING, CHITCHAT}` retrieval is skipped and context is not injected; otherwise retrieval runs normally.
+- `"caller"` — retrieval is always skipped; caller embeds `<context>…</context>` in the user message; intent detection still runs (for temperature and system-prompt selection); `sources` returns `null`.
+- `"force"` — retrieval always runs regardless of intent.
 
 **Intent taxonomy** (maintained in `src/ragent/routers/chat.py::_INTENT_REQUIRES_RETRIEVE`):
 
@@ -181,8 +182,9 @@ to begin retrieval-grounded responses with an opener such as "根據所提供的
   "request_id":"…", "feedback_token":"<base64url>.<hmac>" }
 ```
 
-`sources` null when retrieval ran but returned nothing; `[]` (empty array) when retrieval
-was intentionally skipped (`retrieve=false` or intent ∈ `{GREETING, CHITCHAT}`).
+`sources` is `null` when retrieval was intentionally skipped (`context_mode="caller"`, or
+`context_mode="auto"` with intent ∈ `{GREETING, CHITCHAT}`); `[]` (empty array) when
+retrieval ran but returned no hits; `[{…}]` when retrieval ran and found results.
 `excerpt` truncated to `EXCERPT_MAX_CHARS` (512) in router, LLM gets full text (B23).
 `feedback_token`+`request_id` only when `CHAT_FEEDBACK_ENABLED=true` AND `X-User-Id` present.
 

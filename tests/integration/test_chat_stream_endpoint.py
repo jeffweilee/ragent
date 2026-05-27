@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 pytestmark = pytest.mark.docker
 
 
-def _make_app(stream_deltas=None, retrieval_docs=None, llm_error=None):
+def _make_app(stream_deltas=None, retrieval_docs=None, llm_error=None, intent="QUESTION"):
     from ragent.routers.chat import create_chat_router
 
     retrieval_docs = retrieval_docs or []
@@ -20,6 +20,8 @@ def _make_app(stream_deltas=None, retrieval_docs=None, llm_error=None):
     retrieval_pipeline.run.return_value = {"excerpt_truncator": {"documents": retrieval_docs}}
 
     llm_client = MagicMock()
+    # Intent detection uses llm_client.chat (max_tokens=10); always mock it.
+    llm_client.chat.return_value = {"content": intent}
     if llm_error:
         llm_client.stream.side_effect = llm_error
     else:
@@ -95,7 +97,8 @@ def test_stream_sources_null_on_empty_retrieval():
         )
     events = _parse_sse(resp.text)
     done = next(e for e in events if e.get("type") == "done")
-    assert done["sources"] is None
+    # retrieval ran but returned no documents → sources=[] (not null, which means skipped)
+    assert done["sources"] == []
 
 
 def test_chat_stream_injects_retrieved_context_into_llm_messages():

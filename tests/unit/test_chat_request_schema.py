@@ -31,12 +31,12 @@ def test_messages_required_empty():
 def test_defaults_from_env(monkeypatch):
     monkeypatch.setenv("RAGENT_DEFAULT_LLM_PROVIDER", "openai")
     monkeypatch.setenv("RAGENT_DEFAULT_LLM_MODEL", "gptoss-120b")
-    monkeypatch.setenv("RAGENT_DEFAULT_TEMPERATURE", "0.7")
     monkeypatch.setenv("RAGENT_DEFAULT_MAX_TOKENS", "4096")
     req = _req(messages=[{"role": "user", "content": "hi"}])
     assert req.provider == "openai"
     assert req.model == "gptoss-120b"
-    assert req.temperature == 0.7
+    # temperature defaults to None (intent-based auto); RAGENT_DEFAULT_TEMPERATURE no longer used
+    assert req.temperature is None
     assert req.max_tokens == 4096
 
 
@@ -193,3 +193,54 @@ def test_chat_request_min_score_must_be_non_negative():
 def test_chat_request_min_score_accepts_none_explicitly():
     req = _req(messages=[{"role": "user", "content": "hi"}], min_score=None)
     assert req.min_score is None
+
+
+# ---------------------------------------------------------------------------
+# T-CH2.S1 — context_mode field replaces retrieve: bool
+# ---------------------------------------------------------------------------
+
+
+def test_context_mode_defaults_auto():
+    """ChatRequest.context_mode defaults to 'auto'."""
+    req = _req(messages=[{"role": "user", "content": "hi"}])
+    assert req.context_mode == "auto"
+
+
+def test_context_mode_accepts_valid_values():
+    """context_mode accepts 'auto', 'caller', 'force'."""
+    for mode in ("auto", "caller", "force"):
+        req = _req(messages=[{"role": "user", "content": "hi"}], context_mode=mode)
+        assert req.context_mode == mode
+
+
+def test_context_mode_rejects_invalid():
+    """context_mode rejects values outside the allowed set."""
+    from pydantic import ValidationError as _VE
+
+    from ragent.schemas.chat import ChatRequest
+
+    with pytest.raises(_VE):
+        ChatRequest(messages=[{"role": "user", "content": "hi"}], context_mode="raw")
+
+
+# ---------------------------------------------------------------------------
+# T-CH2.S2 — temperature: float | None = None
+# ---------------------------------------------------------------------------
+
+
+def test_temperature_none_is_default():
+    """ChatRequest.temperature defaults to None (intent-based auto)."""
+    req = _req(messages=[{"role": "user", "content": "hi"}])
+    assert req.temperature is None
+
+
+def test_temperature_none_accepted_explicitly():
+    """Explicit temperature=None is valid."""
+    req = _req(messages=[{"role": "user", "content": "hi"}], temperature=None)
+    assert req.temperature is None
+
+
+def test_temperature_float_accepted():
+    """Explicit float temperature overrides intent-based default."""
+    req = _req(messages=[{"role": "user", "content": "hi"}], temperature=0.3)
+    assert req.temperature == pytest.approx(0.3)

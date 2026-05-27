@@ -248,31 +248,35 @@ Request schema is shared by both endpoints. Only `messages` is required.
 | `messages` | array | — | Required. Conversation turns (`role`/`content`). |
 | `provider` | string | `"openai"` | LLM provider (validated against `{"openai"}`). |
 | `model` | string | env default | Model name forwarded to provider. |
-| `temperature` | float | `0.7` | Sampling temperature. |
+| `temperature` | float\|null | `null` | Sampling temperature. `null` = intent-based auto (GREETING/CHITCHAT → 0.8, QUESTION/SUMMARY → 0.2, GENERATION → 0.7). |
 | `max_tokens` | int | `4096` | Max completion tokens. |
 | `source_app` | string | `null` | ES filter: restrict chunks to this source app. |
 | `source_meta` | string | `null` | ES filter: restrict chunks to this source meta tag. |
 | `top_k` | int | `20` | Max chunks to retrieve (1–200). |
 | `min_score` | float | `null` | Minimum chunk score threshold. |
 | `dedupe` | bool | `false` | Keep only the top-scored chunk per `document_id`. |
-| `retrieve` | bool | `true` | When `false`, intent detection and retrieval are both skipped; caller must embed `<context>…</context>` in the user message. |
+| `context_mode` | string | `"auto"` | `"auto"` = intent-based retrieval; `"caller"` = skip retrieval (caller embeds context); `"force"` = always retrieve. |
 
-**Intent detection** (when `retrieve=true`): before retrieval, a lightweight LLM call
-(temperature=0, max_tokens=10) classifies the last user turn into one of five intents:
+**Intent detection** always runs (a lightweight `temperature=0`, `max_tokens=10` LLM call)
+unless the user turn is empty or whitespace. It classifies the last user turn:
 
-| Intent | Retrieval | Notes |
-|--------|-----------|-------|
-| `GREETING` | skipped | Greetings, farewells, pleasantries |
-| `CHITCHAT` | skipped | Casual conversation, small talk |
-| `QUESTION` | runs | Factual question answered from documents |
-| `SUMMARY` | runs | Summarise document content |
-| `GENERATION` | runs | Draft/write content grounded in documents |
+| Intent | Retrieval (`auto` mode) | Temperature (when `temperature=null`) | Notes |
+|--------|------------------------|---------------------------------------|-------|
+| `GREETING` | skipped | 0.8 | Greetings, farewells, pleasantries |
+| `CHITCHAT` | skipped | 0.8 | Casual conversation, small talk |
+| `QUESTION` | runs | 0.2 | Factual question answered from documents |
+| `SUMMARY` | runs | 0.2 | Summarise document content |
+| `GENERATION` | runs | 0.7 | Draft/write content grounded in documents |
 
 Unknown intent labels default to `QUESTION` (fail-safe). Intent tokens are normalized
 (non-alpha chars stripped) before lookup, so `"GREETING."` is treated as `"GREETING"`.
-Empty or whitespace-only user turns skip intent detection and default to `QUESTION`.
-`sources` is `[]` (empty array, not `null`) when retrieval is skipped; `null` when
-retrieval ran but found nothing.
+
+**`sources` semantics:** `null` = retrieval was skipped (`context_mode="caller"`, or
+`context_mode="auto"` with GREETING/CHITCHAT intent); `[]` = retrieval ran but found no
+hits; `[{…}]` = retrieval ran and found results.
+
+**Citation normalization:** full-width brackets `【N】` in LLM output are post-processed
+to ASCII half-width `[N]` before the response is returned.
 
 ```bash
 curl -X POST http://localhost:8000/chat/v1 \
