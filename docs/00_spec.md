@@ -297,6 +297,11 @@ Exposes ragent's retrieval pipeline as an MCP tool (JSON-RPC 2.0, retrieve-only)
 
 > Full spec: [docs/spec/mcp_server.md](spec/mcp_server.md) — protocol, methods, `retrieve` tool schema, error codes, BDD S58–S67.
 
+**Interface notes (2026-05-27):**
+- `tools/list` response includes `annotations: {readOnlyHint: true}` on the `retrieve` tool — signals to MCP hosts (protocol 2025-03-26+) that the tool is read-only. Clients on earlier pinned version (`"2024-11-05"`) silently ignore the field.
+- `excerpt_max_chars` is threaded into the MCP handler at router-creation time (same `EXCERPT_MAX_CHARS` env var used by `POST /retrieve/v1`). Previously the MCP surface always used the hardcoded 512-char default regardless of operator config.
+- Full API call chain (upstream services, exception handling, process-exit conditions): [docs/api_call_chains.md](api_call_chains.md).
+
 ### 3.9 MCP Hub Microservice
 
 Standalone FastMCP service that federates arbitrary third-party REST APIs as MCP tools.

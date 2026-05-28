@@ -405,7 +405,12 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
                 hmac_secret=container.feedback_hmac_secret,
             )
         )
-    app.include_router(create_mcp_router(retrieval_pipeline=container.retrieval_pipeline))
+    app.include_router(
+        create_mcp_router(
+            retrieval_pipeline=container.retrieval_pipeline,
+            excerpt_max_chars=container.excerpt_max_chars,
+        )
+    )
     app.include_router(
         create_admin_embedding_router(
             service=container.embedding_lifecycle_service,

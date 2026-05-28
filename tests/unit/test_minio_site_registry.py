@@ -202,3 +202,52 @@ def test_head_object_preserves_none_size_so_worker_skips_size_check():
     size, ct = reg.head_object("__default__", "key")
     assert size is None, "None size must pass through so worker uses expected_size=None"
     assert ct == "application/octet-stream"
+
+
+# ---------------------------------------------------------------------------
+# Retry config read at construction, not per-call (Fix: runtime sys.exit risk)
+# ---------------------------------------------------------------------------
+
+
+def test_get_object_retry_params_fixed_at_construction_not_per_call(monkeypatch):
+    """MINIO_GET_RETRIES and MINIO_GET_RETRY_DELAY_SECONDS must be read once at
+    MinioSiteRegistry construction time, not on every get_object() call.
+
+    If they are read per-call, a misconfigured env var (e.g. MINIO_GET_RETRIES=abc)
+    survives boot silently and causes sys.exit(1) on the first worker document ingest.
+    Reading at construction moves the failure to boot time, consistent with all
+    other env var reads in the project.
+    """
+    import json
+
+    from ragent.storage.minio_registry import MinioSiteRegistry
+
+    site_json = json.dumps(
+        [
+            {
+                "name": "__default__",
+                "endpoint": "minio:9000",
+                "access_key": "ak",
+                "secret_key": "example_minio_secret_not_real",  # pragma: allowlist secret
+                "bucket": "b",
+            }
+        ]
+    )
+
+    # Set env before construction
+    monkeypatch.setenv("MINIO_GET_RETRIES", "7")
+    monkeypatch.setenv("MINIO_GET_RETRY_DELAY_SECONDS", "0.01")
+
+    client_stub = MagicMock()
+    client_stub.get_object.return_value.__enter__ = lambda s: MagicMock(read=lambda: b"data")
+    client_stub.get_object.return_value.__exit__ = MagicMock(return_value=False)
+
+    reg = MinioSiteRegistry.from_json(site_json, minio_factory=lambda **_: client_stub)
+
+    # Change env AFTER construction — the already-constructed registry must NOT
+    # re-read the env var on each get_object() call.
+    monkeypatch.setenv("MINIO_GET_RETRIES", "abc")  # would cause sys.exit if re-read
+
+    # Should use the value from construction time (7), not re-read "abc"
+    assert reg._get_retries == 7
+    assert reg._get_retry_delay == pytest.approx(0.01)

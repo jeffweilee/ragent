@@ -97,3 +97,16 @@ def test_retrieve_input_schema_property_types(client: TestClient) -> None:
 
     assert props["dedupe"]["type"] == "boolean"
     assert props["dedupe"]["default"] is False
+
+
+def test_retrieve_tool_has_readonly_hint(client: TestClient) -> None:
+    """Retrieve never writes data — readOnlyHint must be True.
+
+    MCP hosts use this annotation to skip confirmation prompts for
+    read-only tools (protocol 2025-03-26+). Clients on earlier versions
+    ignore unknown fields, so this is backward compatible.
+    """
+    [tool] = client.post(
+        "/mcp/v1", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+    ).json()["result"]["tools"]
+    assert tool.get("annotations", {}).get("readOnlyHint") is True

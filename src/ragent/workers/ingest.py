@@ -233,18 +233,28 @@ async def ingest_supersede_task(survivor_id: str, source_id: str, source_app: st
     from ragent.bootstrap.composition import get_container
     from ragent.services.ingest_service import IngestService
 
-    container = get_container()
-    svc = IngestService(
-        repo=container.doc_repo,
-        storage=container.minio_registry,
-        broker=container.registry,
-        registry=container.registry,
-    )
-
-    await svc.supersede(survivor_id, source_id, source_app)
-    logger.info(
-        "supersede.completed",
-        survivor_id=survivor_id,
-        source_id=source_id,
-        source_app=source_app,
-    )
+    try:
+        container = get_container()
+        svc = IngestService(
+            repo=container.doc_repo,
+            storage=container.minio_registry,
+            broker=container.registry,
+            registry=container.registry,
+        )
+        await svc.supersede(survivor_id, source_id, source_app)
+        logger.info(
+            "supersede.completed",
+            survivor_id=survivor_id,
+            source_id=source_id,
+            source_app=source_app,
+        )
+    except Exception as exc:
+        logger.error(
+            "supersede.failed",
+            survivor_id=survivor_id,
+            source_id=source_id,
+            source_app=source_app,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        raise

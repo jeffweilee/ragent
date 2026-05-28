@@ -29,7 +29,7 @@ Exposes ragent's retrieval pipeline as a **Model Context Protocol** tool so exte
 |---|---|---|
 | `initialize` | client → server | Capability negotiation. Returns `{protocolVersion, capabilities, serverInfo}`. |
 | `notifications/initialized` | client → server (notification) | Client signals init complete. Server silently accepts. |
-| `tools/list` | client → server | Returns `{tools: [{name, description, inputSchema}]}`. |
+| `tools/list` | client → server | Returns `{tools: [{name, description, annotations?, inputSchema}]}`. |
 | `tools/call` | client → server | Invokes a tool. Returns `{content: [{type, text}], isError}`. |
 | `ping` | bidirectional | Returns `{}`. Optional keepalive. |
 
@@ -43,6 +43,7 @@ The sole tool advertised by `tools/list`. Mirrors §3.4.4 `POST /retrieve/v1` se
 {
   "name": "retrieve",
   "description": "Retrieve relevant document chunks from the ragent corpus using hybrid vector+BM25 search with optional reranking. Returns ranked chunks (no LLM synthesis).",
+  "annotations": {"readOnlyHint": true},
   "inputSchema": {
     "type": "object",
     "properties": {
@@ -57,6 +58,10 @@ The sole tool advertised by `tools/list`. Mirrors §3.4.4 `POST /retrieve/v1` se
   }
 }
 ```
+
+`annotations.readOnlyHint=true` signals that `retrieve` never writes data. MCP hosts (protocol
+2025-03-26+) MAY use this to skip confirmation prompts. Clients on earlier versions silently
+ignore unknown tool fields — this is an additive, backward-compatible extension.
 
 **`tools/call` result shape** (MCP spec compliant):
 ```json

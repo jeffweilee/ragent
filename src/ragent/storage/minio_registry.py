@@ -52,6 +52,10 @@ def _sanitise(s: str) -> str:
 class MinioSiteRegistry:
     def __init__(self, sites: dict[str, SiteRecord]) -> None:
         self._sites = sites
+        # Read retry config once at construction so a misconfigured env var
+        # (e.g. MINIO_GET_RETRIES=abc) fails at boot, not on the first ingest.
+        self._get_retries = max(1, int_env("MINIO_GET_RETRIES", 3))
+        self._get_retry_delay = float_env("MINIO_GET_RETRY_DELAY_SECONDS", 2.0)
 
     @classmethod
     def from_env(
@@ -203,8 +207,8 @@ class MinioSiteRegistry:
 
     def get_object(self, site: str, object_key: str, *, expected_size: int | None = None) -> bytes:
         rec = self.get(site)
-        max_retries = max(1, int_env("MINIO_GET_RETRIES", 3))
-        retry_delay = float_env("MINIO_GET_RETRY_DELAY_SECONDS", 2.0)
+        max_retries = self._get_retries
+        retry_delay = self._get_retry_delay
 
         last_exc: Exception | None = None
         for attempt in range(max_retries):

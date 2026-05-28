@@ -6,6 +6,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import httpx
+
 
 class TokenManager:
     _REFRESH_MARGIN = 300  # refresh 5 minutes before expiry
@@ -50,6 +52,10 @@ class TokenManager:
             resp = self._http.post(self._url, json={"key": j1})
             resp.raise_for_status()
             data = resp.json()
+        except httpx.TimeoutException:
+            # Preserve timeout type so classify_upstream_error() can return
+            # UpstreamTimeoutError (504) instead of UpstreamServiceError (502).
+            raise
         except Exception as exc:
             raise RuntimeError("Token refresh failed") from exc
         from ragent.utility.datetime import from_iso

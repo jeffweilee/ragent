@@ -21,6 +21,7 @@ from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
 from ragent.pipelines.retrieve import (
     DEFAULT_TOP_K,
+    EXCERPT_MAX_CHARS_DEFAULT,
     build_es_filters,
     dedupe_by_document,
     doc_to_source_entry,
@@ -97,6 +98,11 @@ _RETRIEVE_TOOL_SCHEMA: dict[str, Any] = {
         "hybrid vector+BM25 search with optional reranking. Returns ranked "
         "chunks (no LLM synthesis)."
     ),
+    # readOnlyHint=true: retrieve never writes data — MCP hosts MAY use this
+    # annotation to skip confirmation prompts for read-only tools.
+    # Introduced in MCP protocol 2025-03-26; clients on earlier versions
+    # silently ignore unknown tool fields (additive-only change).
+    "annotations": {"readOnlyHint": True},
     "inputSchema": {
         "type": "object",
         "properties": {
@@ -177,7 +183,11 @@ _STATELESS_METHODS: dict[str, Callable[[Any], Awaitable[dict[str, Any]]]] = {
 }
 
 
-def create_mcp_router(retrieval_pipeline: Any) -> APIRouter:
+def create_mcp_router(
+    retrieval_pipeline: Any,
+    *,
+    excerpt_max_chars: int = EXCERPT_MAX_CHARS_DEFAULT,
+) -> APIRouter:
     router = APIRouter(prefix="/mcp/v1")
 
     async def _handle_tools_call(params: Any) -> dict[str, Any]:
@@ -219,7 +229,7 @@ def create_mcp_router(retrieval_pipeline: Any) -> APIRouter:
             ) from exc
         if arguments.get("dedupe"):
             docs = dedupe_by_document(docs)
-        payload = {"chunks": [doc_to_source_entry(d) for d in docs]}
+        payload = {"chunks": [doc_to_source_entry(d, max_chars=excerpt_max_chars) for d in docs]}
         return {
             "content": [{"type": "text", "text": json.dumps(payload)}],
             "isError": False,

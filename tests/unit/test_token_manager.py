@@ -250,3 +250,61 @@ def test_k8s_mode_requires_path_when_j1_is_none():
             j1_token=None,
             http=MagicMock(),
         )
+
+
+# ---------------------------------------------------------------------------
+# Exception transparency (Fix: timeout must not be wrapped as RuntimeError)
+# ---------------------------------------------------------------------------
+
+
+def test_token_refresh_timeout_propagates_as_httpx_timeout():
+    """httpx.TimeoutException from the auth API must NOT be wrapped in RuntimeError.
+
+    classify_upstream_error() dispatches on isinstance(exc, httpx.TimeoutException) to
+    return UpstreamTimeoutError (504). If _refresh() wraps the timeout in RuntimeError,
+    classify_upstream_error sees RuntimeError → returns UpstreamServiceError (502)
+    instead of UpstreamTimeoutError (504). Operators and SRE see wrong HTTP status.
+    """
+    import httpx
+
+    http = MagicMock()
+    http.post.side_effect = httpx.TimeoutException("timed out")
+
+    mgr = _make_mgr("j1", http, time.time)
+
+    with pytest.raises(httpx.TimeoutException):
+        mgr.get_token()
+
+
+def test_token_refresh_non_timeout_errors_still_wrapped_as_runtime_error():
+    """Non-timeout failures (connection refused, 5xx, malformed JSON) stay as RuntimeError.
+
+    This preserves the existing contract: callers and _check_infra_ready both
+    expect RuntimeError for generic auth failures.
+    """
+    http = MagicMock()
+    http.post.side_effect = Exception("connection refused")
+
+    mgr = _make_mgr("j1", http, time.time)
+
+    with pytest.raises(RuntimeError, match="Token refresh failed"):
+        mgr.get_token()
+
+
+def test_token_refresh_http_error_wrapped_as_runtime_error():
+    """HTTP 5xx from the auth API wraps as RuntimeError (non-timeout)."""
+    import httpx
+
+    http = MagicMock()
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+        "503 Service Unavailable",
+        request=MagicMock(),
+        response=MagicMock(),
+    )
+    http.post.return_value = mock_resp
+
+    mgr = _make_mgr("j1", http, time.time)
+
+    with pytest.raises(RuntimeError, match="Token refresh failed"):
+        mgr.get_token()

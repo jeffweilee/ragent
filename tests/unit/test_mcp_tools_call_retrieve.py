@@ -156,3 +156,43 @@ def test_tools_call_retrieve_empty_result(client_factory) -> None:
     payload = json.loads(resp.json()["result"]["content"][0]["text"])
     assert payload == {"chunks": []}
     assert resp.json()["result"]["isError"] is False
+
+
+def test_tools_call_retrieve_respects_excerpt_max_chars(monkeypatch: pytest.MonkeyPatch) -> None:
+    """excerpt_max_chars must be threaded into doc_to_source_entry at router-creation time.
+
+    Without this, MCP callers always get the hardcoded 512-char default even when
+    operators set EXCERPT_MAX_CHARS — the REST /retrieve/v1 and MCP surfaces would
+    silently diverge on the same deployment.
+    """
+    long_raw = "a" * 100
+    doc = SimpleNamespace(
+        meta={
+            "document_id": "dx",
+            "source_app": "app",
+            "source_id": "SID",
+            "source_meta": None,
+            "source_title": "T",
+            "source_url": None,
+            "mime_type": "text/plain",
+            "raw_content": long_raw,
+        },
+        content="content",
+        score=0.5,
+    )
+    monkeypatch.setattr("ragent.routers.mcp.run_retrieval", lambda *_a, **_kw: [doc])
+    app = FastAPI()
+    app.include_router(create_mcp_router(retrieval_pipeline=MagicMock(), excerpt_max_chars=5))
+    with TestClient(app) as c:
+        resp = c.post(
+            "/mcp/v1",
+            json={
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {"name": "retrieve", "arguments": {"query": "q"}},
+            },
+        )
+    chunks = json.loads(resp.json()["result"]["content"][0]["text"])["chunks"]
+    assert len(chunks) == 1
+    assert chunks[0]["excerpt"] == "a" * 5

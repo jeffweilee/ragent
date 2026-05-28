@@ -78,31 +78,41 @@ def _run_backfill(
 async def backfill_candidate_task(stable_index: str, candidate_index: str) -> None:
     from ragent.bootstrap.composition import get_container
 
-    container = get_container()
-    es = container.es_client
-    registry = container.embedding_registry
-    await registry.refresh()
+    try:
+        container = get_container()
+        es = container.es_client
+        registry = container.embedding_registry
+        await registry.refresh()
 
-    write_models = list(registry.write_models())
-    if len(write_models) < 2:
-        logger.info("backfill.skipped.not_in_candidate_state")
-        return
+        write_models = list(registry.write_models())
+        if len(write_models) < 2:
+            logger.info("backfill.skipped.not_in_candidate_state")
+            return
 
-    candidate_model = write_models[1]
-    embed_fn = container.embed_fn
+        candidate_model = write_models[1]
+        embed_fn = container.embed_fn
 
-    total = await to_thread.run_sync(
-        lambda: _run_backfill(
-            es=es,
+        total = await to_thread.run_sync(
+            lambda: _run_backfill(
+                es=es,
+                stable_index=stable_index,
+                candidate_index=candidate_index,
+                embed_fn=embed_fn,
+                candidate_model=candidate_model,
+            )
+        )
+        logger.info(
+            "backfill.complete",
             stable_index=stable_index,
             candidate_index=candidate_index,
-            embed_fn=embed_fn,
-            candidate_model=candidate_model,
+            chunks_written=total,
         )
-    )
-    logger.info(
-        "backfill.complete",
-        stable_index=stable_index,
-        candidate_index=candidate_index,
-        chunks_written=total,
-    )
+    except Exception as exc:
+        logger.error(
+            "backfill.failed",
+            stable_index=stable_index,
+            candidate_index=candidate_index,
+            error_type=type(exc).__name__,
+            error=str(exc),
+        )
+        raise
