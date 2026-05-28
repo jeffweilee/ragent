@@ -28,7 +28,7 @@ spec:
           # apply. Never deploy `:latest` to a long-lived cluster.
           image: ragent:REPLACE_WITH_RELEASE_TAG
           command:
-            - uvicorn
+            - /app/.venv/bin/uvicorn
             - "ragent.bootstrap.app:create_app"
             - "--factory"
             - "--host"

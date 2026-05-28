@@ -13,7 +13,7 @@ uv sync                                                  # install dependencies
 cp .env.example .env                                     # then edit .env to fill in DSNs, MinIO sites, API URLs
 make doctor                                              # pre-flight check (env + datastores + AI endpoints)
 uv run --env-file .env alembic upgrade head              # run database migrations
-uv run --env-file .env uvicorn ragent.bootstrap.app:create_app --factory --host 0.0.0.0 --port 8000  # API server
+uv run --env-file .env uvicorn ragent.bootstrap.app:create_app --factory --host "${RAGENT_HOST:-0.0.0.0}" --port "${RAGENT_PORT:-8000}"  # API server
 uv run --env-file .env python -m ragent.worker           # background worker (separate shell)
 curl http://localhost:8000/livez                         # verify — expect {"status":"ok"}
 make doctor PROBE_LIVE=1                                 # post-launch — also probes /livez and /readyz
@@ -26,7 +26,7 @@ Standalone FastMCP service that federates arbitrary third-party REST APIs as MCP
 ```bash
 export MCP_HUB_TOOLS_YAML=src/ragent/mcp_hub/tools.example.d   # demo registry
 uv run python -m ragent.mcp_hub.doctor                          # validate yaml
-uv run uvicorn ragent.mcp_hub.server:build_mcp_app --factory --host 0.0.0.0 --port 9000  # binds /mcp
+uv run uvicorn ragent.mcp_hub.server:build_mcp_app --factory --host "${MCP_HUB_HOST:-0.0.0.0}" --port "${MCP_HUB_PORT:-9000}"  # binds /mcp
 ```
 
 ### Development

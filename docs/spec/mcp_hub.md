@@ -4,7 +4,7 @@ Standalone FastMCP-based service (`src/ragent/mcp_hub/`) that loads `tools.yaml`
 
 #### 3.9.1 Process and transport
 
-- **Entry point (primary):** `uvicorn ragent.mcp_hub.server:build_mcp_app --factory --host $MCP_HUB_HOST --port $MCP_HUB_PORT`; `build_mcp_app()` is the 0-arg ASGI factory. Legacy shim `python -m ragent.mcp_hub.server` calls `main()` which delegates to the same factory.
+- **Entry point (primary):** `uvicorn ragent.mcp_hub.server:build_mcp_app --factory --host ${MCP_HUB_HOST:-0.0.0.0} --port ${MCP_HUB_PORT:-9000}`; `build_mcp_app()` is the 0-arg ASGI factory. Legacy shim `python -m ragent.mcp_hub.server` calls `main()` which delegates to the same factory.
 - **Transport:** FastMCP Streamable HTTP, mounted at `MCP_HUB_PATH` (default `/mcp`). Clients connect to `http://<host>:<port>{MCP_HUB_PATH}/`.
 - **Bind:** `MCP_HUB_HOST` (default `0.0.0.0`), `MCP_HUB_PORT` (default `9000`).
 - **Registry source:** `MCP_HUB_TOOLS_YAML` (default `tools.yaml`); may be a single yaml file OR a directory. In directory mode every `*.yaml`/`*.yml` is one SYSTEM (name = filename stem, overridable via top-level `system:`); tool names auto-qualify as `<system>.<tool>` so independent registries can reuse raw names.

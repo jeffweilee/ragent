@@ -122,9 +122,10 @@ def build_mcp_app() -> Any:
 def main() -> None:
     host = str_env("MCP_HUB_HOST", "0.0.0.0")
     port = int_env("MCP_HUB_PORT", 9000)
+    log_level = str_env("LOG_LEVEL", "INFO").lower()
     # String factory form so each worker process calls build_mcp_app() independently,
     # avoiding shared httpx clients across fork boundaries.
-    uvicorn.run("ragent.mcp_hub.server:build_mcp_app", factory=True, host=host, port=port)
+    uvicorn.run("ragent.mcp_hub.server:build_mcp_app", factory=True, host=host, port=port, log_level=log_level)
 
 
 if __name__ == "__main__":
