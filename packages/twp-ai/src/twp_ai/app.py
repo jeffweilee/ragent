@@ -1,41 +1,35 @@
 """FastAPI wiring for twp-ai.
 
-create_router(caller, handler) — returns an APIRouter to mount anywhere.
-create_app(caller, handler)    — standalone FastAPI app.
+create_router(agent) — mount into any existing FastAPI app.
+create_app(agent)    — standalone FastAPI app.
 
-The handler controls the conversation flow.
-Default: handlers.form_fill.handle (chat + form fill).
-Pass a different handler for a different scenario.
+The agent controls the conversation flow and event emission.
+Default: DirectLLMAgent (requires a LLMCaller).
 """
 
 from __future__ import annotations
 
 import os
-from collections.abc import Callable, Generator
 
 from fastapi import APIRouter, FastAPI
 from fastapi.responses import StreamingResponse
 
-from .callers.protocol import LLMCaller
-from .handlers import form_fill
+from .agent import Agent
 from .schemas import ChatRequest
-
-Handler = Callable[[ChatRequest, str, LLMCaller], Generator[str, None, None]]
 
 
 def create_router(
-    llm_caller: LLMCaller,
-    handler: Handler = form_fill.handle,
+    agent: Agent,
     default_model: str = "",
 ) -> APIRouter:
-    """Return a router with POST /chat wired to handler.
+    """Return a router with POST /chat wired to agent.run().
 
     Mount into ragent:
-        app.include_router(create_router(caller), prefix="/twp/v1")
+        app.include_router(create_router(agent), prefix="/twp/v1")
     → POST /twp/v1/chat
 
-    Swap scenario:
-        app.include_router(create_router(caller, handler=research.handle), prefix="/twp/v1")
+    Swap agent:
+        app.include_router(create_router(LangGraphAgent(graph)), prefix="/twp/v1")
     """
     router = APIRouter()
 
@@ -44,7 +38,7 @@ def create_router(
         model = body.model or default_model
 
         def _generate():
-            yield from handler(body, model, llm_caller)
+            yield from agent.run(body, model)
 
         return StreamingResponse(_generate(), media_type="text/event-stream")
 
@@ -52,11 +46,10 @@ def create_router(
 
 
 def create_app(
-    llm_caller: LLMCaller,
-    handler: Handler = form_fill.handle,
+    agent: Agent,
     default_model: str = "",
 ) -> FastAPI:
     _default_model = default_model or os.environ.get("TWP_DEFAULT_MODEL", "")
     app = FastAPI(title="twp-ai", version="0.1.0", description="AG-UI event streaming adapter")
-    app.include_router(create_router(llm_caller, handler=handler, default_model=_default_model))
+    app.include_router(create_router(agent, default_model=_default_model))
     return app

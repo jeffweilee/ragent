@@ -421,12 +421,12 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
     )
     app.include_router(create_health_router(probes=_build_probes(container)))
 
-    from twp_ai.app import create_router as create_twp_router
+    from twp_ai import DirectLLMAgent, create_router as create_twp_router
     from twp_ai.callers.ragent import RagentCaller
 
     app.include_router(
         create_twp_router(
-            RagentCaller(container.llm_client),
+            DirectLLMAgent(RagentCaller(container.llm_client)),
             default_model=os.environ.get("TWP_DEFAULT_MODEL", ""),
         ),
         prefix="/twp/v1",
