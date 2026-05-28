@@ -127,6 +127,143 @@ class LLMClient:
         if not seen_done and any_content:
             raise LLMStreamInterruptedError("LLM stream closed before [DONE]")
 
+    def stream_with_tools(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        model: str,
+        temperature: float = 0.7,
+        max_tokens: int = 4096,
+    ) -> Generator[tuple[str, Any], None, None]:
+        """Stream with optional tool calls; same retry contract as stream().
+
+        Yields:
+            ("text",      delta: str)
+            ("tool_call", {"id": str, "name": str, "arguments": str})
+        """
+        from ragent.errors.upstream import LLMStreamInterruptedError
+
+        with _tracer.start_as_current_span("llm.stream_with_tools") as span:
+            span.set_attribute("peer.service", "llm")
+            span.set_attribute("model", model)
+            last_exc: Exception | None = None
+            for attempt in range(3):
+                if attempt:
+                    self._sleep(2.0)
+                try:
+                    span.set_attribute("retry_attempt", attempt)
+                    yield from self._do_stream_with_tools(
+                        messages, tools, model, temperature, max_tokens
+                    )
+                    logger.info(
+                        "llm.call_with_tools",
+                        peer_service="llm",
+                        model=model,
+                        retry_attempt=attempt,
+                    )
+                    return
+                except LLMStreamInterruptedError:
+                    raise
+                except Exception as exc:
+                    last_exc = exc
+            span.record_exception(last_exc)  # type: ignore[arg-type]
+            error_code, exc_cls = classify_upstream_error(
+                last_exc,
+                error_code=HttpErrorCode.LLM_ERROR,
+                timeout_code=HttpErrorCode.LLM_TIMEOUT,
+            )
+            logger.error(
+                "llm.error",
+                peer_service="llm",
+                model=model,
+                error_type=type(last_exc).__name__ if last_exc else None,
+                error_code=error_code,
+            )
+            raise exc_cls(
+                f"llm stream_with_tools failed after retries: {last_exc}",
+                service="llm",
+                error_code=error_code,
+            ) from last_exc
+
+    def _do_stream_with_tools(
+        self,
+        messages: list[dict],
+        tools: list[dict],
+        model: str,
+        temperature: float,
+        max_tokens: int,
+    ) -> Generator[tuple[str, Any], None, None]:
+        from ragent.errors.upstream import LLMStreamInterruptedError
+
+        seen_done = False
+        any_content = False
+        tool_calls_acc: dict[int, dict] = {}
+
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream_options": {"include_usage": True},
+        }
+        if tools:
+            body["tools"] = tools
+            body["tool_choice"] = "auto"
+
+        resp = self._http.post(
+            self._url,
+            json=body,
+            headers={self._auth_header_name: self._get_token()},
+            timeout=self._timeout,
+        )
+        resp.raise_for_status()
+
+        for line in resp.iter_lines():
+            if not line or not line.startswith("data:"):
+                continue
+            data_str = line[len("data:") :].strip()
+            if data_str == "[DONE]":
+                seen_done = True
+                break
+            try:
+                payload = json.loads(data_str)
+            except json.JSONDecodeError:
+                continue
+
+            choices = payload.get("choices") or []
+            if not choices:
+                continue
+
+            choice = choices[0]
+            delta = choice.get("delta") or {}
+            finish_reason = choice.get("finish_reason")
+
+            content = delta.get("content")
+            if content:
+                any_content = True
+                yield ("text", content)
+
+            for tc in delta.get("tool_calls") or []:
+                idx = tc.get("index", 0)
+                if idx not in tool_calls_acc:
+                    tool_calls_acc[idx] = {"id": "", "name": "", "arguments": ""}
+                if tc.get("id"):
+                    tool_calls_acc[idx]["id"] = tc["id"]
+                func = tc.get("function") or {}
+                if func.get("name"):
+                    tool_calls_acc[idx]["name"] += func["name"]
+                if func.get("arguments"):
+                    tool_calls_acc[idx]["arguments"] += func["arguments"]
+
+            if finish_reason in ("stop", "tool_calls", "length"):
+                for _, tc_data in sorted(tool_calls_acc.items()):
+                    yield ("tool_call", tc_data)
+                break
+
+        if not seen_done and any_content:
+            raise LLMStreamInterruptedError("LLM stream closed before [DONE]")
+
     def chat(
         self,
         messages: list[dict],

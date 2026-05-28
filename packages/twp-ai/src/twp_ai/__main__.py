@@ -1,14 +1,15 @@
-"""Entry point: python -m twp_ai"""
+"""Entry point: python -m twp_ai
 
-from __future__ import annotations
+Requires an LLMCaller to be configured. For the ragent-integrated deployment,
+twp-ai is mounted directly into ragent's FastAPI app via create_router().
 
-import os
+To run standalone, create a caller and pass it to create_app(), then start
+uvicorn pointing at your own app factory.
+"""
 
-import uvicorn
-
-if __name__ == "__main__":
-    host = os.environ.get("TWP_HOST", "0.0.0.0")
-    port = int(os.environ.get("TWP_PORT", "8001"))
-    log_level = os.environ.get("LOG_LEVEL", "INFO").lower()
-
-    uvicorn.run("twp_ai.app:create_app", factory=True, host=host, port=port, log_level=log_level)
+raise NotImplementedError(
+    "twp-ai has no built-in standalone caller. "
+    "Provide an LLMCaller implementation and call create_app(caller) "
+    "from your own entry point, or mount create_router(caller) "
+    "into an existing FastAPI app."
+)
