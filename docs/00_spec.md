@@ -111,7 +111,7 @@ class ExtractorPlugin(Protocol):
 
 **P1 plugins:** `VectorExtractor` (required, ES bulk), `StubGraphExtractor` (optional, no-op). See §4.4.
 
-**Plugin construction (B17):** the Protocol freezes the **interface** (`extract`, `delete`, `health` plus three attributes) but plugins are **dependency-injected** via their constructor. `VectorExtractor.__init__(repo: DocumentRepository, chunks: ChunkRepository, embedder: EmbeddingClient, es: ElasticsearchClient)` — `extract(document_id)` reads `source_title` from `repo` and chunk rows from `chunks`. Plugins MUST NOT import `pipelines/` or HTTP layers; they accept their dependencies as constructor args, the registry simply holds the constructed instances.
+**Plugin construction (B17):** the Protocol freezes the **interface** (`extract`, `delete`, `health` plus three attributes) but plugins are **dependency-injected** via their constructor. `VectorExtractor.__init__(repo: DocumentRepository, chunks: dict[str, list[Chunk]], embedder: EmbeddingClient, es: _ES, index: str)` — in v2, composition passes `chunks={}` so `extract()` is effectively a no-op stub (real embedding and ES write done by `DocumentEmbedder` in the Haystack pipeline, §3.2). `ChunkRepository` was dropped in C6. Plugins MUST NOT import `pipelines/` or HTTP layers; they accept their dependencies as constructor args, the registry simply holds the constructed instances.
 
 **Registry:**
 - `register()` raises `DuplicatePluginError` on name conflict.
@@ -416,7 +416,7 @@ All non-2xx responses use **RFC 9457 Problem Details** (`Content-Type: applicati
 
 | Plugin | `name` | `required` | `queue` | `extract()` | `delete()` | Phase |
 |---|---|:---:|---|---|---|:---:|
-| `VectorExtractor`    | `vector`     | ✓ | `extract.vector` | embed `f"{source_title}\n\n{chunk_text}"` (B15) → ES bulk index by `chunk_id`, denormalising `title`, `source_app`, `source_meta` onto each row (B15, B29 → B35) | ES bulk `_op_type=delete` | **P1** |
+| `VectorExtractor`    | `vector`     | ✓ | `extract.vector` | **v2: effectively no-op** — composition wires `chunks={}`, so extract() returns immediately. Real embedding + ES write done by `DocumentEmbedder` (§3.2). Kept as required plugin to preserve Protocol conformance; `delete()` still issues ES bulk delete by `chunk_id`. | ES bulk `_op_type=delete` | **P1** |
 | `StubGraphExtractor` | `graph_stub` | — | `extract.graph`  | no-op | no-op | **P1** |
 | `GraphExtractor`     | `graph`      | — | `extract.graph`  | LightRAG → Graph DB upsert | entity GC + ref_count | P3 |
 

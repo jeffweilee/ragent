@@ -151,6 +151,10 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 
 - **Rule**: `bool_env()` (and any central boolean env parser) MUST accept all four standard truthy sentinels: `"1"`, `"true"`, `"yes"`, `"on"` (case-insensitive). `"on"` is a standard Unix boolean used in Apache configs, K8s manifests, and operator runbooks; omitting it causes silent `False` for any deployment that uses it. When replacing an inline truthy set with the central utility, diff the old set against `bool_env`'s accepted set before deleting the inline version.
 
+- **Rule**: `int_env()`, `float_env()`, `require()` and any other `env.py` helper that calls `sys.exit()` on invalid input MUST be called at **module level** (for constants) or in **`__init__`** (for instance config) — never inside a method that executes per-request or per-task. A misconfigured env var silently passes boot then kills the process on the first invocation with no traceback. Audit: `grep -rn "int_env\|float_env\|require(" src/` on every PR; flag any new call site inside a non-`__init__` method. (SRE journal 2026-05-27)
+
+- **Rule**: For parameters where `0`/`0.0` is a valid deliberate operator value (timeouts, scores, thresholds, weights, ports), use `value if value is not None else <fallback>` — **NOT** `value or <fallback>`. The `or` idiom silently treats `0`/`0.0`/`""` as "unset". Reserve `value or <fallback>` only for fields where the falsy value is a programming error (e.g. `batch_size=0`). For timeouts: `0` means fail-fast (`httpx.ReadTimeout`, non-blocking socket); `None` means no timeout. (QA journal 2026-05-19)
+
 ---
 
 ### Logging: Identity Yes, Content No
@@ -232,6 +236,8 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 - **Rule: Mandatory integration test against `InMemoryBroker`.** At least one integration test MUST exercise the full enqueue → receive → execute cycle using `taskiq.brokers.inmemory_broker.InMemoryBroker`. `MagicMock`-based unit tests accept any attribute and hide call-site drift and label-registration gaps; only a real broker wired with the real task object surfaces them.
 
 - **Sync-from-async bridge**: when a sync call site (FastAPI `run_in_threadpool` worker thread) must enqueue, wrap the async dispatcher in a sync facade using `anyio.from_thread.run` — valid because `run_in_threadpool` uses `anyio.to_thread.run_sync`. Document this constraint at the facade class. Never call `asyncio.run()` from a thread that is already inside a running event loop.
+
+- **Rule: Every `@broker.task` function MUST have a top-level `try/except Exception`** that (a) logs `error_type=type(exc).__name__, error=str(exc)` via structlog at `ERROR` level and (b) re-raises. The re-raise ensures TaskIQ marks the task failed so its retry/DLQ logic fires. Tasks that write to DB on failure also update the status row; tasks with no DB state still need the log + re-raise. Audit: `grep -n "@broker.task" src/` on every PR and confirm each decorated function has the pattern. (SRE journal 2026-05-27)
 
 ---
 

@@ -41,6 +41,10 @@ Append a row to `docs/00_journal.md` so the next session learns from this mistak
 6. Truncate `.claude/pending_journal.md` (`: > .claude/pending_journal.md`) once all entries are filed.
 7. Stage `docs/00_journal.md` and include it in the next `[STRUCTURAL]` commit (journal updates are documentation, never mixed with behavioral diffs).
 
+## Superseded / closed entries
+
+When a row's Actionable Guideline is explicitly reversed or absorbed by a newer entry (marked **SUPERSEDED** or **CLOSED** inline), remove the old row in the same commit that adds the new one. Do not leave phantom rows with "SUPERSEDED by X" as the only content — they add noise without adding rules. Exception: keep a one-line summary row only when the supersession itself is a teaching moment (e.g. "this pattern was tried and rejected; see row Y").
+
 ## Anti-patterns (reject)
 
 - Adding a row under a brand-new domain heading.
