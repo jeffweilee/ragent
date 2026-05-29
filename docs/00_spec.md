@@ -416,7 +416,7 @@ All non-2xx responses use **RFC 9457 Problem Details** (`Content-Type: applicati
 
 | Plugin | `name` | `required` | `queue` | `extract()` | `delete()` | Phase |
 |---|---|:---:|---|---|---|:---:|
-| `VectorExtractor`    | `vector`     | ✓ | `extract.vector` | **v2: effectively no-op** — composition wires `chunks={}`, so extract() returns immediately. Real embedding + ES write done by `DocumentEmbedder` (§3.2). Kept as required plugin to preserve Protocol conformance; `delete()` still issues ES bulk delete by `chunk_id`. | ES bulk `_op_type=delete` | **P1** |
+| `VectorExtractor`    | `vector`     | ✓ | `extract.vector` | **v2: no-op** — composition wires `chunks={}`, so `extract()` returns immediately. Real embedding + ES write done by `DocumentEmbedder` (§3.2). Kept as required plugin to preserve Protocol conformance. | **v2: no-op** — `delete()` also uses `self._chunks` (wired `{}`), so no ES bulk delete is issued; `chunks_v1` entries are orphaned on document delete (tracked in issue #135). | **P1** |
 | `StubGraphExtractor` | `graph_stub` | — | `extract.graph`  | no-op | no-op | **P1** |
 | `GraphExtractor`     | `graph`      | — | `extract.graph`  | LightRAG → Graph DB upsert | entity GC + ref_count | P3 |
 

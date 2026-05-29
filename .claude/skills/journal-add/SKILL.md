@@ -35,7 +35,7 @@ Append a row to `docs/00_journal.md` so the next session learns from this mistak
    ```
 
 5. Validate after write:
-   - `grep -c '^| 20' docs/00_journal.md` increased by exactly the number of rows added.
+   - `grep -c '^| 20' docs/00_journal.md` changes by exactly `rows_added − rows_removed` (zero for a pure supersession, positive for a new-only addition).
    - The new row appears under exactly one of the six allowed `## ` headings.
    - No new `## ` heading was introduced.
 6. Truncate `.claude/pending_journal.md` (`: > .claude/pending_journal.md`) once all entries are filed.
