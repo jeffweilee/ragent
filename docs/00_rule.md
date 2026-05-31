@@ -116,8 +116,8 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
     - **Verification**: Every `_promote_or_demote` or equivalent method MUST have a unit test asserting that the demote UPDATE SQL contains the same status values as the election subquery. A test that only asserts the winner was promoted but not that all prior holders were demoted is insufficient.
     - **Example**: `_promote_or_demote` electing on `status IN ('PENDING', 'READY')` must also demote with `WHERE status IN ('PENDING', 'READY')` — not `WHERE status = 'READY'` which would miss a concurrent PENDING that later races to READY.
 
-- **Rule: SQL File Parsing — strip-then-split (`_iter_statements`).**
-  - Bare `sql.split(";")` breaks when a `--` comment contains `;` (e.g. `"-- rows are seeded; future settings …"`), producing an invalid SQL fragment that crashes `alembic upgrade`. Any helper that loads `.sql` text MUST call `ragent.bootstrap.init_schema._iter_statements(sql)` (strips `--` comments per-line first, then splits). This pattern recurred 4 times; never reintroduce `split(";")` without strip-then-split.
+- **Rule: SQL File Parsing — strip-then-split (`iter_statements`).**
+  - Bare `sql.split(";")` breaks when a `--` comment contains `;` (e.g. `"-- rows are seeded; future settings …"`), producing an invalid SQL fragment that crashes `alembic upgrade`. Any helper that loads `.sql` text MUST call `ragent.bootstrap.init_schema.iter_statements(sql)` (strips `--` comments per-line first, then splits). This pattern recurred 4 times; never reintroduce `split(";")` without strip-then-split.
   - **Audit**: `grep -n "split.*\";\"" migrations/` on every PR that adds or modifies a migration helper.
 
 ---
