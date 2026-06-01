@@ -228,10 +228,10 @@ def _x_user_id_middleware(
             structlog.contextvars.bind_contextvars(user_id=inbound)
             return await call_next(request)
 
-        def _verify_or_error(token: str) -> tuple[str, None] | tuple[None, Response]:
-            """Return (user_id, None) on success or (None, error_response) on failure."""
+        def _verify_or_error(token: str) -> str | Response:
+            """Return user_id on success or error Response on failure."""
             try:
-                return verify_jwt(token, claim_user_id=jwt_claim, token_manager=token_manager), None
+                return verify_jwt(token, claim_user_id=jwt_claim, token_manager=token_manager)
             except JwtAuthError as exc:
                 logger.warning(
                     "api.jwt_invalid",
@@ -240,16 +240,16 @@ def _x_user_id_middleware(
                     error_code=exc.error_code,
                     http_status=exc.http_status,
                 )
-                return None, problem(exc.http_status, exc.error_code, "Authentication failed")
+                return problem(exc.http_status, exc.error_code, "Authentication failed")
 
         if auth_mode == AuthMode.jwt_prefer_header:
             token = request.headers.get(jwt_header_lower) or ""
             if token:
-                user_id, err = _verify_or_error(token)
-                if err is not None:
-                    return err
-                _inject_header(request, user_id)  # type: ignore[arg-type]
-                structlog.contextvars.bind_contextvars(user_id=user_id)
+                res = _verify_or_error(token)
+                if isinstance(res, Response):
+                    return res
+                _inject_header(request, res)
+                structlog.contextvars.bind_contextvars(user_id=res)
                 return await call_next(request)
             inbound = request.headers.get(user_id_header)
             if not inbound:
@@ -262,17 +262,17 @@ def _x_user_id_middleware(
 
         # jwt_header mode
         token = request.headers.get(jwt_header_lower) or ""
-        user_id, err = _verify_or_error(token)
-        if err is not None:
-            return err
+        res = _verify_or_error(token)
+        if isinstance(res, Response):
+            return res
 
-        _inject_header(request, user_id)
+        _inject_header(request, res)
         # Same contextvar binding as the user_header branch — RequestLogging
         # Middleware reads X-User-Id from request.headers BEFORE call_next, so
         # in JWT mode the user id is absent at the outer layer; binding here
         # makes the JWT-derived id available to every subsequent log emission
         # (handler-time logs + the outer api.request log via merge_contextvars).
-        structlog.contextvars.bind_contextvars(user_id=user_id)
+        structlog.contextvars.bind_contextvars(user_id=res)
         return await call_next(request)
 
 

@@ -20,8 +20,7 @@ metadata:
 data:
   # 4.6.1 Bootstrap & HTTP server
   RAGENT_ENV: "prod"
-  RAGENT_AUTH_DISABLED: "false"
-  RAGENT_TRUST_X_USER_ID_HEADER: "false"
+  RAGENT_AUTH_MODE: "jwt_header"
   RAGENT_PERMISSION_INGEST_ENABLED: "false"
   RAGENT_PERMISSION_CHAT_ENABLED: "false"
   RAGENT_HOST: "0.0.0.0"

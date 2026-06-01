@@ -500,7 +500,7 @@ def dev_env(
     """Apply RAGENT dev-mode env wired to the testcontainer fixtures (B30)."""
     pairs = {
         "RAGENT_ENV": "dev",
-        "RAGENT_AUTH_DISABLED": "true",
+        "RAGENT_AUTH_MODE": "user_header",
         "RAGENT_HOST": "127.0.0.1",
         "AI_API_AUTH_URL": f"{wiremock_url}/auth/api/accesstoken",
         "AI_LLM_API_J1_TOKEN": "test-llm-j1",

@@ -51,10 +51,9 @@ class Container:
     ingest_list_max_limit: int
     ingest_upload_max_bytes: int
     excerpt_max_chars: int
-    # T8.5a — joserfc-based JWT verifier (VerifyingTokenManager) for inbound
-    # JWT verification. ``None`` when ``RAGENT_AUTH_DISABLED=true`` or
-    # ``RAGENT_TRUST_X_USER_ID_HEADER=true``; the middleware uses the
-    # header-trust branch in those cases.
+    # T8.5a / T-AM — joserfc-based JWT verifier (VerifyingTokenManager) for
+    # inbound JWT verification. ``None`` for non-JWT auth modes (none /
+    # user_header); set for jwt_header / jwt_prefer_header.
     auth_token_manager: Any = None
 
 
