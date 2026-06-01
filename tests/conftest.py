@@ -66,18 +66,9 @@ def _fake_oidc_handler(request: _httpx.Request) -> _httpx.Response:
 
 
 @pytest.fixture
-def oidc_token_manager():
+def oidc_token_manager(oidc_token_manager_factory):
     """Build ``VerifyingTokenManager`` against an in-process fake OIDC server."""
-    from ragent.auth.jwt import build_token_manager
-
-    transport = _httpx.MockTransport(_fake_oidc_handler)
-    with _httpx.Client(transport=transport) as client:
-        return build_token_manager(
-            domain=_OIDC_DOMAIN,
-            audience=_OIDC_AUDIENCE,
-            use_https=True,
-            client=client,
-        )
+    return oidc_token_manager_factory()
 
 
 @pytest.fixture

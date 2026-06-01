@@ -228,25 +228,29 @@ def _x_user_id_middleware(
             structlog.contextvars.bind_contextvars(user_id=inbound)
             return await call_next(request)
 
+        def _verify_or_error(token: str) -> tuple[str, None] | tuple[None, Response]:
+            """Return (user_id, None) on success or (None, error_response) on failure."""
+            try:
+                return verify_jwt(token, claim_user_id=jwt_claim, token_manager=token_manager), None
+            except JwtAuthError as exc:
+                logger.warning(
+                    "api.jwt_invalid",
+                    path=request.url.path,
+                    method=request.method,
+                    error_code=exc.error_code,
+                    http_status=exc.http_status,
+                )
+                return None, problem(exc.http_status, exc.error_code, "Authentication failed")
+
         if auth_mode == AuthMode.jwt_prefer_header:
             token = request.headers.get(jwt_header_lower) or ""
             if token:
-                try:
-                    user_id = verify_jwt(
-                        token, claim_user_id=jwt_claim, token_manager=token_manager
-                    )
-                    _inject_header(request, user_id)
-                    structlog.contextvars.bind_contextvars(user_id=user_id)
-                    return await call_next(request)
-                except JwtAuthError as exc:
-                    logger.warning(
-                        "api.jwt_invalid",
-                        path=request.url.path,
-                        method=request.method,
-                        error_code=exc.error_code,
-                        http_status=exc.http_status,
-                    )
-                    return problem(exc.http_status, exc.error_code, "Authentication failed")
+                user_id, err = _verify_or_error(token)
+                if err is not None:
+                    return err
+                _inject_header(request, user_id)  # type: ignore[arg-type]
+                structlog.contextvars.bind_contextvars(user_id=user_id)
+                return await call_next(request)
             inbound = request.headers.get(user_id_header)
             if not inbound:
                 return problem(
@@ -258,17 +262,9 @@ def _x_user_id_middleware(
 
         # jwt_header mode
         token = request.headers.get(jwt_header_lower) or ""
-        try:
-            user_id = verify_jwt(token, claim_user_id=jwt_claim, token_manager=token_manager)
-        except JwtAuthError as exc:
-            logger.warning(
-                "api.jwt_invalid",
-                path=request.url.path,
-                method=request.method,
-                error_code=exc.error_code,
-                http_status=exc.http_status,
-            )
-            return problem(exc.http_status, exc.error_code, "Authentication failed")
+        user_id, err = _verify_or_error(token)
+        if err is not None:
+            return err
 
         _inject_header(request, user_id)
         # Same contextvar binding as the user_header branch — RequestLogging
