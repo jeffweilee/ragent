@@ -78,7 +78,7 @@ Found 2 chunk(s).
 ---
 ```
 
-`content[0].text` uses the `[資料來源 #N]` + `---` format (aligned with the chat pipeline's `_render_context()` convention) so calling agents can cite chunks with the same `[N]` reference convention. Metadata (score, source_app, document_id, title) appears in the header line — unlike the in-chat LLM path where metadata is intentionally hidden, MCP callers are agents that need it for citation and filtering. Optional metadata fields (score, source_app, document_id, title) are omitted from the header when null/empty. Empty results return `"Found 0 chunk(s)."`. `isError: true` is set when the tool itself fails (e.g. retrieval pipeline raises); transport-layer failures still come through `error` envelopes.
+`content[0].text` uses the `[資料來源 #N]` + `---` format (aligned with the chat pipeline's `_render_context()` convention) so calling agents can cite chunks with the same `[N]` reference convention. Metadata (score, source_app, document_id, title) appears in the header line — unlike the in-chat LLM path where metadata is intentionally hidden, MCP callers are agents that need it for citation and filtering. Optional metadata fields (score, source_app, document_id, title) are omitted from the header when null/empty. Header metadata fields (source_app, document_id, title) have CR/LF stripped before insertion — a document title containing an embedded newline cannot inject a fake `[資料來源 #N]` header line. Empty results return `"Found 0 chunk(s)."`. `isError: true` is set when the tool itself fails (e.g. retrieval pipeline raises); transport-layer failures still come through `error` envelopes.
 
 #### 3.8.4 Error codes (JSON-RPC layer)
 

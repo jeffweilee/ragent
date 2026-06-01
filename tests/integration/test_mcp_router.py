@@ -201,13 +201,14 @@ def test_mcp_full_handshake_round_trip(client: TestClient, es_store, es_url: str
     assert call_body["jsonrpc"] == "2.0"
     assert call_body["id"] == 3
     assert call_body["result"]["isError"] is False
-    payload = json.loads(call_body["result"]["content"][0]["text"])
-    assert "chunks" in payload
-    # The pipeline ran against the seeded ES — chunks must include the seeded
-    # document_ids (proves the wire reached run_retrieval).
-    doc_ids = {c["document_id"] for c in payload["chunks"]}
-    assert doc_ids.issubset({"doc-mcp-1", "doc-mcp-2"})
-    assert len(payload["chunks"]) >= 1
+    text = call_body["result"]["content"][0]["text"]
+    # Preamble confirms at least one chunk was retrieved (not an empty result).
+    assert text.startswith("Found ") and "chunk(s)." in text
+    assert not text.startswith("Found 0 chunk(s).")
+    # At least one [資料來源 #N] header with a seeded document_id (proves the wire
+    # reached run_retrieval and the pipeline returned real results).
+    assert "[資料來源 #1]" in text
+    assert "document_id=doc-mcp-1" in text or "document_id=doc-mcp-2" in text
 
 
 def test_mcp_initialize_then_notifications_initialized(client: TestClient) -> None:

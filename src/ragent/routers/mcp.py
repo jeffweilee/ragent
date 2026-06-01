@@ -175,6 +175,11 @@ def _validate_retrieve_args(args: Any) -> None:
         ) from exc
 
 
+def _header_field(value: str | None) -> str:
+    """Strip CR/LF from a metadata value to keep it on a single header line."""
+    return (value or "").replace("\n", " ").replace("\r", "")
+
+
 def _render_chunks(entries: list[dict]) -> str:
     """Format retrieve entries as [資料來源 #N]-labelled text for MCP callers.
 
@@ -189,9 +194,9 @@ def _render_chunks(entries: list[dict]) -> str:
     parts = [f"Found {len(entries)} chunk(s).\n"]
     for i, entry in enumerate(entries, start=1):
         score = entry.get("score")
-        source_app = entry.get("source_app") or ""
-        doc_id = entry.get("document_id") or ""
-        title = entry.get("source_title") or ""
+        source_app = _header_field(entry.get("source_app"))
+        doc_id = _header_field(entry.get("document_id"))
+        title = _header_field(entry.get("source_title"))
         header = f"[資料來源 #{i}]"
         if score is not None:
             header += f" score={score:.2f}"
