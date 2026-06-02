@@ -6,7 +6,6 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import httpx
-import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -61,7 +60,10 @@ def test_chatagent_session_list_happy_path_200():
     http_mock.get.return_value = MagicMock(
         raise_for_status=MagicMock(return_value=None),
         json=MagicMock(
-            return_value={"totalCount": 1, "sessions": [{"session": "s1", "apName": "IntegrationAP"}]}
+            return_value={
+                "totalCount": 1,
+                "sessions": [{"session": "s1", "apName": "IntegrationAP"}],
+            }
         ),
     )
     with TestClient(app) as client:
@@ -76,9 +78,15 @@ def test_chatagent_session_list_happy_path_200():
 def test_chatagent_session_happy_path_200():
     app, http_mock = _make_app()
     detail = {
-        "_id": "x", "apName": "IntegrationAP", "user": "alice", "session": "s1",
-        "sessionName": "chat", "sessionStatus": "active", "messages": [],
-        "createTime": "2025-05-01T00:00:00.000Z", "updateTime": "2025-05-01T00:00:00.000Z",
+        "_id": "x",
+        "apName": "IntegrationAP",
+        "user": "alice",
+        "session": "s1",
+        "sessionName": "chat",
+        "sessionStatus": "active",
+        "messages": [],
+        "createTime": "2025-05-01T00:00:00.000Z",
+        "updateTime": "2025-05-01T00:00:00.000Z",
     }
     http_mock.get.return_value = MagicMock(
         raise_for_status=MagicMock(return_value=None),

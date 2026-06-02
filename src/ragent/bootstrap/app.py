@@ -424,11 +424,13 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
             excerpt_max_chars=container.excerpt_max_chars,
         )
     )
-    if any([
-        container.chatagent_api_url,
-        container.chatagent_sessionlist_api_url,
-        container.chatagent_session_api_url,
-    ]):
+    if any(
+        [
+            container.chatagent_api_url,
+            container.chatagent_sessionlist_api_url,
+            container.chatagent_session_api_url,
+        ]
+    ):
         app.include_router(
             create_chatagent_router(
                 http_client=container.http,
