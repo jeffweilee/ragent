@@ -34,15 +34,28 @@ class _FakeEmbedder:
 @dataclass
 class _FakeES:
     bulk_calls: list[list[dict[str, Any]]] = field(default_factory=list)
-    indexed_ids: set[str] = field(default_factory=set)
+    delete_by_query_calls: list[dict[str, Any]] = field(default_factory=list)
+    _indexed: dict[str, str] = field(default_factory=dict)  # chunk_id -> document_id
+
+    @property
+    def indexed_ids(self) -> set[str]:
+        return set(self._indexed.keys())
 
     def bulk(self, actions: list[dict[str, Any]]) -> None:
         self.bulk_calls.append(list(actions))
         for a in actions:
             if a.get("_op_type") == "delete":
-                self.indexed_ids.discard(a["_id"])
+                self._indexed.pop(a["_id"], None)
             else:
-                self.indexed_ids.add(a["_id"])
+                self._indexed[a["_id"]] = a["_source"]["document_id"]
+
+    def delete_by_query(
+        self, *, index: str, query: dict[str, Any], conflicts: str = "proceed"
+    ) -> None:
+        self.delete_by_query_calls.append({"index": index, "query": query, "conflicts": conflicts})
+        doc_id = query["term"]["document_id"]
+        for k in [k for k, v in self._indexed.items() if v == doc_id]:
+            del self._indexed[k]
 
 
 def _chunks(document_id: str) -> list[Chunk]:
@@ -117,3 +130,25 @@ def test_extract_is_noop_when_doc_not_found() -> None:
     )
     plugin.extract("d1")  # must not raise
     assert es.bulk_calls == []
+
+
+def test_delete_uses_delete_by_query_with_chunks_empty() -> None:
+    """v2 wiring passes chunks={} — delete() must clean up via delete_by_query, not bulk."""
+    es = _FakeES()
+    plugin = VectorExtractor(repo=_Repo(), chunks={}, embedder=_FakeEmbedder(), es=es)
+    plugin.delete("d1")
+    assert len(es.delete_by_query_calls) == 1
+    call = es.delete_by_query_calls[0]
+    assert call["index"] == "chunks_v1"
+    assert call["query"] == {"term": {"document_id": "d1"}}
+    assert call["conflicts"] == "proceed"
+
+
+def test_delete_uses_delete_by_query_index_override() -> None:
+    """Custom index name is forwarded to delete_by_query."""
+    es = _FakeES()
+    plugin = VectorExtractor(
+        repo=_Repo(), chunks={}, embedder=_FakeEmbedder(), es=es, index="custom_idx"
+    )
+    plugin.delete("doc99")
+    assert es.delete_by_query_calls[0]["index"] == "custom_idx"

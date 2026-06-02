@@ -200,7 +200,7 @@ def build_container() -> Container:
     registry.register(
         VectorExtractor(
             repo=doc_repo,
-            chunks={},  # v2: chunks live in ES; vector plugin is a no-op stub.
+            chunks={},  # v2: extract() is a no-op; delete() uses delete_by_query by document_id.
             embedder=embedding_client,
             es=es_client,
             index=chunks_index_name,
