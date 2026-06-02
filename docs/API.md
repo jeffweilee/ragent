@@ -507,7 +507,7 @@ Supported methods (full spec: [`docs/spec/mcp_server.md`](docs/spec/mcp_server.m
 | `initialize` | client → server | Capability negotiation. |
 | `notifications/initialized` | client → server (notification) | Client signals init complete; server returns 204. |
 | `tools/list` | client → server | Returns the single `retrieve` tool with `inputSchema` and `annotations: {readOnlyHint: true}` (MCP 2025-03-26+; older clients ignore). |
-| `tools/call` | client → server | Invokes the tool. Result `content[0].text` is JSON-stringified `{chunks:[...]}`. |
+| `tools/call` | client → server | Invokes the tool. Result `content[0].text` is `[資料來源 #N]`-formatted text (one numbered block per chunk with metadata header, separated by `---`). Header metadata fields (source_app, document_id, title) have CR/LF stripped. Unknown arguments return `-32602 MCP_TOOL_INPUT_INVALID` (`inputSchema` is a closed schema with `additionalProperties:false`). |
 | `ping` | bidirectional | Returns `{}`. |
 
 Errors surface as JSON-RPC error envelopes with `data.error_code` mapping

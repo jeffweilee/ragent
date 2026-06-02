@@ -237,3 +237,18 @@
 | T-AM.3 | Behavioral | • **Achieve:** `RAGENT_JWT_VERIFY_AUD` (default `true`) + `RAGENT_JWT_VERIFY_EXP` (default `true`) respected by JWT verifier; both `false` require `RAGENT_ENV=dev`.<br>• **Deliver:** Guard checks flags; `build_token_manager()` receives `verify_aud` + `verify_exp`; joserfc claims options updated. Tests: `tests/unit/test_jwt_verify_flags.py`. | [x] | Dev |
 | T-AM.S2 | Structural | • **Achieve:** Remove `RAGENT_AUTH_DISABLED` + `RAGENT_TRUST_X_USER_ID_HEADER` from all source, tests, and docs.<br>• **Deliver:** Delete dead reads in `guard.py`, `app.py`, `composition.py`, `openapi.py`; update `docs/spec/env_vars.md`, `docs/00_spec.md`, `.env.example` if present. | [x] | Dev |
 
+---
+
+## Track T-MCP2 — MCP retrieve tool input/output alignment
+
+> Source: 2026-06-01 review session.
+> Two improvements to `POST /mcp/v1` `retrieve` tool:
+> (1) `inputSchema` hardening — `additionalProperties:false` + richer field descriptions so MCP hosts and agents have an accurate closed schema.
+> (2) Response text aligned with `_render_context()` convention — `[資料來源 #N]` + `---` format with metadata header so calling agents can cite chunks without a second `json.loads`.
+
+| # | Category | Task | Status | Owner |
+|---|---|---|:---:|---|
+| T-MCP2.1 | Behavioral | • **Achieve:** `inputSchema` is a closed schema — unknown arguments are rejected with -32602.<br>• **Deliver:** `tests/unit/test_mcp_tools_call_retrieve.py::test_tools_call_retrieve_rejects_unknown_argument` — extra field → -32602 `MCP_TOOL_INPUT_INVALID`. Add `additionalProperties:false` + improve field descriptions. | [x] | Dev |
+| T-MCP2.2 | Behavioral | • **Achieve:** `tools/call retrieve` response `content[0].text` is `[資料來源 #N]`-formatted text, not a JSON blob.<br>• **Deliver:** `tests/unit/test_mcp_tools_call_retrieve.py::test_tools_call_retrieve_text_format_*` (numbered sources, metadata header, empty result, excerpt truncation). Update existing JSON-parse tests to match new format. | [x] | Dev |
+| T-MCP2.3 | Behavioral | • **Achieve:** Header metadata fields (source_app, document_id, source_title) have CR/LF stripped to prevent injection of fake `[資料來源 #N]` header lines.<br>• **Deliver:** `tests/unit/test_mcp_tools_call_retrieve.py::test_tools_call_retrieve_sanitizes_newlines_in_header_metadata`; `_header_field()` helper in `routers/mcp.py`; integration test contract updated to `[資料來源 #N]` text format. | [x] | Dev |
+

@@ -46,34 +46,39 @@ The sole tool advertised by `tools/list`. Mirrors §3.4.4 `POST /retrieve/v1` se
   "annotations": {"readOnlyHint": true},
   "inputSchema": {
     "type": "object",
+    "additionalProperties": false,
     "properties": {
-      "query":       {"type": "string", "minLength": 1, "description": "Natural-language query."},
-      "top_k":       {"type": "integer", "minimum": 1, "maximum": 200, "default": 20},
-      "source_app":  {"type": "string",  "minLength": 1, "maxLength": 64,   "description": "Optional ES term filter."},
-      "source_meta": {"type": "string",  "minLength": 1, "maxLength": 1024, "description": "Optional ES term filter."},
-      "min_score":   {"type": "number",  "minimum": 0,    "description": "Optional post-pipeline score floor."},
-      "dedupe":      {"type": "boolean", "default": false, "description": "Keep one chunk per document_id."}
+      "query":       {"type": "string", "minLength": 1, "description": "Natural-language search query."},
+      "top_k":       {"type": "integer", "minimum": 1, "maximum": 200, "default": 20, "description": "Number of chunks to return (1–200, default 20)."},
+      "source_app":  {"type": "string",  "minLength": 1, "maxLength": 64,   "description": "Exact-match filter on the ingesting application name (e.g. 'confluence', 'jira')."},
+      "source_meta": {"type": "string",  "minLength": 1, "maxLength": 1024, "description": "Exact-match filter on the document's source_meta tag."},
+      "min_score":   {"type": "number",  "minimum": 0,    "description": "Drop chunks whose relevance score is below this threshold."},
+      "dedupe":      {"type": "boolean", "default": false, "description": "When true, keep only the highest-scored chunk per document_id."}
     },
     "required": ["query"]
   }
 }
 ```
 
+`additionalProperties: false` makes this a closed schema — unknown arguments are rejected with `-32602 MCP_TOOL_INPUT_INVALID` rather than silently ignored.
+
 `annotations.readOnlyHint=true` signals that `retrieve` never writes data. MCP hosts (protocol
 2025-03-26+) MAY use this to skip confirmation prompts. Clients on earlier versions silently
 ignore unknown tool fields — this is an additive, backward-compatible extension.
 
 **`tools/call` result shape** (MCP spec compliant):
-```json
-{
-  "content": [
-    {"type": "text", "text": "{\"chunks\":[{...},{...}]}"}
-  ],
-  "isError": false
-}
+```
+Found 2 chunk(s).
+
+[資料來源 #1] score=0.95 | source_app=confluence | document_id=abc123 | title=User Manual
+<excerpt text up to EXCERPT_MAX_CHARS>
+---
+[資料來源 #2] score=0.82 | source_app=wiki | document_id=def456 | title=Setup Guide
+<excerpt text>
+---
 ```
 
-The single `content[0].text` value is the **JSON-stringified** `RetrieveResponse` (same shape as `POST /retrieve/v1`). MCP standardises tool-result content as a typed array; text type with stringified JSON is the canonical pattern for structured returns (the calling LLM parses it). `isError: true` is set when the tool itself fails (e.g. retrieval pipeline raises); transport-layer failures still come through `error` envelopes.
+`content[0].text` uses the `[資料來源 #N]` + `---` format (aligned with the chat pipeline's `_render_context()` convention) so calling agents can cite chunks with the same `[N]` reference convention. Metadata (score, source_app, document_id, title) appears in the header line — unlike the in-chat LLM path where metadata is intentionally hidden, MCP callers are agents that need it for citation and filtering. Optional metadata fields (score, source_app, document_id, title) are omitted from the header when null/empty. Header metadata fields (source_app, document_id, title) have CR/LF stripped before insertion — a document title containing an embedded newline cannot inject a fake `[資料來源 #N]` header line. Empty results return `"Found 0 chunk(s)."`. `isError: true` is set when the tool itself fails (e.g. retrieval pipeline raises); transport-layer failures still come through `error` envelopes.
 
 #### 3.8.4 Error codes (JSON-RPC layer)
 
@@ -95,7 +100,8 @@ App-level errors (-32000..-32099) carry `data.error_code` matching the existing 
 
 - **S58 mcp initialize** — `initialize` with `protocolVersion:"2024-11-05"` → `result.{protocolVersion:"2024-11-05", capabilities:{tools:{}}, serverInfo:{name:"ragent",version:"<semver>"}}`.
 - **S59 mcp tools/list** — `result.tools` has exactly one entry `name:"retrieve"` with `inputSchema` matching §3.8.3.
-- **S60 mcp tools/call retrieve** — Given indexed corpus and `tools/call` with `{name:"retrieve", arguments:{query:"...",top_k:3}}`, When the server processes it, Then `result.content[0].text` is JSON parseable into `{chunks: list}` of length ≤ 3 and `result.isError` is `false`.
+- **S60 mcp tools/call retrieve** — Given indexed corpus and `tools/call` with `{name:"retrieve", arguments:{query:"...",top_k:3}}`, When the server processes it, Then `result.content[0].text` contains `[資料來源 #1]` … `[資料來源 #N]` labels (one per chunk, N ≤ 3) separated by `---` dividers with a `Found N chunk(s).` preamble, and `result.isError` is `false`. Empty results return `"Found 0 chunk(s)."`.
+- **S60a mcp tools/call retrieve unknown arg** — Given `tools/call` with `{name:"retrieve", arguments:{query:"q", unknown_field:"bad"}}`, Then `error.code` is `-32602` and `error.data.error_code` is `MCP_TOOL_INPUT_INVALID`.
 - **S61 mcp method not found** — Given `{method:"resources/list"}` (unimplemented), Then `error.code` is `-32601`.
 - **S62 mcp tools/call invalid name** — Given `{method:"tools/call", params:{name:"unknown_tool",arguments:{}}}`, Then `error.code` is `-32602` and `error.data.error_code` is `MCP_TOOL_NOT_FOUND`.
 - **S63 mcp tools/call missing query** — Given `{method:"tools/call", params:{name:"retrieve",arguments:{}}}` (no `query`), Then `error.code` is `-32602` and `error.data.error_code` is `MCP_TOOL_INPUT_INVALID`.
