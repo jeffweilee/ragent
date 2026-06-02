@@ -21,7 +21,9 @@ class _Embedder(Protocol):
 
 class _ES(Protocol):
     def bulk(self, actions: list[dict[str, Any]]) -> None: ...
-    def delete_by_query(self, *, index: str, query: dict[str, Any], conflicts: str = "proceed") -> None: ...
+    def delete_by_query(
+        self, *, index: str, query: dict[str, Any], conflicts: str = "proceed"
+    ) -> None: ...
 
 
 class VectorExtractor:

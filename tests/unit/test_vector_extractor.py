@@ -49,7 +49,9 @@ class _FakeES:
             else:
                 self._indexed[a["_id"]] = a["_source"]["document_id"]
 
-    def delete_by_query(self, *, index: str, query: dict[str, Any], conflicts: str = "proceed") -> None:
+    def delete_by_query(
+        self, *, index: str, query: dict[str, Any], conflicts: str = "proceed"
+    ) -> None:
         self.delete_by_query_calls.append({"index": index, "query": query, "conflicts": conflicts})
         doc_id = query["term"]["document_id"]
         for k in [k for k, v in self._indexed.items() if v == doc_id]:
