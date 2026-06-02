@@ -128,7 +128,7 @@ def _build_dev_env(
     """
     infra = {
         "RAGENT_ENV": "dev",
-        "RAGENT_AUTH_DISABLED": "true",
+        "RAGENT_AUTH_MODE": "user_header",
         "RAGENT_HOST": "127.0.0.1",
         "RAGENT_PORT": "8000",
         "AI_API_AUTH_URL": f"{wiremock_url}/auth/api/accesstoken",

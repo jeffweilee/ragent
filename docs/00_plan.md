@@ -221,3 +221,19 @@
 |---|----------|-----|
 | PR130.F1 | Defensive | `result.get("content") or ""` in sync handler — guard against null/missing LLM content field (KeyError on safety-filtered responses). Gemini review comment. |
 
+---
+
+## Track T-AM — Auth Mode Consolidation
+
+> Replace two-boolean auth config (`RAGENT_AUTH_DISABLED` + `RAGENT_TRUST_X_USER_ID_HEADER`) with a single `RAGENT_AUTH_MODE` enum.
+> New modes: `none` (no header required, `create_user="anonymous"`) and `jwt_prefer_header` (JWT fallback to `X-User-Id`).
+> New JWT verification flags: `RAGENT_JWT_VERIFY_AUD` + `RAGENT_JWT_VERIFY_EXP`.
+
+| # | Category | Task | Status | Owner |
+|---|---|---|:---:|---|
+| T-AM.S1 | Structural | • **Achieve:** `AuthMode` enum + `parse_auth_mode()` as the single source of truth for mode resolution.<br>• **Deliver:** `src/ragent/bootstrap/auth_mode.py` — `AuthMode(str, Enum)` with values `none \| user_header \| jwt_header \| jwt_prefer_header`; `parse_auth_mode()` reads `RAGENT_AUTH_MODE` (default `user_header`); raises `ValueError` on unknown value. Tests: `tests/unit/test_auth_mode_parse.py`. | [x] | Dev |
+| T-AM.1 | Behavioral | • **Achieve:** Guard enforces `RAGENT_AUTH_MODE` rules, replacing old two-bool logic.<br>• **Deliver:** Rewrite `src/ragent/bootstrap/guard.py`; rewrite `tests/unit/test_bootstrap_startup_guard.py` — `none`/`user_header`/`jwt_prefer_header` → `dev` only; `jwt_header` → no env restriction; `jwt_header`/`jwt_prefer_header` → require `OIDC_DOMAIN` + `OIDC_AUDIENCE`. | [x] | Dev |
+| T-AM.2 | Behavioral | • **Achieve:** Middleware + composition handle all 4 modes; `none` injects `"anonymous"`, skips header check; `jwt_prefer_header` tries JWT first, falls back to `X-User-Id`.<br>• **Deliver:** Update `app.py` middleware, `composition.py` JWT-manager guard, `openapi.py` `is_trust_header_mode()`. Tests: extend `tests/unit/test_bootstrap_app_middleware.py` (or create). | [x] | Dev |
+| T-AM.3 | Behavioral | • **Achieve:** `RAGENT_JWT_VERIFY_AUD` (default `true`) + `RAGENT_JWT_VERIFY_EXP` (default `true`) respected by JWT verifier; both `false` require `RAGENT_ENV=dev`.<br>• **Deliver:** Guard checks flags; `build_token_manager()` receives `verify_aud` + `verify_exp`; joserfc claims options updated. Tests: `tests/unit/test_jwt_verify_flags.py`. | [x] | Dev |
+| T-AM.S2 | Structural | • **Achieve:** Remove `RAGENT_AUTH_DISABLED` + `RAGENT_TRUST_X_USER_ID_HEADER` from all source, tests, and docs.<br>• **Deliver:** Delete dead reads in `guard.py`, `app.py`, `composition.py`, `openapi.py`; update `docs/spec/env_vars.md`, `docs/00_spec.md`, `.env.example` if present. | [x] | Dev |
+

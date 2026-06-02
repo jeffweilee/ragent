@@ -150,10 +150,11 @@ def test_jwt_mode_api_request_log_carries_resolved_user_id(oidc_token_manager, m
     # Order matters: register _x_user_id_middleware FIRST so it runs as the
     # innermost middleware; RequestLoggingMiddleware is registered LAST so it
     # wraps everything (Starlette wraps in reverse registration order).
+    from ragent.bootstrap.auth_mode import AuthMode
+
     _x_user_id_middleware(
         app,
-        trust_header=False,
-        auth_disabled=False,
+        auth_mode=AuthMode.jwt_header,
         token_manager=oidc_token_manager,
     )
     app.add_middleware(RequestLoggingMiddleware)
@@ -190,11 +191,12 @@ def test_trust_header_mode_custom_header_name_carries_user_id_in_api_request_log
 
     configure_logging("ragent-test")
     app = FastAPI()
+    from ragent.bootstrap.auth_mode import AuthMode
+
     _x_user_id_middleware(
         app,
+        auth_mode=AuthMode.user_header,
         user_id_header="X-Whoami",
-        trust_header=True,
-        auth_disabled=False,
     )
     app.add_middleware(RequestLoggingMiddleware)
 

@@ -66,25 +66,32 @@ def _fake_oidc_handler(request: _httpx.Request) -> _httpx.Response:
 
 
 @pytest.fixture
-def oidc_token_manager():
-    """Build ``VerifyingTokenManager`` against an in-process fake OIDC server.
+def oidc_token_manager(oidc_token_manager_factory):
+    """Build ``VerifyingTokenManager`` against an in-process fake OIDC server."""
+    return oidc_token_manager_factory()
 
-    The MockTransport intercepts OIDC discovery + JWKS fetch performed by
-    ``build_token_manager``; subsequent ``verify_jwt`` calls do no HTTP
-    (JWKS is cached on the manager). The test passes its own ``httpx.Client``
-    via the ``client`` seam, then closes it — production code never sees the
-    mock.
+
+@pytest.fixture
+def oidc_token_manager_factory():
+    """Parameterised builder: returns a callable that accepts ``verify_aud`` /
+    ``verify_exp`` keyword args and builds a ``VerifyingTokenManager`` backed
+    by the same in-process fake OIDC server used by ``oidc_token_manager``.
     """
     from ragent.auth.jwt import build_token_manager
 
-    transport = _httpx.MockTransport(_fake_oidc_handler)
-    with _httpx.Client(transport=transport) as client:
-        return build_token_manager(
-            domain=_OIDC_DOMAIN,
-            audience=_OIDC_AUDIENCE,
-            use_https=True,
-            client=client,
-        )
+    def _factory(*, verify_aud: bool = True, verify_exp: bool = True):
+        transport = _httpx.MockTransport(_fake_oidc_handler)
+        with _httpx.Client(transport=transport) as client:
+            return build_token_manager(
+                domain=_OIDC_DOMAIN,
+                audience=_OIDC_AUDIENCE,
+                use_https=True,
+                client=client,
+                verify_aud=verify_aud,
+                verify_exp=verify_exp,
+            )
+
+    return _factory
 
 
 @pytest.fixture
@@ -493,7 +500,7 @@ def dev_env(
     """Apply RAGENT dev-mode env wired to the testcontainer fixtures (B30)."""
     pairs = {
         "RAGENT_ENV": "dev",
-        "RAGENT_AUTH_DISABLED": "true",
+        "RAGENT_AUTH_MODE": "user_header",
         "RAGENT_HOST": "127.0.0.1",
         "AI_API_AUTH_URL": f"{wiremock_url}/auth/api/accesstoken",
         "AI_LLM_API_J1_TOKEN": "test-llm-j1",

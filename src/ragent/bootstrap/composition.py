@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from ragent.bootstrap.auth_mode import AuthMode, parse_auth_mode
 from ragent.utility.env import bool_env as _bool_env
 from ragent.utility.env import float_env as _float_env
 from ragent.utility.env import int_env as _int_env
@@ -50,10 +51,9 @@ class Container:
     ingest_list_max_limit: int
     ingest_upload_max_bytes: int
     excerpt_max_chars: int
-    # T8.5a — joserfc-based JWT verifier (VerifyingTokenManager) for inbound
-    # JWT verification. ``None`` when ``RAGENT_AUTH_DISABLED=true`` or
-    # ``RAGENT_TRUST_X_USER_ID_HEADER=true``; the middleware uses the
-    # header-trust branch in those cases.
+    # T8.5a / T-AM — joserfc-based JWT verifier (VerifyingTokenManager) for
+    # inbound JWT verification. ``None`` for non-JWT auth modes (none /
+    # user_header); set for jwt_header / jwt_prefer_header.
     auth_token_manager: Any = None
 
 
@@ -310,14 +310,12 @@ def build_container() -> Container:
             timeout=_float_env("UNPROTECT_TIMEOUT_SECONDS", 30.0),
         )
 
-    # T8.5a — Build the joserfc-based JWKS verifier iff inbound JWT auth is on.
-    # OIDC discovery + JWKS are fetched HERE (boot-time) so a misconfigured
-    # OIDC_DOMAIN aborts startup rather than 500-ing the first request; JWKS
-    # is then cached for the manager's lifetime (§3.5 cache-reuse).
+    # T8.5a / T-AM.2 — Build the joserfc-based JWKS verifier iff inbound JWT
+    # auth is on. OIDC discovery + JWKS are fetched HERE (boot-time) so a
+    # misconfigured OIDC_DOMAIN aborts startup rather than 500-ing the first
+    # request; JWKS is then cached for the manager's lifetime (§3.5 cache-reuse).
     auth_token_manager: Any = None
-    if not _bool_env("RAGENT_AUTH_DISABLED", False) and not _bool_env(
-        "RAGENT_TRUST_X_USER_ID_HEADER", False
-    ):
+    if parse_auth_mode() in (AuthMode.jwt_header, AuthMode.jwt_prefer_header):
         from ragent.auth.jwt import build_token_manager
 
         auth_token_manager = build_token_manager(
@@ -325,6 +323,8 @@ def build_container() -> Container:
             audience=_require("OIDC_AUDIENCE"),
             use_https=_bool_env("OIDC_USE_HTTPS", True),
             verify_ssl=_bool_env("OIDC_VERIFY_SSL", True),
+            verify_aud=_bool_env("RAGENT_JWT_VERIFY_AUD", True),
+            verify_exp=_bool_env("RAGENT_JWT_VERIFY_EXP", True),
         )
 
     return Container(

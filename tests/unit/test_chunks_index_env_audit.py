@@ -36,9 +36,8 @@ def test_build_probes_uses_container_chunks_index_name() -> None:
 def _composition_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Minimum env for `build_container()` to traverse past the env-validation
     front-matter and reach the wiring sites under test."""
-    # T8.5a — the JWT verifier is constructed only when inbound auth is on;
-    # this test exercises chunks-index threading, not auth, so disable it.
-    monkeypatch.setenv("RAGENT_AUTH_DISABLED", "true")
+    # non-JWT auth mode so build_container doesn't require OIDC_*
+    monkeypatch.setenv("RAGENT_AUTH_MODE", "user_header")
     monkeypatch.setenv("MARIADB_DSN", "mysql+aiomysql://u:p@h:3306/db")
     monkeypatch.setenv("AI_API_AUTH_URL", "http://auth.example/token")
     monkeypatch.setenv("AI_LLM_API_J1_TOKEN", "j1-llm")

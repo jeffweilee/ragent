@@ -43,11 +43,15 @@ class VerifyingTokenManager:
     ``jwks`` is the parsed key set (decoder picks the right key by ``kid``);
     ``audience`` and ``expected_iss`` are precomputed for the registry + the
     manual issuer compare. No I/O after construction (§3.5 cache-reuse).
+    ``verify_aud`` / ``verify_exp`` gate the corresponding claim checks;
+    both default to ``True`` and require ``RAGENT_ENV=dev`` when ``False``.
     """
 
     jwks: KeySet
     audience: str
     expected_iss: str  # already rstripped
+    verify_aud: bool = True
+    verify_exp: bool = True
 
 
 def build_token_manager(
@@ -57,6 +61,8 @@ def build_token_manager(
     use_https: bool = True,
     verify_ssl: bool = True,
     client: httpx.Client | None = None,
+    verify_aud: bool = True,
+    verify_exp: bool = True,
 ) -> VerifyingTokenManager:
     """Compose the JWKS verifier from OIDC discovery.
 
@@ -94,6 +100,8 @@ def build_token_manager(
         jwks=KeySet.import_key_set(jwks_data),
         audience=audience,
         expected_iss=str(oidc["issuer"]).rstrip("/"),
+        verify_aud=verify_aud,
+        verify_exp=verify_exp,
     )
 
 
@@ -121,8 +129,18 @@ def verify_jwt(token: str, *, claim_user_id: str, token_manager: VerifyingTokenM
     # Standard claim validation: exp / nbf / iat / aud via joserfc's registry.
     # iss is checked separately below to absorb trailing-slash variance between
     # OIDC discovery (often `.../`) and real-IdP-issued tokens (often `...`).
+    # joserfc always calls validate_exp when "exp" is present; strip it from the
+    # validation copy only when the flag is False (avoids a copy on the common path).
+    validate_claims = (
+        {k: v for k, v in claims.items() if k != "exp"} if not token_manager.verify_exp else claims
+    )
+    aud_option = (
+        {"essential": True, "value": token_manager.audience}
+        if token_manager.verify_aud
+        else {"essential": False}
+    )
     try:
-        JWTClaimsRegistry(aud={"essential": True, "value": token_manager.audience}).validate(claims)
+        JWTClaimsRegistry(aud=aud_option).validate(validate_claims)
     except ExpiredTokenError as exc:
         raise JwtAuthError(HttpErrorCode.AUTH_TOKEN_EXPIRED) from exc
     except JoseError as exc:

@@ -1,82 +1,29 @@
-"""Startup guard: validates auth-mode coherence and safety constraints.
+"""T-AM.1 — Startup guard: RAGENT_AUTH_MODE coherence and safety constraints.
 
-Three modes supported (mirrors `src/ragent/bootstrap/composition.py` lines
-311-313 where the JWT verifier is conditionally built):
-
-  A. RAGENT_AUTH_DISABLED=true                                — open auth
-  B. AUTH_DISABLED=false, TRUST_X_USER_ID_HEADER=true         — JWT bypassed
-  C. AUTH_DISABLED=false, TRUST_X_USER_ID_HEADER=false        — OIDC JWT
-
-Modes A and B trust an unverified header; they are dev-only. Mode A
-additionally requires loopback bind because the endpoint has no auth
-surface at all.
+Four modes:
+  none             — dev only
+  user_header      — dev only
+  jwt_header       — no env restriction; requires OIDC_DOMAIN + OIDC_AUDIENCE
+  jwt_prefer_header— dev only; requires OIDC_DOMAIN + OIDC_AUDIENCE
 """
 
 import pytest
 
-# ---------------------------------------------------------------- Mode A
+# ---------------------------------------------------------------- none
 
 
-def test_mode_a_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_none_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RAGENT_AUTH_MODE", "none")
     monkeypatch.setenv("RAGENT_ENV", "dev")
-    monkeypatch.setenv("RAGENT_AUTH_DISABLED", "true")
-    monkeypatch.setenv("RAGENT_HOST", "127.0.0.1")
-    monkeypatch.setenv("LOG_LEVEL", "INFO")
-
-    from ragent.bootstrap.guard import enforce
-
-    enforce()  # must not raise
-
-
-def test_mode_a_non_dev_env_exits(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("RAGENT_ENV", "production")
-    monkeypatch.setenv("RAGENT_AUTH_DISABLED", "true")
-
-    from ragent.bootstrap.guard import enforce
-
-    with pytest.raises(SystemExit):
-        enforce()
-
-
-def test_mode_a_non_loopback_host_exits(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("RAGENT_ENV", "dev")
-    monkeypatch.setenv("RAGENT_AUTH_DISABLED", "true")
-    monkeypatch.setenv("RAGENT_HOST", "0.0.0.0")
-
-    from ragent.bootstrap.guard import enforce
-
-    with pytest.raises(SystemExit):
-        enforce()
-
-
-def test_mode_a_default_host_is_loopback(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("RAGENT_ENV", "dev")
-    monkeypatch.setenv("RAGENT_AUTH_DISABLED", "true")
-    monkeypatch.delenv("RAGENT_HOST", raising=False)
-    monkeypatch.delenv("LOG_LEVEL", raising=False)
 
     from ragent.bootstrap.guard import enforce
 
     enforce()
 
 
-# ---------------------------------------------------------------- Mode B
-
-
-def test_mode_b_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("RAGENT_ENV", "dev")
-    monkeypatch.setenv("RAGENT_AUTH_DISABLED", "false")
-    monkeypatch.setenv("RAGENT_TRUST_X_USER_ID_HEADER", "true")
-
-    from ragent.bootstrap.guard import enforce
-
-    enforce()  # must not raise — JWT bypassed, X-User-Id trusted
-
-
-def test_mode_b_non_dev_env_exits(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_none_non_dev_exits(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RAGENT_AUTH_MODE", "none")
     monkeypatch.setenv("RAGENT_ENV", "production")
-    monkeypatch.setenv("RAGENT_AUTH_DISABLED", "false")
-    monkeypatch.setenv("RAGENT_TRUST_X_USER_ID_HEADER", "true")
 
     from ragent.bootstrap.guard import enforce
 
@@ -84,26 +31,66 @@ def test_mode_b_non_dev_env_exits(monkeypatch: pytest.MonkeyPatch) -> None:
         enforce()
 
 
-# ---------------------------------------------------------------- Mode C
+# ---------------------------------------------------------------- user_header
 
 
-def test_mode_c_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_user_header_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RAGENT_AUTH_MODE", "user_header")
+    monkeypatch.setenv("RAGENT_ENV", "dev")
+
+    from ragent.bootstrap.guard import enforce
+
+    enforce()
+
+
+def test_user_header_non_dev_exits(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RAGENT_AUTH_MODE", "user_header")
     monkeypatch.setenv("RAGENT_ENV", "production")
-    monkeypatch.setenv("RAGENT_AUTH_DISABLED", "false")
-    monkeypatch.delenv("RAGENT_TRUST_X_USER_ID_HEADER", raising=False)
+
+    from ragent.bootstrap.guard import enforce
+
+    with pytest.raises(SystemExit):
+        enforce()
+
+
+def test_default_mode_is_user_header_and_boots_in_dev(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("RAGENT_AUTH_MODE", raising=False)
+    monkeypatch.setenv("RAGENT_ENV", "dev")
+
+    from ragent.bootstrap.guard import enforce
+
+    enforce()
+
+
+# ---------------------------------------------------------------- jwt_header
+
+
+def test_jwt_header_happy_path_dev(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RAGENT_AUTH_MODE", "jwt_header")
+    monkeypatch.setenv("RAGENT_ENV", "dev")
+    monkeypatch.setenv("OIDC_DOMAIN", "idp.example.com")
+    monkeypatch.setenv("OIDC_AUDIENCE", "ragent")
+
+    from ragent.bootstrap.guard import enforce
+
+    enforce()
+
+
+def test_jwt_header_happy_path_prod(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RAGENT_AUTH_MODE", "jwt_header")
+    monkeypatch.setenv("RAGENT_ENV", "production")
     monkeypatch.setenv("RAGENT_HOST", "0.0.0.0")
     monkeypatch.setenv("OIDC_DOMAIN", "idp.example.com")
     monkeypatch.setenv("OIDC_AUDIENCE", "ragent")
 
     from ragent.bootstrap.guard import enforce
 
-    enforce()  # OIDC mode tolerates non-dev env and non-loopback host
+    enforce()
 
 
-def test_mode_c_missing_oidc_domain_exits(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("RAGENT_ENV", "dev")
-    monkeypatch.setenv("RAGENT_AUTH_DISABLED", "false")
-    monkeypatch.delenv("RAGENT_TRUST_X_USER_ID_HEADER", raising=False)
+def test_jwt_header_missing_oidc_domain_exits(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RAGENT_AUTH_MODE", "jwt_header")
+    monkeypatch.setenv("RAGENT_ENV", "production")
     monkeypatch.delenv("OIDC_DOMAIN", raising=False)
     monkeypatch.setenv("OIDC_AUDIENCE", "ragent")
 
@@ -113,10 +100,9 @@ def test_mode_c_missing_oidc_domain_exits(monkeypatch: pytest.MonkeyPatch) -> No
         enforce()
 
 
-def test_mode_c_missing_oidc_audience_exits(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("RAGENT_ENV", "dev")
-    monkeypatch.setenv("RAGENT_AUTH_DISABLED", "false")
-    monkeypatch.delenv("RAGENT_TRUST_X_USER_ID_HEADER", raising=False)
+def test_jwt_header_missing_oidc_audience_exits(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RAGENT_AUTH_MODE", "jwt_header")
+    monkeypatch.setenv("RAGENT_ENV", "production")
     monkeypatch.setenv("OIDC_DOMAIN", "idp.example.com")
     monkeypatch.delenv("OIDC_AUDIENCE", raising=False)
 
@@ -126,25 +112,60 @@ def test_mode_c_missing_oidc_audience_exits(monkeypatch: pytest.MonkeyPatch) -> 
         enforce()
 
 
-def test_mode_c_default_auth_is_oidc(monkeypatch: pytest.MonkeyPatch) -> None:
+# ---------------------------------------------------------------- jwt_prefer_header
+
+
+def test_jwt_prefer_header_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RAGENT_AUTH_MODE", "jwt_prefer_header")
     monkeypatch.setenv("RAGENT_ENV", "dev")
-    monkeypatch.delenv("RAGENT_AUTH_DISABLED", raising=False)
-    monkeypatch.delenv("RAGENT_TRUST_X_USER_ID_HEADER", raising=False)
-    monkeypatch.delenv("OIDC_DOMAIN", raising=False)
+    monkeypatch.setenv("OIDC_DOMAIN", "idp.example.com")
+    monkeypatch.setenv("OIDC_AUDIENCE", "ragent")
+
+    from ragent.bootstrap.guard import enforce
+
+    enforce()
+
+
+def test_jwt_prefer_header_non_dev_exits(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RAGENT_AUTH_MODE", "jwt_prefer_header")
+    monkeypatch.setenv("RAGENT_ENV", "production")
+    monkeypatch.setenv("OIDC_DOMAIN", "idp.example.com")
+    monkeypatch.setenv("OIDC_AUDIENCE", "ragent")
 
     from ragent.bootstrap.guard import enforce
 
     with pytest.raises(SystemExit):
-        enforce()  # default mode is OIDC; missing OIDC_DOMAIN exits
+        enforce()
+
+
+def test_jwt_prefer_header_missing_oidc_domain_exits(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RAGENT_AUTH_MODE", "jwt_prefer_header")
+    monkeypatch.setenv("RAGENT_ENV", "dev")
+    monkeypatch.delenv("OIDC_DOMAIN", raising=False)
+    monkeypatch.setenv("OIDC_AUDIENCE", "ragent")
+
+    from ragent.bootstrap.guard import enforce
+
+    with pytest.raises(SystemExit):
+        enforce()
 
 
 # ---------------------------------------------------------------- misc
 
 
-def test_invalid_log_level_exits(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_invalid_auth_mode_exits(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RAGENT_AUTH_MODE", "bogus")
     monkeypatch.setenv("RAGENT_ENV", "dev")
-    monkeypatch.setenv("RAGENT_AUTH_DISABLED", "true")
-    monkeypatch.setenv("RAGENT_HOST", "127.0.0.1")
+
+    from ragent.bootstrap.guard import enforce
+
+    with pytest.raises(SystemExit):
+        enforce()
+
+
+def test_invalid_log_level_exits(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("RAGENT_AUTH_MODE", "user_header")
+    monkeypatch.setenv("RAGENT_ENV", "dev")
     monkeypatch.setenv("LOG_LEVEL", "VERBOSE")
 
     from ragent.bootstrap.guard import enforce
