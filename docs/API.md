@@ -445,6 +445,10 @@ Errors surface as JSON-RPC error envelopes with `data.error_code` (`MCP_PARSE_ER
 | `GET /embedding/v1/state` | Registry snapshot | `200 {stable, candidate, read, retired}` |
 | `GET /embedding/v1/cutover/preflight` | Run gates without action | `200 {pass, gates}` |
 
-All state-mutation endpoints return `409 EMBEDDING_LIFECYCLE_INVALID_STATE` on invalid state; `promote` additionally returns `422 EMBEDDING_INVALID_CONFIG` / `EMBEDDING_FIELD_NAME_COLLISION`.
+**Non-2xx cases:**
+- `409 EMBEDDING_LIFECYCLE_INVALID_STATE` — all state-mutation endpoints when transition is invalid.
+- `409 EMBEDDING_CUTOVER_PREFLIGHT_FAILED` — `/cutover` when hard gates fail; body carries `preflight` report with failed gate names and details.
+- `422 EMBEDDING_INVALID_CONFIG` / `EMBEDDING_FIELD_NAME_COLLISION` — `/promote` validation failures.
+- `503` — `/backfill` when broker is not wired; `/embedding/v1/state` as `EMBEDDING_REGISTRY_NOT_READY` when the registry has not completed its first refresh.
 
 Cutover hard gates: `state_is_candidate`, `field_dim_matches`, `candidate_coverage` (≥ 99%), `dual_write_warmup` (≥ 2 × cache TTL). See [`docs/team/2026_05_15_embedding_model_lifecycle.md`](team/2026_05_15_embedding_model_lifecycle.md) for full semantics.
