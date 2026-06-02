@@ -116,6 +116,10 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
     - **Verification**: Every `_promote_or_demote` or equivalent method MUST have a unit test asserting that the demote UPDATE SQL contains the same status values as the election subquery. A test that only asserts the winner was promoted but not that all prior holders were demoted is insufficient.
     - **Example**: `_promote_or_demote` electing on `status IN ('PENDING', 'READY')` must also demote with `WHERE status IN ('PENDING', 'READY')` — not `WHERE status = 'READY'` which would miss a concurrent PENDING that later races to READY.
 
+- **Rule: SQL File Parsing — strip-then-split (`iter_statements`).**
+  - Bare `sql.split(";")` breaks when a `--` comment contains `;` (e.g. `"-- rows are seeded; future settings …"`), producing an invalid SQL fragment that crashes `alembic upgrade`. Any helper that loads `.sql` text MUST call `ragent.bootstrap.init_schema.iter_statements(sql)` (strips `--` comments per-line first, then splits). This pattern recurred 4 times; never reintroduce `split(";")` without strip-then-split.
+  - **Audit**: `grep -rn "\.split(\";\")\" migrations/ alembic/versions/` on every PR that adds or modifies a migration helper. Both locations must be checked — `migrations/` holds raw SQL files, `alembic/versions/` holds Python wrappers that may load SQL inline.
+
 ---
 
 ### ID Generation Strategy: UUIDv7 + Base32
@@ -146,6 +150,10 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
   - **Verification**: every `optional_*_env` utility must have a regression test asserting it returns `None` when the var is set to `""`.
 
 - **Rule**: `bool_env()` (and any central boolean env parser) MUST accept all four standard truthy sentinels: `"1"`, `"true"`, `"yes"`, `"on"` (case-insensitive). `"on"` is a standard Unix boolean used in Apache configs, K8s manifests, and operator runbooks; omitting it causes silent `False` for any deployment that uses it. When replacing an inline truthy set with the central utility, diff the old set against `bool_env`'s accepted set before deleting the inline version.
+
+- **Rule**: `int_env()`, `float_env()`, `require()` and any other `env.py` helper that calls `sys.exit()` on invalid input MUST be called at **module level** (for constants), in **`__init__`** (for instance config), or in a **boot-only composition root** (e.g. `build_container()` — runs once at process start) — never inside a method that executes per-request or per-task. A misconfigured env var silently passes boot then kills the process on the first invocation with no traceback. Audit: `grep -rnE "int_env|float_env|require\(" src/` on every PR; flag any new call site outside these three permitted contexts. (SRE journal 2026-05-27)
+
+- **Rule**: For parameters where `0`/`0.0` is a valid deliberate operator value (timeouts, scores, thresholds, weights, ports), use `value if value is not None else <fallback>` — **NOT** `value or <fallback>`. The `or` idiom silently treats `0`/`0.0`/`""` as "unset". Reserve `value or <fallback>` only for fields where the falsy value is a programming error (e.g. `batch_size=0`). For timeouts: `0` means fail-fast (`httpx.ReadTimeout`, non-blocking socket); `None` means no timeout. (QA journal 2026-05-19)
 
 ---
 
@@ -229,6 +237,8 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 
 - **Sync-from-async bridge**: when a sync call site (FastAPI `run_in_threadpool` worker thread) must enqueue, wrap the async dispatcher in a sync facade using `anyio.from_thread.run` — valid because `run_in_threadpool` uses `anyio.to_thread.run_sync`. Document this constraint at the facade class. Never call `asyncio.run()` from a thread that is already inside a running event loop.
 
+- **Rule: Every new `@broker.task` function MUST have a top-level `try/except Exception`** that (a) logs `error_type=type(exc).__name__, error=str(exc)` via structlog at `ERROR` level and (b) re-raises. The re-raise ensures TaskIQ marks the task failed so its retry/DLQ logic fires. Tasks that write to DB on failure also update the status row; tasks with no DB state still need the log + re-raise. **Exception:** `ingest_pipeline_task` pre-dates this rule and uses per-phase error handling; its pre-pipeline setup path (container init, registry refresh, claim) is unguarded — accepted as-is until retrofitted (tracked in issue #135). Audit: `grep -n "@broker.task" src/` on every PR; flag **new** decorated functions that lack the wrapper. (SRE journal 2026-05-27)
+
 ---
 
 
@@ -301,6 +311,8 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 - **Rule: Vacuous assertions are banned for wire-shape fields.** `assert "key" in body[X]` passes even when the value at that key is malformed. Tests asserting a request body, ES DSL fragment, or wire payload contains key `X` MUST also assert the **exact value or shape at X** — use `==` against the expected dict, or schema-validate for large structures. Audit grep: `assert ".*" in .*\[.*\]` on a body/DSL target is a smell — promote to a value assertion. (Journal QA 2026-05-19 "Vacuous assertion")
 
 - **Rule: Verify the real object supports the same protocol as its mock.** `MagicMock` auto-generates `__enter__`/`__exit__` and any method; the real object may not. Before mocking, confirm the real class actually supports the used protocol. **httpx-specific:** `httpx.Response` is NOT a context manager (`httpx.Client.stream()` is). Using `with self._http.post(...) as resp:` raises `TypeError` in production while silently passing with any mock. Audit grep: `with self\._http\.post(` anywhere in `src/` is a bug — replace with `resp = self._http.post(...); resp.raise_for_status()`. (Journal QA 2026-05-23)
+
+- **Rule: Use `spec=` or `autospec=True` when mocking DI-injected collaborators.** Bare `MagicMock()` accepts any attribute and any call, so a unit test that passes `broker=MagicMock()` to a service will silently accept `broker.enqueue(...)` even when the real class (`AsyncBroker`) has no `.enqueue()` method — the bug only surfaces at runtime. Every mock of a class that has a defined interface MUST be created as `MagicMock(spec=RealClass)` or via `unittest.mock.create_autospec(RealClass)`. Recurred 3+ times across TaskIQ producer, chat retrieval stubs, and reconciler broker tests.
 
 ---
 
