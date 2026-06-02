@@ -424,6 +424,36 @@ def test_post_rate_limit_returns_429():
     http_mock.post.assert_not_called()
 
 
+def test_post_response_includes_supplied_session():
+    http_mock = MagicMock()
+    http_mock.post.return_value = _post_response()
+    app = _make_app(http_mock=http_mock)
+    with TestClient(app) as client:
+        resp = client.post(
+            "/chatagent/v1",
+            json={"messages": [{"role": "user", "content": "hi"}], "session": "caller-sess"},
+            headers={"X-User-Id": "alice"},
+        )
+    assert resp.status_code == 200
+    assert resp.json()["session"] == "caller-sess"
+
+
+def test_post_response_includes_generated_session_when_absent():
+    http_mock = MagicMock()
+    http_mock.post.return_value = _post_response()
+    app = _make_app(http_mock=http_mock)
+    with TestClient(app) as client:
+        resp = client.post(
+            "/chatagent/v1",
+            json={"messages": [{"role": "user", "content": "hi"}]},
+            headers={"X-User-Id": "alice"},
+        )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "session" in body
+    assert isinstance(body["session"], str) and len(body["session"]) > 0
+
+
 def test_post_missing_messages_gives_422():
     app = _make_app()
     with TestClient(app) as client:

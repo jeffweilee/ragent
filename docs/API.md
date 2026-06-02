@@ -373,6 +373,7 @@ curl -X POST http://localhost:8000/chatagent/v1 \
 ```json
 // 200 OK
 {
+  "session": "01JWTXYZ...",
   "content": "根據所提供的資料，Q3 OKRs 包含...",
   "usage": {"promptTokens": null, "completionTokens": null},
   "model": "gptoss-120b",
@@ -380,6 +381,8 @@ curl -X POST http://localhost:8000/chatagent/v1 \
   "sources": null
 }
 ```
+
+`session` echoes the caller-supplied value or the auto-generated ID for this request — useful when the caller did not provide a session and needs to reference the conversation later.
 
 **Errors:**
 - `429 CHATAGENT_RATE_LIMITED` — rate limit exceeded.

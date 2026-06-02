@@ -157,6 +157,7 @@ def create_chatagent_router(
             logger.info("chatagent.request", user_id=user_id, http_status=200)
             return JSONResponse(
                 {
+                    "session": session_id,
                     "content": messages[0]["content"],
                     "usage": {"promptTokens": None, "completionTokens": None},
                     "model": body.model,
