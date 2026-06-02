@@ -152,3 +152,67 @@ def test_delete_uses_delete_by_query_index_override() -> None:
     )
     plugin.delete("doc99")
     assert es.delete_by_query_calls[0]["index"] == "custom_idx"
+
+
+# T-DEL1.1 — registry-aware delete
+
+
+class _RegistryStub:
+    def __init__(self, stable: str = "chunks_stable", candidate: str | None = None) -> None:
+        self._stable = stable
+        self._candidate = candidate
+
+    @property
+    def stable_index(self) -> str:
+        return self._stable
+
+    @property
+    def candidate_index(self) -> str | None:
+        return self._candidate
+
+
+def test_delete_with_registry_stable_only() -> None:
+    """When registry has no candidate, delete() targets stable_index only."""
+    es = _FakeES()
+    plugin = VectorExtractor(
+        repo=_Repo(), chunks={}, embedder=_FakeEmbedder(), es=es, registry=_RegistryStub()
+    )
+    plugin.delete("doc1")
+    assert len(es.delete_by_query_calls) == 1
+    assert es.delete_by_query_calls[0]["index"] == "chunks_stable"
+    assert es.delete_by_query_calls[0]["query"] == {"term": {"document_id": "doc1"}}
+
+
+def test_delete_with_registry_dual_index() -> None:
+    """During CANDIDATE/CUTOVER, delete() issues one call per live index."""
+    es = _FakeES()
+    plugin = VectorExtractor(
+        repo=_Repo(),
+        chunks={},
+        embedder=_FakeEmbedder(),
+        es=es,
+        registry=_RegistryStub(candidate="chunks_candidate"),
+    )
+    plugin.delete("doc2")
+    assert len(es.delete_by_query_calls) == 2
+    indices = [c["index"] for c in es.delete_by_query_calls]
+    assert indices == ["chunks_stable", "chunks_candidate"]
+    for call in es.delete_by_query_calls:
+        assert call["query"] == {"term": {"document_id": "doc2"}}
+        assert call["conflicts"] == "proceed"
+
+
+def test_delete_registry_takes_precedence_over_index_kwarg() -> None:
+    """When registry is injected, it drives the index list — static index= is ignored for delete."""
+    es = _FakeES()
+    plugin = VectorExtractor(
+        repo=_Repo(),
+        chunks={},
+        embedder=_FakeEmbedder(),
+        es=es,
+        index="old_index",
+        registry=_RegistryStub(),
+    )
+    plugin.delete("doc3")
+    assert len(es.delete_by_query_calls) == 1
+    assert es.delete_by_query_calls[0]["index"] == "chunks_stable"

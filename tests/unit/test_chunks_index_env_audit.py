@@ -100,6 +100,10 @@ def test_composition_threads_es_chunks_index_to_vector_extractor(
         "must pass `index=chunks_index_name` — silently using the default "
         "`'chunks_v1'` would write to the wrong ES index in overridden envs."
     )
+    assert kwargs.get("registry") is not None, (
+        "VectorExtractor must receive registry=embedding_registry (B62 / issue #147) "
+        "so that delete() fans out across stable + candidate indices during lifecycle migration."
+    )
 
 
 def test_composition_threads_es_chunks_index_to_feedback_retriever(

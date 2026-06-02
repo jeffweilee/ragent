@@ -196,6 +196,22 @@ def build_container() -> Container:
 
     rate_limiter = RateLimiter.from_env()
 
+    # B50 T-EM.21 — Embedding-model lifecycle plumbing.
+    # SystemSettingsRepository sits over the same engine as DocumentRepository
+    # (table `system_settings` from migration 009). ActiveModelRegistry caches
+    # the four `embedding.*` rows with a TTL refresh; lifespan startup calls
+    # `await registry.refresh()` so query/ingest paths never see a cold cache.
+    # Constructed before VectorExtractor so that registry= can be injected
+    # (B62 — delete() must fan out across stable + candidate indices during
+    # CANDIDATE/CUTOVER lifecycle; see issue #147).
+    system_settings_repo = SystemSettingsRepository(engine=engine)
+    embedding_registry = ActiveModelRegistry(
+        settings_repo=system_settings_repo,
+        ttl_seconds=_int_env("EMBEDDING_REGISTRY_TTL_SECONDS", 10),
+        chunks_read_alias=chunks_read_alias,
+        chunks_fallback_index=chunks_index_name,
+    )
+
     registry = PluginRegistry()
     registry.register(
         VectorExtractor(
@@ -204,22 +220,11 @@ def build_container() -> Container:
             embedder=embedding_client,
             es=es_client,
             index=chunks_index_name,
+            registry=embedding_registry,
         )
     )
     registry.register(StubGraphExtractor())
 
-    # B50 T-EM.21 — Embedding-model lifecycle plumbing.
-    # SystemSettingsRepository sits over the same engine as DocumentRepository
-    # (table `system_settings` from migration 009). ActiveModelRegistry caches
-    # the four `embedding.*` rows with a TTL refresh; lifespan startup calls
-    # `await registry.refresh()` so query/ingest paths never see a cold cache.
-    system_settings_repo = SystemSettingsRepository(engine=engine)
-    embedding_registry = ActiveModelRegistry(
-        settings_repo=system_settings_repo,
-        ttl_seconds=_int_env("EMBEDDING_REGISTRY_TTL_SECONDS", 10),
-        chunks_read_alias=chunks_read_alias,
-        chunks_fallback_index=chunks_index_name,
-    )
     embedding_lifecycle_service = EmbeddingLifecycleService(
         settings_repo=system_settings_repo,
         es_client=es_client,

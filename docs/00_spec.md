@@ -111,7 +111,7 @@ class ExtractorPlugin(Protocol):
 
 **P1 plugins:** `VectorExtractor` (required, ES bulk), `StubGraphExtractor` (optional, no-op). See §4.4.
 
-**Plugin construction (B17):** the Protocol freezes the **interface** (`extract`, `delete`, `health` plus three attributes) but plugins are **dependency-injected** via their constructor. `VectorExtractor.__init__(repo: DocumentRepository, chunks: dict[str, list[Chunk]], embedder: EmbeddingClient, es: ElasticsearchClient, index: str)` — in v2, composition passes `chunks={}` so `extract()` is a no-op stub (real embedding and ES write done by `DocumentEmbedder` in the Haystack pipeline, §3.2). `ChunkRepository` was dropped in C6. Plugins MUST NOT import `pipelines/` or HTTP layers; they accept their dependencies as constructor args, the registry simply holds the constructed instances.
+**Plugin construction (B17):** the Protocol freezes the **interface** (`extract`, `delete`, `health` plus three attributes) but plugins are **dependency-injected** via their constructor. `VectorExtractor.__init__(repo: DocumentRepository, chunks: dict[str, list[Chunk]], embedder: EmbeddingClient, es: ElasticsearchClient, index: str, registry: _IndexProvider | None)` — in v2, composition passes `chunks={}` so `extract()` is a no-op stub (real embedding and ES write done by `DocumentEmbedder` in the Haystack pipeline, §3.2). `registry` receives `ActiveModelRegistry` so that `delete()` fans out across all live write targets (stable + candidate) during lifecycle migration (B62). `ChunkRepository` was dropped in C6. Plugins MUST NOT import `pipelines/` or HTTP layers; they accept their dependencies as constructor args, the registry simply holds the constructed instances.
 
 **Registry:**
 - `register()` raises `DuplicatePluginError` on name conflict.
@@ -417,7 +417,7 @@ All non-2xx responses use **RFC 9457 Problem Details** (`Content-Type: applicati
 
 | Plugin | `name` | `required` | `queue` | `extract()` | `delete()` | Phase |
 |---|---|:---:|---|---|---|:---:|
-| `VectorExtractor`    | `vector`     | ✓ | `extract.vector` | **v2: no-op** — composition wires `chunks={}`, so `extract()` returns immediately. Real embedding + ES write done by `DocumentEmbedder` (§3.2). Kept as required plugin to preserve Protocol conformance. | `delete_by_query` on `chunks_v1` index by `document_id` field — cleans up all chunk entries for the document regardless of how they were written (issue #135 fix). | **P1** |
+| `VectorExtractor`    | `vector`     | ✓ | `extract.vector` | **v2: no-op** — composition wires `chunks={}`, so `extract()` returns immediately. Real embedding + ES write done by `DocumentEmbedder` (§3.2). Kept as required plugin to preserve Protocol conformance. | `delete_by_query` by `document_id` on every live write target: `registry.stable_index` always; `registry.candidate_index` when not `None` (CANDIDATE/CUTOVER lifecycle). Falls back to static `index` param when `registry=None` (B62 / issue #147). | **P1** |
 | `StubGraphExtractor` | `graph_stub` | — | `extract.graph`  | no-op | no-op | **P1** |
 | `GraphExtractor`     | `graph`      | — | `extract.graph`  | LightRAG → Graph DB upsert | entity GC + ref_count | P3 |
 
