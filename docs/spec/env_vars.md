@@ -72,6 +72,11 @@
 | `LLM_AUTH_HEADER_NAME`                | `Authorization`  | HTTP header name used by `LLMClient`. Same semantics as `EMBEDDING_AUTH_HEADER_NAME`. |
 | `RERANK_AUTH_HEADER_NAME`             | `Authorization`  | HTTP header name used by `RerankClient`. Same semantics as `EMBEDDING_AUTH_HEADER_NAME`. |
 | `HR_API_URL`                          | (future)         | OpenFGA-related role lookup (P2+). |
+| `CHATAGENT_API_URL`                   | (optional)       | POST `/chatagent/v1` proxy endpoint. When unset that route is not registered. |
+| `CHATAGENT_SESSIONLIST_API_URL`       | (optional)       | GET `/chatagent/v1/sessionList` proxy endpoint. When unset that route is not registered. |
+| `CHATAGENT_SESSION_API_URL`           | (optional)       | GET `/chatagent/v1/session` proxy endpoint. When unset that route is not registered. |
+| `CHATAGENT_AP_NAME`                   | `ragent`         | `apName` injected into all outbound chatagent requests. |
+| `CHATAGENT_AUTH`                      | (optional)       | Raw value for the `Authorization` header on all outbound chatagent calls (e.g. `Basic dXNlcjpwYXNz`). **Never logged, never echoed.** |
 | `UNPROTECT_ENABLED`                   | `false`          | When `true`, worker calls the unprotect API before passing `file`/`upload` ingest bytes to the pipeline. `ingest_type=inline` rows are always skipped (content is caller-supplied UTF-8 text). On unprotect failure the worker logs a warning and continues with the original MinIO bytes. |
 | `UNPROTECT_API_URL`                   | (required when enabled) | Full URL of the unprotect endpoint (multipart POST). |
 | `UNPROTECT_APIKEY`                    | (required when enabled) | Raw JWT (no `Bearer` prefix) sent as `apikey` request header. **Never logged, never echoed.** |
@@ -141,6 +146,7 @@
 | `MINIO_GET_RETRY_DELAY_SECONDS`       | `2.0`            | sleep between `get_object()` retry attempts (seconds). |
 | `MINIO_PUT_TIMEOUT_SECONDS`           | `60`             | router upload to staging. |
 | `LLM_TIMEOUT_SECONDS`                 | `120`            | `LLMClient.{chat\|stream}`. |
+| `CHATAGENT_TIMEOUT_SECONDS`           | `30`             | per-call timeout for all chatagent proxy HTTP calls. |
 | `PLUGIN_FAN_OUT_TIMEOUT_SECONDS`      | `60`             | per-plugin `extract`/`delete` ceiling (§3.3). |
 | `READYZ_PROBE_TIMEOUT_SECONDS`        | `2`              | per-dependency `/readyz` probe budget (§4.1). |
 | `UNPROTECT_TIMEOUT_SECONDS`           | `30`             | per-call budget for the unprotect API POST (when `UNPROTECT_ENABLED=true`). |

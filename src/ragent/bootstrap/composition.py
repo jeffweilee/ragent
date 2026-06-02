@@ -55,6 +55,13 @@ class Container:
     # inbound JWT verification. ``None`` for non-JWT auth modes (none /
     # user_header); set for jwt_header / jwt_prefer_header.
     auth_token_manager: Any = None
+    # T-CA — chatagent proxy config. URLs are None when env vars are unset; the
+    # app only registers routes whose URLs are configured.
+    chatagent_api_url: str | None = None
+    chatagent_sessionlist_api_url: str | None = None
+    chatagent_session_api_url: str | None = None
+    chatagent_ap_name: str = "ragent"
+    chatagent_auth: str | None = None
 
 
 def build_container() -> Container:
@@ -327,6 +334,12 @@ def build_container() -> Container:
             verify_exp=_bool_env("RAGENT_JWT_VERIFY_EXP", True),
         )
 
+    chatagent_api_url = os.environ.get("CHATAGENT_API_URL") or None
+    chatagent_sessionlist_api_url = os.environ.get("CHATAGENT_SESSIONLIST_API_URL") or None
+    chatagent_session_api_url = os.environ.get("CHATAGENT_SESSION_API_URL") or None
+    chatagent_ap_name = os.environ.get("CHATAGENT_AP_NAME", "ragent")
+    chatagent_auth = os.environ.get("CHATAGENT_AUTH") or None
+
     return Container(
         token_managers=(llm_tm, embedding_tm, rerank_tm),
         embedding_client=embedding_client,
@@ -358,6 +371,11 @@ def build_container() -> Container:
         ingest_upload_max_bytes=inline_max_bytes,
         excerpt_max_chars=excerpt_max_chars,
         auth_token_manager=auth_token_manager,
+        chatagent_api_url=chatagent_api_url,
+        chatagent_sessionlist_api_url=chatagent_sessionlist_api_url,
+        chatagent_session_api_url=chatagent_session_api_url,
+        chatagent_ap_name=chatagent_ap_name,
+        chatagent_auth=chatagent_auth,
     )
 
 

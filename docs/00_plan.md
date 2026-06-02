@@ -252,3 +252,23 @@
 | T-MCP2.2 | Behavioral | • **Achieve:** `tools/call retrieve` response `content[0].text` is `[資料來源 #N]`-formatted text, not a JSON blob.<br>• **Deliver:** `tests/unit/test_mcp_tools_call_retrieve.py::test_tools_call_retrieve_text_format_*` (numbered sources, metadata header, empty result, excerpt truncation). Update existing JSON-parse tests to match new format. | [x] | Dev |
 | T-MCP2.3 | Behavioral | • **Achieve:** Header metadata fields (source_app, document_id, source_title) have CR/LF stripped to prevent injection of fake `[資料來源 #N]` header lines.<br>• **Deliver:** `tests/unit/test_mcp_tools_call_retrieve.py::test_tools_call_retrieve_sanitizes_newlines_in_header_metadata`; `_header_field()` helper in `routers/mcp.py`; integration test contract updated to `[資料來源 #N]` text format. | [x] | Dev |
 
+
+
+---
+
+## Track T-CA — ChatAgent Proxy Endpoints
+
+> Three proxy endpoints under `/chatagent/v1` that forward to external services.
+> All share `CHATAGENT_AUTH` outbound header and `CHATAGENT_AP_NAME` config.
+> Each route is conditionally registered based on its URL env var.
+
+| # | Category | Task | Status | Owner |
+|---|---|---|:---:|---|
+| T-CA.S1 | Structural | • **Achieve:** `CHATAGENT_UPSTREAM_ERROR`, `CHATAGENT_TIMEOUT`, `CHATAGENT_RATE_LIMITED` in `HttpErrorCode`.<br>• **Deliver:** `src/ragent/errors/codes.py`. | [x] | Dev |
+| T-CA.S2 | Structural | • **Achieve:** `ChatAgentRequest(ChatRequest)` with optional `session: str \| None`.<br>• **Deliver:** `src/ragent/schemas/chatagent.py`; `tests/unit/test_chatagent_schema.py`. | [x] | Dev |
+| T-CA.R1 | Behavioral | • **Achieve:** `POST /chatagent/v1` proxies to `CHATAGENT_API_URL`; JWT sub, session generation, rate limiting, error mapping.<br>• **Deliver:** `src/ragent/routers/chatagent.py::create_chatagent_router`; `tests/unit/test_chatagent_router.py` POST tests. | [x] | Dev |
+| T-CA.R2 | Behavioral | • **Achieve:** `GET /chatagent/v1/sessionList` proxies to `CHATAGENT_SESSIONLIST_API_URL`; injects user/apName.<br>• **Deliver:** route in `chatagent.py`; GET sessionList unit tests. | [x] | Dev |
+| T-CA.R3 | Behavioral | • **Achieve:** `GET /chatagent/v1/session` proxies to `CHATAGENT_SESSION_API_URL`; injects user/apName/session.<br>• **Deliver:** route in `chatagent.py`; GET session unit tests. | [x] | Dev |
+| T-CA.I1 | Behavioral | • **Achieve:** Routes registered conditionally by URL env var; integration tests via TestClient + mocked httpx.<br>• **Deliver:** `tests/integration/test_chatagent_endpoint.py`. | [x] | Dev |
+| T-CA.W1 | Behavioral | • **Achieve:** Composition root reads 5 new env vars; app.py registers router when any URL is set.<br>• **Deliver:** `composition.py` Container fields + build_container(); `app.py` registration block. | [x] | Dev |
+| T-CA.D1 | Structural | • **Achieve:** All new env vars documented (B28); API.md + third-party API doc updated.<br>• **Deliver:** `docs/spec/env_vars.md`, `docs/API.md`, `docs/00_rule_third_party_api.md`. | [x] | Dev |

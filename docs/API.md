@@ -347,6 +347,109 @@ Error events:
 
 ---
 
+## ChatAgent
+
+Three proxy endpoints under `/chatagent/v1` that forward requests to external services. All three share the same `Authorization: <CHATAGENT_AUTH>` outbound header and `apName` config. Each is only registered when its URL env var is set.
+
+### `POST /chatagent/v1` — Chat via external agent service
+
+Accepts the same request body as `/chat/v1` plus an optional `session` field. Forwards to `CHATAGENT_API_URL` instead of running the internal RAG pipeline.
+
+**Additional request field:**
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `session` | string\|null | `null` | Session ID forwarded to the chatagent service. When absent, a new ID is generated per request. |
+
+`user` (`sub` claim from inbound JWT, fallback to `user_id`) and `userToken` (raw JWT) are injected server-side.
+
+```bash
+curl -X POST http://localhost:8000/chatagent/v1 \
+  -H "Content-Type: application/json" \
+  -H "X-Auth-Token: <jwt>" \
+  -d '{"messages": [{"role": "user", "content": "What are our Q3 OKRs?"}]}'
+```
+
+```json
+// 200 OK
+{
+  "content": "根據所提供的資料，Q3 OKRs 包含...",
+  "usage": {"promptTokens": null, "completionTokens": null},
+  "model": "gptoss-120b",
+  "provider": "openai",
+  "sources": null
+}
+```
+
+**Errors:**
+- `429 CHATAGENT_RATE_LIMITED` — rate limit exceeded.
+- `502 CHATAGENT_UPSTREAM_ERROR` — external service returned non-96200 `returnCode`, empty messages, HTTP error, or non-JSON body.
+- `504 CHATAGENT_TIMEOUT` — external service did not respond within `CHATAGENT_TIMEOUT_SECONDS`.
+
+### `GET /chatagent/v1/sessionList` — List chat sessions
+
+Proxies to `CHATAGENT_SESSIONLIST_API_URL`. `user` and `apName` are injected server-side.
+
+**Query parameters:**
+
+| Parameter | Required | Description |
+|---|---|---|
+| `startTime` | No | Filter start time (ISO 8601, e.g. `2025-05-01T06:48:55.617Z`) |
+| `endTime` | No | Filter end time (ISO 8601) |
+
+```bash
+curl "http://localhost:8000/chatagent/v1/sessionList?startTime=2025-05-01T00:00:00.000Z" \
+  -H "X-Auth-Token: <jwt>"
+```
+
+```json
+// 200 OK
+{
+  "totalCount": 3,
+  "sessions": [
+    {"apName": "ragent", "user": "alice", "session": "abc123", "updateTime": "...", "sessionName": "Q3 OKR chat"}
+  ]
+}
+```
+
+### `GET /chatagent/v1/session` — Get session detail
+
+Proxies to `CHATAGENT_SESSION_API_URL`. `user` and `apName` are injected server-side.
+
+**Query parameters:**
+
+| Parameter | Required | Description |
+|---|---|---|
+| `session` | Yes | Session ID to retrieve |
+
+```bash
+curl "http://localhost:8000/chatagent/v1/session?session=abc123" \
+  -H "X-Auth-Token: <jwt>"
+```
+
+```json
+// 200 OK
+{
+  "_id": "...",
+  "apName": "ragent",
+  "user": "alice",
+  "session": "abc123",
+  "sessionName": "Q3 OKR chat",
+  "sessionStatus": "active",
+  "messages": [
+    {
+      "session": "abc123", "apName": "ragent", "user": "alice",
+      "messageId": "...", "role": "user", "content": "What are the OKRs?",
+      "createTime": "2025-05-01T06:48:55.617Z", "updateTime": "2025-05-01T06:48:55.617Z"
+    }
+  ],
+  "createTime": "2025-05-01T06:48:55.617Z",
+  "updateTime": "2025-05-01T06:48:55.617Z"
+}
+```
+
+---
+
 ## Retrieve
 
 ### `POST /retrieve/v1` — Retrieve chunks without LLM

@@ -169,4 +169,94 @@ Content-Type: multipart/form-data; boundary=<httpx-generated>
 > **Field-name pins (per 2026-05-11 journal rule):** `fileInput`, `delegatedUser`, `apikey` are the exact wire names — do not rename in client code or test mocks.
 
 
+#### Chatagent API
+
+**Endpoint:** `CHATAGENT_API_URL` (no default — route disabled when unset)
+**Method:** POST | **Auth header:** `Authorization: <CHATAGENT_AUTH>` (raw value; omitted when `CHATAGENT_AUTH` is unset)
+**Timeout:** `CHATAGENT_TIMEOUT_SECONDS` (default: 30s) | **Retry:** none
+
+**Request:**
+```json
+{
+  "metadata": {
+    "apName": "<CHATAGENT_AP_NAME>",
+    "session": "<session from request body, or generated UUIDv7-based ID>",
+    "user": "<sub claim from inbound JWT, fallback to user_id>",
+    "userToken": "<raw JWT from RAGENT_JWT_HEADER header, or empty string>"
+  },
+  "inputData": {
+    "message": "<last user-role message from ChatAgentRequest.messages>"
+  },
+  "stream": false
+}
+```
+
+**Response:**
+```json
+{
+  "returnCode": 96200,
+  "returnData": {
+    "messages": [
+      {"role": "assistant", "content": "<response text>", "message_id": "<id>"}
+    ]
+  }
+}
+```
+
+> **Field-name pins:** `metadata`, `apName`, `session`, `user`, `userToken`, `inputData`, `message`, `stream`, `returnCode`, `returnData`, `messages`, `role`, `content`, `message_id` are the exact wire names.
+
+> **Error mapping:** `returnCode ≠ 96200` → 502 `CHATAGENT_UPSTREAM_ERROR`; `returnData.messages` empty → 502; HTTP timeout → 504 `CHATAGENT_TIMEOUT`; other HTTP/network error → 502 `CHATAGENT_UPSTREAM_ERROR`.
+
+---
+
+#### Chatagent SessionList API
+
+**Endpoint:** `CHATAGENT_SESSIONLIST_API_URL` (no default — route disabled when unset)
+**Method:** GET | **Auth header:** `Authorization: <CHATAGENT_AUTH>`
+**Timeout:** `CHATAGENT_TIMEOUT_SECONDS` (default: 30s)
+
+**Outbound query params:** `user=<user_id>`, `apName=<CHATAGENT_AP_NAME>`, `startTime=<caller_value>` (if present), `endTime=<caller_value>` (if present)
+
+**Response** (passed through as-is):
+```json
+{
+  "totalCount": 3,
+  "sessions": [
+    {"apName": "xxx", "user": "xxx", "session": "xxx", "updateTime": "xxx", "sessionName": "xxx"}
+  ]
+}
+```
+
+> **Field-name pins:** `totalCount`, `sessions`, `apName`, `user`, `session`, `updateTime`, `sessionName` are the exact wire names.
+
+---
+
+#### Chatagent Session API
+
+**Endpoint:** `CHATAGENT_SESSION_API_URL` (no default — route disabled when unset)
+**Method:** GET | **Auth header:** `Authorization: <CHATAGENT_AUTH>`
+**Timeout:** `CHATAGENT_TIMEOUT_SECONDS` (default: 30s)
+
+**Outbound query params:** `user=<user_id>`, `apName=<CHATAGENT_AP_NAME>`, `session=<caller_value>`
+
+**Response** (passed through as-is):
+```json
+{
+  "_id": "xxx", "apName": "xxx", "user": "xxx", "session": "xxx",
+  "sessionName": "xxx", "sessionStatus": "xxx",
+  "messages": [
+    {
+      "session": "xxx", "apName": "xxx", "user": "xxx", "messageId": "xxx",
+      "role": "user|assistant", "content": "xxx",
+      "createTime": "2025-05-01T06:48:55.617Z", "updateTime": "2025-05-01T06:48:55.617Z"
+    }
+  ],
+  "createTime": "2025-05-01T06:48:55.617Z", "updateTime": "2025-05-01T06:48:55.617Z"
+}
+```
+
+> **Field-name pins:** `_id`, `apName`, `user`, `session`, `sessionName`, `sessionStatus`, `messages`, `messageId`, `role`, `content`, `createTime`, `updateTime` are the exact wire names.
+
+---
+
 > **P2 API contracts** (HR API, OpenFGA API) are referenced in `docs/00_spec.md §3.5` (PermissionClient/OpenFGA) and `§4.5` (Third-Party Client Catalog). Verify request/response field names against those samples before implementing any P2 client — field-name drift is a runtime `KeyError` hidden by unit-test mocks.

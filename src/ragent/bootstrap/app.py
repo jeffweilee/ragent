@@ -29,11 +29,13 @@ from ragent.middleware.logging import SCOPE_USER_ID_KEY, RequestLoggingMiddlewar
 from ragent.routers.admin_embedding import create_router as create_admin_embedding_router
 from ragent.routers.admin_ingest import create_router as create_upload_ingest_router
 from ragent.routers.chat import create_chat_router
+from ragent.routers.chatagent import create_chatagent_router
 from ragent.routers.feedback import create_feedback_router
 from ragent.routers.health import create_health_router
 from ragent.routers.ingest import create_router as create_ingest_router
 from ragent.routers.mcp import create_mcp_router
 from ragent.routers.retrieve import create_retrieve_router
+from ragent.utility.env import float_env as _float_env
 from ragent.utility.env import list_env as _list_env
 from ragent.utility.env import str_env
 
@@ -422,6 +424,28 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
             excerpt_max_chars=container.excerpt_max_chars,
         )
     )
+    if any(
+        [
+            container.chatagent_api_url,
+            container.chatagent_sessionlist_api_url,
+            container.chatagent_session_api_url,
+        ]
+    ):
+        app.include_router(
+            create_chatagent_router(
+                http_client=container.http,
+                chatagent_ap_name=container.chatagent_ap_name,
+                chatagent_auth=container.chatagent_auth,
+                chatagent_api_url=container.chatagent_api_url,
+                chatagent_sessionlist_api_url=container.chatagent_sessionlist_api_url,
+                chatagent_session_api_url=container.chatagent_session_api_url,
+                rate_limiter=container.rate_limiter,
+                rate_limit=container.rate_limit,
+                rate_limit_window=container.rate_limit_window,
+                jwt_header=str_env("RAGENT_JWT_HEADER", _DEFAULT_JWT_HEADER),
+                timeout=_float_env("CHATAGENT_TIMEOUT_SECONDS", 30.0),
+            )
+        )
     if container.feedback_hmac_secret is not None:
         app.include_router(
             create_feedback_router(

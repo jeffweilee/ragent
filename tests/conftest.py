@@ -33,14 +33,14 @@ from joserfc import jwt as _joserfc_jwt
 from joserfc.jwk import KeySet as _KeySet
 from joserfc.jwk import RSAKey as _RSAKey
 
-# Pre-import ragent.workers.ingest so its @broker.task decorators bind to
+# Pre-import all worker modules so their @broker.task decorators bind to
 # the real broker before any test can monkeypatch
 # ragent.bootstrap.broker.broker. Without this, a test that patches that
-# attribute and then triggers the first-time import of the worker module
-# (e.g. via ragent.reconciler._build_from_env) replaces
-# ingest_pipeline_task with a MagicMock and leaks that replacement into
-# every later test in the run. Invariant pinned by
-# tests/unit/test_worker_decoration_invariant.py.
+# attribute and then triggers the first-time import of a worker module
+# (e.g. via ragent.reconciler._build_from_env) replaces the task with a
+# MagicMock and leaks that replacement into every later test in the run.
+# Invariant pinned by tests/unit/test_worker_decoration_invariant.py.
+import ragent.workers.backfill  # noqa: E402, F401
 import ragent.workers.ingest  # noqa: E402, F401
 
 _OIDC_DOMAIN = "ragent-test.example"
