@@ -403,7 +403,7 @@ curl -X POST http://localhost:8000/chatagent/v2 \
 
 The response `Content-Type` is forwarded from the upstream response (e.g. `application/json`, `text/event-stream`). Upstream errors before the first byte return `502`/`504` — not `200` with an empty body.
 
-Errors: `429 CHATAGENT_RATE_LIMITED` · `502 CHATAGENT_UPSTREAM_ERROR` · `504 CHATAGENT_TIMEOUT`.
+Errors: `429 CHATAGENT_RATE_LIMITED` · `502 CHATAGENT_UPSTREAM_ERROR` · `504 CHATAGENT_TIMEOUT`. Request timeout defaults to `CHATAGENT_TIMEOUT_SECONDS` (default 30 s).
 
 ---
 

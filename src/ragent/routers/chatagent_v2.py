@@ -104,9 +104,10 @@ def create_chatagent_v2_router(
                     chatagent_api_url,
                     json=upstream_payload,
                     headers=_headers,
+                    timeout=timeout,
                 )
                 resp = await run_in_threadpool(
-                    http_client.send, req, stream=body.stream, timeout=timeout
+                    http_client.send, req, stream=body.stream
                 )
                 resp.raise_for_status()
             except httpx.TimeoutException:
