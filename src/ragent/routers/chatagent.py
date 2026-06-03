@@ -16,7 +16,7 @@ from ragent.auth.deps import get_user_id
 from ragent.clients.rate_limiter import RateLimiter
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
-from ragent.schemas.chatagent import ChatAgentRequest
+from ragent.schemas.chatagent import ChatAgentRequest, SessionDeleteRequest, SessionRenameRequest
 from ragent.utility.id_gen import new_id
 
 logger = structlog.get_logger(__name__)
@@ -164,6 +164,27 @@ def create_chatagent_router(
             return _upstream_error()
         return JSONResponse(payload)
 
+    async def _proxy_write(method: str, url: str, payload: dict, log_prefix: str) -> Response:
+        try:
+            resp = await run_in_threadpool(
+                http_client.request,
+                method,
+                url,
+                json=payload,
+                headers=_headers,
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+            if resp.status_code == 204 or not resp.content:
+                return Response(status_code=resp.status_code)
+            return JSONResponse(resp.json())
+        except httpx.TimeoutException:
+            logger.warning("chatagent.proxy.timeout", route=log_prefix, http_status=504)
+            return _timeout_error()
+        except (httpx.HTTPStatusError, httpx.RequestError, ValueError):
+            logger.warning("chatagent.proxy.upstream_error", route=log_prefix, http_status=502)
+            return _upstream_error()
+
     if chatagent_sessionlist_api_url is not None:
 
         @router.get("/sessionList")
@@ -190,5 +211,36 @@ def create_chatagent_router(
             user_id = x_user_id or "anonymous"
             params = {"user": user_id, "apName": chatagent_ap_name, "session": session}
             return await _proxy_get(chatagent_session_api_url, params, "session")
+
+        @router.put("/session")
+        async def chatagent_session_rename(
+            body: SessionRenameRequest,
+            x_user_id: Annotated[str | None, Depends(get_user_id)] = None,
+        ) -> Response:
+            user_id = x_user_id or "anonymous"
+            return await _proxy_write(
+                "PUT",
+                chatagent_session_api_url,
+                {
+                    "session": body.session,
+                    "sessionName": body.sessionName,
+                    "apName": chatagent_ap_name,
+                    "user": user_id,
+                },
+                "session.rename",
+            )
+
+        @router.delete("/session")
+        async def chatagent_session_delete(
+            body: SessionDeleteRequest,
+            x_user_id: Annotated[str | None, Depends(get_user_id)] = None,
+        ) -> Response:
+            user_id = x_user_id or "anonymous"
+            return await _proxy_write(
+                "DELETE",
+                chatagent_session_api_url,
+                {"session": body.session, "apName": chatagent_ap_name, "user": user_id},
+                "session.delete",
+            )
 
     return router

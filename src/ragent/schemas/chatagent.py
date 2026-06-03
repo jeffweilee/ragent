@@ -16,6 +16,17 @@ class ChatAgentRequest(ChatRequest):
     session: str | None = None
 
 
+class SessionRenameRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    session: str
+    sessionName: str
+
+
+class SessionDeleteRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    session: str
+
+
 class ChatAgentV2Metadata(BaseModel):
     model_config = ConfigDict(extra="forbid")
     session: str | None = None

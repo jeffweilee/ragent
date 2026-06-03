@@ -729,3 +729,345 @@ def test_only_post_registered_when_only_chatagent_url_set():
         assert r.status_code == 200
         assert client.get("/chatagent/v1/sessionList").status_code == 404
         assert client.get("/chatagent/v1/session").status_code == 404
+
+
+# ===========================================================================
+# PUT /chatagent/v1/session
+# ===========================================================================
+
+
+def test_session_rename_returns_upstream_json():
+    upstream_body = {"returnCode": 96200, "returnData": {"session": "s1", "sessionName": "new"}}
+    http_mock = MagicMock(spec=httpx.Client)
+    http_mock.request.return_value = _get_response(upstream_body)
+    app = _make_app(http_mock=http_mock)
+    with TestClient(app) as client:
+        r = client.put(
+            "/chatagent/v1/session",
+            json={"session": "s1", "sessionName": "new"},
+            headers={"X-User-Id": "alice"},
+        )
+    assert r.status_code == 200
+    assert r.json() == upstream_body
+
+
+def test_session_rename_injects_user_and_apname():
+    http_mock = MagicMock(spec=httpx.Client)
+    http_mock.request.return_value = _get_response({"ok": True})
+    app = _make_app(http_mock=http_mock, chatagent_ap_name="RenAP")
+    with TestClient(app) as client:
+        client.put(
+            "/chatagent/v1/session",
+            json={"session": "s1", "sessionName": "chat"},
+            headers={"X-User-Id": "bob"},
+        )
+    call_args = http_mock.request.call_args
+    assert call_args[0][0] == "PUT"
+    payload = call_args[1]["json"]
+    assert payload["user"] == "bob"
+    assert payload["apName"] == "RenAP"
+    assert payload["session"] == "s1"
+    assert payload["sessionName"] == "chat"
+
+
+def test_session_rename_missing_session_gives_422():
+    app = _make_app()
+    with TestClient(app) as client:
+        r = client.put(
+            "/chatagent/v1/session",
+            json={"sessionName": "chat"},
+            headers={"X-User-Id": "alice"},
+        )
+    assert r.status_code == 422
+
+
+def test_session_rename_missing_session_name_gives_422():
+    app = _make_app()
+    with TestClient(app) as client:
+        r = client.put(
+            "/chatagent/v1/session",
+            json={"session": "s1"},
+            headers={"X-User-Id": "alice"},
+        )
+    assert r.status_code == 422
+
+
+def test_session_rename_auth_header_forwarded():
+    http_mock = MagicMock(spec=httpx.Client)
+    http_mock.request.return_value = _get_response({"ok": True})
+    app = _make_app(http_mock=http_mock, chatagent_auth="Basic xyz")
+    with TestClient(app) as client:
+        client.put(
+            "/chatagent/v1/session",
+            json={"session": "s1", "sessionName": "chat"},
+            headers={"X-User-Id": "alice"},
+        )
+    headers_sent = http_mock.request.call_args[1]["headers"]
+    assert headers_sent.get("Authorization") == "Basic xyz"
+
+
+def test_session_rename_timeout_gives_504():
+    http_mock = MagicMock(spec=httpx.Client)
+    http_mock.request.side_effect = httpx.TimeoutException("timeout")
+    app = _make_app(http_mock=http_mock)
+    with TestClient(app) as client:
+        r = client.put(
+            "/chatagent/v1/session",
+            json={"session": "s1", "sessionName": "chat"},
+            headers={"X-User-Id": "alice"},
+        )
+    assert r.status_code == 504
+    assert r.json()["error_code"] == HttpErrorCode.CHATAGENT_TIMEOUT
+
+
+def test_session_rename_upstream_error_gives_502():
+    http_mock = MagicMock(spec=httpx.Client)
+    http_mock.request.return_value = MagicMock(
+        raise_for_status=MagicMock(
+            side_effect=httpx.HTTPStatusError("err", request=MagicMock(), response=MagicMock())
+        )
+    )
+    app = _make_app(http_mock=http_mock)
+    with TestClient(app) as client:
+        r = client.put(
+            "/chatagent/v1/session",
+            json={"session": "s1", "sessionName": "chat"},
+            headers={"X-User-Id": "alice"},
+        )
+    assert r.status_code == 502
+    assert r.json()["error_code"] == HttpErrorCode.CHATAGENT_UPSTREAM_ERROR
+
+
+def test_session_rename_connect_error_gives_502():
+    http_mock = MagicMock(spec=httpx.Client)
+    http_mock.request.side_effect = httpx.ConnectError("refused")
+    app = _make_app(http_mock=http_mock)
+    with TestClient(app) as client:
+        r = client.put(
+            "/chatagent/v1/session",
+            json={"session": "s1", "sessionName": "chat"},
+            headers={"X-User-Id": "alice"},
+        )
+    assert r.status_code == 502
+    assert r.json()["error_code"] == HttpErrorCode.CHATAGENT_UPSTREAM_ERROR
+
+
+def test_session_rename_malformed_json_gives_502():
+    http_mock = MagicMock(spec=httpx.Client)
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status.return_value = None
+    mock_resp.json.side_effect = ValueError("not json")
+    http_mock.request.return_value = mock_resp
+    app = _make_app(http_mock=http_mock)
+    with TestClient(app) as client:
+        r = client.put(
+            "/chatagent/v1/session",
+            json={"session": "s1", "sessionName": "chat"},
+            headers={"X-User-Id": "alice"},
+        )
+    assert r.status_code == 502
+    assert r.json()["error_code"] == HttpErrorCode.CHATAGENT_UPSTREAM_ERROR
+
+
+def test_session_rename_no_content_204_returns_204():
+    http_mock = MagicMock(spec=httpx.Client)
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status.return_value = None
+    mock_resp.status_code = 204
+    mock_resp.content = b""
+    http_mock.request.return_value = mock_resp
+    app = _make_app(http_mock=http_mock)
+    with TestClient(app) as client:
+        r = client.put(
+            "/chatagent/v1/session",
+            json={"session": "s1", "sessionName": "chat"},
+            headers={"X-User-Id": "alice"},
+        )
+    assert r.status_code == 204
+
+
+def test_session_rename_not_registered_when_session_url_none():
+    from ragent.routers.chatagent import create_chatagent_router
+
+    http_mock = MagicMock(spec=httpx.Client)
+    app = FastAPI()
+    router = create_chatagent_router(
+        http_client=http_mock,
+        chatagent_ap_name="AP",
+        chatagent_api_url=None,
+        chatagent_sessionlist_api_url=None,
+        chatagent_session_api_url=None,
+    )
+    app.include_router(router)
+    with TestClient(app) as client:
+        assert client.put("/chatagent/v1/session", json={}).status_code == 404
+
+
+# ===========================================================================
+# DELETE /chatagent/v1/session
+# ===========================================================================
+
+
+def test_session_delete_returns_upstream_json():
+    upstream_body = {"returnCode": 96200, "returnData": {}}
+    http_mock = MagicMock(spec=httpx.Client)
+    http_mock.request.return_value = _get_response(upstream_body)
+    app = _make_app(http_mock=http_mock)
+    with TestClient(app) as client:
+        r = client.request(
+            "DELETE",
+            "/chatagent/v1/session",
+            json={"session": "s1"},
+            headers={"X-User-Id": "alice"},
+        )
+    assert r.status_code == 200
+    assert r.json() == upstream_body
+
+
+def test_session_delete_injects_user_and_apname():
+    http_mock = MagicMock(spec=httpx.Client)
+    http_mock.request.return_value = _get_response({"ok": True})
+    app = _make_app(http_mock=http_mock, chatagent_ap_name="DelAP")
+    with TestClient(app) as client:
+        client.request(
+            "DELETE",
+            "/chatagent/v1/session",
+            json={"session": "s1"},
+            headers={"X-User-Id": "carol"},
+        )
+    call_args = http_mock.request.call_args
+    assert call_args[0][0] == "DELETE"
+    payload = call_args[1]["json"]
+    assert payload["user"] == "carol"
+    assert payload["apName"] == "DelAP"
+    assert payload["session"] == "s1"
+
+
+def test_session_delete_missing_session_gives_422():
+    app = _make_app()
+    with TestClient(app) as client:
+        r = client.request(
+            "DELETE",
+            "/chatagent/v1/session",
+            json={},
+            headers={"X-User-Id": "alice"},
+        )
+    assert r.status_code == 422
+
+
+def test_session_delete_auth_header_forwarded():
+    http_mock = MagicMock(spec=httpx.Client)
+    http_mock.request.return_value = _get_response({"ok": True})
+    app = _make_app(http_mock=http_mock, chatagent_auth="Basic xyz")
+    with TestClient(app) as client:
+        client.request(
+            "DELETE",
+            "/chatagent/v1/session",
+            json={"session": "s1"},
+            headers={"X-User-Id": "alice"},
+        )
+    headers_sent = http_mock.request.call_args[1]["headers"]
+    assert headers_sent.get("Authorization") == "Basic xyz"
+
+
+def test_session_delete_timeout_gives_504():
+    http_mock = MagicMock(spec=httpx.Client)
+    http_mock.request.side_effect = httpx.TimeoutException("timeout")
+    app = _make_app(http_mock=http_mock)
+    with TestClient(app) as client:
+        r = client.request(
+            "DELETE",
+            "/chatagent/v1/session",
+            json={"session": "s1"},
+            headers={"X-User-Id": "alice"},
+        )
+    assert r.status_code == 504
+    assert r.json()["error_code"] == HttpErrorCode.CHATAGENT_TIMEOUT
+
+
+def test_session_delete_upstream_error_gives_502():
+    http_mock = MagicMock(spec=httpx.Client)
+    http_mock.request.return_value = MagicMock(
+        raise_for_status=MagicMock(
+            side_effect=httpx.HTTPStatusError("err", request=MagicMock(), response=MagicMock())
+        )
+    )
+    app = _make_app(http_mock=http_mock)
+    with TestClient(app) as client:
+        r = client.request(
+            "DELETE",
+            "/chatagent/v1/session",
+            json={"session": "s1"},
+            headers={"X-User-Id": "alice"},
+        )
+    assert r.status_code == 502
+    assert r.json()["error_code"] == HttpErrorCode.CHATAGENT_UPSTREAM_ERROR
+
+
+def test_session_delete_connect_error_gives_502():
+    http_mock = MagicMock(spec=httpx.Client)
+    http_mock.request.side_effect = httpx.ConnectError("refused")
+    app = _make_app(http_mock=http_mock)
+    with TestClient(app) as client:
+        r = client.request(
+            "DELETE",
+            "/chatagent/v1/session",
+            json={"session": "s1"},
+            headers={"X-User-Id": "alice"},
+        )
+    assert r.status_code == 502
+    assert r.json()["error_code"] == HttpErrorCode.CHATAGENT_UPSTREAM_ERROR
+
+
+def test_session_delete_malformed_json_gives_502():
+    http_mock = MagicMock(spec=httpx.Client)
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status.return_value = None
+    mock_resp.json.side_effect = ValueError("not json")
+    http_mock.request.return_value = mock_resp
+    app = _make_app(http_mock=http_mock)
+    with TestClient(app) as client:
+        r = client.request(
+            "DELETE",
+            "/chatagent/v1/session",
+            json={"session": "s1"},
+            headers={"X-User-Id": "alice"},
+        )
+    assert r.status_code == 502
+    assert r.json()["error_code"] == HttpErrorCode.CHATAGENT_UPSTREAM_ERROR
+
+
+def test_session_delete_no_content_204_returns_204():
+    http_mock = MagicMock(spec=httpx.Client)
+    mock_resp = MagicMock()
+    mock_resp.raise_for_status.return_value = None
+    mock_resp.status_code = 204
+    mock_resp.content = b""
+    http_mock.request.return_value = mock_resp
+    app = _make_app(http_mock=http_mock)
+    with TestClient(app) as client:
+        r = client.request(
+            "DELETE",
+            "/chatagent/v1/session",
+            json={"session": "s1"},
+            headers={"X-User-Id": "alice"},
+        )
+    assert r.status_code == 204
+
+
+def test_session_delete_not_registered_when_session_url_none():
+    from ragent.routers.chatagent import create_chatagent_router
+
+    http_mock = MagicMock(spec=httpx.Client)
+    app = FastAPI()
+    router = create_chatagent_router(
+        http_client=http_mock,
+        chatagent_ap_name="AP",
+        chatagent_api_url=None,
+        chatagent_sessionlist_api_url=None,
+        chatagent_session_api_url=None,
+    )
+    app.include_router(router)
+    with TestClient(app) as client:
+        r = client.request("DELETE", "/chatagent/v1/session", json={})
+        assert r.status_code == 404
