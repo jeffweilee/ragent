@@ -138,6 +138,41 @@ def test_non_streaming_server_fields_overwrite_caller_metadata():
     assert payload["metadata"]["userToken"] == "real-tok"
 
 
+def test_non_streaming_non_dict_metadata_is_ignored():
+    """Non-dict metadata (string, list, etc.) is treated as absent — no 500."""
+    app, http_mock = _make_app()
+    http_mock.send.return_value = _resp_mock(b"{}")
+
+    with TestClient(app) as client:
+        r = client.post(
+            "/chatagent/v2",
+            json={"metadata": "not-a-dict"},
+            headers={"X-User-Id": "alice"},
+        )
+
+    assert r.status_code == 200
+    payload = http_mock.build_request.call_args.kwargs["json"]
+    assert payload["metadata"]["apName"] == "TestAP"
+    assert payload["metadata"]["session"]  # auto-generated
+
+
+def test_non_streaming_string_stream_false_not_treated_as_streaming():
+    """stream='false' (string) must not trigger the streaming path."""
+    app, http_mock = _make_app()
+    http_mock.send.return_value = _resp_mock(b"{}")
+
+    with TestClient(app) as client:
+        r = client.post(
+            "/chatagent/v2",
+            json={"inputData": {"message": "hi"}, "stream": "false"},
+            headers={"X-User-Id": "alice"},
+        )
+
+    assert r.status_code == 200
+    payload = http_mock.build_request.call_args.kwargs["json"]
+    assert payload["stream"] is False  # coerced: "false" string → non-streaming
+
+
 def test_non_streaming_timeout_returns_504():
     app, http_mock = _make_app()
     http_mock.send.side_effect = httpx.TimeoutException("timed out")

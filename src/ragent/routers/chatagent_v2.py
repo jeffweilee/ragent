@@ -82,9 +82,11 @@ def create_chatagent_v2_router(
                 return blocked
 
             raw_token = request.headers.get(jwt_header.lower()) or ""
-            caller_meta = body.get("metadata") or {}
+            caller_meta = body.get("metadata")
+            if not isinstance(caller_meta, dict):
+                caller_meta = {}
             session_id = caller_meta.get("session") or new_id()
-            stream = body.get("stream", False)
+            stream = body.get("stream", False) is True
 
             upstream_payload = {
                 **body,

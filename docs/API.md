@@ -371,7 +371,7 @@ Accepts any JSON body. The server injects `apName`, `user`, and `userToken` into
 }
 ```
 
-`metadata` is optional (session auto-generated when absent). `stream` defaults to `false`. Any extra fields at any level are forwarded unchanged.
+`metadata` is optional (session auto-generated when absent). If `metadata` is not a JSON object it is ignored and treated as absent. `stream` defaults to `false`. Any extra fields at any level are forwarded unchanged.
 
 **Non-streaming (`stream: false`):**
 
