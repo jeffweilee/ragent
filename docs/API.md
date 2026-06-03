@@ -411,7 +411,7 @@ Dual-write: MariaDB `feedback` (truth) → ES `feedback_v1` (serving view). ES f
 |---|---|
 | `GET /livez` | Liveness probe — always 200 if process is up |
 | `GET /startupz` | Startup probe — 503 until every dep probe has been green at least once; then permanently 200 |
-| `GET /readyz` | Readiness probe — checks all dependencies (DB, ES, Redis, MinIO); 503 with problem+json on failure |
+| `GET /readyz` | Readiness probe — checks all dependencies (DB, ES, Redis, MinIO); 503 with problem+json on failure. Emits structlog events `probe.start`, `probe.ok` / `probe.failed` (with `error_code`, `detail`, `duration_ms`) per probe. |
 | `GET /metrics` | Prometheus metrics (text/plain) |
 
 ---

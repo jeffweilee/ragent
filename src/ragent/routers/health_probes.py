@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import Any
 
 import anyio
+import structlog
 
 from ragent.bootstrap.metrics import (
     readyz_probe_duration_seconds,
@@ -17,6 +18,8 @@ from ragent.bootstrap.metrics import (
     readyz_probe_status,
 )
 from ragent.errors.codes import ProbeErrorCode
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -79,6 +82,7 @@ class IndexMissing(Exception):
 
 
 async def run_probe(name: str, probe: Callable[[], Awaitable[None]]) -> ProbeFailure | None:
+    logger.info("probe.start", probe=name)
     started = time.monotonic()
     failure: ProbeFailure | None
     try:
@@ -93,10 +97,20 @@ async def run_probe(name: str, probe: Callable[[], Awaitable[None]]) -> ProbeFai
     except Exception as exc:  # noqa: BLE001
         failure = ProbeFailure(error_code=ProbeErrorCode.DEPENDENCY_DOWN, detail=str(exc))
 
-    readyz_probe_duration_seconds.labels(probe=name).observe(time.monotonic() - started)
+    elapsed = time.monotonic() - started
+    duration_ms = round(elapsed * 1000.0, 3)
+    readyz_probe_duration_seconds.labels(probe=name).observe(elapsed)
     if failure is None:
         readyz_probe_status.labels(probe=name).set(1)
+        logger.info("probe.ok", probe=name, duration_ms=duration_ms)
     else:
         readyz_probe_status.labels(probe=name).set(0)
         readyz_probe_failures_total.labels(probe=name, error_code=failure.error_code).inc()
+        logger.warning(
+            "probe.failed",
+            probe=name,
+            error_code=failure.error_code,
+            detail=failure.detail,
+            duration_ms=duration_ms,
+        )
     return failure
