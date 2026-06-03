@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 import time
-from typing import Annotated
+from typing import Annotated, Any
 
 import httpx
 import structlog
@@ -17,7 +17,6 @@ from ragent.auth.deps import get_user_id
 from ragent.clients.rate_limiter import RateLimiter
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
-from ragent.schemas.chatagent import ChatAgentV2Request
 from ragent.utility.id_gen import new_id
 
 logger = structlog.get_logger(__name__)
@@ -73,7 +72,7 @@ def create_chatagent_v2_router(
 
         @router.post("")
         async def chatagent_v2_post(
-            body: ChatAgentV2Request,
+            body: dict[str, Any],
             request: Request,
             x_user_id: Annotated[str | None, Depends(get_user_id)] = None,
         ) -> Response:
@@ -83,17 +82,22 @@ def create_chatagent_v2_router(
                 return blocked
 
             raw_token = request.headers.get(jwt_header.lower()) or ""
-            session_id = body.metadata.session or new_id()
+            caller_meta = body.get("metadata")
+            if not isinstance(caller_meta, dict):
+                caller_meta = {}
+            session_id = caller_meta.get("session") or new_id()
+            stream = body.get("stream", False) is True
 
             upstream_payload = {
+                **body,
                 "metadata": {
+                    **caller_meta,
                     "apName": chatagent_ap_name,
                     "session": session_id,
                     "user": user_id,
                     "userToken": raw_token,
                 },
-                "inputData": {"message": body.inputData.message},
-                "stream": body.stream,
+                "stream": stream,
             }
 
             # Validate status/headers before committing an HTTP status to the client.
@@ -104,10 +108,9 @@ def create_chatagent_v2_router(
                     chatagent_api_url,
                     json=upstream_payload,
                     headers=_headers,
+                    timeout=timeout,
                 )
-                resp = await run_in_threadpool(
-                    http_client.send, req, stream=body.stream, timeout=timeout
-                )
+                resp = await run_in_threadpool(http_client.send, req, stream=stream)
                 resp.raise_for_status()
             except httpx.TimeoutException:
                 if resp is not None:
@@ -123,7 +126,7 @@ def create_chatagent_v2_router(
             content_type = resp.headers.get("content-type", "application/json")
             logger.info("chatagent_v2.request", user_id=user_id, http_status=200)
 
-            if body.stream:
+            if stream:
 
                 def _gen():
                     try:

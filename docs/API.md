@@ -359,19 +359,19 @@ Errors: `502 CHATAGENT_UPSTREAM_ERROR` · `504 CHATAGENT_TIMEOUT`.
 
 ### `POST /chatagent/v2` — Raw-proxy chat (with streaming)
 
-Accepts the upstream wire format directly. Client omits `apName`, `user`, and `userToken` — the server injects them before forwarding. Upstream response is forwarded byte-for-byte with no reshaping. Registered only when `CHATAGENT_API_URL` is set.
+Accepts any JSON body. The server injects `apName`, `user`, and `userToken` into `metadata` before forwarding; all other fields are passed through verbatim. Upstream response is forwarded byte-for-byte with no reshaping. Registered only when `CHATAGENT_API_URL` is set.
 
-**Request body:**
+**Request body** (flexible — any JSON object):
 
 ```json
 {
   "metadata": { "session": "optional-caller-id" },
-  "inputData": { "message": "What are our Q3 OKRs?" },
+  "inputData": { "message": "What are our Q3 OKRs?", "messageMeta": { "lang": "en" } },
   "stream": false
 }
 ```
 
-`metadata` is optional (session auto-generated when absent). `stream` defaults to `false`.
+`metadata` is optional (session auto-generated when absent). If `metadata` is not a JSON object it is ignored and treated as absent. `stream` defaults to `false`. Any extra fields at any level are forwarded unchanged.
 
 **Non-streaming (`stream: false`):**
 
@@ -403,7 +403,7 @@ curl -X POST http://localhost:8000/chatagent/v2 \
 
 The response `Content-Type` is forwarded from the upstream response (e.g. `application/json`, `text/event-stream`). Upstream errors before the first byte return `502`/`504` — not `200` with an empty body.
 
-Errors: `429 CHATAGENT_RATE_LIMITED` · `502 CHATAGENT_UPSTREAM_ERROR` · `504 CHATAGENT_TIMEOUT`.
+Errors: `429 CHATAGENT_RATE_LIMITED` · `502 CHATAGENT_UPSTREAM_ERROR` · `504 CHATAGENT_TIMEOUT`. Request timeout defaults to `CHATAGENT_TIMEOUT_SECONDS` (default 30 s).
 
 ---
 

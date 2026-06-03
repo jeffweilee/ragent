@@ -9,6 +9,7 @@ import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from ragent.clients.rate_limiter import RateLimitResult
 from ragent.errors.codes import HttpErrorCode
 from ragent.routers.chatagent_v2 import create_chatagent_v2_router
 
@@ -81,6 +82,22 @@ def test_post_session_caller_supplied():
 
     payload = http_mock.build_request.call_args.kwargs["json"]
     assert payload["metadata"]["session"] == "my-sess"
+
+
+def test_post_flexible_input_data_forwarded():
+    """Arbitrary inputData fields (e.g. messageMeta) are forwarded verbatim."""
+    app, http_mock = _make_app()
+    http_mock.send.return_value = _send_mock(b"{}")
+
+    with TestClient(app) as client:
+        client.post(
+            "/chatagent/v2",
+            json={"inputData": {"message": "hi", "messageMeta": {"foo": "bar"}}},
+            headers={"X-User-Id": "alice"},
+        )
+
+    payload = http_mock.build_request.call_args.kwargs["json"]
+    assert payload["inputData"]["messageMeta"] == {"foo": "bar"}
 
 
 def test_post_timeout_returns_504():
@@ -170,7 +187,7 @@ def test_rate_limit_returns_429():
     from ragent.clients.rate_limiter import RateLimiter
 
     rl = MagicMock(spec=RateLimiter)
-    result = MagicMock()
+    result = MagicMock(spec=RateLimitResult)
     result.allowed = False
     result.reset_at = 9999999999.0
     rl.check.return_value = result
