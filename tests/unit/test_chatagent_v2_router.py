@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -28,17 +27,22 @@ def _make_app(*, rate_limiter: Any = None, chatagent_auth: str | None = None):
     return app, http_mock
 
 
+def _resp_mock(raw: bytes, content_type: str = "application/json"):
+    m = MagicMock(spec=httpx.Response)
+    m.raise_for_status.return_value = None
+    m.headers = {"content-type": content_type}
+    m.read.return_value = raw
+    m.iter_bytes.return_value = iter([raw])
+    return m
+
+
 # ── non-streaming ──────────────────────────────────────────────────────────────
 
 
 def test_non_streaming_forwards_upstream_bytes():
     app, http_mock = _make_app()
     raw = b'{"returnCode":96200,"returnData":{"messages":[{"content":"ok"}]}}'
-    resp_mock = MagicMock()
-    resp_mock.raise_for_status.return_value = None
-    resp_mock.content = raw
-    resp_mock.headers = {"content-type": "application/json"}
-    http_mock.post.return_value = resp_mock
+    http_mock.send.return_value = _resp_mock(raw)
 
     with TestClient(app) as client:
         r = client.post(
@@ -52,11 +56,7 @@ def test_non_streaming_forwards_upstream_bytes():
 
 def test_non_streaming_injects_server_fields():
     app, http_mock = _make_app()
-    resp_mock = MagicMock()
-    resp_mock.raise_for_status.return_value = None
-    resp_mock.content = b"{}"
-    resp_mock.headers = {"content-type": "application/json"}
-    http_mock.post.return_value = resp_mock
+    http_mock.send.return_value = _resp_mock(b"{}")
 
     with TestClient(app) as client:
         client.post(
@@ -65,7 +65,7 @@ def test_non_streaming_injects_server_fields():
             headers={"X-User-Id": "bob", "X-Auth-Token": "tok123"},
         )
 
-    payload = http_mock.post.call_args.kwargs["json"]
+    payload = http_mock.build_request.call_args.kwargs["json"]
     assert payload["metadata"]["apName"] == "TestAP"
     assert payload["metadata"]["user"] == "bob"
     assert payload["metadata"]["userToken"] == "tok123"
@@ -75,11 +75,7 @@ def test_non_streaming_injects_server_fields():
 
 def test_non_streaming_auto_generates_session_when_absent():
     app, http_mock = _make_app()
-    resp_mock = MagicMock()
-    resp_mock.raise_for_status.return_value = None
-    resp_mock.content = b"{}"
-    resp_mock.headers = {"content-type": "application/json"}
-    http_mock.post.return_value = resp_mock
+    http_mock.send.return_value = _resp_mock(b"{}")
 
     with TestClient(app) as client:
         client.post(
@@ -88,13 +84,13 @@ def test_non_streaming_auto_generates_session_when_absent():
             headers={"X-User-Id": "alice"},
         )
 
-    payload = http_mock.post.call_args.kwargs["json"]
+    payload = http_mock.build_request.call_args.kwargs["json"]
     assert payload["metadata"]["session"]  # non-empty auto-generated id
 
 
 def test_non_streaming_timeout_returns_504():
     app, http_mock = _make_app()
-    http_mock.post.side_effect = httpx.TimeoutException("timed out")
+    http_mock.send.side_effect = httpx.TimeoutException("timed out")
 
     with TestClient(app) as client:
         r = client.post(
@@ -108,7 +104,7 @@ def test_non_streaming_timeout_returns_504():
 
 def test_non_streaming_upstream_error_returns_502():
     app, http_mock = _make_app()
-    http_mock.post.side_effect = httpx.RequestError("conn refused")
+    http_mock.send.side_effect = httpx.RequestError("conn refused")
 
     with TestClient(app) as client:
         r = client.post(
@@ -123,24 +119,13 @@ def test_non_streaming_upstream_error_returns_502():
 # ── streaming ─────────────────────────────────────────────────────────────────
 
 
-def _make_stream_mock(chunks: list[bytes], content_type: str = "application/json"):
-    stream_resp = MagicMock()
-    stream_resp.headers = {"content-type": content_type}
-    stream_resp.raise_for_status.return_value = None
-    stream_resp.iter_bytes.return_value = iter(chunks)
-
-    @contextmanager
-    def _stream_ctx(*args, **kwargs):
-        yield stream_resp
-
-    stream_mock = MagicMock(spec=httpx.Client)
-    stream_mock.stream = _stream_ctx
-    return stream_mock
-
-
 def test_streaming_forwards_all_chunks():
     chunks = [b'{"delta":"part1"}', b'{"delta":"part2"}', b'{"done":true}']
-    http_mock = _make_stream_mock(chunks)
+    http_mock = MagicMock(spec=httpx.Client)
+    resp_mock = _resp_mock(b"".join(chunks))
+    resp_mock.iter_bytes.return_value = iter(chunks)
+    http_mock.send.return_value = resp_mock
+
     app = FastAPI()
     router = create_chatagent_v2_router(
         http_client=http_mock,
@@ -160,19 +145,10 @@ def test_streaming_forwards_all_chunks():
 
 
 def test_streaming_injects_server_fields():
-    captured: list[dict] = []
-
-    @contextmanager
-    def _stream_ctx(*args, **kwargs):
-        captured.append(kwargs.get("json") or args[1] if len(args) > 1 else kwargs["json"])
-        resp = MagicMock()
-        resp.headers = {"content-type": "application/json"}
-        resp.raise_for_status.return_value = None
-        resp.iter_bytes.return_value = iter([b"{}"])
-        yield resp
-
     http_mock = MagicMock(spec=httpx.Client)
-    http_mock.stream = _stream_ctx
+    resp_mock = _resp_mock(b"{}")
+    resp_mock.iter_bytes.return_value = iter([b"{}"])
+    http_mock.send.return_value = resp_mock
 
     app = FastAPI()
     router = create_chatagent_v2_router(
@@ -189,13 +165,58 @@ def test_streaming_injects_server_fields():
             headers={"X-User-Id": "carol", "X-Auth-Token": "tok456"},
         )
 
-    assert len(captured) == 1
-    meta = captured[0]["metadata"]
-    assert meta["apName"] == "TestAP"
-    assert meta["user"] == "carol"
-    assert meta["userToken"] == "tok456"
-    assert meta["session"] == "s2"
-    assert captured[0]["stream"] is True
+    payload = http_mock.build_request.call_args.kwargs["json"]
+    assert payload["metadata"]["apName"] == "TestAP"
+    assert payload["metadata"]["user"] == "carol"
+    assert payload["metadata"]["userToken"] == "tok456"
+    assert payload["metadata"]["session"] == "s2"
+    assert payload["stream"] is True
+
+
+def test_streaming_upstream_error_returns_502():
+    http_mock = MagicMock(spec=httpx.Client)
+    http_mock.send.side_effect = httpx.RequestError("conn refused")
+
+    app = FastAPI()
+    router = create_chatagent_v2_router(
+        http_client=http_mock,
+        chatagent_ap_name="TestAP",
+        chatagent_api_url="http://upstream",
+    )
+    app.include_router(router)
+
+    with TestClient(app) as client:
+        r = client.post(
+            "/chatagent/v2",
+            json={"inputData": {"message": "hi"}, "stream": True},
+            headers={"X-User-Id": "alice"},
+        )
+    assert r.status_code == 502
+    assert r.json()["error_code"] == HttpErrorCode.CHATAGENT_UPSTREAM_ERROR
+
+
+def test_streaming_forwards_upstream_content_type():
+    http_mock = MagicMock(spec=httpx.Client)
+    resp_mock = _resp_mock(b"data: chunk\n\n", content_type="text/event-stream")
+    resp_mock.iter_bytes.return_value = iter([b"data: chunk\n\n"])
+    http_mock.send.return_value = resp_mock
+
+    app = FastAPI()
+    router = create_chatagent_v2_router(
+        http_client=http_mock,
+        chatagent_ap_name="TestAP",
+        chatagent_api_url="http://upstream",
+    )
+    app.include_router(router)
+
+    with TestClient(app) as client:
+        r = client.post(
+            "/chatagent/v2",
+            json={"inputData": {"message": "hi"}, "stream": True},
+            headers={"X-User-Id": "alice"},
+        )
+    assert r.status_code == 200
+    assert "text/event-stream" in r.headers["content-type"]
 
 
 # ── rate limiting ─────────────────────────────────────────────────────────────

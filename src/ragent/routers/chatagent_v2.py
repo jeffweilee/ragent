@@ -96,49 +96,45 @@ def create_chatagent_v2_router(
                 "stream": body.stream,
             }
 
-            if body.stream:
-                return _stream_response(upstream_payload)
-
+            # Validate status/headers before committing an HTTP status to the client.
+            resp = None
             try:
-                resp = await run_in_threadpool(
-                    http_client.post,
+                req = http_client.build_request(
+                    "POST",
                     chatagent_api_url,
                     json=upstream_payload,
                     headers=_headers,
-                    timeout=timeout,
                 )
+                resp = await run_in_threadpool(http_client.send, req, stream=True, timeout=timeout)
                 resp.raise_for_status()
             except httpx.TimeoutException:
+                if resp is not None:
+                    resp.close()
                 logger.warning("chatagent_v2.timeout", http_status=504)
                 return _timeout_error()
             except (httpx.HTTPStatusError, httpx.RequestError):
+                if resp is not None:
+                    resp.close()
                 logger.warning("chatagent_v2.upstream_error", http_status=502)
                 return _upstream_error()
 
             content_type = resp.headers.get("content-type", "application/json")
             logger.info("chatagent_v2.request", user_id=user_id, http_status=200)
-            return Response(content=resp.content, media_type=content_type)
 
-        def _stream_response(upstream_payload: dict) -> StreamingResponse:
-            def _gen():
-                try:
-                    with http_client.stream(
-                        "POST",
-                        chatagent_api_url,
-                        json=upstream_payload,
-                        headers=_headers,
-                        timeout=timeout,
-                    ) as resp:
-                        resp.raise_for_status()
+            if body.stream:
+
+                def _gen():
+                    try:
                         yield from resp.iter_bytes()
-                except httpx.TimeoutException:
-                    logger.warning("chatagent_v2.stream_timeout", http_status=504)
-                except (httpx.HTTPStatusError, httpx.RequestError):
-                    logger.warning("chatagent_v2.stream_upstream_error", http_status=502)
+                    finally:
+                        resp.close()
 
-            # Peek content-type before streaming; default to application/json.
-            # Full content-type is available only inside the context manager,
-            # so we use the default here and let clients inspect headers.
-            return StreamingResponse(iterate_in_threadpool(_gen()), media_type="application/json")
+                return StreamingResponse(iterate_in_threadpool(_gen()), media_type=content_type)
+
+            try:
+                content = await run_in_threadpool(resp.read)
+            finally:
+                resp.close()
+            return Response(content=content, media_type=content_type)
 
     return router

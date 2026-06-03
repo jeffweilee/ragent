@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -27,11 +26,12 @@ def _make_app(*, rate_limiter: Any = None):
     return app, http_mock
 
 
-def _post_mock(raw: bytes, content_type: str = "application/json"):
-    m = MagicMock()
+def _send_mock(raw: bytes, content_type: str = "application/json"):
+    m = MagicMock(spec=httpx.Response)
     m.raise_for_status.return_value = None
-    m.content = raw
     m.headers = {"content-type": content_type}
+    m.read.return_value = raw
+    m.iter_bytes.return_value = iter([raw])
     return m
 
 
@@ -41,7 +41,7 @@ def _post_mock(raw: bytes, content_type: str = "application/json"):
 def test_post_non_streaming_happy_path():
     app, http_mock = _make_app()
     raw = b'{"returnCode":96200,"returnData":{"messages":[{"content":"ok"}]}}'
-    http_mock.post.return_value = _post_mock(raw)
+    http_mock.send.return_value = _send_mock(raw)
 
     with TestClient(app) as client:
         r = client.post(
@@ -55,7 +55,7 @@ def test_post_non_streaming_happy_path():
 
 def test_post_session_auto_generated():
     app, http_mock = _make_app()
-    http_mock.post.return_value = _post_mock(b"{}")
+    http_mock.send.return_value = _send_mock(b"{}")
 
     with TestClient(app) as client:
         client.post(
@@ -64,13 +64,13 @@ def test_post_session_auto_generated():
             headers={"X-User-Id": "alice"},
         )
 
-    payload = http_mock.post.call_args.kwargs["json"]
+    payload = http_mock.build_request.call_args.kwargs["json"]
     assert payload["metadata"]["session"]  # auto-generated, non-empty
 
 
 def test_post_session_caller_supplied():
     app, http_mock = _make_app()
-    http_mock.post.return_value = _post_mock(b"{}")
+    http_mock.send.return_value = _send_mock(b"{}")
 
     with TestClient(app) as client:
         client.post(
@@ -79,13 +79,13 @@ def test_post_session_caller_supplied():
             headers={"X-User-Id": "alice"},
         )
 
-    payload = http_mock.post.call_args.kwargs["json"]
+    payload = http_mock.build_request.call_args.kwargs["json"]
     assert payload["metadata"]["session"] == "my-sess"
 
 
 def test_post_timeout_returns_504():
     app, http_mock = _make_app()
-    http_mock.post.side_effect = httpx.TimeoutException("t/o")
+    http_mock.send.side_effect = httpx.TimeoutException("t/o")
 
     with TestClient(app) as client:
         r = client.post(
@@ -99,7 +99,7 @@ def test_post_timeout_returns_504():
 
 def test_post_upstream_error_returns_502():
     app, http_mock = _make_app()
-    http_mock.post.side_effect = httpx.RequestError("conn refused")
+    http_mock.send.side_effect = httpx.RequestError("conn refused")
 
     with TestClient(app) as client:
         r = client.post(
@@ -114,24 +114,13 @@ def test_post_upstream_error_returns_502():
 # ── streaming ─────────────────────────────────────────────────────────────────
 
 
-def _stream_mock(chunks: list[bytes]):
-    stream_resp = MagicMock()
-    stream_resp.headers = {"content-type": "application/json"}
-    stream_resp.raise_for_status.return_value = None
-    stream_resp.iter_bytes.return_value = iter(chunks)
-
-    @contextmanager
-    def _ctx(*args, **kwargs):
-        yield stream_resp
-
-    http_mock = MagicMock(spec=httpx.Client)
-    http_mock.stream = _ctx
-    return http_mock
-
-
 def test_post_streaming_happy_path():
     chunks = [b'{"delta":"a"}', b'{"delta":"b"}', b'{"done":true}']
-    http_mock = _stream_mock(chunks)
+    http_mock = MagicMock(spec=httpx.Client)
+    resp_mock = _send_mock(b"".join(chunks))
+    resp_mock.iter_bytes.return_value = iter(chunks)
+    http_mock.send.return_value = resp_mock
+
     app = FastAPI()
     app.include_router(
         create_chatagent_v2_router(
@@ -149,6 +138,29 @@ def test_post_streaming_happy_path():
         )
     assert r.status_code == 200
     assert r.content == b"".join(chunks)
+
+
+def test_post_streaming_timeout_returns_504():
+    http_mock = MagicMock(spec=httpx.Client)
+    http_mock.send.side_effect = httpx.TimeoutException("t/o")
+
+    app = FastAPI()
+    app.include_router(
+        create_chatagent_v2_router(
+            http_client=http_mock,
+            chatagent_ap_name="IntegAP",
+            chatagent_api_url="http://upstream",
+        )
+    )
+
+    with TestClient(app) as client:
+        r = client.post(
+            "/chatagent/v2",
+            json={"inputData": {"message": "hi"}, "stream": True},
+            headers={"X-User-Id": "alice"},
+        )
+    assert r.status_code == 504
+    assert r.json()["error_code"] == HttpErrorCode.CHATAGENT_TIMEOUT
 
 
 # ── rate limiting ─────────────────────────────────────────────────────────────
