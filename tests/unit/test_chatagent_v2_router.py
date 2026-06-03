@@ -124,7 +124,6 @@ def test_non_streaming_upstream_error_returns_502():
 
 
 def _make_stream_mock(chunks: list[bytes], content_type: str = "application/json"):
-    """Return an httpx.Client mock whose .stream() context manager yields chunks."""
     stream_resp = MagicMock()
     stream_resp.headers = {"content-type": content_type}
     stream_resp.raise_for_status.return_value = None
