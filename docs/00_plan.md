@@ -273,6 +273,8 @@
 | T-CA.W1 | Behavioral | • **Achieve:** Composition root reads 5 new env vars; app.py registers router when any URL is set.<br>• **Deliver:** `composition.py` Container fields + build_container(); `app.py` registration block. | [x] | Dev |
 | T-CA.D1 | Structural | • **Achieve:** All new env vars documented (B28); API.md + third-party API doc updated.<br>• **Deliver:** `docs/spec/env_vars.md`, `docs/API.md`, `docs/00_rule_third_party_api.md`. | [x] | Dev |
 | T-CA.R4 | Behavioral | • **Achieve:** `POST /chatagent/v1` response body includes `session` field — the value used for this request (either caller-supplied or auto-generated via `new_id()`).<br>• **Deliver:** `"session"` key added to `JSONResponse` dict in `chatagent.py`; two new tests in `test_chatagent_router.py` covering supplied vs generated session echo. | [x] | Dev |
+| T-CA.R5 | Behavioral | • **Achieve:** `PUT /chatagent/v1/session` proxies to `CHATAGENT_SESSION_API_URL`; injects `apName`/`user`; forwards `session`+`sessionName` from request body; `SessionRenameRequest` schema (`session`, `sessionName` required).<br>• **Deliver:** route + schema in `chatagent.py`/`schemas/chatagent.py`; unit tests in `test_chatagent_router.py`; integration tests in `test_chatagent_endpoint.py`. | [x] | Dev |
+| T-CA.R6 | Behavioral | • **Achieve:** `DELETE /chatagent/v1/session` proxies to `CHATAGENT_SESSION_API_URL`; injects `apName`/`user`; forwards `session` from request body; `SessionDeleteRequest` schema (`session` required).<br>• **Deliver:** route + schema in `chatagent.py`/`schemas/chatagent.py`; unit tests in `test_chatagent_router.py`; integration tests in `test_chatagent_endpoint.py`. | [x] | Dev |
 
 
 ---

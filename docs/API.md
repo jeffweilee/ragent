@@ -325,6 +325,36 @@ curl "http://localhost:8000/chatagent/v1/session?session=abc123" \
 
 Returns session object with `messages[]` array (role, content, timestamps).
 
+### `PUT /chatagent/v1/session` — Rename a session
+
+Proxies to `CHATAGENT_SESSION_API_URL`. Request body: `{"session": "<id>", "sessionName": "<new name>"}`. Server injects `apName` and `user` before forwarding.
+
+```bash
+curl -X PUT http://localhost:8000/chatagent/v1/session \
+  -H "Content-Type: application/json" \
+  -H "X-User-Id: alice" \
+  -d '{"session": "abc123", "sessionName": "My Chat"}'
+```
+
+Returns the upstream response unchanged. Registered only when `CHATAGENT_SESSION_API_URL` is set.
+
+Errors: `502 CHATAGENT_UPSTREAM_ERROR` · `504 CHATAGENT_TIMEOUT`.
+
+### `DELETE /chatagent/v1/session` — Delete a session
+
+Proxies to `CHATAGENT_SESSION_API_URL`. Request body: `{"session": "<id>"}`. Server injects `apName` and `user` before forwarding.
+
+```bash
+curl -X DELETE http://localhost:8000/chatagent/v1/session \
+  -H "Content-Type: application/json" \
+  -H "X-User-Id: alice" \
+  -d '{"session": "abc123"}'
+```
+
+Returns the upstream response unchanged. Registered only when `CHATAGENT_SESSION_API_URL` is set.
+
+Errors: `502 CHATAGENT_UPSTREAM_ERROR` · `504 CHATAGENT_TIMEOUT`.
+
 ---
 
 ### `POST /chatagent/v2` — Raw-proxy chat (with streaming)

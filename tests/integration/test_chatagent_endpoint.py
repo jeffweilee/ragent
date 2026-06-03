@@ -130,3 +130,38 @@ def test_chatagent_post_upstream_502():
         )
     assert r.status_code == 502
     assert r.json()["error_code"] == HttpErrorCode.CHATAGENT_UPSTREAM_ERROR
+
+
+def test_chatagent_session_rename_happy_path_200():
+    app, http_mock = _make_app()
+    upstream_body = {"returnCode": 96200, "returnData": {"session": "s1", "sessionName": "new"}}
+    http_mock.request.return_value = MagicMock(
+        raise_for_status=MagicMock(return_value=None),
+        json=MagicMock(return_value=upstream_body),
+    )
+    with TestClient(app) as client:
+        r = client.put(
+            "/chatagent/v1/session",
+            json={"session": "s1", "sessionName": "new"},
+            headers={"X-User-Id": "alice"},
+        )
+    assert r.status_code == 200
+    assert r.json() == upstream_body
+
+
+def test_chatagent_session_delete_happy_path_200():
+    app, http_mock = _make_app()
+    upstream_body = {"returnCode": 96200, "returnData": {}}
+    http_mock.request.return_value = MagicMock(
+        raise_for_status=MagicMock(return_value=None),
+        json=MagicMock(return_value=upstream_body),
+    )
+    with TestClient(app) as client:
+        r = client.request(
+            "DELETE",
+            "/chatagent/v1/session",
+            json={"session": "s1"},
+            headers={"X-User-Id": "alice"},
+        )
+    assert r.status_code == 200
+    assert r.json() == upstream_body
