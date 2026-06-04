@@ -1,16 +1,14 @@
 name: Gemini PR Agent
-
 on:
   pull_request:
     types: [opened, reopened, synchronize]
-
 jobs:
   pr_agent_job:
     runs-on: ubuntu-latest
     permissions:
       issues: write
       pull-requests: write
-      contents: parse
+      contents: read
     name: Run PR Agent
     steps:
       - name: PR Agent action
