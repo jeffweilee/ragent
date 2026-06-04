@@ -124,26 +124,47 @@ def create_chatagent_router(
                     logger.warning("chatagent.upstream_error", http_status=502)
                     return _upstream_error()
 
-                def _gen():
-                    try:
-                        logger.info("chatagent.stream_request", user_id=user_id, http_status=200)
-                        for line in stream_resp.iter_lines():
-                            if not line.startswith("data: "):
-                                yield line.encode() + b"\n"
-                                continue
-                            if node_filter is None:
-                                yield line.encode() + b"\n"
-                                continue
-                            try:
-                                chunk = json.loads(line[len("data: ") :])
-                            except ValueError:
-                                continue
+                def _should_yield(event_lines: list[str]) -> bool:
+                    if node_filter is None:
+                        return True
+                    data_lines = [l for l in event_lines if l.startswith("data: ")]
+                    if not data_lines:
+                        return False
+                    for dl in data_lines:
+                        content = dl[len("data: ") :]
+                        if content == "[DONE]":
+                            return True
+                        try:
+                            chunk = json.loads(content)
                             msgs = (chunk.get("returnData") or {}).get("messages") or []
                             if any(
                                 (m.get("messageMeta") or {}).get("langgraph_node") == node_filter
                                 for m in msgs
                             ):
-                                yield line.encode() + b"\n"
+                                return True
+                        except ValueError:
+                            return True
+                    return False
+
+                def _gen():
+                    try:
+                        logger.info("chatagent.stream_request", user_id=user_id, http_status=200)
+                        buffer: list[str] = []
+                        for line in stream_resp.iter_lines():
+                            if not line:
+                                if buffer:
+                                    if _should_yield(buffer):
+                                        for l in buffer:
+                                            yield l.encode() + b"\n"
+                                        yield b"\n"
+                                    buffer = []
+                                elif node_filter is None:
+                                    yield b"\n"
+                            else:
+                                buffer.append(line)
+                        if buffer and _should_yield(buffer):
+                            for l in buffer:
+                                yield l.encode() + b"\n"
                     finally:
                         stream_resp.close()
 

@@ -171,26 +171,26 @@ def test_chatagent_session_delete_happy_path_200():
 # ── streaming + node_filter ───────────────────────────────────────────────────
 
 
-def _sse_line(langgraph_node: str | None, content: str = "hi") -> str:
+def _sse_event(langgraph_node: str | None, content: str = "hi") -> list[str]:
+    """Return lines for one SSE event block (data line + empty delimiter)."""
     msg: dict = {"role": "assistant", "content": content}
     if langgraph_node is not None:
         msg["messageMeta"] = {"langgraph_node": langgraph_node}
     payload = {"returnData": {"messages": [msg]}}
-    return f"data: {json.dumps(payload)}"
+    return [f"data: {json.dumps(payload)}", ""]
 
 
-def _stream_mock(lines: list[str]):
+def _stream_mock(events: list[list[str]]):
     m = MagicMock(spec=httpx.Response)
     m.raise_for_status.return_value = None
     m.headers = {"content-type": "text/event-stream"}
-    m.iter_lines.return_value = iter(lines)
+    m.iter_lines.return_value = iter(line for event in events for line in event)
     return m
 
 
 def test_streaming_node_filter_none_all_events_forwarded():
     app, http_mock = _make_app()
-    lines = [_sse_line("agent", "a"), _sse_line("tools", "b")]
-    http_mock.send.return_value = _stream_mock(lines)
+    http_mock.send.return_value = _stream_mock([_sse_event("agent", "a"), _sse_event("tools", "b")])
 
     with TestClient(app) as client:
         r = client.post(
@@ -206,7 +206,7 @@ def test_streaming_node_filter_none_all_events_forwarded():
 
 def test_streaming_node_filter_matching_event_forwarded():
     app, http_mock = _make_app()
-    http_mock.send.return_value = _stream_mock([_sse_line("agent", "answer")])
+    http_mock.send.return_value = _stream_mock([_sse_event("agent", "answer")])
 
     with TestClient(app) as client:
         r = client.post(
@@ -224,7 +224,7 @@ def test_streaming_node_filter_matching_event_forwarded():
 
 def test_streaming_node_filter_nonmatching_event_dropped():
     app, http_mock = _make_app()
-    http_mock.send.return_value = _stream_mock([_sse_line("tools", "tool-result")])
+    http_mock.send.return_value = _stream_mock([_sse_event("tools", "tool-result")])
 
     with TestClient(app) as client:
         r = client.post(
@@ -242,8 +242,9 @@ def test_streaming_node_filter_nonmatching_event_dropped():
 
 def test_streaming_node_filter_mixed_only_matching_forwarded():
     app, http_mock = _make_app()
-    lines = [_sse_line("tools", "t1"), _sse_line("agent", "a1"), _sse_line("tools", "t2")]
-    http_mock.send.return_value = _stream_mock(lines)
+    http_mock.send.return_value = _stream_mock(
+        [_sse_event("tools", "t1"), _sse_event("agent", "a1"), _sse_event("tools", "t2")]
+    )
 
     with TestClient(app) as client:
         r = client.post(
@@ -264,10 +265,10 @@ def test_streaming_node_filter_mixed_only_matching_forwarded():
 
 def test_streaming_node_filter_missing_messagemeta_dropped():
     app, http_mock = _make_app()
-    line = (
+    data_line = (
         f"data: {json.dumps({'returnData': {'messages': [{'role': 'assistant', 'content': 'x'}]}})}"
     )
-    http_mock.send.return_value = _stream_mock([line])
+    http_mock.send.return_value = _stream_mock([[data_line, ""]])
 
     with TestClient(app) as client:
         r = client.post(
@@ -281,6 +282,24 @@ def test_streaming_node_filter_missing_messagemeta_dropped():
         )
     assert r.status_code == 200
     assert r.content == b""
+
+
+def test_streaming_done_signal_forwarded_with_filter():
+    app, http_mock = _make_app()
+    http_mock.send.return_value = _stream_mock([["data: [DONE]", ""]])
+
+    with TestClient(app) as client:
+        r = client.post(
+            "/chatagent/v1",
+            json={
+                "messages": [{"role": "user", "content": "hi"}],
+                "stream": True,
+                "node_filter": "agent",
+            },
+            headers={"X-User-Id": "alice"},
+        )
+    assert r.status_code == 200
+    assert b"[DONE]" in r.content
 
 
 def test_non_streaming_path_uses_post_and_unchanged():
