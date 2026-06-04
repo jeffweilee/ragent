@@ -105,7 +105,12 @@ def test_tools_call_non_string_name(client: TestClient, name: object) -> None:
     """S62 — non-string name (e.g. array/object) → -32602 MCP_TOOL_NOT_FOUND, not TypeError."""
     body = client.post(
         "/mcp/v1",
-        json={"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {"name": name, "arguments": {}}},
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": name, "arguments": {}},
+        },
     ).json()
     err = body["error"]
     assert err["code"] == -32602
