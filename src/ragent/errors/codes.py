@@ -67,6 +67,11 @@ class HttpErrorCode(StrEnum):
     # Chat (429).
     CHAT_RATE_LIMITED = "CHAT_RATE_LIMITED"
 
+    # Chatagent proxy (429 / 502 / 504).
+    CHATAGENT_RATE_LIMITED = "CHATAGENT_RATE_LIMITED"
+    CHATAGENT_UPSTREAM_ERROR = "CHATAGENT_UPSTREAM_ERROR"
+    CHATAGENT_TIMEOUT = "CHATAGENT_TIMEOUT"
+
     # LLM stream interrupt (502) — stream closed before [DONE] sentinel.
     LLM_STREAM_INTERRUPTED = "LLM_STREAM_INTERRUPTED"
 

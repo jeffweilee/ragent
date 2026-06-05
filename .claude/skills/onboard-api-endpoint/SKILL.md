@@ -146,7 +146,7 @@ Implement the minimum handler. Template for a new route on an existing router:
 @router.<method>("<relative-path>", status_code=<N>, response_model=<ResponseModel>)
 async def <handler>(
     body: <RequestModel>,
-    x_user_id: Annotated[str | None, Header(alias="X-User-Id")] = None,
+    x_user_id: Annotated[str | None, Depends(get_user_id)] = None,  # NOT Header(alias="X-User-Id")
 ) -> <ResponseModel> | Response:
     try:
         result = await svc.<operation>(...)
@@ -154,6 +154,8 @@ async def <handler>(
         return problem(<status>, HttpErrorCode.<CODE>, "<message>")
     return <ResponseModel>(...)
 ```
+
+> **IMPORTANT:** Never use `Header(alias="X-User-Id")` in route handlers — the domain map R3 prohibition and `00_rule.md` ban it. Always use `Depends(get_user_id)` from `ragent.auth.deps`; it reads from `request.scope[SCOPE_USER_ID_KEY]` populated by the auth middleware, so it works correctly in all auth modes (open, trust-header, JWT). `Header(alias="X-User-Id")` bypasses the middleware and breaks in JWT mode. `get_user_id` returns `str | None`; the `= None` default is required for FastAPI to accept the dependency without a positional arg.
 
 For a **brand-new resource** also:
 
@@ -235,5 +237,6 @@ endpoints (any path under `/<resource>/v<N>`) must NOT be in this list.
 - [ ] `tests/unit/test_api_versioning.py` still passes after wiring
 - [ ] For v2: old version still mounted; deprecation timeline in spec; decommission task in plan
 - [ ] Infra bypass: only added to `_PUBLIC_PATHS` if genuinely infra (not a business endpoint)
+- [ ] Handler uses `Depends(get_user_id)` (from `ragent.auth.deps`), NOT `Header(alias="X-User-Id")`
 - [ ] `make check` green (format + lint + full test suite)
 - [ ] `[BEHAVIORAL]` commit; no structural changes mixed in

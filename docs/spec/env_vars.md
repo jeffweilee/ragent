@@ -8,19 +8,20 @@
 
 | Variable | Default | Description |
 |---|---|---|
-| `RAGENT_ENV`                          | (required)       | `dev` \| `staging` \| `prod`. Modes A & B require `dev`; Mode C tolerates any value (§1). |
-| `RAGENT_AUTH_DISABLED`                | `false`          | `true` selects Mode A (open auth — guard requires dev + loopback). `false` selects Mode B or C depending on `RAGENT_TRUST_X_USER_ID_HEADER` (§1, §3.5). |
-| `RAGENT_TRUST_X_USER_ID_HEADER`       | `false`          | When `true` (and `AUTH_DISABLED=false`), selects Mode B: JWT middleware bypassed, `<RAGENT_USER_ID_HEADER>` trusted as `user_id` (§3.5). Guard requires `RAGENT_ENV=dev`. |
-| `RAGENT_USER_ID_HEADER`               | `X-User-Id`      | Canonical header name carrying the downstream `user_id`. In trust mode this is the inbound header read directly; in JWT mode the extracted claim is injected into this header on the request scope. Routers consume the value via `Header(alias=...)` — currently hard-coded to the default, so changing this env var requires updating each router's alias. `RequestLoggingMiddleware` is header-name-agnostic: the auth middleware writes the resolved `user_id` into `request.scope["ragent.user_id"]` in both modes, and the logging layer reads from there, so customising this env var alone does not break `api.request` logging. |
-| `RAGENT_JWT_HEADER`                   | `X-Auth-Token`   | **Mode C only.** Inbound header carrying the raw JWT (no `Bearer ` prefix). Read only when `RAGENT_AUTH_DISABLED=false` AND `RAGENT_TRUST_X_USER_ID_HEADER=false`. |
-| `RAGENT_JWT_CLAIM_USER_ID`            | `preferred_username` | **Mode C only.** JWT payload claim path used as the downstream `user_id`. Verified value is non-empty string; missing/empty → 401 `AUTH_CLAIM_MISSING`. |
-| `OIDC_DOMAIN`                         | (required in Mode C) | OIDC issuer domain. JWKS is fetched from `{scheme}://<OIDC_DOMAIN>/.well-known/jwks.json` (resolved via the OIDC discovery `jwks_uri`); the verifier validates `iss == discovery["issuer"]`. Guard exits if unset when `AUTH_DISABLED=false` AND `TRUST_X_USER_ID_HEADER=false`. |
-| `OIDC_AUDIENCE`                       | (required in Mode C) | Expected `aud` claim. Tokens with mismatched `aud` → 401 `AUTH_TOKEN_INVALID`. |
+| `RAGENT_ENV`                          | (required)       | `dev` \| `staging` \| `prod`. Modes `none`/`user_header`/`jwt_prefer_header` require `dev`; `jwt_header` tolerates any value (§1, §3.5). |
+| `RAGENT_AUTH_MODE`                    | `user_header`    | `none` \| `user_header` \| `jwt_header` \| `jwt_prefer_header`. `none`: inject `"anonymous"`, no header needed (dev only). `user_header`: trust `<RAGENT_USER_ID_HEADER>` directly (dev only). `jwt_header`: OIDC JWT only. `jwt_prefer_header`: JWT wins when present, fallback to header (dev only). |
+| `RAGENT_USER_ID_HEADER`               | `X-User-Id`      | Canonical header name carrying the downstream `user_id`. In `user_header`/`jwt_prefer_header` mode this is the inbound header read directly; in JWT modes the extracted claim is injected into this header on the request scope. `RequestLoggingMiddleware` reads `request.scope["ragent.user_id"]` — not the header name — so customising this does not break `api.request` logging. |
+| `RAGENT_JWT_HEADER`                   | `X-Auth-Token`   | **`jwt_header`/`jwt_prefer_header` only.** Inbound header carrying the raw JWT (no `Bearer ` prefix). |
+| `RAGENT_JWT_CLAIM_USER_ID`            | `preferred_username` | **`jwt_header`/`jwt_prefer_header` only.** JWT payload claim path used as the downstream `user_id`. Verified value is non-empty string; missing/empty → 401 `AUTH_CLAIM_MISSING`. |
+| `OIDC_DOMAIN`                         | (required for JWT modes) | OIDC issuer domain. JWKS is fetched from `{scheme}://<OIDC_DOMAIN>/.well-known/jwks.json`; verifier validates `iss == discovery["issuer"]`. Guard exits if unset for `jwt_header`/`jwt_prefer_header`. |
+| `OIDC_AUDIENCE`                       | (required for JWT modes) | Expected `aud` claim. Tokens with mismatched `aud` → 401 `AUTH_TOKEN_INVALID`. |
 | `OIDC_USE_HTTPS`                      | `true`           | Scheme toggle for the OIDC discovery + JWKS URL. Set `false` ONLY for in-cluster discovery or local fixture; production deployments MUST keep `true`. |
 | `OIDC_VERIFY_SSL`                     | `true`           | Verify the IdP's TLS certificate during OIDC discovery + JWKS fetch. Set `false` ONLY for dev/staging against self-signed Keycloak. For production with a private CA, leave `true` and mount the CA via `SSL_CERT_FILE` instead. |
+| `RAGENT_JWT_VERIFY_AUD`               | `true`           | **`jwt_header`/`jwt_prefer_header` only.** When `false`, audience claim check is skipped. Guard requires `RAGENT_ENV=dev`. |
+| `RAGENT_JWT_VERIFY_EXP`               | `true`           | **`jwt_header`/`jwt_prefer_header` only.** When `false`, expiry claim check is skipped. Guard requires `RAGENT_ENV=dev`. |
 | `RAGENT_PERMISSION_INGEST_ENABLED`    | `false`          | **P2 only.** When `true`, `GET/DELETE /ingest/v1/{id}` and `GET /ingest/v1` enforce `PermissionClient` (§3.5). Default off — gate is wired but inert until OpenFGA tuples exist. |
 | `RAGENT_PERMISSION_CHAT_ENABLED`      | `false`          | **P2 only.** When `true`, chat retrieval applies the `PermissionClient` post-filter (§3.5). Default off. |
-| `RAGENT_HOST`                         | `127.0.0.1`      | API bind address. Guard (§1) refuses any value other than `127.0.0.1` in Mode A (open auth — no auth surface, must bind loopback). Modes B/C tolerate any bind. Consumed by the legacy `python -m ragent.api` shim; primary startup `uvicorn ragent.bootstrap.app:create_app --factory` passes `--host` directly. |
+| `RAGENT_HOST`                         | `127.0.0.1`      | API bind address. Consumed by the legacy `python -m ragent.api` shim; primary startup `uvicorn ragent.bootstrap.app:create_app --factory` passes `--host` directly. |
 | `RAGENT_PORT`                         | `8000`           | API bind port. Consumed by the legacy `python -m ragent.api` shim; primary startup passes `--port` to uvicorn directly. |
 | `LOG_LEVEL`                           | `INFO`           | `DEBUG` \| `INFO` \| `WARNING` \| `ERROR`. Applies to app + TaskIQ + Reconciler. |
 | `CORS_ALLOW_ORIGINS`                  | *(unset)*        | Comma-separated list of allowed CORS origins (e.g. `https://app.example.com,https://admin.example.com`). When unset or empty, no `CORSMiddleware` is added and all cross-origin requests are denied. |
@@ -71,6 +72,11 @@
 | `LLM_AUTH_HEADER_NAME`                | `Authorization`  | HTTP header name used by `LLMClient`. Same semantics as `EMBEDDING_AUTH_HEADER_NAME`. |
 | `RERANK_AUTH_HEADER_NAME`             | `Authorization`  | HTTP header name used by `RerankClient`. Same semantics as `EMBEDDING_AUTH_HEADER_NAME`. |
 | `HR_API_URL`                          | (future)         | OpenFGA-related role lookup (P2+). |
+| `CHATAGENT_API_URL`                   | (optional)       | POST `/chatagent/v1` proxy endpoint. When unset that route is not registered. |
+| `CHATAGENT_SESSIONLIST_API_URL`       | (optional)       | GET `/chatagent/v1/sessionList` proxy endpoint. When unset that route is not registered. |
+| `CHATAGENT_SESSION_API_URL`           | (optional)       | GET `/chatagent/v1/session` proxy endpoint. When unset that route is not registered. |
+| `CHATAGENT_AP_NAME`                   | `ragent`         | `apName` injected into all outbound chatagent requests. |
+| `CHATAGENT_AUTH`                      | (optional)       | Raw value for the `Authorization` header on all outbound chatagent calls (e.g. `Basic dXNlcjpwYXNz`). **Never logged, never echoed.** |
 | `UNPROTECT_ENABLED`                   | `false`          | When `true`, worker calls the unprotect API before passing `file`/`upload` ingest bytes to the pipeline. `ingest_type=inline` rows are always skipped (content is caller-supplied UTF-8 text). On unprotect failure the worker logs a warning and continues with the original MinIO bytes. |
 | `UNPROTECT_API_URL`                   | (required when enabled) | Full URL of the unprotect endpoint (multipart POST). |
 | `UNPROTECT_APIKEY`                    | (required when enabled) | Raw JWT (no `Bearer` prefix) sent as `apikey` request header. **Never logged, never echoed.** |
@@ -140,6 +146,7 @@
 | `MINIO_GET_RETRY_DELAY_SECONDS`       | `2.0`            | sleep between `get_object()` retry attempts (seconds). |
 | `MINIO_PUT_TIMEOUT_SECONDS`           | `60`             | router upload to staging. |
 | `LLM_TIMEOUT_SECONDS`                 | `120`            | `LLMClient.{chat\|stream}`. |
+| `CHATAGENT_TIMEOUT_SECONDS`           | `30`             | per-call timeout for all chatagent proxy HTTP calls. |
 | `PLUGIN_FAN_OUT_TIMEOUT_SECONDS`      | `60`             | per-plugin `extract`/`delete` ceiling (§3.3). |
 | `READYZ_PROBE_TIMEOUT_SECONDS`        | `2`              | per-dependency `/readyz` probe budget (§4.1). |
 | `UNPROTECT_TIMEOUT_SECONDS`           | `30`             | per-call budget for the unprotect API POST (when `UNPROTECT_ENABLED=true`). |

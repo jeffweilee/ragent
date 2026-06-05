@@ -21,8 +21,8 @@ import pytest
 
 @pytest.fixture()
 def _env(monkeypatch: pytest.MonkeyPatch) -> None:
-    # T8.5a — disable inbound auth so build_container doesn't require OIDC_*
-    monkeypatch.setenv("RAGENT_AUTH_DISABLED", "true")
+    # non-JWT auth mode so build_container doesn't require OIDC_*
+    monkeypatch.setenv("RAGENT_AUTH_MODE", "user_header")
     monkeypatch.setenv("MARIADB_DSN", "mysql+aiomysql://u:p@h:3306/db")
     monkeypatch.setenv("AI_API_AUTH_URL", "http://auth.example/token")
     monkeypatch.setenv("AI_LLM_API_J1_TOKEN", "j1-llm")
@@ -200,7 +200,10 @@ def test_reconciler_engine_pool_pre_ping_and_recycle(
     monkeypatch.setattr("ragent.bootstrap.broker.broker", fake_broker)
     monkeypatch.setattr(
         "ragent.bootstrap.composition.get_container",
-        lambda: MagicMock(registry=MagicMock()),
+        lambda: MagicMock(
+            registry=MagicMock(),
+            embedding_registry=MagicMock(refresh=AsyncMock()),
+        ),
     )
     monkeypatch.setattr(
         "ragent.bootstrap.init_schema.patch_aiomysql_ping",

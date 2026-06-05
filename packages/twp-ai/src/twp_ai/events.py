@@ -8,7 +8,7 @@ Adding a new event:
 
 from __future__ import annotations
 
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -96,18 +96,16 @@ class RunErrorEvent(BaseEvent):
 # Discriminated union consumed by the FE for type-safe deserialization.
 # Extend this when adding new event types.
 Event = Annotated[
-    Union[
-        RunStartedEvent,
-        TextMessageStartEvent,
-        TextMessageContentEvent,
-        TextMessageEndEvent,
-        ToolCallStartEvent,
-        ToolCallArgsEvent,
-        ToolCallEndEvent,
-        ToolCallResultEvent,
-        RunFinishedEvent,
-        RunErrorEvent,
-    ],
+    RunStartedEvent
+    | TextMessageStartEvent
+    | TextMessageContentEvent
+    | TextMessageEndEvent
+    | ToolCallStartEvent
+    | ToolCallArgsEvent
+    | ToolCallEndEvent
+    | ToolCallResultEvent
+    | RunFinishedEvent
+    | RunErrorEvent,
     Field(discriminator="type"),
 ]
 

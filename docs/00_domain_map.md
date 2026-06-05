@@ -65,7 +65,7 @@
 | `app.py` | `create_app()` — 掛載 routers、lifespan、middleware |
 | `broker.py` | TaskIQ broker 工廠（standalone / sentinel）|
 | `dispatcher.py` | 同步封裝層，讓同步呼叫能 enqueue async task |
-| `init_schema.py` | DB + ES schema 初始化；`_iter_statements` strip-then-split SQL parser |
+| `init_schema.py` | DB + ES schema 初始化；`iter_statements` strip-then-split SQL parser |
 | `logging_config.py` | structlog 設定、privacy denylist processor |
 | `metrics.py` | Prometheus counter/histogram 定義 |
 | `telemetry.py` | OTEL TracerProvider setup/shutdown |

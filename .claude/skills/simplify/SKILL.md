@@ -60,6 +60,8 @@ Review the same changes for hacky patterns:
 5. **Stringly-typed code**: using raw strings where constants, enums (string unions), or branded types already exist in the codebase
 6. **Nested conditionals**: ternary chains (`a ? x : b ? y : ...`), nested if/else, or nested switch 3+ levels deep — flatten with early returns, guard clauses, a lookup table, or an if/else-if cascade
 7. **Unnecessary comments**: comments explaining WHAT the code does, narrating the change, or referencing the task/caller — delete; keep only non-obvious WHY (hidden constraints, subtle invariants, workarounds)
+8. **Bare `MagicMock()` on typed collaborators**: any `MagicMock()` (no `spec=`) used as a stand-in for a real service/client/broker class — should be `MagicMock(spec=RealClass)` or `create_autospec(RealClass)`. Bare mocks accept any attribute and hide `AttributeError` bugs that only surface at runtime. (`docs/00_rule.md` §Test Log Capture)
+9. **SQL `split(";")` without strip-then-split**: any code that loads `.sql` text and splits by `";"` without first stripping `--` comments line-by-line — use `iter_statements(sql)` from `ragent.bootstrap.init_schema`. (`docs/00_rule.md` §Database Practices)
 
 #### Agent 3: Efficiency Review
 

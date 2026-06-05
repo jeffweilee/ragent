@@ -7,6 +7,11 @@ import time
 from dataclasses import dataclass
 from typing import Any
 
+import redis as redis_lib
+import structlog
+
+logger = structlog.get_logger(__name__)
+
 _KEY_PREFIX = "ratelimit:"
 
 
@@ -26,10 +31,16 @@ class RateLimiter:
         # Pipeline batches INCR + EXPIRE NX in one round-trip.
         # EXPIRE NX sets TTL only if the key has no expiry, preventing immortal keys
         # if a process crashes after INCR but before a separate EXPIRE call.
-        pipe = self._redis.pipeline()
-        pipe.incr(full_key)
-        pipe.expire(full_key, window_seconds, nx=True)
-        count, _ = pipe.execute()
+        try:
+            pipe = self._redis.pipeline()
+            pipe.incr(full_key)
+            pipe.expire(full_key, window_seconds, nx=True)
+            count, _ = pipe.execute()
+        except redis_lib.RedisError as exc:
+            logger.warning(
+                "rate_limiter.redis_unavailable", error_type=type(exc).__name__, error=str(exc)
+            )
+            return RateLimitResult(allowed=True, remaining=-1, reset_at=None)
         if count > limit:
             return RateLimitResult(
                 allowed=False,
@@ -53,7 +64,6 @@ class RateLimiter:
             ]
             sentinel = Sentinel(sentinels)
             return cls(redis_client=sentinel.master_for(master))
-        import redis
 
         url = os.environ.get("REDIS_RATELIMIT_URL", "redis://localhost:6379/1")
-        return cls(redis_client=redis.from_url(url))
+        return cls(redis_client=redis_lib.from_url(url))

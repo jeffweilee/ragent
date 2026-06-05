@@ -17,6 +17,8 @@ uv run --env-file .env uvicorn ragent.bootstrap.app:create_app --factory --host 
 uv run --env-file .env python -m ragent.worker           # background worker (separate shell)
 curl http://localhost:8000/livez                         # verify — expect {"status":"ok"}
 make doctor PROBE_LIVE=1                                 # post-launch — also probes /livez and /readyz
+
+uv export --format requirements-txt --no-hashes --dev -o requirements.txt # export requirement.txt
 ```
 
 ### MCP Hub

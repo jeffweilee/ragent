@@ -9,28 +9,9 @@ a single failure raises RuntimeError and short-circuits boot.
 from __future__ import annotations
 
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-
-def _ok_probe_patch(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Stub MariaDB + ES + run_probe to succeed so token warmup is the only failure surface."""
-
-    async def _probe_ok(*_a, **_kw):
-        return None
-
-    def _factory(*_a, **_kw):
-        async def _p() -> None:
-            return None
-
-        return _p
-
-    import ragent.routers.health_probes as hp
-
-    monkeypatch.setattr(hp, "probe_mariadb", _factory)
-    monkeypatch.setattr(hp, "probe_es", _factory)
-    monkeypatch.setattr(hp, "run_probe", _probe_ok)
 
 
 def _make_broker_with_tasks() -> Any:  # type: ignore[name-defined]
@@ -45,23 +26,19 @@ from typing import Any  # noqa: E402
 async def _run(container: Any) -> None:
     from ragent.bootstrap.app import _check_infra_ready
 
-    await _check_infra_ready(container, _make_broker_with_tasks())
+    ok_probes = {
+        "mariadb": AsyncMock(return_value=None),
+        "es": AsyncMock(return_value=None),
+    }
+    await _check_infra_ready(ok_probes, _make_broker_with_tasks(), container)
 
 
 @pytest.mark.anyio("asyncio")
-async def test_check_infra_ready_invokes_get_token_for_each_token_manager(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _ok_probe_patch(monkeypatch)
-
+async def test_check_infra_ready_invokes_get_token_for_each_token_manager() -> None:
     tm_llm = MagicMock()
     tm_emb = MagicMock()
     tm_rerank = MagicMock()
-    container = SimpleNamespace(
-        engine=MagicMock(),
-        es_client=MagicMock(),
-        token_managers=(tm_llm, tm_emb, tm_rerank),
-    )
+    container = SimpleNamespace(token_managers=(tm_llm, tm_emb, tm_rerank))
 
     await _run(container)
 
@@ -71,19 +48,11 @@ async def test_check_infra_ready_invokes_get_token_for_each_token_manager(
 
 
 @pytest.mark.anyio("asyncio")
-async def test_check_infra_ready_skips_none_token_managers(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+async def test_check_infra_ready_skips_none_token_managers() -> None:
     """When CHAT_RERANK_ENABLED=false, rerank_tm is None — must not crash."""
-    _ok_probe_patch(monkeypatch)
-
     tm_llm = MagicMock()
     tm_emb = MagicMock()
-    container = SimpleNamespace(
-        engine=MagicMock(),
-        es_client=MagicMock(),
-        token_managers=(tm_llm, tm_emb, None),
-    )
+    container = SimpleNamespace(token_managers=(tm_llm, tm_emb, None))
 
     await _run(container)
 
@@ -92,19 +61,11 @@ async def test_check_infra_ready_skips_none_token_managers(
 
 
 @pytest.mark.anyio("asyncio")
-async def test_check_infra_ready_raises_when_token_exchange_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _ok_probe_patch(monkeypatch)
-
+async def test_check_infra_ready_raises_when_token_exchange_fails() -> None:
     tm_good = MagicMock()
     tm_bad = MagicMock()
     tm_bad.get_token.side_effect = RuntimeError("J1→J2 exchange refused: 401")
-    container = SimpleNamespace(
-        engine=MagicMock(),
-        es_client=MagicMock(),
-        token_managers=(tm_good, tm_bad, None),
-    )
+    container = SimpleNamespace(token_managers=(tm_good, tm_bad, None))
 
     with pytest.raises(RuntimeError, match="token"):
         await _run(container)

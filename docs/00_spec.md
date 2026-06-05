@@ -10,10 +10,11 @@
 - Streaming chat answers grounded in private documents.
 - Pluggable extractor architecture: graph reasoning (P3) without pipeline rewrite.
 
-### Auth Modes (switchable; enforced by startup guard)
-- **Mode A — open auth** (`RAGENT_AUTH_DISABLED=true`): no auth surface; `X-User-Id` header trusted; recorded as `documents.create_user` (audit only, not authorization). Guard requires `RAGENT_ENV=dev` AND `RAGENT_HOST=127.0.0.1` — loopback dev only.
-- **Mode B — trust-header** (`RAGENT_AUTH_DISABLED=false`, `RAGENT_TRUST_X_USER_ID_HEADER=true`): JWT middleware bypassed; `X-User-Id` header trusted directly. Guard requires `RAGENT_ENV=dev` — dev override only.
-- **Mode C — OIDC JWT** (both flags false): full JWKS-backed JWT verification (§3.5). Any env, any bind. Guard requires `OIDC_DOMAIN` and `OIDC_AUDIENCE`.
+### Auth Modes (`RAGENT_AUTH_MODE`; enforced by startup guard)
+- **`none`**: no header required; `user_id` = `"anonymous"`. Guard requires `RAGENT_ENV=dev`.
+- **`user_header`** (default): `<RAGENT_USER_ID_HEADER>` trusted directly; non-empty required. Guard requires `RAGENT_ENV=dev`.
+- **`jwt_header`**: full JWKS-backed JWT verification (§3.5). Any env, any bind. Guard requires `OIDC_DOMAIN` + `OIDC_AUDIENCE`.
+- **`jwt_prefer_header`**: JWT wins when present; invalid JWT → 401 (no fallback); no JWT → fallback to `<RAGENT_USER_ID_HEADER>`. Guard requires `RAGENT_ENV=dev`.
 - Permission gating remains **DISABLED**. The Permission Layer (§3.5) ships in **P2**, backed by OpenFGA, and stays out of the retrieval/ES path.
 
 ---
@@ -110,7 +111,7 @@ class ExtractorPlugin(Protocol):
 
 **P1 plugins:** `VectorExtractor` (required, ES bulk), `StubGraphExtractor` (optional, no-op). See §4.4.
 
-**Plugin construction (B17):** the Protocol freezes the **interface** (`extract`, `delete`, `health` plus three attributes) but plugins are **dependency-injected** via their constructor. `VectorExtractor.__init__(repo: DocumentRepository, chunks: ChunkRepository, embedder: EmbeddingClient, es: ElasticsearchClient)` — `extract(document_id)` reads `source_title` from `repo` and chunk rows from `chunks`. Plugins MUST NOT import `pipelines/` or HTTP layers; they accept their dependencies as constructor args, the registry simply holds the constructed instances.
+**Plugin construction (B17):** the Protocol freezes the **interface** (`extract`, `delete`, `health` plus three attributes) but plugins are **dependency-injected** via their constructor. `VectorExtractor.__init__(repo: DocumentRepository, chunks: dict[str, list[Chunk]], embedder: EmbeddingClient, es: ElasticsearchClient, index: str, registry: _IndexProvider | None)` — in v2, composition passes `chunks={}` so `extract()` is a no-op stub (real embedding and ES write done by `DocumentEmbedder` in the Haystack pipeline, §3.2). `registry` receives `ActiveModelRegistry` so that `delete()` fans out across all live write targets (stable + candidate) during lifecycle migration (B62). `ChunkRepository` was dropped in C6. Plugins MUST NOT import `pipelines/` or HTTP layers; they accept their dependencies as constructor args, the registry simply holds the constructed instances.
 
 **Registry:**
 - `register()` raises `DuplicatePluginError` on name conflict.
@@ -193,11 +194,12 @@ retrieval ran but returned no hits; `[{…}]` when retrieval ran and found resul
 ```
 data: {"type":"delta","content":"<token>"}
 
-  … data: {"type":"done","content":"<full>","sources":[…]}
+  … data: {"type":"done","content":"<full>","model":"…","provider":"…","sources":[…],"request_id":"…","feedback_token":"…"}
 
 
 ```
 
+`request_id`+`feedback_token` fields present only when `CHAT_FEEDBACK_ENABLED=true` AND `X-User-Id` present; absent otherwise (see §3.4.2 for same condition). `done` omits `usage` — token counts go to server-side `chat.llm` logs only.
 Mid-stream error (B6): `data: {"type":"error","error_code":"…","message":"…"}` then close. Pre-stream: normal RFC 9457.
 
 #### 3.4.4 `POST /retrieve/v1`
@@ -274,16 +276,19 @@ top-level `tools` array.
 **Stream events:** the direct runtime emits twp-ai camelCase SSE payloads
 for `RUN_STARTED`, `TEXT_MESSAGE_START`, `TEXT_MESSAGE_CONTENT`,
 `TEXT_MESSAGE_END`, `TOOL_CALL_START`, `TOOL_CALL_ARGS`, `TOOL_CALL_END`,
-`TOOL_CALL_RESULT`, `RUN_FINISHED`, and `RUN_ERROR`. The first direct runtime
+`RUN_FINISHED`, and `RUN_ERROR`. The first direct runtime
 turn lets the LLM decide whether to call a tool (`tool_choice=auto` in the
 OpenAI-compatible caller). Tool arguments may be emitted as a single complete
 `TOOL_CALL_ARGS` delta when the underlying provider adapter only exposes
 accumulated tool-call arguments.
 
-**Tool result boundary:** the current direct runtime synthesizes a successful
-tool result (`{"status":"ok"}`) to preserve the existing two-turn confirmation
-flow. A later resume-capable slice will accept frontend tool results explicitly
-and translate them into the provider-specific tool-result message/state format.
+**Tool result boundary:** the direct runtime does not synthesize a tool result
+or run a confirmation turn. After emitting the tool-call lifecycle events it
+finishes the run, yielding control to the frontend. The frontend executes the
+client-side tool and sends the real result back as a `role="tool"` message in a
+continuation run; the runtime translates the prior tool-call and tool-result
+messages into provider-compatible messages so the next LLM turn sees the actual
+outcome.
 
 ---
 
@@ -293,7 +298,7 @@ Two distinct concerns, kept architecturally separate from retrieval:
 
 | Concern | Question answered | Mechanism | P1 | Future phase |
 |---|---|---|---|---|
-| **Authentication** | Who is the caller? | JWT verified by **joserfc** against OIDC `OIDC_DOMAIN` JWKS (signature + `iss` + `aud` + `exp`) → `user_id = <RAGENT_JWT_CLAIM_USER_ID>` claim | OFF — `<RAGENT_USER_ID_HEADER>` trusted, validated non-empty | FastAPI middleware verifies on every protected endpoint; `RAGENT_TRUST_X_USER_ID_HEADER=true` falls back to header (dev/integration override) |
+| **Authentication** | Who is the caller? | JWT verified by **joserfc** against OIDC `OIDC_DOMAIN` JWKS (signature + `iss` + `aud` + `exp`) → `user_id = <RAGENT_JWT_CLAIM_USER_ID>` claim | OFF — `<RAGENT_USER_ID_HEADER>` trusted, validated non-empty | FastAPI middleware verifies on every protected endpoint; `RAGENT_AUTH_MODE` selects behaviour (§1, §3.5) |
 | **Permission** | Can this caller see this document? | Permission Layer service that calls **OpenFGA** | OPEN — no checks, all docs visible | `PermissionClient.batch_check(user_id, document_ids)` returns the allowed subset; gated per-surface by `RAGENT_PERMISSION_INGEST_ENABLED` / `RAGENT_PERMISSION_CHAT_ENABLED` (both default `false` even in P2) |
 
 **Design principle:** ES (`chunks_v1`) carries **no auth fields** in any phase — retrieval is permission-blind. The Permission Layer post-filters by `document_id`, keeping ES schema stable across phases.
@@ -301,10 +306,10 @@ Two distinct concerns, kept architecturally separate from retrieval:
 **P1 (current phase):** No JWT — `<RAGENT_USER_ID_HEADER>` trusted, written to `documents.create_user` (audit only, not authz). No permission gating — all chunks visible. `auth_mode=open` in audit logs. **TokenManager (J1→J2) is active** for Embedding/LLM/Rerank API auth (unrelated to user auth).
 
 **P2 additions:**
-- **JWT:** standard OIDC token. Carried in the `<RAGENT_JWT_HEADER>` request header as a **raw token, no `Bearer ` prefix** — clients send a raw JWT. **joserfc** (`joserfc` package — the actively-maintained successor to `authlib.jose`) verifies: signature against the JWKS published at `{scheme}://<OIDC_DOMAIN>/.well-known/jwks.json` (scheme = `https` unless `OIDC_USE_HTTPS=false`), `iss == OIDC discovery's "issuer"` (compared with trailing slashes stripped to absorb pydantic/IdP variance), `aud == <OIDC_AUDIENCE>`, `exp` ≥ now, `nbf` ≤ now. OIDC discovery + JWKS are fetched at composition (`build_container()`) via an injected `httpx.Client` (the same client controls `verify=...` for TLS verification — see `OIDC_VERIFY_SSL`), so a misconfigured `OIDC_DOMAIN` aborts startup rather than 500-ing the first protected request; the fetched JWKS is then cached in-process for the verifier's lifetime. Cache reuse is a contract requirement pinned by T8.1a tests. Once verified, `<RAGENT_JWT_CLAIM_USER_ID>` (default `preferred_username`) is extracted as the downstream `user_id`. Failure mapping: absent header / malformed token / bad signature / wrong `iss` / wrong `aud` / non-numeric `exp` / `nbf` in future / unknown `kid` / unsupported `alg` / any other verification error → 401 `AUTH_TOKEN_INVALID`; expired → 401 `AUTH_TOKEN_EXPIRED`; missing required claim → 401 `AUTH_CLAIM_MISSING`. `RAGENT_TRUST_X_USER_ID_HEADER=true` (non-prod only) bypasses JWT verification and reads `<RAGENT_USER_ID_HEADER>` directly.
+- **JWT (`jwt_header` / `jwt_prefer_header` modes):** standard OIDC token. Carried in the `<RAGENT_JWT_HEADER>` request header as a **raw token, no `Bearer ` prefix** — clients send a raw JWT. **joserfc** (`joserfc` package — the actively-maintained successor to `authlib.jose`) verifies: signature against the JWKS published at `{scheme}://<OIDC_DOMAIN>/.well-known/jwks.json` (scheme = `https` unless `OIDC_USE_HTTPS=false`), `iss == OIDC discovery's "issuer"` (compared with trailing slashes stripped to absorb pydantic/IdP variance), `aud == <OIDC_AUDIENCE>` (unless `RAGENT_JWT_VERIFY_AUD=false`), `exp` ≥ now (unless `RAGENT_JWT_VERIFY_EXP=false`), `nbf` ≤ now. OIDC discovery + JWKS are fetched at composition (`build_container()`) via an injected `httpx.Client` (the same client controls `verify=...` for TLS verification — see `OIDC_VERIFY_SSL`), so a misconfigured `OIDC_DOMAIN` aborts startup rather than 500-ing the first protected request; the fetched JWKS is then cached in-process for the verifier's lifetime. Cache reuse is a contract requirement pinned by T8.1a tests. Once verified, `<RAGENT_JWT_CLAIM_USER_ID>` (default `preferred_username`) is extracted as the downstream `user_id`. Failure mapping: absent header / malformed token / bad signature / wrong `iss` / wrong `aud` / non-numeric `exp` / `nbf` in future / unknown `kid` / unsupported `alg` / any other verification error → 401 `AUTH_TOKEN_INVALID`; expired → 401 `AUTH_TOKEN_EXPIRED`; missing required claim → 401 `AUTH_CLAIM_MISSING`. In `jwt_prefer_header` mode, if no JWT header is present the middleware falls back to `<RAGENT_USER_ID_HEADER>` (an invalid JWT never falls back — it returns 401).
 - **Public paths (auth short-circuit):** the JWT middleware does not read the header or call the verifier for `/livez`, `/readyz`, `/startupz`, `/metrics`, `/docs`, `/docs/oauth2-redirect`, `/redoc`, `/openapi.json`. The set is a strict superset of `middleware/logging.py::_SKIP_PATHS` (which covers only the four operational health/metrics paths) — extended here with the FastAPI auto-docs surface. These endpoints are declared `P1 Auth = none` in §4.1 and remain auth-free in P2. The outbound MCP HUB (`src/ragent/mcp_hub/server.py`) runs as a separate process and is not covered by this middleware.
 - **Header injection:** the extracted `user_id` is written into `<RAGENT_USER_ID_HEADER>` on the request scope so downstream routers (whose `Header(alias=...)` is bound to the canonical name) see the same value irrespective of the inbound auth mode.
-- **Swagger/OpenAPI doc derivation (T8.D1):** `src/ragent/bootstrap/openapi.py::install_openapi` is called from `create_app` with the **same** env-resolved values that wire `_x_user_id_middleware`. The active mode publishes exactly one `apiKey` security scheme in `/openapi.json::components.securitySchemes` — `UserIdHeader` (name = `<RAGENT_USER_ID_HEADER>`) in trust-header mode, `JWT` (name = `<RAGENT_JWT_HEADER>`) in JWT mode — and tags every non-public operation with `security: [{<scheme>: []}]`. Public paths (§3.5 list) carry NO `security`. Per-route `Header(alias=...)` declarations are NOT the source of truth for docs; this generator is. Flipping `RAGENT_AUTH_DISABLED` / `RAGENT_TRUST_X_USER_ID_HEADER` / `RAGENT_JWT_HEADER` updates the middleware AND the Swagger Authorize button together — the two cannot drift.
+- **Swagger/OpenAPI doc derivation (T8.D1):** `src/ragent/bootstrap/openapi.py::install_openapi` is called from `create_app` with the **same** env-resolved values that wire `_x_user_id_middleware`. The active mode publishes exactly one `apiKey` security scheme in `/openapi.json::components.securitySchemes` — `UserIdHeader` (name = `<RAGENT_USER_ID_HEADER>`) for `none`/`user_header`/`jwt_prefer_header` modes, `JWT` (name = `<RAGENT_JWT_HEADER>`) for `jwt_header` mode — and tags every non-public operation with `security: [{<scheme>: []}]`. Public paths (§3.5 list) carry NO `security`. Per-route `Header(alias=...)` declarations are NOT the source of truth for docs; this generator is. Changing `RAGENT_AUTH_MODE` / `RAGENT_JWT_HEADER` updates the middleware AND the Swagger Authorize button together — the two cannot drift.
 - **Handler-side user_id source (T8.D2, T8.D3):** route handlers obtain the resolved `user_id` via `Depends(ragent.auth.deps.get_user_id)` — NOT via `Header(alias="X-User-Id")`. The dep reads `request.scope[SCOPE_USER_ID_KEY]` (populated by the middleware in both trust-header and JWT modes) with a header fallback for unit tests that bypass the middleware. Because `Depends(...)` is invisible to OpenAPI, the T8.D1 security scheme remains the single documented source. `tests/unit/test_no_auth_header_in_routes.py` is the anti-drift CI gate that fails collection if any router re-introduces `Header(alias="X-User-Id"|"X-Auth-Token")`.
 - **PermissionClient (OpenFGA):** `batch_check(user_id, document_ids) → set[str]` post-filters retrieved chunks. Gated per-surface: `RAGENT_PERMISSION_INGEST_ENABLED` / `RAGENT_PERMISSION_CHAT_ENABLED` (both default `false`). Chat pipeline: ES retrieval → `batch_check` → `SourceHydrator → LLM`. May over-fetch K' = K × factor so K results remain after filtering.
 - OpenFGA is fully encapsulated behind `PermissionClient`; never reaches the retrieval/ES path.
@@ -333,7 +338,7 @@ Two distinct concerns, kept architecturally separate from retrieval:
 - **S3** Given a `PENDING` document with `attempt > 5`, When the reconciler runs, Then status transitions to `FAILED`, partial output is cleaned, and a structured log line `event=ingest.failed` is emitted.
 - See also S24 (UPLOADED orphan), S26 (multi-READY repair), S30 (heartbeat).
 
-**Infrastructure (B27):** Redis broker (TaskIQ) and Redis rate-limiter are **separate logical instances**, each independently configurable as **standalone or Sentinel** via `REDIS_MODE` env (default `standalone` for dev/CI, set `sentinel` in prod). Sentinel mode shares a single sentinel quorum (`REDIS_SENTINEL_HOSTS`, ≥ 3 nodes) and resolves each instance by its master name (`REDIS_BROKER_SENTINEL_MASTER`, `REDIS_RATELIMIT_SENTINEL_MASTER`). Standalone mode reads direct URLs (`REDIS_BROKER_URL`, `REDIS_RATELIMIT_URL`). Connection layer uses `redis-py-sentinel` when mode=sentinel, plain `redis-py` when mode=standalone. The same code path is used by both the API process and the worker.
+**Infrastructure (B27):** Redis broker (TaskIQ) and Redis rate-limiter are **separate logical instances**, each independently configurable as **standalone or Sentinel** via `REDIS_MODE` env (default `standalone` for dev/CI, set `sentinel` in prod). Sentinel mode shares a single sentinel quorum (`REDIS_SENTINEL_HOSTS`, ≥ 3 nodes) and resolves each instance by its master name (`REDIS_BROKER_SENTINEL_MASTER`, `REDIS_RATELIMIT_SENTINEL_MASTER`). Standalone mode reads direct URLs (`REDIS_BROKER_URL`, `REDIS_RATELIMIT_URL`). Connection layer uses `redis-py-sentinel` when mode=sentinel, plain `redis-py` when mode=standalone. The same code path is used by both the API process and the worker. **Rate-limiter degraded mode (fail-open):** if `redis.RedisError` is raised during `RateLimiter.check()`, the call logs `rate_limiter.redis_unavailable` at WARNING and returns `allowed=True` — the chat request proceeds unrestricted. Rate limiting is a non-essential gate; its degradation MUST NOT surface as a 5xx to callers.
 
 #### 3.6.1 Chaos drill suite (P2.6 軌三 / T7.4.x)
 
@@ -487,7 +492,7 @@ All non-2xx responses use **RFC 9457 Problem Details** (`Content-Type: applicati
 
 | Plugin | `name` | `required` | `queue` | `extract()` | `delete()` | Phase |
 |---|---|:---:|---|---|---|:---:|
-| `VectorExtractor`    | `vector`     | ✓ | `extract.vector` | embed `f"{source_title}\n\n{chunk_text}"` (B15) → ES bulk index by `chunk_id`, denormalising `title`, `source_app`, `source_meta` onto each row (B15, B29 → B35) | ES bulk `_op_type=delete` | **P1** |
+| `VectorExtractor`    | `vector`     | ✓ | `extract.vector` | **v2: no-op** — composition wires `chunks={}`, so `extract()` returns immediately. Real embedding + ES write done by `DocumentEmbedder` (§3.2). Kept as required plugin to preserve Protocol conformance. | `delete_by_query` by `document_id` on every live write target: `registry.stable_index` always; `registry.candidate_index` when not `None` (CANDIDATE/CUTOVER lifecycle). Falls back to static `index` param when `registry=None` (B62 / issue #147). | **P1** |
 | `StubGraphExtractor` | `graph_stub` | — | `extract.graph`  | no-op | no-op | **P1** |
 | `GraphExtractor`     | `graph`      | — | `extract.graph`  | LightRAG → Graph DB upsert | entity GC + ref_count | P3 |
 

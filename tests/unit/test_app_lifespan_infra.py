@@ -37,11 +37,22 @@ def fake_broker() -> MagicMock:
     return broker
 
 
+def _make_probes(container: SimpleNamespace) -> dict:
+    from ragent.routers.health_probes import probe_es, probe_mariadb
+
+    return {
+        "mariadb": probe_mariadb(container.engine),
+        "es": probe_es(
+            container.es_client, []
+        ),  # index check not needed; tests cover cluster-health path only
+    }
+
+
 @pytest.mark.asyncio
 async def test_check_infra_ready_passes_when_all_ok(fake_container, fake_broker) -> None:
     from ragent.bootstrap.app import _check_infra_ready
 
-    await _check_infra_ready(fake_container, fake_broker)
+    await _check_infra_ready(_make_probes(fake_container), fake_broker, fake_container)
 
 
 @pytest.mark.asyncio
@@ -55,7 +66,7 @@ async def test_check_infra_ready_raises_when_broker_task_missing(
     )
 
     with pytest.raises(RuntimeError, match="ingest.pipeline"):
-        await _check_infra_ready(fake_container, fake_broker)
+        await _check_infra_ready(_make_probes(fake_container), fake_broker, fake_container)
 
 
 @pytest.mark.asyncio
@@ -65,7 +76,7 @@ async def test_check_infra_ready_raises_when_db_probe_fails(fake_container, fake
     fake_container.engine.connect.side_effect = RuntimeError("db unreachable")
 
     with pytest.raises(RuntimeError, match="mariadb"):
-        await _check_infra_ready(fake_container, fake_broker)
+        await _check_infra_ready(_make_probes(fake_container), fake_broker, fake_container)
 
 
 @pytest.mark.asyncio
@@ -75,7 +86,7 @@ async def test_check_infra_ready_raises_when_es_unhealthy(fake_container, fake_b
     fake_container.es_client.cluster.health.return_value = {"status": "red"}
 
     with pytest.raises(RuntimeError, match="es"):
-        await _check_infra_ready(fake_container, fake_broker)
+        await _check_infra_ready(_make_probes(fake_container), fake_broker, fake_container)
 
 
 @pytest.mark.asyncio

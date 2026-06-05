@@ -21,6 +21,16 @@ class _Embedder(Protocol):
 
 class _ES(Protocol):
     def bulk(self, actions: list[dict[str, Any]]) -> None: ...
+    def delete_by_query(
+        self, *, index: str, query: dict[str, Any], conflicts: str = "proceed"
+    ) -> None: ...
+
+
+class _IndexProvider(Protocol):
+    @property
+    def stable_index(self) -> str: ...
+    @property
+    def candidate_index(self) -> str | None: ...
 
 
 class VectorExtractor:
@@ -35,12 +45,14 @@ class VectorExtractor:
         embedder: _Embedder,
         es: _ES,
         index: str = "chunks_v1",
+        registry: _IndexProvider | None = None,
     ) -> None:
         self._repo = repo
         self._chunks = chunks
         self._embedder = embedder
         self._es = es
         self._index = index
+        self._index_provider = registry
 
     def extract(self, document_id: str) -> None:
         chunk_list = self._chunks.get(document_id, [])
@@ -71,12 +83,24 @@ class VectorExtractor:
         self._es.bulk(actions)
 
     def delete(self, document_id: str) -> None:
-        chunk_list = self._chunks.get(document_id, [])
-        actions = [
-            {"_op_type": "delete", "_index": self._index, "_id": c.chunk_id} for c in chunk_list
-        ]
-        if actions:
-            self._es.bulk(actions)
+        for index in self._delete_indices():
+            self._es.delete_by_query(
+                index=index,
+                query={"term": {"document_id": document_id}},
+                conflicts="proceed",
+            )
+
+    def _delete_indices(self) -> list[str]:
+        if self._index_provider is None:
+            return [self._index] if self._index else []
+        indices = []
+        stable = self._index_provider.stable_index
+        if stable:
+            indices.append(stable)
+        candidate = self._index_provider.candidate_index
+        if candidate and candidate != stable:
+            indices.append(candidate)
+        return indices
 
     def health(self) -> bool:
         return True

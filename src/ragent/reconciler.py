@@ -280,6 +280,7 @@ class _PerTickRunner:
             await taskiq_broker.startup()
             try:
                 container = get_container()
+                await container.embedding_registry.refresh()
                 rec = Reconciler(
                     repo=DocumentRepository(engine=engine),
                     broker=TaskiqDispatcher(taskiq_broker),

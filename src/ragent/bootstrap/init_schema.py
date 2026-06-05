@@ -74,7 +74,7 @@ def _strip_comments(sql: str) -> str:
     return "\n".join(out).strip()
 
 
-def _iter_statements(sql: str) -> Iterator[str]:
+def iter_statements(sql: str) -> Iterator[str]:
     for raw in _strip_comments(sql).split(";"):
         stmt = raw.strip()
         if stmt:
@@ -84,7 +84,7 @@ def _iter_statements(sql: str) -> Iterator[str]:
 def init_mariadb(engine) -> None:
     sql = (_MIGRATIONS / "schema.sql").read_text(encoding="utf-8")
     with engine.begin() as conn:
-        for stmt in _iter_statements(sql):
+        for stmt in iter_statements(sql):
             conn.execute(text(stmt))
 
 

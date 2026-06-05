@@ -138,39 +138,32 @@ def check_env() -> None:
         _ok("required vars present", f"{len(_REQUIRED_VARS)} checked")
 
     # Auth-mode coherence (matches src/ragent/bootstrap/guard.py).
-    # Three modes: A=open-auth, B=trust-header, C=OIDC. Doctor reports the
-    # active mode + the safety preconditions enforced by guard.enforce().
-    from ragent.utility.env import bool_env
+    from ragent.bootstrap.auth_mode import AuthMode, parse_auth_mode
 
     env = os.environ.get("RAGENT_ENV", "dev")
-    auth_disabled = bool_env("RAGENT_AUTH_DISABLED", False)
-    trust_header = bool_env("RAGENT_TRUST_X_USER_ID_HEADER", False)
-    host = os.environ.get("RAGENT_HOST", "127.0.0.1")
+    try:
+        auth_mode = parse_auth_mode()
+    except ValueError as exc:
+        _fail("RAGENT_AUTH_MODE", str(exc))
+        auth_mode = None
 
-    if auth_disabled:
-        mode = "A: open auth (X-User-Id header trusted)"
-        if env != "dev":
-            _fail(f"auth mode {mode}", f"open auth requires RAGENT_ENV=dev, got {env!r}")
-        elif host != "127.0.0.1":
-            _fail(
-                f"auth mode {mode}",
-                f"open auth requires RAGENT_HOST=127.0.0.1, got {host!r}",
-            )
+    _DEV_ONLY_LABELS = {
+        AuthMode.none: "none (anonymous — dev only)",
+        AuthMode.user_header: "user_header (trust X-User-Id header — dev only)",
+        AuthMode.jwt_prefer_header: "jwt_prefer_header (JWT with header fallback — dev only)",
+    }
+    if auth_mode is not None:
+        if auth_mode in _DEV_ONLY_LABELS:
+            if env != "dev":
+                _fail("auth mode", f"{auth_mode.value} requires RAGENT_ENV=dev, got {env!r}")
+            else:
+                _ok("auth mode", _DEV_ONLY_LABELS[auth_mode])
         else:
-            _ok("auth mode", mode)
-    elif trust_header:
-        mode = "B: trust X-User-Id header (JWT bypassed, dev override)"
-        if env != "dev":
-            _fail(f"auth mode {mode}", f"trust-header requires RAGENT_ENV=dev, got {env!r}")
-        else:
-            _ok("auth mode", mode)
-    else:
-        mode = "C: OIDC JWT verification"
-        miss = [v for v in ("OIDC_DOMAIN", "OIDC_AUDIENCE") if not os.environ.get(v)]
-        if miss:
-            _fail(f"auth mode {mode}", f"OIDC mode requires {miss}")
-        else:
-            _ok("auth mode", mode)
+            miss = [v for v in ("OIDC_DOMAIN", "OIDC_AUDIENCE") if not os.environ.get(v)]
+            if miss:
+                _fail("auth mode", f"jwt_header requires {miss}")
+            else:
+                _ok("auth mode", "jwt_header (OIDC JWT verification)")
 
     # AI tokens — required unless K8s SA mode.
     if os.environ.get("AI_USE_K8S_SERVICE_ACCOUNT_TOKEN", "").lower() == "true":
@@ -513,13 +506,16 @@ def check_ai_endpoints() -> None:
 def check_oidc() -> None:
     _section("OIDC (JWT verification)")
 
+    from ragent.bootstrap.auth_mode import AuthMode, parse_auth_mode
     from ragent.utility.env import bool_env
 
-    if bool_env("RAGENT_AUTH_DISABLED", False):
-        _skip("OIDC", "RAGENT_AUTH_DISABLED=true — JWT verifier not built")
-        return
-    if bool_env("RAGENT_TRUST_X_USER_ID_HEADER", False):
-        _skip("OIDC", "RAGENT_TRUST_X_USER_ID_HEADER=true — JWT verifier not built")
+    try:
+        auth_mode = parse_auth_mode()
+    except ValueError:
+        auth_mode = None
+
+    if auth_mode not in (AuthMode.jwt_header, AuthMode.jwt_prefer_header):
+        _skip("OIDC", f"RAGENT_AUTH_MODE={auth_mode} — JWT verifier not built")
         return
 
     domain = os.environ.get("OIDC_DOMAIN", "").strip()
@@ -528,11 +524,11 @@ def check_oidc() -> None:
     if domain:
         _ok("OIDC_DOMAIN", domain)
     else:
-        _fail("OIDC_DOMAIN", "unset — required when RAGENT_AUTH_DISABLED=false")
+        _fail("OIDC_DOMAIN", "unset — required for jwt_header / jwt_prefer_header")
     if audience:
         _ok("OIDC_AUDIENCE", audience)
     else:
-        _fail("OIDC_AUDIENCE", "unset — required when RAGENT_AUTH_DISABLED=false")
+        _fail("OIDC_AUDIENCE", "unset — required for jwt_header / jwt_prefer_header")
 
     if not domain:
         return

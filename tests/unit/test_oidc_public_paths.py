@@ -48,10 +48,10 @@ def test_skip_paths_is_subset_of_public_paths() -> None:
 def auth_on_client(oidc_token_manager) -> TestClient:
     """TestClient for every parametrized public-path case. Function-scoped to
     inherit ``oidc_token_manager`` (also function-scoped)."""
+    from ragent.bootstrap.auth_mode import AuthMode
+
     app = FastAPI()
-    _x_user_id_middleware(
-        app, auth_disabled=False, trust_header=False, token_manager=oidc_token_manager
-    )
+    _x_user_id_middleware(app, auth_mode=AuthMode.jwt_header, token_manager=oidc_token_manager)
 
     @app.get("/livez")
     def _livez() -> dict:
@@ -86,10 +86,10 @@ def test_public_path_bypasses_middleware_without_token(
 
 def test_protected_path_still_requires_auth_when_enabled(oidc_token_manager) -> None:
     """Sanity: with auth on, a non-public path without a token MUST fail."""
+    from ragent.bootstrap.auth_mode import AuthMode
+
     app = FastAPI()
-    _x_user_id_middleware(
-        app, auth_disabled=False, trust_header=False, token_manager=oidc_token_manager
-    )
+    _x_user_id_middleware(app, auth_mode=AuthMode.jwt_header, token_manager=oidc_token_manager)
 
     @app.get("/protected")
     def _protected(x_user_id: str | None = Header(default=None, alias="X-User-Id")) -> dict:

@@ -255,5 +255,20 @@ def test_per_tick_runner_wires_settings_repo_and_es_client() -> None:
     assert "es_client=container.es_client" in source
 
 
+def test_per_tick_runner_refreshes_embedding_registry() -> None:
+    """_PerTickRunner._tick() must call container.embedding_registry.refresh() before
+    fan_out_delete so VectorExtractor._delete_indices() sees a warm cache and cleans
+    both stable and candidate indices during CANDIDATE/CUTOVER lifecycle (B62)."""
+    import inspect
+
+    from ragent.reconciler import _PerTickRunner
+
+    source = inspect.getsource(_PerTickRunner._tick)
+    assert "container.embedding_registry.refresh()" in source, (
+        "_PerTickRunner._tick() must await container.embedding_registry.refresh() "
+        "so VectorExtractor.delete() fans out to candidate_index during lifecycle migration."
+    )
+
+
 if __name__ == "__main__":  # pragma: no cover
     pytest.main([__file__, "-v"])

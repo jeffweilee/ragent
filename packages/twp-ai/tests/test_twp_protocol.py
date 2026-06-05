@@ -44,9 +44,7 @@ def _run_input() -> dict:
         "threadId": "thread_1",
         "runId": "run_1",
         "state": {"page": {"title": "Edit product"}},
-        "messages": [
-            {"id": "msg_user_1", "role": "user", "content": "Fill the description"}
-        ],
+        "messages": [{"id": "msg_user_1", "role": "user", "content": "Fill the description"}],
         "tools": [
             {
                 "name": "fill_form",

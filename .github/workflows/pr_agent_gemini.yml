@@ -1,0 +1,21 @@
+name: Gemini PR Agent
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+
+jobs:
+  pr_agent_job:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+      contents: parse
+    name: Run PR Agent
+    steps:
+      - name: PR Agent action
+        id: pragent
+        uses: Codium-ai/pr-agent@main
+        env:
+          OPENAI.KEY: ${{ secrets.GEMINI_API_KEY }}
+          CONFIG.MODEL: "gemini/gemini-2.5-pro"

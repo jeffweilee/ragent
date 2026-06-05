@@ -35,11 +35,14 @@ RAGENT_SKILL_INVOCATION_TOKEN=1 bash .claude/hooks/stamp_pre_commit_approved.sh 
 
 ## full mode (default)
 
+> **MANDATORY — no exceptions:** ALWAYS perform ALL steps below even if the diff appears small, focused, or surgical. The phrase *"diff is small/focused/inline review sufficient"* is a process violation — see journal Process 2026-05-17 "Inline /simplify rationalization". The review process **is** the protection.
+
 1. Run `git diff --cached` (or `git diff origin/<branch>..HEAD` if triggered from the pre-push gate for a high-risk commit) to get the diff.
-2. Read the relevant sections of `docs/00_plan.md` and `docs/00_spec.md` for the items being committed.
+2. Read the relevant sections of `docs/00_plan.md`, `docs/00_spec.md`, and `docs/00_domain_map.md` for the items being committed.
 3. Analyze the changes and provide a thorough review covering:
    - **Plan compliance**: every objective in `docs/00_plan.md` for this cycle is fully implemented — no partial or skipped items.
    - **Spec alignment**: behaviour matches `docs/00_spec.md` contracts (HTTP shapes, error codes, streaming framing, DB schema, etc.).
+   - **Domain boundaries**: no import crosses a forbidden boundary in `docs/00_domain_map.md §三`. Common violations to grep for: `pipelines/` importing `repositories/`; any router handler using `Header` with a user-id alias instead of `Depends(get_user_id)` — grep with `grep -rn 'Header.*alias.*[Xx]-[Uu]ser' src/ragent/routers/` (catches both quote styles and case variants); `os.environ` read outside `utility/env.py` or `bootstrap/composition.py`; `services/` importing `routers/`.
    - **Test coverage**: every new behaviour path has a corresponding test; no dead or unreachable code.
    - **Code quality**: no duplication, no hidden coupling, no premature abstraction, no commented-out code.
 4. If findings require fixes, make them and re-stage.

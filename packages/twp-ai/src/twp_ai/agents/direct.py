@@ -71,9 +71,7 @@ class DirectLLMAgent:
             # twp-ai tool lifecycle. The current direct runtime receives
             # accumulated tool calls, so args are emitted as one complete delta.
             for tc in turn1.tool_calls:
-                yield to_sse(
-                    ToolCallStartEvent(tool_call_id=tc["id"], tool_call_name=tc["name"])
-                )
+                yield to_sse(ToolCallStartEvent(tool_call_id=tc["id"], tool_call_name=tc["name"]))
                 if tc["arguments"]:
                     yield to_sse(ToolCallArgsEvent(tool_call_id=tc["id"], delta=tc["arguments"]))
                 yield to_sse(ToolCallEndEvent(tool_call_id=tc["id"]))

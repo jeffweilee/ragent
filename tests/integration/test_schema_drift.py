@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from ragent.bootstrap.init_schema import _iter_statements
+from ragent.bootstrap.init_schema import iter_statements
 from tc_utils import tc_image
 
 pytestmark = [pytest.mark.docker]
@@ -46,7 +46,7 @@ def _apply_schema_sql(dsn: str) -> None:
     )
     engine = sqlalchemy.create_engine(dsn)
     with engine.begin() as conn:
-        for stmt in _iter_statements(schema_sql):
+        for stmt in iter_statements(schema_sql):
             conn.execute(text(stmt))
 
 

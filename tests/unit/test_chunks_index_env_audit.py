@@ -36,9 +36,8 @@ def test_build_probes_uses_container_chunks_index_name() -> None:
 def _composition_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Minimum env for `build_container()` to traverse past the env-validation
     front-matter and reach the wiring sites under test."""
-    # T8.5a — the JWT verifier is constructed only when inbound auth is on;
-    # this test exercises chunks-index threading, not auth, so disable it.
-    monkeypatch.setenv("RAGENT_AUTH_DISABLED", "true")
+    # non-JWT auth mode so build_container doesn't require OIDC_*
+    monkeypatch.setenv("RAGENT_AUTH_MODE", "user_header")
     monkeypatch.setenv("MARIADB_DSN", "mysql+aiomysql://u:p@h:3306/db")
     monkeypatch.setenv("AI_API_AUTH_URL", "http://auth.example/token")
     monkeypatch.setenv("AI_LLM_API_J1_TOKEN", "j1-llm")
@@ -100,6 +99,10 @@ def test_composition_threads_es_chunks_index_to_vector_extractor(
         f"expected {_CUSTOM_INDEX!r} (env ES_CHUNKS_INDEX). composition.py "
         "must pass `index=chunks_index_name` — silently using the default "
         "`'chunks_v1'` would write to the wrong ES index in overridden envs."
+    )
+    assert kwargs.get("registry") is not None, (
+        "VectorExtractor must receive registry=embedding_registry (B62 / issue #147) "
+        "so that delete() fans out across stable + candidate indices during lifecycle migration."
     )
 
 

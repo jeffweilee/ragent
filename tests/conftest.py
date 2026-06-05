@@ -33,14 +33,14 @@ from joserfc import jwt as _joserfc_jwt
 from joserfc.jwk import KeySet as _KeySet
 from joserfc.jwk import RSAKey as _RSAKey
 
-# Pre-import ragent.workers.ingest so its @broker.task decorators bind to
+# Pre-import all worker modules so their @broker.task decorators bind to
 # the real broker before any test can monkeypatch
 # ragent.bootstrap.broker.broker. Without this, a test that patches that
-# attribute and then triggers the first-time import of the worker module
-# (e.g. via ragent.reconciler._build_from_env) replaces
-# ingest_pipeline_task with a MagicMock and leaks that replacement into
-# every later test in the run. Invariant pinned by
-# tests/unit/test_worker_decoration_invariant.py.
+# attribute and then triggers the first-time import of a worker module
+# (e.g. via ragent.reconciler._build_from_env) replaces the task with a
+# MagicMock and leaks that replacement into every later test in the run.
+# Invariant pinned by tests/unit/test_worker_decoration_invariant.py.
+import ragent.workers.backfill  # noqa: E402, F401
 import ragent.workers.ingest  # noqa: E402, F401
 
 _OIDC_DOMAIN = "ragent-test.example"
@@ -66,25 +66,32 @@ def _fake_oidc_handler(request: _httpx.Request) -> _httpx.Response:
 
 
 @pytest.fixture
-def oidc_token_manager():
-    """Build ``VerifyingTokenManager`` against an in-process fake OIDC server.
+def oidc_token_manager(oidc_token_manager_factory):
+    """Build ``VerifyingTokenManager`` against an in-process fake OIDC server."""
+    return oidc_token_manager_factory()
 
-    The MockTransport intercepts OIDC discovery + JWKS fetch performed by
-    ``build_token_manager``; subsequent ``verify_jwt`` calls do no HTTP
-    (JWKS is cached on the manager). The test passes its own ``httpx.Client``
-    via the ``client`` seam, then closes it — production code never sees the
-    mock.
+
+@pytest.fixture
+def oidc_token_manager_factory():
+    """Parameterised builder: returns a callable that accepts ``verify_aud`` /
+    ``verify_exp`` keyword args and builds a ``VerifyingTokenManager`` backed
+    by the same in-process fake OIDC server used by ``oidc_token_manager``.
     """
     from ragent.auth.jwt import build_token_manager
 
-    transport = _httpx.MockTransport(_fake_oidc_handler)
-    with _httpx.Client(transport=transport) as client:
-        return build_token_manager(
-            domain=_OIDC_DOMAIN,
-            audience=_OIDC_AUDIENCE,
-            use_https=True,
-            client=client,
-        )
+    def _factory(*, verify_aud: bool = True, verify_exp: bool = True):
+        transport = _httpx.MockTransport(_fake_oidc_handler)
+        with _httpx.Client(transport=transport) as client:
+            return build_token_manager(
+                domain=_OIDC_DOMAIN,
+                audience=_OIDC_AUDIENCE,
+                use_https=True,
+                client=client,
+                verify_aud=verify_aud,
+                verify_exp=verify_exp,
+            )
+
+    return _factory
 
 
 @pytest.fixture
@@ -493,7 +500,7 @@ def dev_env(
     """Apply RAGENT dev-mode env wired to the testcontainer fixtures (B30)."""
     pairs = {
         "RAGENT_ENV": "dev",
-        "RAGENT_AUTH_DISABLED": "true",
+        "RAGENT_AUTH_MODE": "user_header",
         "RAGENT_HOST": "127.0.0.1",
         "AI_API_AUTH_URL": f"{wiremock_url}/auth/api/accesstoken",
         "AI_LLM_API_J1_TOKEN": "test-llm-j1",

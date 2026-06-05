@@ -224,10 +224,159 @@
 |---|---|---|:---:|---|
 | T-twp-ai.1 | Red+Green | • **Achieve:** Accept twp-ai required run input fields and top-level client-provided tool definitions.<br>• **Deliver:** `packages/twp-ai/src/twp_ai/schemas.py` + `packages/twp-ai/tests/test_twp_protocol.py::test_run_agent_input_accepts_twp_ai_tool_shape`. | [x] | Dev |
 | T-twp-ai.2 | Red+Green | • **Achieve:** Emit twp-ai tool lifecycle events for direct LLM tool calls.<br>• **Deliver:** `packages/twp-ai/src/twp_ai/events.py`, `packages/twp-ai/src/twp_ai/agents/direct.py`, and `packages/twp-ai/tests/test_twp_protocol.py::test_direct_agent_emits_twp_ai_tool_lifecycle_events`. | [x] | Dev |
-| T-twp-ai.3 | Red+Green | • **Achieve:** Preserve the current two-turn direct LLM confirmation by translating the tool result back into provider-compatible messages.<br>• **Deliver:** `packages/twp-ai/src/twp_ai/_compose.py` + `packages/twp-ai/tests/test_twp_protocol.py::test_direct_agent_sends_tool_result_to_second_llm_turn`. | [x] | Dev |
+| T-twp-ai.3 | Red+Green | • **Achieve:** Preserve the current two-turn direct LLM confirmation by translating the tool result back into provider-compatible messages. _(Superseded by T-twp-ai.4 — the synthetic confirmation turn was replaced by real client tool-result history.)_<br>• **Deliver:** `packages/twp-ai/src/twp_ai/_compose.py`. | [x] | Dev |
+| T-twp-ai.4 | Red+Green | • **Achieve:** Wait for client tool results — the direct runtime stops after the tool-call lifecycle events (no synthetic `TOOL_CALL_RESULT`, no confirmation turn); a continuation run carrying `role="tool"` messages preserves the real client tool-result history into provider-compatible messages.<br>• **Deliver:** `packages/twp-ai/src/twp_ai/agents/direct.py`, `packages/twp-ai/src/twp_ai/_compose.py` + `packages/twp-ai/tests/test_twp_protocol.py::test_direct_agent_preserves_client_tool_result_history`. | [x] | Dev |
 
 ### Post-merge fix — PR #130 review (2026-05-27)
 
 | # | Category | Fix |
 |---|----------|-----|
 | PR130.F1 | Defensive | `result.get("content") or ""` in sync handler — guard against null/missing LLM content field (KeyError on safety-filtered responses). Gemini review comment. |
+
+---
+
+## Track T-AM — Auth Mode Consolidation
+
+> Replace two-boolean auth config (`RAGENT_AUTH_DISABLED` + `RAGENT_TRUST_X_USER_ID_HEADER`) with a single `RAGENT_AUTH_MODE` enum.
+> New modes: `none` (no header required, `create_user="anonymous"`) and `jwt_prefer_header` (JWT fallback to `X-User-Id`).
+> New JWT verification flags: `RAGENT_JWT_VERIFY_AUD` + `RAGENT_JWT_VERIFY_EXP`.
+
+| # | Category | Task | Status | Owner |
+|---|---|---|:---:|---|
+| T-AM.S1 | Structural | • **Achieve:** `AuthMode` enum + `parse_auth_mode()` as the single source of truth for mode resolution.<br>• **Deliver:** `src/ragent/bootstrap/auth_mode.py` — `AuthMode(str, Enum)` with values `none \| user_header \| jwt_header \| jwt_prefer_header`; `parse_auth_mode()` reads `RAGENT_AUTH_MODE` (default `user_header`); raises `ValueError` on unknown value. Tests: `tests/unit/test_auth_mode_parse.py`. | [x] | Dev |
+| T-AM.1 | Behavioral | • **Achieve:** Guard enforces `RAGENT_AUTH_MODE` rules, replacing old two-bool logic.<br>• **Deliver:** Rewrite `src/ragent/bootstrap/guard.py`; rewrite `tests/unit/test_bootstrap_startup_guard.py` — `none`/`user_header`/`jwt_prefer_header` → `dev` only; `jwt_header` → no env restriction; `jwt_header`/`jwt_prefer_header` → require `OIDC_DOMAIN` + `OIDC_AUDIENCE`. | [x] | Dev |
+| T-AM.2 | Behavioral | • **Achieve:** Middleware + composition handle all 4 modes; `none` injects `"anonymous"`, skips header check; `jwt_prefer_header` tries JWT first, falls back to `X-User-Id`.<br>• **Deliver:** Update `app.py` middleware, `composition.py` JWT-manager guard, `openapi.py` `is_trust_header_mode()`. Tests: extend `tests/unit/test_bootstrap_app_middleware.py` (or create). | [x] | Dev |
+| T-AM.3 | Behavioral | • **Achieve:** `RAGENT_JWT_VERIFY_AUD` (default `true`) + `RAGENT_JWT_VERIFY_EXP` (default `true`) respected by JWT verifier; both `false` require `RAGENT_ENV=dev`.<br>• **Deliver:** Guard checks flags; `build_token_manager()` receives `verify_aud` + `verify_exp`; joserfc claims options updated. Tests: `tests/unit/test_jwt_verify_flags.py`. | [x] | Dev |
+| T-AM.S2 | Structural | • **Achieve:** Remove `RAGENT_AUTH_DISABLED` + `RAGENT_TRUST_X_USER_ID_HEADER` from all source, tests, and docs.<br>• **Deliver:** Delete dead reads in `guard.py`, `app.py`, `composition.py`, `openapi.py`; update `docs/spec/env_vars.md`, `docs/00_spec.md`, `.env.example` if present. | [x] | Dev |
+
+---
+
+## Track T-MCP2 — MCP retrieve tool input/output alignment
+
+> Source: 2026-06-01 review session.
+> Two improvements to `POST /mcp/v1` `retrieve` tool:
+> (1) `inputSchema` hardening — `additionalProperties:false` + richer field descriptions so MCP hosts and agents have an accurate closed schema.
+> (2) Response text aligned with `_render_context()` convention — `[資料來源 #N]` + `---` format with metadata header so calling agents can cite chunks without a second `json.loads`.
+
+| # | Category | Task | Status | Owner |
+|---|---|---|:---:|---|
+| T-MCP2.1 | Behavioral | • **Achieve:** `inputSchema` is a closed schema — unknown arguments are rejected with -32602.<br>• **Deliver:** `tests/unit/test_mcp_tools_call_retrieve.py::test_tools_call_retrieve_rejects_unknown_argument` — extra field → -32602 `MCP_TOOL_INPUT_INVALID`. Add `additionalProperties:false` + improve field descriptions. | [x] | Dev |
+| T-MCP2.2 | Behavioral | • **Achieve:** `tools/call retrieve` response `content[0].text` is `[資料來源 #N]`-formatted text, not a JSON blob.<br>• **Deliver:** `tests/unit/test_mcp_tools_call_retrieve.py::test_tools_call_retrieve_text_format_*` (numbered sources, metadata header, empty result, excerpt truncation). Update existing JSON-parse tests to match new format. | [x] | Dev |
+| T-MCP2.3 | Behavioral | • **Achieve:** Header metadata fields (source_app, document_id, source_title) have CR/LF stripped to prevent injection of fake `[資料來源 #N]` header lines.<br>• **Deliver:** `tests/unit/test_mcp_tools_call_retrieve.py::test_tools_call_retrieve_sanitizes_newlines_in_header_metadata`; `_header_field()` helper in `routers/mcp.py`; integration test contract updated to `[資料來源 #N]` text format. | [x] | Dev |
+
+
+
+---
+
+## Track T-CA — ChatAgent Proxy Endpoints
+
+> Three proxy endpoints under `/chatagent/v1` that forward to external services.
+> All share `CHATAGENT_AUTH` outbound header and `CHATAGENT_AP_NAME` config.
+> Each route is conditionally registered based on its URL env var.
+
+| # | Category | Task | Status | Owner |
+|---|---|---|:---:|---|
+| T-CA.S1 | Structural | • **Achieve:** `CHATAGENT_UPSTREAM_ERROR`, `CHATAGENT_TIMEOUT`, `CHATAGENT_RATE_LIMITED` in `HttpErrorCode`.<br>• **Deliver:** `src/ragent/errors/codes.py`. | [x] | Dev |
+| T-CA.S2 | Structural | • **Achieve:** `ChatAgentRequest(ChatRequest)` with optional `session: str \| None`.<br>• **Deliver:** `src/ragent/schemas/chatagent.py`; `tests/unit/test_chatagent_schema.py`. | [x] | Dev |
+| T-CA.R1 | Behavioral | • **Achieve:** `POST /chatagent/v1` proxies to `CHATAGENT_API_URL`; user_id (RAGENT_JWT_CLAIM_USER_ID), session generation, rate limiting, error mapping.<br>• **Deliver:** `src/ragent/routers/chatagent.py::create_chatagent_router`; `tests/unit/test_chatagent_router.py` POST tests. | [x] | Dev |
+| T-CA.R2 | Behavioral | • **Achieve:** `GET /chatagent/v1/sessionList` proxies to `CHATAGENT_SESSIONLIST_API_URL`; injects user/apName.<br>• **Deliver:** route in `chatagent.py`; GET sessionList unit tests. | [x] | Dev |
+| T-CA.R3 | Behavioral | • **Achieve:** `GET /chatagent/v1/session` proxies to `CHATAGENT_SESSION_API_URL`; injects user/apName/session.<br>• **Deliver:** route in `chatagent.py`; GET session unit tests. | [x] | Dev |
+| T-CA.I1 | Behavioral | • **Achieve:** Routes registered conditionally by URL env var; integration tests via TestClient + mocked httpx.<br>• **Deliver:** `tests/integration/test_chatagent_endpoint.py`. | [x] | Dev |
+| T-CA.W1 | Behavioral | • **Achieve:** Composition root reads 5 new env vars; app.py registers router when any URL is set.<br>• **Deliver:** `composition.py` Container fields + build_container(); `app.py` registration block. | [x] | Dev |
+| T-CA.D1 | Structural | • **Achieve:** All new env vars documented (B28); API.md + third-party API doc updated.<br>• **Deliver:** `docs/spec/env_vars.md`, `docs/API.md`, `docs/00_rule_third_party_api.md`. | [x] | Dev |
+| T-CA.R4 | Behavioral | • **Achieve:** `POST /chatagent/v1` response body includes `session` field — the value used for this request (either caller-supplied or auto-generated via `new_id()`).<br>• **Deliver:** `"session"` key added to `JSONResponse` dict in `chatagent.py`; two new tests in `test_chatagent_router.py` covering supplied vs generated session echo. | [x] | Dev |
+| T-CA.R5 | Behavioral | • **Achieve:** `PUT /chatagent/v1/session` proxies to `CHATAGENT_SESSION_API_URL`; injects `apName`/`user`; forwards `session`+`sessionName` from request body; `SessionRenameRequest` schema (`session`, `sessionName` required).<br>• **Deliver:** route + schema in `chatagent.py`/`schemas/chatagent.py`; unit tests in `test_chatagent_router.py`; integration tests in `test_chatagent_endpoint.py`. | [x] | Dev |
+| T-CA.R6 | Behavioral | • **Achieve:** `DELETE /chatagent/v1/session` proxies to `CHATAGENT_SESSION_API_URL`; injects `apName`/`user`; forwards `session` from request body; `SessionDeleteRequest` schema (`session` required).<br>• **Deliver:** route + schema in `chatagent.py`/`schemas/chatagent.py`; unit tests in `test_chatagent_router.py`; integration tests in `test_chatagent_endpoint.py`. | [x] | Dev |
+| T-CA.R7 | Behavioral | • **Achieve:** `_proxy_write` handles empty/204 upstream responses — forwards `Response(status_code)` instead of calling `.json()` on empty body, preventing false 502.<br>• **Deliver:** guard in `_proxy_write`; `test_session_rename_no_content_204_returns_204` and `test_session_delete_no_content_204_returns_204`. | [x] | Dev |
+
+
+---
+
+## Track T-DEL1 — VectorExtractor.delete() candidate-index alignment (issue #147)
+
+> `VectorExtractor.delete()` only cleans the stable index. During CANDIDATE/CUTOVER lifecycle,
+> `DocumentEmbedder._run_dual` writes to both `stable_index` and `candidate_index`.
+> Deleting a document in that window orphans chunks in the candidate index.
+> Fix: inject `ActiveModelRegistry` (via `_IndexProvider` Protocol) into `VectorExtractor` so
+> `delete()` fans out across all live write targets. Decision Log: B62.
+
+| # | Category | Task | Status | Owner |
+|---|---|---|:---:|---|
+| T-DEL1.1 | Behavioral | • **Achieve:** `VectorExtractor.delete()` issues `delete_by_query` for every live index (`stable_index` + `candidate_index` when not None).<br>• **Deliver:** `_IndexProvider` Protocol in `vector.py`; `registry: _IndexProvider \| None` constructor arg; `_delete_indices()` helper; tests in `tests/unit/test_vector_extractor.py` — stable-only and dual-index cases. | [x] | Dev |
+| T-DEL1.2 | Behavioral | • **Achieve:** Composition wires `ActiveModelRegistry` into `VectorExtractor` so production deployments use the live-index fan-out path.<br>• **Deliver:** Reorder `composition.py` to build `embedding_registry` before `VectorExtractor`; pass `registry=embedding_registry`. Update `tests/unit/test_chunks_index_env_audit.py` to assert `registry` kwarg is wired. | [x] | Dev |
+
+## Track T-DEL2 — PR #149 review findings (Gemini + Codex)
+
+> Two review findings on PR #149:
+> (1) Gemini: `_delete_indices()` must deduplicate when `candidate == stable`.
+> (2) Codex: `_PerTickRunner._tick()` must refresh `embedding_registry` before `fan_out_delete`
+>     so the cold-cache path during CANDIDATE/CUTOVER doesn't silently skip candidate cleanup.
+
+| # | Category | Task | Status | Owner |
+|---|---|---|:---:|---|
+| T-DEL2.1 | Behavioral | • **Achieve:** `_delete_indices()` deduplicates — if `candidate_index == stable_index`, only one `delete_by_query` call is issued.<br>• **Deliver:** Guard `candidate and candidate != stable` in `_delete_indices()`; `test_delete_indices_deduplicates_when_candidate_equals_stable` in `test_vector_extractor.py`. | [x] | Dev |
+| T-DEL2.2 | Behavioral | • **Achieve:** Reconciler warms `ActiveModelRegistry` before fan-out so `VectorExtractor.delete()` sees live indices during CANDIDATE/CUTOVER.<br>• **Deliver:** `await container.embedding_registry.refresh()` in `_PerTickRunner._tick()`; source-inspection test `test_per_tick_runner_refreshes_embedding_registry` in `test_retired_embedding_sweep.py`. Update `test_engine_pool_config.py` mock. | [x] | Dev |
+
+---
+
+## Track T-CAv2 — ChatAgent v2 Raw-Proxy Endpoint
+
+> Source: 2026-06-03 feature request.
+> Adds `POST /chatagent/v2` — a thin raw-proxy that accepts the upstream payload shape
+> directly (minus the three server-managed fields `apName`/`user`/`userToken`), forwards
+> it verbatim, and streams the upstream response back to the client unchanged.
+>
+> **Key differences from v1:**
+> - Input schema mirrors the upstream wire format; server injects `apName`, `user`,
+>   `userToken` before forwarding (both streaming and non-streaming paths).
+> - Output is the upstream response forwarded as-is (no JSON reshaping).
+> - `stream: true` triggers chunked forwarding via `StreamingResponse`.
+
+### Input / Output Samples
+
+#### Non-streaming (`stream: false`)
+
+**Client → ragent**
+```
+POST /chatagent/v2
+Content-Type: application/json
+X-User-Id: alice
+
+{"metadata": {"session": "sess-abc"}, "inputData": {"message": "What are the product features?"}, "stream": false}
+```
+
+**ragent → upstream** *(server injects apName, user, userToken — in both streaming and non-streaming)*
+```json
+{"metadata": {"apName": "MyApp", "session": "sess-abc", "user": "alice", "userToken": "Bearer eyJ..."}, "inputData": {"message": "What are the product features?"}, "stream": false}
+```
+
+**Upstream → client** *(forwarded byte-for-byte)*
+```json
+{"returnCode": 96200, "returnData": {"messages": [{"role": "assistant", "content": "The features include...", "message_id": "m1"}]}}
+```
+
+#### Streaming (`stream: true`)
+
+**Client → ragent**
+```
+POST /chatagent/v2
+Content-Type: application/json
+X-User-Id: alice
+
+{"metadata": {"session": "sess-abc"}, "inputData": {"message": "Summarise the release notes."}, "stream": true}
+```
+
+**Upstream → client** *(Transfer-Encoding: chunked; Content-Type copied from upstream)*
+```
+{"returnCode": 96200, "returnData": {"delta": "The release notes "}}
+{"returnCode": 96200, "returnData": {"delta": "cover..."}}
+{"returnCode": 96200, "returnData": {"done": true}}
+```
+
+| # | Category | Task | Status | Owner |
+|---|---|---|:---:|---|
+| T-CAv2.S1 | Structural | • **Achieve:** Accept arbitrary JSON body (`dict[str, Any]`) — no schema enforcement; server injects `apName`/`user`/`userToken` into `metadata`, extracts `session` and `stream` by key lookup, forwards the rest verbatim.<br>• **Deliver:** `src/ragent/routers/chatagent_v2.py` uses raw dict body; `ChatAgentV2*` schema models removed. | [x] | Dev |
+| T-CAv2.R1 | Behavioral | • **Achieve:** `POST /chatagent/v2` non-streaming — inject server fields, POST to upstream, forward raw bytes + upstream `Content-Type`.<br>• **Deliver:** `src/ragent/routers/chatagent_v2.py::create_chatagent_v2_router()`; unit tests for happy path, timeout, upstream error. | [x] | Dev |
+| T-CAv2.R2 | Behavioral | • **Achieve:** `POST /chatagent/v2` streaming — `stream: true` uses unified `build_request`+`send(stream=True)` path, validates upstream status before committing HTTP response, returns `StreamingResponse` via `iterate_in_threadpool` forwarding each byte-chunk immediately with upstream Content-Type.<br>• **Deliver:** Streaming branch in `chatagent_v2.py`; unit tests assert all chunks forwarded, upstream Content-Type forwarded, upstream error returns 502 before first byte. | [x] | Dev |
+| T-CAv2.R3 | Behavioral | • **Achieve:** Rate limiting with key `"chatagent:{user_id}"` → 429 `CHATAGENT_RATE_LIMITED`.<br>• **Deliver:** Unit test `test_rate_limited_returns_429`. | [x] | Dev |
+| T-CAv2.W1 | Behavioral | • **Achieve:** Router registered in `bootstrap/app.py` under the existing `CHATAGENT_API_URL` guard.<br>• **Deliver:** `app.py` wiring; `tests/integration/test_chatagent_v2_endpoint.py` — non-streaming, streaming, error paths, session auto-generation. | [x] | Dev |

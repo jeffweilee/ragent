@@ -13,6 +13,7 @@ from fastapi.responses import Response
 from starlette.middleware.cors import CORSMiddleware
 
 from ragent.auth.jwt import JwtAuthError, verify_jwt
+from ragent.bootstrap.auth_mode import AuthMode, parse_auth_mode
 from ragent.bootstrap.guard import enforce
 from ragent.bootstrap.init_schema import init_schema
 from ragent.bootstrap.logging_config import configure_logging
@@ -21,7 +22,7 @@ from ragent.bootstrap.metrics import (
     make_document_stats_fetcher,
     setup_metrics,
 )
-from ragent.bootstrap.openapi import install_openapi, is_trust_header_mode
+from ragent.bootstrap.openapi import install_openapi
 from ragent.bootstrap.telemetry import setup_tracing
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
@@ -29,13 +30,16 @@ from ragent.middleware.logging import SCOPE_USER_ID_KEY, RequestLoggingMiddlewar
 from ragent.routers.admin_embedding import create_router as create_admin_embedding_router
 from ragent.routers.admin_ingest import create_router as create_upload_ingest_router
 from ragent.routers.chat import create_chat_router
+from ragent.routers.chatagent import create_chatagent_router
+from ragent.routers.chatagent_v2 import create_chatagent_v2_router
 from ragent.routers.feedback import create_feedback_router
 from ragent.routers.health import create_health_router
 from ragent.routers.ingest import create_router as create_ingest_router
 from ragent.routers.mcp import create_mcp_router
 from ragent.routers.retrieve import create_retrieve_router
-from ragent.utility.env import bool_env, str_env
+from ragent.utility.env import float_env as _float_env
 from ragent.utility.env import list_env as _list_env
+from ragent.utility.env import str_env
 
 logger = structlog.get_logger(__name__)
 
@@ -72,21 +76,18 @@ _DEFAULT_JWT_CLAIM = "preferred_username"
 _REQUIRED_TASK_LABELS = ("ingest.pipeline", "ingest.supersede")
 
 
-async def _check_infra_ready(container: Any, broker: Any) -> None:
-    """Verify DB, ES, and TaskIQ broker are ready before serving traffic.
+async def _check_infra_ready(probes: dict, broker: Any, container: Any) -> None:
+    """Verify all readiness probes, TaskIQ tasks, and AI token exchange before serving traffic.
 
     Raises ``RuntimeError`` on first failure so the lifespan aborts boot
     rather than silently degrading on first request.
     """
-    from ragent.routers.health_probes import probe_es, probe_mariadb, run_probe
+    from ragent.routers.health_probes import run_probe
 
-    db_failure = await run_probe("mariadb", probe_mariadb(container.engine))
-    if db_failure is not None:
-        raise RuntimeError(f"infra not ready: mariadb {db_failure.error_code}: {db_failure.detail}")
-
-    es_failure = await run_probe("es", probe_es(container.es_client, index_names=[]))
-    if es_failure is not None:
-        raise RuntimeError(f"infra not ready: es {es_failure.error_code}: {es_failure.detail}")
+    for name, probe_fn in probes.items():
+        failure = await run_probe(name, probe_fn)
+        if failure is not None:
+            raise RuntimeError(f"infra not ready: {name} {failure.error_code}: {failure.detail}")
 
     for label in _REQUIRED_TASK_LABELS:
         if broker.find_task(label) is None:
@@ -147,34 +148,29 @@ def _register_unhandled_exception_handler(app: FastAPI) -> None:
 def _x_user_id_middleware(
     app: FastAPI,
     *,
+    auth_mode: AuthMode = AuthMode.user_header,
     user_id_header: str = _DEFAULT_USER_ID_HEADER,
     jwt_header: str = _DEFAULT_JWT_HEADER,
     jwt_claim: str = _DEFAULT_JWT_CLAIM,
-    trust_header: bool = True,
-    auth_disabled: bool = True,
     token_manager: Any = None,
 ) -> None:
-    """User-identity middleware (§3.5, rewritten 2026-05-20).
+    """User-identity middleware (§3.5, T-AM.2).
 
-    Branch matrix:
-      * ``auth_disabled=True`` (P1 default) OR ``trust_header=True`` (P2 dev override):
-        require ``<user_id_header>`` non-empty; 422 ``MISSING_USER_ID`` otherwise.
-      * ``auth_disabled=False`` AND ``trust_header=False`` (P2 prod): read
-        ``<jwt_header>``, verify via joserfc against the OIDC JWKS, extract
-        ``<jwt_claim>``, and inject the result into ``<user_id_header>`` on
-        the request scope so downstream routers (whose ``Header(alias=...)``
-        is bound to the canonical name) observe it transparently. Requires
-        ``token_manager`` to be set (constructed by ``build_container``).
+    Mode matrix:
+      * ``none``: inject ``"anonymous"`` unconditionally; no header required.
+      * ``user_header``: require ``<user_id_header>`` non-empty; 422 otherwise.
+      * ``jwt_header``: verify JWT, extract claim, inject as user_id; 401 on failure.
+      * ``jwt_prefer_header``: verify JWT if present; fallback to ``<user_id_header>``;
+        422 if neither is present.
     """
 
     user_id_header_lower = user_id_header.lower().encode("latin-1")
     jwt_header_lower = jwt_header.lower()
-    trust_header_mode = is_trust_header_mode(auth_disabled=auth_disabled, trust_header=trust_header)
-    if not trust_header_mode and token_manager is None:
+    needs_jwt = auth_mode in (AuthMode.jwt_header, AuthMode.jwt_prefer_header)
+    if needs_jwt and token_manager is None:
         raise RuntimeError(
-            "JWT auth mode requires a token_manager; "
-            "build_container() must construct one when "
-            "RAGENT_AUTH_DISABLED=false and RAGENT_TRUST_X_USER_ID_HEADER=false."
+            f"RAGENT_AUTH_MODE={auth_mode!r} requires a token_manager; "
+            "build_container() must construct one for jwt_header/jwt_prefer_header modes."
         )
 
     def _inject_header(request: Request, value: str) -> None:
@@ -206,7 +202,12 @@ def _x_user_id_middleware(
         if request.url.path in _PUBLIC_PATHS:
             return await call_next(request)
 
-        if trust_header_mode:
+        if auth_mode == AuthMode.none:
+            _inject_header(request, "anonymous")
+            structlog.contextvars.bind_contextvars(user_id="anonymous")
+            return await call_next(request)
+
+        if auth_mode == AuthMode.user_header:
             inbound = request.headers.get(user_id_header)
             if not inbound:
                 logger.warning(
@@ -228,26 +229,51 @@ def _x_user_id_middleware(
             structlog.contextvars.bind_contextvars(user_id=inbound)
             return await call_next(request)
 
-        token = request.headers.get(jwt_header_lower) or ""
-        try:
-            user_id = verify_jwt(token, claim_user_id=jwt_claim, token_manager=token_manager)
-        except JwtAuthError as exc:
-            logger.warning(
-                "api.jwt_invalid",
-                path=request.url.path,
-                method=request.method,
-                error_code=exc.error_code,
-                http_status=exc.http_status,
-            )
-            return problem(exc.http_status, exc.error_code, "Authentication failed")
+        def _verify_or_error(token: str) -> str | Response:
+            """Return user_id on success or error Response on failure."""
+            try:
+                return verify_jwt(token, claim_user_id=jwt_claim, token_manager=token_manager)
+            except JwtAuthError as exc:
+                logger.warning(
+                    "api.jwt_invalid",
+                    path=request.url.path,
+                    method=request.method,
+                    error_code=exc.error_code,
+                    http_status=exc.http_status,
+                )
+                return problem(exc.http_status, exc.error_code, "Authentication failed")
 
-        _inject_header(request, user_id)
-        # Same contextvar binding as the trust-header branch — RequestLogging
+        if auth_mode == AuthMode.jwt_prefer_header:
+            token = request.headers.get(jwt_header_lower) or ""
+            if token:
+                res = _verify_or_error(token)
+                if isinstance(res, Response):
+                    return res
+                _inject_header(request, res)
+                structlog.contextvars.bind_contextvars(user_id=res)
+                return await call_next(request)
+            inbound = request.headers.get(user_id_header)
+            if not inbound:
+                return problem(
+                    422, HttpErrorCode.MISSING_USER_ID, f"{user_id_header} header is required"
+                )
+            request.scope[SCOPE_USER_ID_KEY] = inbound
+            structlog.contextvars.bind_contextvars(user_id=inbound)
+            return await call_next(request)
+
+        # jwt_header mode
+        token = request.headers.get(jwt_header_lower) or ""
+        res = _verify_or_error(token)
+        if isinstance(res, Response):
+            return res
+
+        _inject_header(request, res)
+        # Same contextvar binding as the user_header branch — RequestLogging
         # Middleware reads X-User-Id from request.headers BEFORE call_next, so
         # in JWT mode the user id is absent at the outer layer; binding here
         # makes the JWT-derived id available to every subsequent log emission
         # (handler-time logs + the outer api.request log via merge_contextvars).
-        structlog.contextvars.bind_contextvars(user_id=user_id)
+        structlog.contextvars.bind_contextvars(user_id=res)
         return await call_next(request)
 
 
@@ -264,8 +290,6 @@ def _register_document_stats_collector() -> None:
     global _document_stats_registered
     if _document_stats_registered:
         return
-    import os
-
     from prometheus_client import REGISTRY
 
     dsn = os.environ.get("MARIADB_DSN", "")
@@ -315,6 +339,7 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
     from ragent.services.ingest_service import IngestService
 
     container = get_container()
+    probes = _build_probes(container)
     # IngestService is async (post-aiomysql migration); FastAPI awaits it directly,
     # so the producer-side dispatcher must also be async to avoid blocking the loop.
     dispatcher = TaskiqDispatcher(taskiq_broker)
@@ -326,13 +351,13 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
         # /readyz instead of silently 500-ing on first ingest.
         await taskiq_broker.startup()
         init_schema()
-        await _check_infra_ready(container, taskiq_broker)
+        await _check_infra_ready(probes, taskiq_broker, container)
         # B50 T-EM.21: warm the embedding-model registry so the first
         # ingest/chat after boot doesn't raise ActiveModelRegistryNotReady.
         # Refresh failures degrade to stale-warning per the registry's
         # contract — they don't abort boot.
         await container.embedding_registry.refresh()
-        logger.info("api.startup.infra_ready", db=True, es=True, broker=True)
+        logger.info("api.startup.infra_ready", probes=list(probes.keys()), broker=True)
         try:
             yield
         finally:
@@ -397,6 +422,41 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
             excerpt_max_chars=container.excerpt_max_chars,
         )
     )
+    if any(
+        [
+            container.chatagent_api_url,
+            container.chatagent_sessionlist_api_url,
+            container.chatagent_session_api_url,
+        ]
+    ):
+        app.include_router(
+            create_chatagent_router(
+                http_client=container.http,
+                chatagent_ap_name=container.chatagent_ap_name,
+                chatagent_auth=container.chatagent_auth,
+                chatagent_api_url=container.chatagent_api_url,
+                chatagent_sessionlist_api_url=container.chatagent_sessionlist_api_url,
+                chatagent_session_api_url=container.chatagent_session_api_url,
+                rate_limiter=container.rate_limiter,
+                rate_limit=container.rate_limit,
+                rate_limit_window=container.rate_limit_window,
+                jwt_header=str_env("RAGENT_JWT_HEADER", _DEFAULT_JWT_HEADER),
+                timeout=_float_env("CHATAGENT_TIMEOUT_SECONDS", 30.0),
+            )
+        )
+        app.include_router(
+            create_chatagent_v2_router(
+                http_client=container.http,
+                chatagent_ap_name=container.chatagent_ap_name,
+                chatagent_auth=container.chatagent_auth,
+                chatagent_api_url=container.chatagent_api_url,
+                rate_limiter=container.rate_limiter,
+                rate_limit=container.rate_limit,
+                rate_limit_window=container.rate_limit_window,
+                jwt_header=str_env("RAGENT_JWT_HEADER", _DEFAULT_JWT_HEADER),
+                timeout=_float_env("CHATAGENT_TIMEOUT_SECONDS", 30.0),
+            )
+        )
     if container.feedback_hmac_secret is not None:
         app.include_router(
             create_feedback_router(
@@ -419,15 +479,16 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
             broker=dispatcher,
         )
     )
-    app.include_router(create_health_router(probes=_build_probes(container)))
+    app.include_router(create_health_router(probes=probes))
 
-    from twp_ai import DirectLLMAgent, create_router as create_twp_router
+    from twp_ai import DirectLLMAgent
+    from twp_ai import create_router as create_twp_router
     from twp_ai.callers.ragent import RagentCaller
 
     app.include_router(
         create_twp_router(
             DirectLLMAgent(RagentCaller(container.llm_client)),
-            default_model=os.environ.get("TWP_DEFAULT_MODEL", ""),
+            default_model=str_env("TWP_DEFAULT_MODEL", ""),
         ),
         prefix="/twp/v1",
     )
@@ -438,23 +499,20 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
 
     # Single env read so middleware and Swagger doc derive from the same
     # values — flipping any of these flips both at once (T8.D1).
+    _auth_mode = parse_auth_mode()
     _user_id_header = str_env("RAGENT_USER_ID_HEADER", _DEFAULT_USER_ID_HEADER)
     _jwt_header = str_env("RAGENT_JWT_HEADER", _DEFAULT_JWT_HEADER)
-    _trust_header = bool_env("RAGENT_TRUST_X_USER_ID_HEADER", False)
-    _auth_disabled = bool_env("RAGENT_AUTH_DISABLED", False)
     _x_user_id_middleware(
         app,
+        auth_mode=_auth_mode,
         user_id_header=_user_id_header,
         jwt_header=_jwt_header,
         jwt_claim=str_env("RAGENT_JWT_CLAIM_USER_ID", _DEFAULT_JWT_CLAIM),
-        trust_header=_trust_header,
-        auth_disabled=_auth_disabled,
         token_manager=container.auth_token_manager,
     )
     install_openapi(
         app,
-        auth_disabled=_auth_disabled,
-        trust_header=_trust_header,
+        auth_mode=_auth_mode,
         user_id_header=_user_id_header,
         jwt_header=_jwt_header,
         public_paths=_PUBLIC_PATHS,

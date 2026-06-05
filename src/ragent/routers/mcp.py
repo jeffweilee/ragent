@@ -105,39 +105,41 @@ _RETRIEVE_TOOL_SCHEMA: dict[str, Any] = {
     "annotations": {"readOnlyHint": True},
     "inputSchema": {
         "type": "object",
+        "additionalProperties": False,
         "properties": {
             "query": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Natural-language query.",
+                "description": "Natural-language search query.",
             },
             "top_k": {
                 "type": "integer",
                 "minimum": 1,
                 "maximum": 200,
                 "default": DEFAULT_TOP_K,
+                "description": f"Number of chunks to return (1–200, default {DEFAULT_TOP_K}).",
             },
             "source_app": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 64,
-                "description": "Optional ES term filter.",
+                "description": "Exact-match filter on the source application name.",
             },
             "source_meta": {
                 "type": "string",
                 "minLength": 1,
                 "maxLength": 1024,
-                "description": "Optional ES term filter.",
+                "description": "Exact-match filter on the document's source_meta tag.",
             },
             "min_score": {
                 "type": "number",
                 "minimum": 0,
-                "description": "Optional post-pipeline score floor.",
+                "description": "Drop chunks whose relevance score is below this threshold.",
             },
             "dedupe": {
                 "type": "boolean",
                 "default": False,
-                "description": "Keep one chunk per document_id.",
+                "description": "When true, keep only the highest-scored chunk per document_id.",
             },
         },
         "required": ["query"],
@@ -171,6 +173,42 @@ def _validate_retrieve_args(args: Any) -> None:
             HttpErrorCode.MCP_TOOL_INPUT_INVALID.value,
             f"{location}: {exc.message}",
         ) from exc
+
+
+def _header_field(value: str | None) -> str:
+    """Strip CR/LF from a metadata value to keep it on a single header line."""
+    return (value or "").replace("\n", " ").replace("\r", "")
+
+
+def _render_chunks(entries: list[dict]) -> str:
+    """Format retrieve entries as [資料來源 #N]-labelled text for MCP callers.
+
+    Mirrors the `_render_context()` skeleton used in chat prompt injection so
+    that calling agents can cite chunks with the same [N] convention. Metadata
+    (score, source_app, document_id, title) is included in the header line
+    because MCP callers are agents that need it for citation and filtering —
+    unlike the in-chat LLM where metadata is intentionally hidden.
+    """
+    if not entries:
+        return "Found 0 chunk(s)."
+    parts = [f"Found {len(entries)} chunk(s).\n"]
+    for i, entry in enumerate(entries, start=1):
+        score = entry.get("score")
+        source_app = _header_field(entry.get("source_app"))
+        doc_id = _header_field(entry.get("document_id"))
+        title = _header_field(entry.get("source_title"))
+        header = f"[資料來源 #{i}]"
+        if score is not None:
+            header += f" score={score:.2f}"
+        if source_app:
+            header += f" | source_app={source_app}"
+        if doc_id:
+            header += f" | document_id={doc_id}"
+        if title:
+            header += f" | title={title}"
+        excerpt = entry.get("excerpt") or ""
+        parts.append(f"{header}\n{excerpt}\n---")
+    return "\n".join(parts)
 
 
 # Stateless handlers — composed before per-router state (the retrieval
@@ -229,9 +267,9 @@ def create_mcp_router(
             ) from exc
         if arguments.get("dedupe"):
             docs = dedupe_by_document(docs)
-        payload = {"chunks": [doc_to_source_entry(d, max_chars=excerpt_max_chars) for d in docs]}
+        entries = [doc_to_source_entry(d, max_chars=excerpt_max_chars) for d in docs]
         return {
-            "content": [{"type": "text", "text": json.dumps(payload)}],
+            "content": [{"type": "text", "text": _render_chunks(entries)}],
             "isError": False,
         }
 

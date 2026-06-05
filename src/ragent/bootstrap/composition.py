@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from ragent.bootstrap.auth_mode import AuthMode, parse_auth_mode
 from ragent.utility.env import bool_env as _bool_env
 from ragent.utility.env import float_env as _float_env
 from ragent.utility.env import int_env as _int_env
@@ -50,11 +51,17 @@ class Container:
     ingest_list_max_limit: int
     ingest_upload_max_bytes: int
     excerpt_max_chars: int
-    # T8.5a — joserfc-based JWT verifier (VerifyingTokenManager) for inbound
-    # JWT verification. ``None`` when ``RAGENT_AUTH_DISABLED=true`` or
-    # ``RAGENT_TRUST_X_USER_ID_HEADER=true``; the middleware uses the
-    # header-trust branch in those cases.
+    # T8.5a / T-AM — joserfc-based JWT verifier (VerifyingTokenManager) for
+    # inbound JWT verification. ``None`` for non-JWT auth modes (none /
+    # user_header); set for jwt_header / jwt_prefer_header.
     auth_token_manager: Any = None
+    # T-CA — chatagent proxy config. URLs are None when env vars are unset; the
+    # app only registers routes whose URLs are configured.
+    chatagent_api_url: str | None = None
+    chatagent_sessionlist_api_url: str | None = None
+    chatagent_session_api_url: str | None = None
+    chatagent_ap_name: str = "ragent"
+    chatagent_auth: str | None = None
 
 
 def build_container() -> Container:
@@ -189,23 +196,14 @@ def build_container() -> Container:
 
     rate_limiter = RateLimiter.from_env()
 
-    registry = PluginRegistry()
-    registry.register(
-        VectorExtractor(
-            repo=doc_repo,
-            chunks={},  # v2: chunks live in ES; vector plugin is a no-op stub.
-            embedder=embedding_client,
-            es=es_client,
-            index=chunks_index_name,
-        )
-    )
-    registry.register(StubGraphExtractor())
-
     # B50 T-EM.21 — Embedding-model lifecycle plumbing.
     # SystemSettingsRepository sits over the same engine as DocumentRepository
     # (table `system_settings` from migration 009). ActiveModelRegistry caches
     # the four `embedding.*` rows with a TTL refresh; lifespan startup calls
     # `await registry.refresh()` so query/ingest paths never see a cold cache.
+    # Constructed before VectorExtractor so that registry= can be injected
+    # (B62 — delete() must fan out across stable + candidate indices during
+    # CANDIDATE/CUTOVER lifecycle; see issue #147).
     system_settings_repo = SystemSettingsRepository(engine=engine)
     embedding_registry = ActiveModelRegistry(
         settings_repo=system_settings_repo,
@@ -213,6 +211,20 @@ def build_container() -> Container:
         chunks_read_alias=chunks_read_alias,
         chunks_fallback_index=chunks_index_name,
     )
+
+    registry = PluginRegistry()
+    registry.register(
+        VectorExtractor(
+            repo=doc_repo,
+            chunks={},  # v2: extract() is a no-op; delete() uses delete_by_query by document_id.
+            embedder=embedding_client,
+            es=es_client,
+            index=chunks_index_name,
+            registry=embedding_registry,
+        )
+    )
+    registry.register(StubGraphExtractor())
+
     embedding_lifecycle_service = EmbeddingLifecycleService(
         settings_repo=system_settings_repo,
         es_client=es_client,
@@ -310,14 +322,12 @@ def build_container() -> Container:
             timeout=_float_env("UNPROTECT_TIMEOUT_SECONDS", 30.0),
         )
 
-    # T8.5a — Build the joserfc-based JWKS verifier iff inbound JWT auth is on.
-    # OIDC discovery + JWKS are fetched HERE (boot-time) so a misconfigured
-    # OIDC_DOMAIN aborts startup rather than 500-ing the first request; JWKS
-    # is then cached for the manager's lifetime (§3.5 cache-reuse).
+    # T8.5a / T-AM.2 — Build the joserfc-based JWKS verifier iff inbound JWT
+    # auth is on. OIDC discovery + JWKS are fetched HERE (boot-time) so a
+    # misconfigured OIDC_DOMAIN aborts startup rather than 500-ing the first
+    # request; JWKS is then cached for the manager's lifetime (§3.5 cache-reuse).
     auth_token_manager: Any = None
-    if not _bool_env("RAGENT_AUTH_DISABLED", False) and not _bool_env(
-        "RAGENT_TRUST_X_USER_ID_HEADER", False
-    ):
+    if parse_auth_mode() in (AuthMode.jwt_header, AuthMode.jwt_prefer_header):
         from ragent.auth.jwt import build_token_manager
 
         auth_token_manager = build_token_manager(
@@ -325,7 +335,15 @@ def build_container() -> Container:
             audience=_require("OIDC_AUDIENCE"),
             use_https=_bool_env("OIDC_USE_HTTPS", True),
             verify_ssl=_bool_env("OIDC_VERIFY_SSL", True),
+            verify_aud=_bool_env("RAGENT_JWT_VERIFY_AUD", True),
+            verify_exp=_bool_env("RAGENT_JWT_VERIFY_EXP", True),
         )
+
+    chatagent_api_url = os.environ.get("CHATAGENT_API_URL") or None
+    chatagent_sessionlist_api_url = os.environ.get("CHATAGENT_SESSIONLIST_API_URL") or None
+    chatagent_session_api_url = os.environ.get("CHATAGENT_SESSION_API_URL") or None
+    chatagent_ap_name = os.environ.get("CHATAGENT_AP_NAME", "ragent")
+    chatagent_auth = os.environ.get("CHATAGENT_AUTH") or None
 
     return Container(
         token_managers=(llm_tm, embedding_tm, rerank_tm),
@@ -358,6 +376,11 @@ def build_container() -> Container:
         ingest_upload_max_bytes=inline_max_bytes,
         excerpt_max_chars=excerpt_max_chars,
         auth_token_manager=auth_token_manager,
+        chatagent_api_url=chatagent_api_url,
+        chatagent_sessionlist_api_url=chatagent_sessionlist_api_url,
+        chatagent_session_api_url=chatagent_session_api_url,
+        chatagent_ap_name=chatagent_ap_name,
+        chatagent_auth=chatagent_auth,
     )
 
 

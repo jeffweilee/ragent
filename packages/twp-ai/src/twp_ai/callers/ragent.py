@@ -33,7 +33,7 @@ class RagentCaller:
     LLM API is OpenAI-compatible so no further translation is needed.
     """
 
-    def __init__(self, llm_client: "LLMClient") -> None:
+    def __init__(self, llm_client: LLMClient) -> None:
         self._client = llm_client
 
     def stream_events(
