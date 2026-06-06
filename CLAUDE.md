@@ -49,7 +49,12 @@ Whenever team start to work or user says "go" or "continue", follow these steps 
     the freshness window, AND the audit log shows BOTH /simplify and /review
     ran for the current diff. It then consumes the marker.)_
 10. **Documentation**: Follow "RESOURCES" Section to update each document accordingly.
-11. **Next**: Start new round and repeat the workflow until all plans matches successful criteria.
+11. **PR**: After every `git push`, immediately create a pull request using
+    `mcp__github__create_pull_request` with a body containing all three required
+    sections from `docs/00_rule.md §PR description rule`:
+    **總結決策** / **業務意涵** / **異動檔案簡述** (Markdown table).
+    Never skip this step; a PR body copied from the commit message alone is non-compliant.
+12. **Next**: Start new round and repeat the workflow until all plans matches successful criteria.
 
 ---
 
