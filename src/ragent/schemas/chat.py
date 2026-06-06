@@ -8,9 +8,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from ragent.pipelines.retrieve import DEFAULT_MIN_SCORE as _DEFAULT_MIN_SCORE
-from ragent.pipelines.retrieve import DEFAULT_TOP_K as _DEFAULT_TOP_K
-from ragent.schemas.ingest import SOURCE_META_MAX
+from ragent.schemas._common import FILTER_MAX_LEN, FILTER_META_MAX_LEN, validate_filter_str
+from ragent.utility.env import int_env, optional_float_env
+
+_DEFAULT_TOP_K: int = int_env("RETRIEVAL_TOP_K", 20)
+_DEFAULT_MIN_SCORE: float | None = optional_float_env("RETRIEVAL_MIN_SCORE")
 
 _DEFAULT_PROVIDER = os.environ.get("RAGENT_DEFAULT_LLM_PROVIDER", "openai")
 _DEFAULT_MODEL = os.environ.get("RAGENT_DEFAULT_LLM_MODEL", "gptoss-120b")
@@ -131,8 +133,6 @@ Do not reference documents, context blocks, or citations in your reply.
 )
 
 _PROVIDER_ALLOWLIST = frozenset({"openai"})
-_FILTER_MAX_LEN = 64
-_FILTER_META_MAX_LEN = SOURCE_META_MAX
 
 # Regex for post-processing: normalize full-width citation brackets 【N】→[N].
 _CITATION_FULLWIDTH_RE = re.compile(r"【(\d+)】")
@@ -185,20 +185,12 @@ class ChatRequest(BaseModel):
     @field_validator("source_app", mode="before")
     @classmethod
     def _validate_source_app(cls, v: str | None) -> str | None:
-        if v is None:
-            return v
-        if v == "" or len(v) > _FILTER_MAX_LEN:
-            raise ValueError(f"source_app must be 1–{_FILTER_MAX_LEN} chars")
-        return v
+        return validate_filter_str(v, name="source_app", max_len=FILTER_MAX_LEN)
 
     @field_validator("source_meta", mode="before")
     @classmethod
     def _validate_source_meta(cls, v: str | None) -> str | None:
-        if v is None:
-            return v
-        if v == "" or len(v) > _FILTER_META_MAX_LEN:
-            raise ValueError(f"source_meta must be 1–{_FILTER_META_MAX_LEN} chars")
-        return v
+        return validate_filter_str(v, name="source_meta", max_len=FILTER_META_MAX_LEN)
 
 
 def _render_context(docs: list[Any] | None) -> str:

@@ -4,14 +4,11 @@ from __future__ import annotations
 
 from pydantic import BaseModel, Field, field_validator
 
-from ragent.schemas.ingest import SOURCE_META_MAX
+from ragent.schemas._common import FILTER_MAX_LEN, FILTER_META_MAX_LEN, validate_filter_str
 from ragent.utility.env import int_env, optional_float_env
 
 DEFAULT_TOP_K: int = int_env("RETRIEVAL_TOP_K", 20)
 DEFAULT_MIN_SCORE: float | None = optional_float_env("RETRIEVAL_MIN_SCORE")
-
-_FILTER_MAX_LEN = 64
-_FILTER_META_MAX_LEN = SOURCE_META_MAX
 
 
 class RetrieveRequest(BaseModel):
@@ -25,20 +22,12 @@ class RetrieveRequest(BaseModel):
     @field_validator("source_app", mode="before")
     @classmethod
     def _validate_source_app(cls, v: str | None) -> str | None:
-        if v is None:
-            return v
-        if v == "" or len(v) > _FILTER_MAX_LEN:
-            raise ValueError(f"source_app must be 1–{_FILTER_MAX_LEN} chars")
-        return v
+        return validate_filter_str(v, name="source_app", max_len=FILTER_MAX_LEN)
 
     @field_validator("source_meta", mode="before")
     @classmethod
     def _validate_source_meta(cls, v: str | None) -> str | None:
-        if v is None:
-            return v
-        if v == "" or len(v) > _FILTER_META_MAX_LEN:
-            raise ValueError(f"source_meta must be 1–{_FILTER_META_MAX_LEN} chars")
-        return v
+        return validate_filter_str(v, name="source_meta", max_len=FILTER_META_MAX_LEN)
 
 
 class ChunkEntry(BaseModel):
