@@ -33,7 +33,7 @@ from ragent.clients.embedding_model_config import EmbeddingModelConfig
 from ragent.services.embedding.backfill import backfill as _do_backfill
 from ragent.services.embedding.preflight import preflight as _preflight
 from ragent.utility.datetime import from_iso, to_iso, utcnow
-from ragent.utility.embedding_lifecycle import IllegalEmbeddingTransition, next_state
+from ragent.utility.embedding_lifecycle import next_state
 
 logger = structlog.get_logger(__name__)
 
