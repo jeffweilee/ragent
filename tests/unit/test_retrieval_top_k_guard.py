@@ -167,9 +167,7 @@ def test_retrieve_schema_top_k_out_of_range_refuses_import(
 
 
 @pytest.mark.parametrize("bad_value", ["0", "201", "500", "-1"])
-def test_chat_schema_top_k_out_of_range_refuses_import(
-    _reload_chat_schema, bad_value
-) -> None:
+def test_chat_schema_top_k_out_of_range_refuses_import(_reload_chat_schema, bad_value) -> None:
     """ragent.schemas.chat raises at import when RETRIEVAL_TOP_K is out of [1,200]."""
     with pytest.raises(RuntimeError, match="RETRIEVAL_TOP_K"):
         _reload_chat_schema(bad_value)
@@ -237,9 +235,7 @@ def test_retrieve_schema_min_score_negative_refuses_import(
 
 
 @pytest.mark.parametrize("bad_value", ["-0.1", "-1", "-99.9"])
-def test_chat_schema_min_score_negative_refuses_import(
-    _reload_chat_schema_min, bad_value
-) -> None:
+def test_chat_schema_min_score_negative_refuses_import(_reload_chat_schema_min, bad_value) -> None:
     """ragent.schemas.chat raises at import when RETRIEVAL_MIN_SCORE is negative."""
     with pytest.raises(RuntimeError, match="RETRIEVAL_MIN_SCORE"):
         _reload_chat_schema_min(bad_value)
