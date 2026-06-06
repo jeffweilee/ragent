@@ -77,15 +77,15 @@ def build_container() -> Container:
     from ragent.clients.llm import LLMClient
     from ragent.clients.rate_limiter import RateLimiter
     from ragent.clients.rerank import RerankClient
-    from ragent.pipelines.ingest import DocumentEmbedder, build_ingest_pipeline
-    from ragent.pipelines.retrieve import EXCERPT_MAX_CHARS_DEFAULT, build_retrieval_pipeline
     from ragent.extractors.registry import PluginRegistry
     from ragent.extractors.stub_graph import StubGraphExtractor
     from ragent.extractors.vector import VectorExtractor
+    from ragent.pipelines.ingest import DocumentEmbedder, build_ingest_pipeline
+    from ragent.pipelines.retrieve import EXCERPT_MAX_CHARS_DEFAULT, build_retrieval_pipeline
     from ragent.repositories.document_repository import DocumentRepository
     from ragent.repositories.system_settings_repository import SystemSettingsRepository
-    from ragent.services.active_model_registry import ActiveModelRegistry
-    from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
+    from ragent.services.embedding.lifecycle import EmbeddingLifecycleService
+    from ragent.services.embedding.registry import ActiveModelRegistry
     from ragent.services.ingest_service import (
         FILE_MAX_BYTES_DEFAULT,
         INLINE_MAX_BYTES_DEFAULT,

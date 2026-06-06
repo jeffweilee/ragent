@@ -23,13 +23,12 @@ from ragent.clients.embedding_model_config import InvalidEmbeddingModelConfig
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
 from ragent.schemas.embedding import CutoverRequest, PromoteRequest
-from ragent.services.active_model_registry import ActiveModelRegistryNotReady
-from ragent.services.embedding_lifecycle_service import (
+from ragent.services.embedding.lifecycle import (
     CutoverPreflightFailed,
     EmbeddingFieldCollision,
 )
+from ragent.services.embedding.registry import ActiveModelRegistryNotReady
 from ragent.utility.embedding_lifecycle import IllegalEmbeddingTransition
-
 
 _EXCEPTION_MAP: list[tuple[type, int, HttpErrorCode]] = [
     (IllegalEmbeddingTransition, 409, HttpErrorCode.EMBEDDING_LIFECYCLE_INVALID_STATE),

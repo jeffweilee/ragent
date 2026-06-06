@@ -93,7 +93,7 @@ class _FakeRegistry:
 
 
 async def test_promote_from_idle_creates_new_index_and_writes_candidate() -> None:
-    from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
+    from ragent.services.embedding.lifecycle import EmbeddingLifecycleService
 
     repo = AsyncMock()
     es = AsyncMock()
@@ -120,7 +120,7 @@ async def test_promote_from_idle_creates_new_index_and_writes_candidate() -> Non
 
 
 async def test_promote_rejected_when_state_not_idle() -> None:
-    from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
+    from ragent.services.embedding.lifecycle import EmbeddingLifecycleService
     from ragent.utility.embedding_lifecycle import IllegalEmbeddingTransition
 
     reg = _FakeRegistry(state="CANDIDATE", candidate=_bgem3v2_with_promoted_at())
@@ -134,7 +134,7 @@ async def test_promote_rejected_when_state_not_idle() -> None:
 
 async def test_promote_new_index_mapping_contains_embedding_with_correct_dim() -> None:
     """promote() creates the new index with a single 'embedding' field at the specified dim."""
-    from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
+    from ragent.services.embedding.lifecycle import EmbeddingLifecycleService
 
     es = AsyncMock()
     reg = _FakeRegistry(state="IDLE")
@@ -152,7 +152,7 @@ async def test_promote_new_index_mapping_contains_embedding_with_correct_dim() -
 
 async def test_promote_passes_optimistic_lock_expect_candidate_null() -> None:
     """Promote must abort if another admin slipped a candidate in concurrently."""
-    from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
+    from ragent.services.embedding.lifecycle import EmbeddingLifecycleService
 
     repo = AsyncMock()
     es = AsyncMock()
@@ -175,7 +175,7 @@ async def test_promote_passes_optimistic_lock_expect_candidate_null() -> None:
 
 
 async def test_cutover_passes_preflight_and_flips_read() -> None:
-    from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
+    from ragent.services.embedding.lifecycle import EmbeddingLifecycleService
 
     repo = AsyncMock()
     es = _passing_preflight_es()
@@ -194,7 +194,7 @@ async def test_cutover_passes_preflight_and_flips_read() -> None:
 
 
 async def test_cutover_blocked_by_hard_gate_failure() -> None:
-    from ragent.services.embedding_lifecycle_service import (
+    from ragent.services.embedding.lifecycle import (
         CutoverPreflightFailed,
         EmbeddingLifecycleService,
     )
@@ -219,7 +219,7 @@ async def test_cutover_warmup_gate_reads_promoted_at_from_registry_raw() -> None
     service reads from the projected `candidate_dict` (which drops
     `promoted_at`), elapsed is always 0 and the gate is permanently
     broken. Pin that the path goes through `candidate_raw`."""
-    from ragent.services.embedding_lifecycle_service import (
+    from ragent.services.embedding.lifecycle import (
         CutoverPreflightFailed,
         EmbeddingLifecycleService,
     )
@@ -244,7 +244,7 @@ async def test_cutover_warmup_gate_reads_promoted_at_from_registry_raw() -> None
 
 
 async def test_cutover_rejected_when_state_not_candidate() -> None:
-    from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
+    from ragent.services.embedding.lifecycle import EmbeddingLifecycleService
     from ragent.utility.embedding_lifecycle import IllegalEmbeddingTransition
 
     reg = _FakeRegistry(state="IDLE")
@@ -261,7 +261,7 @@ async def test_cutover_rejected_when_state_not_candidate() -> None:
 
 
 async def test_rollback_from_cutover_returns_to_candidate() -> None:
-    from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
+    from ragent.services.embedding.lifecycle import EmbeddingLifecycleService
 
     repo = AsyncMock()
     reg = _FakeRegistry(state="CUTOVER", candidate=_bgem3v2_with_promoted_at())
@@ -276,7 +276,7 @@ async def test_rollback_from_cutover_returns_to_candidate() -> None:
 
 
 async def test_commit_from_cutover_promotes_candidate_to_stable() -> None:
-    from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
+    from ragent.services.embedding.lifecycle import EmbeddingLifecycleService
 
     repo = AsyncMock()
     cand_live = _bgem3v2_with_promoted_at()
@@ -306,7 +306,7 @@ async def test_commit_from_cutover_promotes_candidate_to_stable() -> None:
 
 
 async def test_abort_from_candidate_retires_candidate() -> None:
-    from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
+    from ragent.services.embedding.lifecycle import EmbeddingLifecycleService
 
     repo = AsyncMock()
     cand_live = _bgem3v2_with_promoted_at()
@@ -331,7 +331,7 @@ async def test_abort_from_candidate_retires_candidate() -> None:
 
 
 async def test_abort_rejected_from_cutover() -> None:
-    from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
+    from ragent.services.embedding.lifecycle import EmbeddingLifecycleService
     from ragent.utility.embedding_lifecycle import IllegalEmbeddingTransition
 
     reg = _FakeRegistry(state="CUTOVER", candidate=_bgem3v2_with_promoted_at())
@@ -350,7 +350,7 @@ async def test_abort_rejected_from_cutover() -> None:
 async def test_promote_emits_started_and_completed_logs() -> None:
     import structlog
 
-    from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
+    from ragent.services.embedding.lifecycle import EmbeddingLifecycleService
 
     es = AsyncMock()
     es.indices.get_mapping.return_value = {"chunks_v1": {"mappings": {"properties": {}}}}
@@ -370,7 +370,7 @@ async def test_promote_emits_started_and_completed_logs() -> None:
 async def test_promote_failure_emits_failed_log() -> None:
     import structlog
 
-    from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
+    from ragent.services.embedding.lifecycle import EmbeddingLifecycleService
     from ragent.utility.embedding_lifecycle import IllegalEmbeddingTransition
 
     reg = _FakeRegistry(state="CANDIDATE", candidate=_bgem3v2_with_promoted_at())
@@ -390,7 +390,7 @@ async def test_promote_failure_emits_failed_log() -> None:
 async def test_commit_emits_started_and_completed_logs() -> None:
     import structlog
 
-    from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
+    from ragent.services.embedding.lifecycle import EmbeddingLifecycleService
 
     reg = _FakeRegistry(state="CUTOVER", candidate=_bgem3v2_with_promoted_at())
     svc = EmbeddingLifecycleService(
@@ -411,7 +411,7 @@ async def test_commit_emits_started_and_completed_logs() -> None:
 
 
 async def test_next_index_name_increments_version() -> None:
-    from ragent.services.embedding_lifecycle_service import _next_index_name
+    from ragent.services.embedding.lifecycle import _next_index_name
 
     assert _next_index_name("chunks_v1") == "chunks_v2"
     assert _next_index_name("chunks_v2") == "chunks_v3"
@@ -421,7 +421,7 @@ async def test_next_index_name_increments_version() -> None:
 
 async def test_promote_creates_new_physical_index_not_put_mapping() -> None:
     """T-EM-R.3 — promote must call indices.create for chunks_v2, not put_mapping."""
-    from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
+    from ragent.services.embedding.lifecycle import EmbeddingLifecycleService
 
     repo = AsyncMock()
     es = AsyncMock()
@@ -439,7 +439,7 @@ async def test_promote_creates_new_physical_index_not_put_mapping() -> None:
 
 async def test_promote_stores_index_name_in_candidate_payload() -> None:
     """T-EM-R.3 — candidate payload must carry index_name=chunks_v2."""
-    from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
+    from ragent.services.embedding.lifecycle import EmbeddingLifecycleService
 
     repo = AsyncMock()
     es = AsyncMock()
@@ -456,7 +456,7 @@ async def test_promote_stores_index_name_in_candidate_payload() -> None:
 
 async def test_abort_deletes_candidate_physical_index() -> None:
     """T-EM-R.3 — abort must DELETE the candidate index before retiring it in DB."""
-    from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
+    from ragent.services.embedding.lifecycle import EmbeddingLifecycleService
 
     cand = {**_bgem3v2_with_promoted_at(), "index_name": "chunks_v2"}
     repo = AsyncMock()
@@ -474,7 +474,7 @@ async def test_abort_deletes_candidate_physical_index() -> None:
 
 async def test_promote_compensating_delete_on_transition_failure() -> None:
     """T-EM-R.3 — if repo.transition raises after index creation, the orphan index is deleted."""
-    from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
+    from ragent.services.embedding.lifecycle import EmbeddingLifecycleService
 
     repo = AsyncMock()
     repo.transition.side_effect = RuntimeError("optimistic lock conflict")
@@ -506,7 +506,7 @@ def _passing_preflight_es() -> AsyncMock:
 
 async def test_cutover_performs_alias_swap_stable_to_candidate() -> None:
     """T-EM-R.4 — cutover must atomically swap the read alias from stable to candidate index."""
-    from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
+    from ragent.services.embedding.lifecycle import EmbeddingLifecycleService
 
     repo = AsyncMock()
     es = _passing_preflight_es()
@@ -527,7 +527,7 @@ async def test_cutover_performs_alias_swap_stable_to_candidate() -> None:
 
 async def test_rollback_performs_alias_swap_candidate_to_stable() -> None:
     """T-EM-R.4 — rollback must atomically swap the read alias back to stable index."""
-    from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
+    from ragent.services.embedding.lifecycle import EmbeddingLifecycleService
 
     repo = AsyncMock()
     es = AsyncMock()
@@ -548,7 +548,7 @@ async def test_rollback_performs_alias_swap_candidate_to_stable() -> None:
 
 async def test_cutover_skips_alias_swap_for_legacy_candidate() -> None:
     """T-EM-R.4 — legacy candidates (no index_name) skip alias swap; force=True bypasses."""
-    from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
+    from ragent.services.embedding.lifecycle import EmbeddingLifecycleService
 
     repo = AsyncMock()
     es = AsyncMock()
@@ -565,7 +565,7 @@ async def test_cutover_skips_alias_swap_for_legacy_candidate() -> None:
 
 async def test_rollback_skips_alias_swap_for_legacy_candidate() -> None:
     """T-EM-R.4 — legacy candidates (no index_name) skip the alias swap on rollback."""
-    from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
+    from ragent.services.embedding.lifecycle import EmbeddingLifecycleService
 
     repo = AsyncMock()
     es = AsyncMock()

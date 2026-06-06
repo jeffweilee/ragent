@@ -87,7 +87,7 @@ def test_promote_bad_dim_returns_422() -> None:
 
 
 def test_promote_field_collision_returns_422() -> None:
-    from ragent.services.embedding_lifecycle_service import EmbeddingFieldCollision
+    from ragent.services.embedding.lifecycle import EmbeddingFieldCollision
 
     svc = AsyncMock()
     svc.promote.side_effect = EmbeddingFieldCollision("already mapped")
@@ -125,7 +125,7 @@ def test_cutover_with_force_true() -> None:
 
 
 def test_cutover_preflight_fail_returns_409() -> None:
-    from ragent.services.embedding_lifecycle_service import CutoverPreflightFailed
+    from ragent.services.embedding.lifecycle import CutoverPreflightFailed
 
     svc = AsyncMock()
     svc.cutover.side_effect = CutoverPreflightFailed({"pass": False, "gates": []})
@@ -188,7 +188,7 @@ def test_abort_invokes_service() -> None:
 
 
 def test_state_returns_503_when_registry_not_ready() -> None:
-    from ragent.services.active_model_registry import ActiveModelRegistryNotReady
+    from ragent.services.embedding.registry import ActiveModelRegistryNotReady
 
     def _snapshot() -> dict:
         raise ActiveModelRegistryNotReady("first refresh has not succeeded")

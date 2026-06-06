@@ -124,8 +124,8 @@ async def lifecycle_setup(lifecycle_engine, chunks_index):
     """Wire SystemSettingsRepository + ActiveModelRegistry + LifecycleService
     against the real MariaDB / ES containers."""
     from ragent.repositories.system_settings_repository import SystemSettingsRepository
-    from ragent.services.active_model_registry import ActiveModelRegistry
-    from ragent.services.embedding_lifecycle_service import EmbeddingLifecycleService
+    from ragent.services.embedding.registry import ActiveModelRegistry
+    from ragent.services.embedding.lifecycle import EmbeddingLifecycleService
 
     es, index, alias = chunks_index
 

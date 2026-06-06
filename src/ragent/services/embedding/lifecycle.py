@@ -30,7 +30,8 @@ from typing import Any
 import structlog
 
 from ragent.clients.embedding_model_config import EmbeddingModelConfig
-from ragent.services.cutover_preflight import preflight as _preflight
+from ragent.services.embedding.backfill import backfill as _do_backfill
+from ragent.services.embedding.preflight import preflight as _preflight
 from ragent.utility.datetime import from_iso, to_iso, utcnow
 from ragent.utility.embedding_lifecycle import IllegalEmbeddingTransition, next_state
 
@@ -308,32 +309,7 @@ class EmbeddingLifecycleService:
     # ------------------------------------------------------------------
 
     async def backfill(self, *, broker: Any) -> dict:
-        logger.info("embedding.lifecycle.backfill.started")
-        try:
-            state = self._registry.derived_state()
-            if state not in ("CANDIDATE", "CUTOVER"):
-                raise IllegalEmbeddingTransition(
-                    f"backfill requires CANDIDATE or CUTOVER state, got {state}"
-                )
-            candidate_index = self._registry.candidate_index
-            if not candidate_index:
-                raise IllegalEmbeddingTransition("backfill: candidate has no index_name")
-            stable_index = self._registry.stable_index
-            await broker.enqueue(
-                "ingest.backfill_candidate",
-                stable_index=stable_index,
-                candidate_index=candidate_index,
-            )
-        except Exception as exc:
-            _log_failure("backfill", exc)
-            raise
-        logger.info("embedding.lifecycle.backfill.completed", candidate_index=candidate_index)
-        return {
-            "state": state,
-            "queued": True,
-            "stable_index": stable_index,
-            "candidate_index": candidate_index,
-        }
+        return await _do_backfill(self._registry, broker=broker)
 
     async def _do_abort(self) -> dict:
         next_state(self._registry.derived_state(), "abort")

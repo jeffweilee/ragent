@@ -39,7 +39,7 @@ def _passing_es(stable_count=100_000, candidate_count=100_000) -> AsyncMock:
 
 
 async def test_preflight_passes_when_state_is_candidate_and_all_gates_ok() -> None:
-    from ragent.services.cutover_preflight import preflight
+    from ragent.services.embedding.preflight import preflight
 
     report = await preflight(
         registry=_make_registry(),
@@ -53,7 +53,7 @@ async def test_preflight_passes_when_state_is_candidate_and_all_gates_ok() -> No
 
 
 async def test_preflight_fails_when_state_is_not_candidate() -> None:
-    from ragent.services.cutover_preflight import preflight
+    from ragent.services.embedding.preflight import preflight
 
     reg = _make_registry(state="IDLE")
     report = await preflight(
@@ -76,7 +76,7 @@ async def test_preflight_fails_when_state_is_not_candidate() -> None:
 
 async def test_preflight_coverage_counts_candidate_index_not_field_exists() -> None:
     """T-EM-R.5 — coverage gate calls count(candidate_index), never a field-exists query."""
-    from ragent.services.cutover_preflight import preflight
+    from ragent.services.embedding.preflight import preflight
 
     reg = _make_registry()
     es = AsyncMock()
@@ -102,7 +102,7 @@ async def test_preflight_coverage_counts_candidate_index_not_field_exists() -> N
 
 
 async def test_preflight_fails_when_candidate_coverage_below_threshold() -> None:
-    from ragent.services.cutover_preflight import preflight
+    from ragent.services.embedding.preflight import preflight
 
     es = AsyncMock()
     es.count.side_effect = [
@@ -125,7 +125,7 @@ async def test_preflight_fails_when_candidate_coverage_below_threshold() -> None
 
 async def test_preflight_coverage_treats_empty_stable_index_as_pass() -> None:
     """Empty stable index → ratio undefined → treat as pass (initial promote, no docs yet)."""
-    from ragent.services.cutover_preflight import preflight
+    from ragent.services.embedding.preflight import preflight
 
     es = AsyncMock()
     es.count.side_effect = [{"count": 0}, {"count": 0}]
@@ -143,7 +143,7 @@ async def test_preflight_coverage_treats_empty_stable_index_as_pass() -> None:
 
 async def test_preflight_coverage_fails_when_candidate_index_is_none() -> None:
     """T-EM-R.5 — coverage gate fails when candidate_index is None (legacy candidate)."""
-    from ragent.services.cutover_preflight import preflight
+    from ragent.services.embedding.preflight import preflight
 
     reg = _make_registry(candidate_index=None)
     es = AsyncMock()
@@ -166,7 +166,7 @@ async def test_preflight_coverage_fails_when_candidate_index_is_none() -> None:
 
 
 async def test_preflight_fails_when_dual_write_warmup_too_short() -> None:
-    from ragent.services.cutover_preflight import preflight
+    from ragent.services.embedding.preflight import preflight
 
     report = await preflight(
         registry=_make_registry(),

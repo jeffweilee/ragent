@@ -61,7 +61,7 @@ def _mock_repo(stable=None, candidate=None, read="stable", retired=None):
 
 
 async def test_state_is_idle_when_no_candidate() -> None:
-    from ragent.services.active_model_registry import ActiveModelRegistry
+    from ragent.services.embedding.registry import ActiveModelRegistry
 
     reg = ActiveModelRegistry(_mock_repo(), ttl_seconds=999)
     await reg.refresh()
@@ -69,7 +69,7 @@ async def test_state_is_idle_when_no_candidate() -> None:
 
 
 async def test_state_is_candidate_when_candidate_set_and_read_stable() -> None:
-    from ragent.services.active_model_registry import ActiveModelRegistry
+    from ragent.services.embedding.registry import ActiveModelRegistry
 
     reg = ActiveModelRegistry(_mock_repo(candidate=_bgem3v2(), read="stable"), ttl_seconds=999)
     await reg.refresh()
@@ -77,7 +77,7 @@ async def test_state_is_candidate_when_candidate_set_and_read_stable() -> None:
 
 
 async def test_state_is_cutover_when_read_is_candidate() -> None:
-    from ragent.services.active_model_registry import ActiveModelRegistry
+    from ragent.services.embedding.registry import ActiveModelRegistry
 
     reg = ActiveModelRegistry(_mock_repo(candidate=_bgem3v2(), read="candidate"), ttl_seconds=999)
     await reg.refresh()
@@ -90,7 +90,7 @@ async def test_state_is_cutover_when_read_is_candidate() -> None:
 
 
 async def test_read_model_returns_stable_when_read_is_stable() -> None:
-    from ragent.services.active_model_registry import ActiveModelRegistry
+    from ragent.services.embedding.registry import ActiveModelRegistry
 
     reg = ActiveModelRegistry(_mock_repo(candidate=_bgem3v2(), read="stable"), ttl_seconds=999)
     await reg.refresh()
@@ -101,7 +101,7 @@ async def test_read_model_returns_stable_when_read_is_stable() -> None:
 
 
 async def test_read_model_returns_candidate_when_read_is_candidate() -> None:
-    from ragent.services.active_model_registry import ActiveModelRegistry
+    from ragent.services.embedding.registry import ActiveModelRegistry
 
     reg = ActiveModelRegistry(_mock_repo(candidate=_bgem3v2(), read="candidate"), ttl_seconds=999)
     await reg.refresh()
@@ -111,7 +111,7 @@ async def test_read_model_returns_candidate_when_read_is_candidate() -> None:
 
 
 async def test_write_models_includes_only_stable_in_idle() -> None:
-    from ragent.services.active_model_registry import ActiveModelRegistry
+    from ragent.services.embedding.registry import ActiveModelRegistry
 
     reg = ActiveModelRegistry(_mock_repo(), ttl_seconds=999)
     await reg.refresh()
@@ -121,7 +121,7 @@ async def test_write_models_includes_only_stable_in_idle() -> None:
 
 
 async def test_write_models_includes_both_in_candidate_or_cutover() -> None:
-    from ragent.services.active_model_registry import ActiveModelRegistry
+    from ragent.services.embedding.registry import ActiveModelRegistry
 
     reg = ActiveModelRegistry(_mock_repo(candidate=_bgem3v2(), read="stable"), ttl_seconds=999)
     await reg.refresh()
@@ -136,7 +136,7 @@ async def test_write_models_includes_both_in_candidate_or_cutover() -> None:
 
 
 async def test_refresh_failure_retains_last_good_cache() -> None:
-    from ragent.services.active_model_registry import ActiveModelRegistry
+    from ragent.services.embedding.registry import ActiveModelRegistry
 
     repo = _mock_repo()
     reg = ActiveModelRegistry(repo, ttl_seconds=999)
@@ -152,7 +152,7 @@ async def test_refresh_failure_retains_last_good_cache() -> None:
 async def test_refresh_failure_emits_stale_warning() -> None:
     import structlog
 
-    from ragent.services.active_model_registry import ActiveModelRegistry
+    from ragent.services.embedding.registry import ActiveModelRegistry
 
     repo = _mock_repo()
     reg = ActiveModelRegistry(repo, ttl_seconds=999)
@@ -169,7 +169,7 @@ async def test_refresh_failure_emits_stale_warning() -> None:
 
 
 async def test_read_before_refresh_raises() -> None:
-    from ragent.services.active_model_registry import (
+    from ragent.services.embedding.registry import (
         ActiveModelRegistry,
         ActiveModelRegistryNotReady,
     )
@@ -188,7 +188,7 @@ async def test_candidate_raw_preserves_promoted_at_from_settings() -> None:
     """The lifecycle service's `_do_cutover` reads `promoted_at` via
     `candidate_raw` to gate the warmup preflight. The projected
     `candidate_dict` strips it — `candidate_raw` must NOT."""
-    from ragent.services.active_model_registry import ActiveModelRegistry
+    from ragent.services.embedding.registry import ActiveModelRegistry
 
     candidate_with_ts = {
         **_bgem3v2(),
@@ -209,7 +209,7 @@ async def test_candidate_raw_preserves_promoted_at_from_settings() -> None:
 async def test_stable_raw_and_candidate_raw_return_copies() -> None:
     """Callers mutate retired entries / commit payloads in place; the
     registry's cached copies must not be visible to those mutations."""
-    from ragent.services.active_model_registry import ActiveModelRegistry
+    from ragent.services.embedding.registry import ActiveModelRegistry
 
     reg = ActiveModelRegistry(_mock_repo(candidate=_bgem3v2(), read="stable"), ttl_seconds=999)
     await reg.refresh()
@@ -223,7 +223,7 @@ async def test_stable_raw_and_candidate_raw_return_copies() -> None:
 
 
 async def test_raw_accessors_return_none_when_unset() -> None:
-    from ragent.services.active_model_registry import ActiveModelRegistry
+    from ragent.services.embedding.registry import ActiveModelRegistry
 
     reg = ActiveModelRegistry(_mock_repo(), ttl_seconds=999)  # no candidate
     await reg.refresh()
@@ -232,7 +232,7 @@ async def test_raw_accessors_return_none_when_unset() -> None:
 
 
 async def test_snapshot_carries_state_and_models() -> None:
-    from ragent.services.active_model_registry import ActiveModelRegistry
+    from ragent.services.embedding.registry import ActiveModelRegistry
 
     reg = ActiveModelRegistry(_mock_repo(candidate=_bgem3v2(), read="candidate"), ttl_seconds=999)
     await reg.refresh()
@@ -250,7 +250,7 @@ async def test_snapshot_carries_state_and_models() -> None:
 
 
 async def test_stable_index_reads_from_stable_raw_index_name() -> None:
-    from ragent.services.active_model_registry import ActiveModelRegistry
+    from ragent.services.embedding.registry import ActiveModelRegistry
 
     stable_with_index = {**_bgem3(), "index_name": "chunks_v1"}
     reg = ActiveModelRegistry(
@@ -263,7 +263,7 @@ async def test_stable_index_reads_from_stable_raw_index_name() -> None:
 
 
 async def test_stable_index_falls_back_to_injected_default_when_absent() -> None:
-    from ragent.services.active_model_registry import ActiveModelRegistry
+    from ragent.services.embedding.registry import ActiveModelRegistry
 
     reg = ActiveModelRegistry(
         _mock_repo(),  # stable has no index_name
@@ -276,7 +276,7 @@ async def test_stable_index_falls_back_to_injected_default_when_absent() -> None
 
 
 async def test_candidate_index_reads_from_candidate_raw() -> None:
-    from ragent.services.active_model_registry import ActiveModelRegistry
+    from ragent.services.embedding.registry import ActiveModelRegistry
 
     candidate_with_index = {**_bgem3v2(), "index_name": "chunks_v2"}
     reg = ActiveModelRegistry(
@@ -289,7 +289,7 @@ async def test_candidate_index_reads_from_candidate_raw() -> None:
 
 
 async def test_candidate_index_is_none_when_no_candidate() -> None:
-    from ragent.services.active_model_registry import ActiveModelRegistry
+    from ragent.services.embedding.registry import ActiveModelRegistry
 
     reg = ActiveModelRegistry(
         _mock_repo(),
@@ -301,7 +301,7 @@ async def test_candidate_index_is_none_when_no_candidate() -> None:
 
 
 async def test_candidate_index_is_none_when_candidate_has_no_index_name() -> None:
-    from ragent.services.active_model_registry import ActiveModelRegistry
+    from ragent.services.embedding.registry import ActiveModelRegistry
 
     reg = ActiveModelRegistry(
         _mock_repo(candidate=_bgem3v2()),  # no index_name in candidate
@@ -313,7 +313,7 @@ async def test_candidate_index_is_none_when_candidate_has_no_index_name() -> Non
 
 
 async def test_read_alias_returns_injected_value() -> None:
-    from ragent.services.active_model_registry import ActiveModelRegistry
+    from ragent.services.embedding.registry import ActiveModelRegistry
 
     reg = ActiveModelRegistry(
         _mock_repo(),
