@@ -23,7 +23,7 @@
 │        ┌─────────────────────┼──────────────────────┐               │
 │        ▼                     ▼                       ▼               │
 │  ┌──────────┐   ┌─────────────────────┐   ┌──────────────────┐     │
-│  │Repositories│  │     Pipelines       │   │     Plugins       │     │
+│  │Repositories│  │     Pipelines       │   │   Extractors      │     │
 │  └──────────┘   └────────┬────────────┘   └──────────────────┘     │
 │                           │                                          │
 │        ┌──────────────────┼─────────────┐                          │
@@ -54,7 +54,7 @@
 | **路徑** | `src/ragent/bootstrap/` |
 | **責任** | 唯一 DI 接縫；讀取 env vars、構建所有外部依賴、組裝 Container dataclass、注入 Routers/Services/Workers。 |
 | **對外暴露** | `Container` dataclass（供 `app.py`、worker、reconciler 使用）；`create_app()`。 |
-| **允許依賴** | `utility/`、`clients/`、`repositories/`、`pipelines/`、`plugins/`、`services/`、`storage/`、`auth/`、`errors/`、`middleware/`。幾乎可引用所有 Domain，因為這裡是組裝層。 |
+| **允許依賴** | `utility/`、`clients/`、`repositories/`、`pipelines/`、`extractors/`、`services/`、`storage/`、`auth/`、`errors/`、`middleware/`。幾乎可引用所有 Domain，因為這裡是組裝層。 |
 | **禁止事項** | ❌ Routers 不得反向依賴 bootstrap（循環）。❌ 除 `composition.py` 外，任何其他檔案不得直接讀取 env vars（`os.environ`）。❌ 不得持有長生命週期的 `AsyncConnection`。 |
 
 **模組清單：**
@@ -111,9 +111,10 @@
 | 檔案 | 職責 |
 |---|---|
 | `ingest_service.py` | inline / file / upload ingest 流程協調；supersede 觸發；delete cascade 協調 |
-| `active_model_registry.py` | 活躍 embedding model config 快取（從 DB 讀取；`refresh()` 在 lifespan 呼叫）|
-| `embedding_lifecycle_service.py` | embedding model 狀態機：draft → staging → active → retired（B50）|
-| `cutover_preflight.py` | embedding cutover 前置檢查：warmup + similarity gate |
+| `embedding/registry.py` | 活躍 embedding model config 快取（從 DB 讀取；`refresh()` 在 lifespan 呼叫）|
+| `embedding/lifecycle.py` | embedding model 狀態機：draft → staging → active → retired（B50）|
+| `embedding/backfill.py` | backfill 長跑背景 op（enqueue 給 worker）|
+| `embedding/preflight.py` | embedding cutover 前置檢查：warmup + similarity gate |
 
 ---
 
@@ -149,20 +150,28 @@
 
 | 檔案 | 職責 |
 |---|---|
-| `ingest.py` | `build_ingest_pipeline()` — TextLoader → MimeAwareSplitter → BudgetChunker → DocumentEmbedder |
-| `retrieve.py` | `build_retrieval_pipeline()` — QueryEmbedder → ESVector+BM25 → RRF Joiner → SourceHydrator |
+| `ingest/__init__.py` | `build_ingest_pipeline()` — re-exports all ingest components |
+| `ingest/loader.py` | `_TextLoader` — 單文件 Document 建構 |
+| `ingest/splitter.py` | `_MimeAwareSplitter` + 各格式 AST splitter（MD / HTML / DOCX / PPTX / PDF）|
+| `ingest/chunker.py` | `_BudgetChunker`、`_pack_atoms` — mime-agnostic budget chunking |
+| `ingest/embedder.py` | `DocumentEmbedder` — 多 model 雙寫 ES embedder |
+| `retrieve/__init__.py` | `build_retrieval_pipeline()`、`run_retrieval()` — re-exports all retrieve components |
+| `retrieve/query_embedder.py` | `_QueryEmbedder`、`_DynamicFieldEmbeddingRetriever` |
+| `retrieve/retriever.py` | `_FeedbackMemoryRetriever` + feedback 相關常數 |
+| `retrieve/hydrator.py` | `_SourceHydrator`、`_ExcerptTruncator`、`_Reranker`、`_LLMGenerator` |
+| `retrieve/joiner.py` | `build_es_filters`、`dedupe_by_document`、`doc_to_source_entry`、retrieval helpers |
 | `observability.py` | `wrap_pipeline_component()` — 每個 Haystack component 的 structlog + OTEL 雙發射封裝 |
 
 ---
 
-### 2.6 Plugins（可插拔萃取器）
+### 2.6 Extractors（可插拔萃取器）
 
 | 項目 | 說明 |
 |---|---|
-| **路徑** | `src/ragent/plugins/` |
-| **責任** | 實作 `ExtractorPlugin` Protocol；`PluginRegistry` 管理 fan-out 生命週期。 |
+| **路徑** | `src/ragent/extractors/` |
+| **責任** | 實作 `ExtractorPlugin` Protocol；`PluginRegistry` 管理 fan-out 生命週期。（類別名稱保持不變；目錄從 `plugins/` 改名為 `extractors/`。）|
 | **允許依賴** | `repositories/`（透過 constructor injection）、`clients/`（透過 constructor injection）、`errors/`。 |
-| **禁止事項** | ❌ Plugins **不得** `import` `pipelines/` 或任何 HTTP 層。❌ 不得在 `extract()` 或 `delete()` 內持有 DB transaction（fan_out 在 TX 外執行）。❌ `registry.register()` 之後不得修改 plugin 實例。 |
+| **禁止事項** | ❌ Extractors **不得** `import` `pipelines/` 或任何 HTTP 層。❌ 不得在 `extract()` 或 `delete()` 內持有 DB transaction（fan_out 在 TX 外執行）。❌ `registry.register()` 之後不得修改 extractor 實例。 |
 
 **模組清單：**
 
@@ -170,7 +179,7 @@
 |---|---|
 | `protocol.py` | `ExtractorPlugin` Protocol 定義（frozen v1）|
 | `registry.py` | `PluginRegistry` — register、fan_out（60s timeout）、fan_out_delete |
-| `vector.py` | `VectorExtractor` — ES bulk write（required plugin）|
+| `vector.py` | `VectorExtractor` — ES bulk write（required extractor）|
 | `stub_graph.py` | `StubGraphExtractor` — no-op（optional，P3 佔位）|
 
 ---
@@ -205,7 +214,12 @@
 | **允許依賴** | Python stdlib、Pydantic。**不得** import 任何 ragent 業務模組。 |
 | **禁止事項** | ❌ Schemas 不得含業務判斷（if/else 邏輯）。❌ 不得直接操作 DB 或外部服務。❌ 不得讀取 `os.environ`。 |
 
-主要檔案：`ingest.py`（InlineIngestRequest / FileIngestRequest / UploadIngestRequest / IngestStatus / IngestListResponse）、`chat.py`（ChatRequest / ChatResponse / Source / StreamDelta/Done/Error）、`feedback.py`（FeedbackRequest / vote / reason enum）。
+主要檔案：
+- `ingest.py`（InlineIngestRequest / FileIngestRequest / IngestCreatedResponse / IngestListItem / IngestListResponse / IngestDetailResponse）
+- `retrieve.py`（RetrieveRequest / ChunkEntry / RetrieveResponse）
+- `embedding.py`（PromoteRequest / CutoverRequest）
+- `chat.py`（ChatRequest / ChatResponse / Source / StreamDelta/Done/Error）
+- `feedback.py`（FeedbackRequest / vote / reason enum）
 
 ---
 
@@ -335,7 +349,7 @@ Routers     → Services, Schemas, Errors, auth/deps, clients/rate_limiter
 Services    → Repositories, Storage, Clients, Errors, Schemas, Utility
 Repositories→ Utility, Errors, Schemas
 Pipelines   → Clients, Utility, Errors, Schemas
-Plugins     → Repositories(注入), Clients(注入), Errors
+Extractors  → Repositories(注入), Clients(注入), Errors
 Clients     → Errors, Utility
 Storage     → Errors, Utility
 Auth        → Errors, Utility
@@ -351,7 +365,7 @@ MCP Hub     → Utility, Errors（完全獨立 subprocess）
 ❌ 禁止反向依賴：
   Repositories → Services（❌）
   Pipelines    → Services 或 Repositories（❌）
-  Plugins      → Pipelines 或 Routers（❌）
+  Extractors   → Pipelines 或 Routers（❌）
   Clients      → Repositories 或 Services（❌）
   Schemas      → 任何 ragent 業務模組（❌）
   Errors       → 任何 ragent 業務模組（❌）
@@ -381,7 +395,7 @@ MCP Hub     → Utility, Errors（完全獨立 subprocess）
 | 新 API endpoint | `routers/` + `schemas/` + unit test in `tests/unit/` |
 | 新業務邏輯（非 CRUD） | `services/` |
 | 新 DB 操作 | `repositories/` |
-| 新 Haystack component | `pipelines/` |
+| 新 Haystack component | `pipelines/ingest/` 或 `pipelines/retrieve/` |
 | 新外部 API 客戶端 | `clients/` |
 | 新純工具函數 | `utility/` |
 | 新 env var 讀取 | 只在 `bootstrap/composition.py` |
@@ -482,11 +496,11 @@ log.error("ingest.failed", document_id=doc_id, error_code="EMBEDDER_ERROR")
 
 | 改動 X | 可能影響的 Domain |
 |---|---|
-| `repositories/document_repository.py` | Services（ingest_service）、Plugins（VectorExtractor）、Reconciler |
-| `clients/embedding.py` | Pipelines（ingest）、Plugins（VectorExtractor） |
+| `repositories/document_repository.py` | Services（ingest_service）、Extractors（VectorExtractor）、Reconciler |
+| `clients/embedding.py` | Pipelines（ingest）、Extractors（VectorExtractor）|
 | `bootstrap/composition.py` | 所有 Domain（DI 變更）|
 | `schemas/ingest.py` | Routers（ingest）、Services（ingest_service）|
 | `errors/codes.py` | 所有 Domain + `docs/00_spec.md §4.1.2` |
-| `pipelines/retrieve.py` | Routers（chat、retrieve）、integration tests |
+| `pipelines/retrieve/__init__.py` | Routers（chat、retrieve）、integration tests |
 | `bootstrap/metrics.py` | 所有有 metric emit 的 Domain |
 
