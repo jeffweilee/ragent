@@ -15,6 +15,7 @@ make doctor                                              # pre-flight check (env
 uv run --env-file .env alembic upgrade head              # run database migrations
 uv run --env-file .env uvicorn ragent.bootstrap.app:create_app --factory --host "${RAGENT_HOST:-0.0.0.0}" --port "${RAGENT_PORT:-8000}"  # API server
 uv run --env-file .env python -m ragent.worker           # background worker (separate shell)
+uv run --env-file .env python -m ragent.reconciler       # reconciler process (separate shell)
 curl http://localhost:8000/livez                         # verify — expect {"status":"ok"}
 make doctor PROBE_LIVE=1                                 # post-launch — also probes /livez and /readyz
 
