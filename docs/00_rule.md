@@ -359,6 +359,39 @@ Any further specifics (constraints, env vars, edge cases, references) follow as 
 
 ---
 
+### Pull Request Description
+
+- **Rule: Every PR description MUST contain the following three sections, in this order:**
+
+  | Section | Purpose | Required Content |
+  | :--- | :--- | :--- |
+  | **總結決策** (Decision Summary) | Capture the key decisions made in this PR and why | What was decided, which alternative was rejected, and the rationale |
+  | **業務意涵** (Business Implications) | State the observable business / product impact | API behaviour changes, SLA effects, data migration side-effects, operator action required, rollback risk |
+  | **異動檔案簡述** (Changed Files) | Give reviewers a file-level map before they open the diff | A Markdown table: `File \| Change type \| One-line summary` |
+
+- **Rule: The 異動檔案簡述 section MUST be a Markdown table** with at least the columns `File`, `Change`, and `Summary`. Rows must cover every file touched by the PR; grouping unrelated files on one row is prohibited.
+
+  **Minimum template:**
+  ```markdown
+  ## 總結決策
+  <!-- What was decided and why; what alternative was rejected -->
+
+  ## 業務意涵
+  <!-- Observable business / product impact; operator actions required; rollback risk -->
+
+  ## 異動檔案簡述
+  | File | Change | Summary |
+  | :--- | :--- | :--- |
+  | `src/ragent/...` | Added / Modified / Deleted | One sentence |
+  ```
+
+- **Rule: A PR that omits any of the three sections, or replaces the 異動檔案簡述 table with a prose list, MUST NOT be approved.** Reviewers must request changes until all three sections are present and correctly formatted.
+
+- **Rule: 總結決策 must explain the decision, not just describe the diff.** "Added X" is a description; "Chose X over Y because Z" is a decision. A section that only restates what the diff shows is non-compliant.
+
+---
+
+
 ### Deployment (K8s & CLI)
 
 - **Rule**: K8s `command:` arrays that reference executables installed by `uv sync` MUST use the full venv path `/app/.venv/bin/<exe>` (e.g. `/app/.venv/bin/uvicorn`). The Dockerfile does not add `.venv/bin` to `PATH`; bare executable names are not found. Verify the path once when adding a new entry point.
