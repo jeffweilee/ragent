@@ -42,7 +42,7 @@ The sole tool advertised by `tools/list`. Mirrors §3.4.4 `POST /retrieve/v1` se
 ```json
 {
   "name": "retrieve",
-  "description": "Retrieve ranked document chunks from the ragent knowledge corpus. Use when you need to ground a response in the organisation's internal documents — runs hybrid vector + BM25 search and returns raw excerpts with source metadata (score, document_id, title, source_app). Does NOT synthesise an answer: read the returned [資料來源 #N] chunks and compose your response from them. Results are ordered by descending relevance.",
+  "description": "Retrieve ranked document chunks from the ragent knowledge corpus. Use when you need to ground a response in the organisation's internal documents — runs hybrid semantic + keyword search and returns raw excerpts with source metadata (score, document_id, title, source_app). Does NOT synthesise an answer: read the returned [資料來源 #N] chunks and compose your response from them. Results are ordered by descending relevance.",
   "annotations": {"readOnlyHint": true},
   "inputSchema": {
     "type": "object",
@@ -50,7 +50,7 @@ The sole tool advertised by `tools/list`. Mirrors §3.4.4 `POST /retrieve/v1` se
     "properties": {
       "query":       {"type": "string",  "minLength": 1, "description": "Natural-language question or topic to search for. Write as a full question or statement rather than keyword strings — both semantic and keyword matching are applied."},
       "top_k":       {"type": "integer", "minimum": 1, "maximum": 200, "default": 20,   "description": "Maximum chunks to return, ranked by relevance (1–200, default 20). Increase for broad topics needing more evidence; decrease for focused lookups. Each chunk is typically 200–800 tokens."},
-      "source_app":  {"type": "string",  "minLength": 1, "maxLength": 64,   "description": "Restrict results to documents from one source application (exact match, max 64 chars, e.g. 'confluence', 'jira'). Omit to search across all sources."},
+      "source_app":  {"type": "string",  "minLength": 1, "maxLength": 64,   "description": "Restrict results to documents from one source application (exact match, max 64 chars). Use a value from the `source_app` field in a previous retrieve result — omit on the first call to search across all sources."},
       "source_meta": {"type": "string",  "minLength": 1, "maxLength": 1024, "description": "Restrict results to documents tagged with this exact source_meta value (product, team, or category label; max 1024 chars). Omit to search without this filter."},
       "min_score":   {"type": "number",  "minimum": 0,                      "description": "Exclude chunks below this relevance score (≥ 0.0). Use 0.7 for high-confidence results only. Omit to return all top_k results regardless of score — recommended for exploratory queries."},
       "dedupe":      {"type": "boolean", "default": false, "description": "When true, return at most one chunk per source document (highest-scored). Set true for broad topic coverage across different documents; leave false to allow multiple excerpts from the same document."}

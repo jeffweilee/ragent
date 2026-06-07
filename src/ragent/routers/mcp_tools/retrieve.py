@@ -49,7 +49,7 @@ RETRIEVE_TOOL = Tool(
     description=(
         "Retrieve ranked document chunks from the ragent knowledge corpus. "
         "Use when you need to ground a response in the organisation's internal documents — "
-        "runs hybrid vector + BM25 search and returns raw excerpts with source metadata "
+        "runs hybrid semantic + keyword search and returns raw excerpts with source metadata "
         "(score, document_id, title, source_app). "
         "Does NOT synthesise an answer: read the returned [資料來源 #N] chunks and "
         "compose your response from them. Results are ordered by descending relevance."

@@ -47,8 +47,9 @@ class RetrieveRequest(BaseModel):
         max_length=FILTER_MAX_LEN,
         description=(
             f"Restrict results to documents from one source application "
-            f"(exact match, max {FILTER_MAX_LEN} chars, e.g. 'confluence', 'jira'). "
-            "Omit to search across all sources."
+            f"(exact match, max {FILTER_MAX_LEN} chars). "
+            "Use a value from the `source_app` field in a previous retrieve result — "
+            "omit on the first call to search across all sources."
         ),
     )
     source_meta: str | None = Field(

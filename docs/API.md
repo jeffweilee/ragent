@@ -567,7 +567,7 @@ Dual-write: MariaDB `feedback` (truth) → ES `feedback_v1` (serving view). ES f
 | `tools/call` | Invokes `retrieve`. Result `content[0].text` is `[資料來源 #N]`-formatted text. Unknown args → `-32602 MCP_TOOL_INPUT_INVALID`. |
 | `ping` | Returns `{}`. |
 
-Optional `retrieve` arguments (`source_app`, `source_meta`, `min_score`) must be **omitted** to skip filtering — do not send `null`. The `inputSchema` does not advertise `default: null` for these fields; sending explicit `null` returns `-32602`.
+Optional `retrieve` arguments (`source_app`, `source_meta`, `min_score`) must be **omitted** to skip filtering — do not send `null`. The `inputSchema` does not advertise `default: null` for these fields; sending explicit `null` returns `-32602`. For `source_app`, use the exact value returned in a prior `retrieve` result's `source_app` metadata field — omit on the first call to search across all sources.
 
 Errors surface as JSON-RPC error envelopes with `data.error_code` (`MCP_PARSE_ERROR`, `MCP_INVALID_REQUEST`, `MCP_METHOD_NOT_FOUND`, `MCP_TOOL_NOT_FOUND`, `MCP_TOOL_INPUT_INVALID`, `MCP_TOOL_EXECUTION_FAILED`). Auth failures still use `application/problem+json`.
 
