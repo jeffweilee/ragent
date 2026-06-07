@@ -31,6 +31,12 @@ def _build_mcp_input_schema(model: type) -> dict[str, Any]:
             if len(non_null) == 1:
                 merged = {k: v for k, v in prop.items() if k != "anyOf"}
                 merged.update(non_null[0])
+                # After stripping the null branch, "default": null is
+                # contradictory — null is no longer a valid value. Optionality
+                # is signalled by absence from "required"; drop the null default
+                # so clients don't materialise and submit it.
+                if "default" in merged and merged["default"] is None:
+                    del merged["default"]
                 prop = merged
         props[name] = prop
     schema["properties"] = props

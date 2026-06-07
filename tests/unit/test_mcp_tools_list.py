@@ -99,6 +99,26 @@ def test_retrieve_input_schema_property_types(client: TestClient) -> None:
     assert props["dedupe"]["default"] is False
 
 
+def test_retrieve_optional_fields_have_no_null_default(client: TestClient) -> None:
+    """Optional fields must not advertise default:null in inputSchema.
+
+    After collapsing anyOf:[{type:T},{type:null}] → {type:T}, a lingering
+    default:null is contradictory — null is not a valid value for type:T.
+    An MCP client that materialises the advertised default and submits null
+    would receive -32602 before retrieval runs.  Optionality is expressed via
+    absence from "required", not via default:null.
+    """
+    [tool] = client.post(
+        "/mcp/v1", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+    ).json()["result"]["tools"]
+    props = tool["inputSchema"]["properties"]
+    for name in ("source_app", "source_meta", "min_score"):
+        assert props[name].get("default") is not None or "default" not in props[name], (
+            f"inputSchema.properties.{name} must not have default:null "
+            f"(null is not a valid value once the null type branch is collapsed)"
+        )
+
+
 def test_retrieve_input_schema_all_properties_have_descriptions(client: TestClient) -> None:
     """Every inputSchema property must carry a non-empty description.
 
