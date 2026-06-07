@@ -51,7 +51,7 @@ _DEFAULT_FAST_INTENTS: frozenset[str] = frozenset({"GREETING", "CHITCHAT"})
 _DEFAULT_SESSION_HISTORY_LIMIT = 20
 
 
-@dataclass
+@dataclass(frozen=True)
 class _V3Config:
     fast_intents: frozenset[str] = field(default=_DEFAULT_FAST_INTENTS)
     session_history_limit: int = _DEFAULT_SESSION_HISTORY_LIMIT
