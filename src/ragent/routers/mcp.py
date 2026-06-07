@@ -93,10 +93,13 @@ async def _handle_initialize(_params: Any) -> dict[str, Any]:
 # To add a new tool: import its Tool descriptor from mcp_tools/, append here.
 _ALL_TOOLS: list[Tool] = [RETRIEVE_TOOL]
 _ALL_TOOLS_BY_NAME: dict[str, Tool] = {t.name: t for t in _ALL_TOOLS}
+# Precomputed once at module load; tools/list is read-only and the registry
+# never changes at runtime.
+_TOOLS_LIST_PAYLOAD: list[dict[str, Any]] = [t.model_dump(exclude_none=True) for t in _ALL_TOOLS]
 
 
 async def _handle_tools_list(_params: Any) -> dict[str, Any]:
-    return {"tools": [t.model_dump(exclude_none=True) for t in _ALL_TOOLS]}
+    return {"tools": _TOOLS_LIST_PAYLOAD}
 
 
 # Uses the same inputSchema already advertised by tools/list — schema and
