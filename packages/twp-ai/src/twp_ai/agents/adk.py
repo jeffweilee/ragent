@@ -81,9 +81,7 @@ def _relay(upstream: Generator[UpstreamMessage, None, None]) -> Generator[str, N
             if msg.interrupt_message:
                 yield to_sse(TextMessageStartEvent(message_id=msg.message_id))
                 yield to_sse(
-                    TextMessageContentEvent(
-                        message_id=msg.message_id, delta=msg.interrupt_message
-                    )
+                    TextMessageContentEvent(message_id=msg.message_id, delta=msg.interrupt_message)
                 )
                 yield to_sse(TextMessageEndEvent(message_id=msg.message_id))
             continue
@@ -93,9 +91,7 @@ def _relay(upstream: Generator[UpstreamMessage, None, None]) -> Generator[str, N
                 if open_msg_id is None:
                     open_msg_id = msg.message_id
                     yield to_sse(TextMessageStartEvent(message_id=open_msg_id))
-                yield to_sse(
-                    TextMessageContentEvent(message_id=msg.message_id, delta=msg.content)
-                )
+                yield to_sse(TextMessageContentEvent(message_id=msg.message_id, delta=msg.content))
 
             if msg.tool_calls and msg.finish_reason == "tool_calls":
                 if open_msg_id is not None:
@@ -114,9 +110,7 @@ def _relay(upstream: Generator[UpstreamMessage, None, None]) -> Generator[str, N
                         )
                     )
                     if fn.get("arguments"):
-                        yield to_sse(
-                            ToolCallArgsEvent(tool_call_id=tc_id, delta=fn["arguments"])
-                        )
+                        yield to_sse(ToolCallArgsEvent(tool_call_id=tc_id, delta=fn["arguments"]))
                     yield to_sse(ToolCallEndEvent(tool_call_id=tc_id))
 
         elif msg.role == "tool" and msg.content is not None:

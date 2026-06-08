@@ -30,8 +30,8 @@ class UpstreamMessage:
     message_id: str
     role: Literal["assistant", "tool"]
     content: str | None = None
-    agent_type: str | None = None   # messageMeta.langgraph_node: planner | commander | summarizer
-    tool_name: str | None = None    # displayMeta.toolName
+    agent_type: str | None = None  # messageMeta.langgraph_node: planner | commander | summarizer
+    tool_name: str | None = None  # displayMeta.toolName
     tool_calls: list[dict] = field(default_factory=list)
     finish_reason: str | None = None
     is_interrupt: bool = False
