@@ -191,7 +191,9 @@ Content-Type: multipart/form-data; boundary=<httpx-generated>
 }
 ```
 
-**Response:**
+> Set `"stream": true` to receive an SSE stream instead of a single JSON response — all other request fields are identical.
+
+**Response (stream: false):**
 ```json
 {
   "returnCode": 96200,
@@ -203,7 +205,65 @@ Content-Type: multipart/form-data; boundary=<httpx-generated>
 }
 ```
 
-> **Field-name pins:** `metadata`, `apName`, `session`, `user`, `userToken`, `inputData`, `message`, `stream`, `returnCode`, `returnData`, `messages`, `role`, `content`, `message_id` are the exact wire names.
+**Response (stream: true — SSE):**
+
+Each event is prefixed `data: ` and terminated by a blank line. The stream ends with the sentinel `data: [Done]`.
+
+**First event** (full message object):
+```
+data: {
+  "returnCode": 96200,
+  "returnMessage": "success",
+  "returnData": {
+    "userName": "<user display name>",
+    "sessionId": "<session id>",
+    "messages": [
+      {
+        "role": "assistant|tool",
+        "content": "<full or initial content>",
+        "messageId": "<id>",
+        "displayMeta": {
+          "agentName": "<agent name>",
+          "toolName": "<tool name>"
+        },
+        "messageMeta": {
+          "langgraph_node": "planner"
+        },
+        "humanInTheLoopMeta": {
+          "isInterrupt": true,
+          "interruptMessage": "<message>",
+          "interruptContent": "<content>"
+        },
+        "finish_reason": "tool_calls",
+        "tool_calls": [
+          {
+            "type": "function",
+            "function": {
+              "name": "<function name>",
+              "arguments": "<JSON string>"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+**Subsequent delta events** — same shape; `returnData.messages[].content` carries the incremental text delta only.
+
+**Terminal event:**
+```
+data: [Done]
+```
+
+> **Nullable / optional fields:** `humanInTheLoopMeta` may be absent. `finish_reason` and `tool_calls` are present only when the message ends a tool-call turn.
+>
+> **`messageMeta.langgraph_node` enum:** `planner` | `commander` | `summarizer`.
+>
+> **Error event:** `returnCode ≠ 96200` — `returnMessage` carries the error description; stream terminates after this event (no `[Done]` sentinel guaranteed).
+
+> **Field-name pins:** `metadata`, `apName`, `session`, `user`, `userToken`, `inputData`, `message`, `stream`, `returnCode`, `returnMessage`, `returnData`, `messages`, `role`, `content`, `message_id`, `messageId`, `userName`, `sessionId`, `displayMeta`, `agentName`, `toolName`, `messageMeta`, `langgraph_node`, `humanInTheLoopMeta`, `isInterrupt`, `interruptMessage`, `interruptContent`, `finish_reason`, `tool_calls` are the exact wire names.
 
 > **Error mapping:** `returnCode ≠ 96200` → 502 `CHATAGENT_UPSTREAM_ERROR`; `returnData.messages` empty → 502; HTTP timeout → 504 `CHATAGENT_TIMEOUT`; other HTTP/network error → 502 `CHATAGENT_UPSTREAM_ERROR`.
 
