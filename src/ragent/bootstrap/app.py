@@ -33,6 +33,7 @@ from ragent.routers.admin_ops import create_admin_ops_router
 from ragent.routers.chat import create_chat_router
 from ragent.routers.chatagent import create_chatagent_router
 from ragent.routers.chatagent_v2 import create_chatagent_v2_router
+from ragent.routers.chatagent_v3 import create_chatagent_v3_router
 from ragent.routers.feedback import create_feedback_router
 from ragent.routers.health import create_health_router
 from ragent.routers.ingest import create_router as create_ingest_router
@@ -448,6 +449,19 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
         )
         app.include_router(
             create_chatagent_v2_router(
+                http_client=container.http,
+                chatagent_ap_name=container.chatagent_ap_name,
+                chatagent_auth=container.chatagent_auth,
+                chatagent_api_url=container.chatagent_api_url,
+                rate_limiter=container.rate_limiter,
+                rate_limit=container.rate_limit,
+                rate_limit_window=container.rate_limit_window,
+                jwt_header=str_env("RAGENT_JWT_HEADER", _DEFAULT_JWT_HEADER),
+                timeout=_float_env("CHATAGENT_TIMEOUT_SECONDS", 30.0),
+            )
+        )
+        app.include_router(
+            create_chatagent_v3_router(
                 http_client=container.http,
                 chatagent_ap_name=container.chatagent_ap_name,
                 chatagent_auth=container.chatagent_auth,

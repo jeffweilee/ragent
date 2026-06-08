@@ -405,6 +405,52 @@ The response `Content-Type` is forwarded from the upstream response (e.g. `appli
 
 Errors: `429 CHATAGENT_RATE_LIMITED` · `502 CHATAGENT_UPSTREAM_ERROR` · `504 CHATAGENT_TIMEOUT`. Request timeout defaults to `CHATAGENT_TIMEOUT_SECONDS` (default 30 s).
 
+### `POST /chatagent/v3` — twp-ai protocol over the ChatAgent upstream (SSE)
+
+Same upstream as v2 (`CHATAGENT_API_URL`, `CHATAGENT_AUTH`, rate limit, `CHATAGENT_TIMEOUT_SECONDS`), but the wire contract is the **twp-ai protocol**: the request is a twp-ai `RunAgentInput` and the response is a twp-ai SSE event stream. ragent converts both directions — it builds the v2 upstream payload from the run input, then maps the upstream's `returnData.delta`/`done` stream into twp-ai text-lifecycle events. Registered only when `CHATAGENT_API_URL` is set.
+
+**Conversion rules:**
+
+- **Request → upstream:** the last `role="user"` message content becomes `inputData.message`; `metadata` is server-injected (`apName`/`user`/`userToken`/`session`) with `session = threadId`; `stream` is always `true`. `model` is not forwarded (the upstream decides, as in v2). `tools`/`state`/`context`/`forwardedProps` are accepted and may be forwarded; client tool-call continuation is not yet handled.
+- **Upstream → response:** `{"returnData":{"delta":"…"}}` → `TEXT_MESSAGE_CONTENT`; `{"returnData":{"done":true}}` → `TEXT_MESSAGE_END` + `RUN_FINISHED`. `messageId` is minted by ragent.
+- **Errors are events, not HTTP codes:** rate-limit, upstream non-`96200`, 5xx, and timeout all surface as a single `RUN_ERROR` event over a `200` stream (`code` = `CHATAGENT_RATE_LIMITED` / `CHATAGENT_UPSTREAM_ERROR` / `CHATAGENT_TIMEOUT`). This is a **breaking change** from v2's HTTP `429`/`502`/`504`.
+
+**Request body** (twp-ai `RunAgentInput`; required: `threadId`, `runId`, `messages`, `tools`, `state`, `context`, `forwardedProps`):
+
+```json
+{
+  "threadId": "thread_1",
+  "runId": "run_1",
+  "messages": [{ "id": "m1", "role": "user", "content": "Summarise the release notes." }],
+  "tools": [],
+  "state": null,
+  "context": [],
+  "forwardedProps": null
+}
+```
+
+```bash
+curl -X POST http://localhost:8000/chatagent/v3 \
+  -H "X-Auth-Token: <jwt>" -H "Content-Type: application/json" \
+  -d '{"threadId":"thread_1","runId":"run_1","messages":[{"id":"m1","role":"user","content":"Summarise the release notes."}],"tools":[],"state":null,"context":[],"forwardedProps":null}' \
+  --no-buffer
+```
+
+**Response:** `text/event-stream`.
+
+```
+data: {"type":"RUN_STARTED","runId":"run_1","threadId":"thread_1"}
+data: {"type":"TEXT_MESSAGE_START","messageId":"a1","role":"assistant"}
+data: {"type":"TEXT_MESSAGE_CONTENT","messageId":"a1","delta":"The release notes "}
+data: {"type":"TEXT_MESSAGE_CONTENT","messageId":"a1","delta":"cover..."}
+data: {"type":"TEXT_MESSAGE_END","messageId":"a1"}
+data: {"type":"RUN_FINISHED","runId":"run_1","threadId":"thread_1"}
+```
+
+On failure the stream ends with `{"type":"RUN_ERROR","message":"…","code":"CHATAGENT_TIMEOUT","runId":"run_1","threadId":"thread_1"}`.
+
+> v3 reuses the twp-ai `Agent`/caller abstraction: an `ADKAgent` (in `packages/twp-ai`) owns the event flow, and a ragent-side `ADKCaller` (`src/ragent/clients/adk_caller.py`) does the upstream proxy. This is a separate service from `/twp/v1/run` (which is a native agent host); the two are unrelated.
+
 ---
 
 ## twp-ai
