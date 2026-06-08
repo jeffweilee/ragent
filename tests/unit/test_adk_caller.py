@@ -223,3 +223,16 @@ def test_stream_deltas_strips_sse_data_prefix() -> None:
 
     assert len(msgs) == 1
     assert msgs[0].content == "hello"
+
+
+def test_stream_deltas_truncated_stream_raises_service_error() -> None:
+    """Stream that closes without [Done] is a truncated response — RUN_ERROR, not RUN_FINISHED."""
+    http_mock = MagicMock(spec=httpx.Client)
+    http_mock.send.return_value = _resp_mock(
+        [_msg_line("partial", message_id="msg-1")]  # no _done_line()
+    )
+    caller = _make_caller(http_mock)
+
+    with pytest.raises(UpstreamServiceError) as exc:
+        list(caller.stream_deltas(_request(), "m"))
+    assert exc.value.error_code == HttpErrorCode.CHATAGENT_UPSTREAM_ERROR

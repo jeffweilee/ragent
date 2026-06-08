@@ -75,7 +75,7 @@ src = ["src", "tests"]
 select = ["E", "F", "I", "B", "UP", "SIM"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "packages/twp-ai/tests"]
 pythonpath = ["src", "tests"]
 addopts = "-q --tb=short"
 asyncio_mode = "auto"

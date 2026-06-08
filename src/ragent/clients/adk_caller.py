@@ -104,6 +104,7 @@ def _classify(exc: httpx.HTTPError) -> UpstreamServiceError:
 
 
 def _iter_deltas(resp: httpx.Response) -> Generator[UpstreamMessage, None, None]:
+    seen_done = False
     for line in resp.iter_lines():
         line = line.strip()
         if not line:
@@ -111,6 +112,7 @@ def _iter_deltas(resp: httpx.Response) -> Generator[UpstreamMessage, None, None]
         if line.startswith(_SSE_PREFIX):
             line = line[_SSE_PREFIX_LEN:]
         if line == _SSE_DONE:
+            seen_done = True
             return
         try:
             obj = json.loads(line)
@@ -131,6 +133,12 @@ def _iter_deltas(resp: httpx.Response) -> Generator[UpstreamMessage, None, None]
         for raw in messages:
             if isinstance(raw, dict):
                 yield _parse_message(raw)
+    if not seen_done:
+        raise UpstreamServiceError(
+            "upstream closed stream without [Done] sentinel",
+            service="chatagent",
+            error_code=HttpErrorCode.CHATAGENT_UPSTREAM_ERROR,
+        )
 
 
 def _parse_message(raw: dict) -> UpstreamMessage:

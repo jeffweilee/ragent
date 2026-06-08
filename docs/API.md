@@ -407,12 +407,12 @@ Errors: `429 CHATAGENT_RATE_LIMITED` · `502 CHATAGENT_UPSTREAM_ERROR` · `504 C
 
 ### `POST /chatagent/v3` — twp-ai protocol over the ChatAgent upstream (SSE)
 
-Same upstream as v2 (`CHATAGENT_API_URL`, `CHATAGENT_AUTH`, rate limit, `CHATAGENT_TIMEOUT_SECONDS`), but the wire contract is the **twp-ai protocol**: the request is a twp-ai `RunAgentInput` and the response is a twp-ai SSE event stream. ragent converts both directions — it builds the v2 upstream payload from the run input, then maps the upstream's `returnData.delta`/`done` stream into twp-ai text-lifecycle events. Registered only when `CHATAGENT_API_URL` is set.
+Same upstream as v2 (`CHATAGENT_API_URL`, `CHATAGENT_AUTH`, rate limit, `CHATAGENT_TIMEOUT_SECONDS`), but the wire contract is the **twp-ai protocol**: the request is a twp-ai `RunAgentInput` and the response is a twp-ai SSE event stream. ragent converts both directions — it builds the v2 upstream payload from the run input, then maps the upstream's SSE stream into twp-ai AG-UI events. Registered only when `CHATAGENT_API_URL` is set.
 
 **Conversion rules:**
 
 - **Request → upstream:** the last `role="user"` message content becomes `inputData.message`; `metadata` is server-injected (`apName`/`user`/`userToken`/`session`) with `session = threadId`; `stream` is always `true`. `model` is not forwarded (the upstream decides, as in v2). `tools`/`state`/`context`/`forwardedProps` are accepted and may be forwarded; client tool-call continuation is not yet handled.
-- **Upstream → response:** `{"returnData":{"delta":"…"}}` → `TEXT_MESSAGE_CONTENT`; `{"returnData":{"done":true}}` → `TEXT_MESSAGE_END` + `RUN_FINISHED`. `messageId` is minted by ragent.
+- **Upstream → response:** each SSE line is `data: {json}\n\n`; `returnData.messages[].content` → `TEXT_MESSAGE_CONTENT` (bracketed by `TEXT_MESSAGE_START`/`TEXT_MESSAGE_END`; `messageId` taken from upstream `messages[].messageId`). Each distinct upstream node (planner/commander/summarizer) gets its own TEXT_MESSAGE block. `finish_reason="tool_calls"` + `tool_calls` → `TOOL_CALL_START/ARGS/END`; `role="tool"` turns → `TOOL_CALL_RESULT`. `humanInTheLoopMeta.isInterrupt=true` → standalone TEXT_MESSAGE with `interruptMessage` as delta. `data: [Done]` sentinel → `RUN_FINISHED`.
 - **Errors are events, not HTTP codes:** rate-limit, upstream non-`96200`, 5xx, and timeout all surface as a single `RUN_ERROR` event over a `200` stream (`code` = `CHATAGENT_RATE_LIMITED` / `CHATAGENT_UPSTREAM_ERROR` / `CHATAGENT_TIMEOUT`). This is a **breaking change** from v2's HTTP `429`/`502`/`504`.
 
 **Request body** (twp-ai `RunAgentInput`; required: `threadId`, `runId`, `messages`, `tools`, `state`, `context`, `forwardedProps`):
