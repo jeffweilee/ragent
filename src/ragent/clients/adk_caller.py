@@ -2,10 +2,11 @@
 
 Implements the `twp_ai.callers.adk.ADKCaller` protocol (structural). Converts
 a `RunAgentInput` into the upstream v2 wire shape (`{metadata, inputData,
-stream}`), streams the upstream's newline-delimited JSON response, and yields
-assistant text deltas. Transport / upstream failures raise typed
-`UpstreamServiceError` / `UpstreamTimeoutError` so `ADKAgent` surfaces them as a
-twp-ai `RUN_ERROR` event with the originating `error_code`.
+stream}`), streams the upstream's SSE response (each line `data: {json}`,
+terminal `data: [Done]`), parses each `returnData.messages[]` entry into an
+`UpstreamMessage`, and yields those to the caller. Transport / upstream failures
+raise typed `UpstreamServiceError` / `UpstreamTimeoutError` so `ADKAgent`
+surfaces them as a twp-ai `RUN_ERROR` event with the originating `error_code`.
 
 `user_id` and `user_token` are per-request values (carried in the HTTP
 request, not known at startup), so each instance is scoped to one run.
@@ -18,6 +19,7 @@ from collections.abc import Generator
 
 import httpx
 import structlog
+from twp_ai.callers.adk import UpstreamMessage
 from twp_ai.schemas import Message, RunAgentInput
 
 from ragent.errors.codes import HttpErrorCode
@@ -27,6 +29,9 @@ logger = structlog.get_logger(__name__)
 
 _UPSTREAM_SUCCESS_CODE = 96200
 _HTTPX_ERRORS = (httpx.TimeoutException, httpx.HTTPStatusError, httpx.RequestError)
+_SSE_PREFIX = "data: "
+_SSE_PREFIX_LEN = len(_SSE_PREFIX)
+_SSE_DONE = "[Done]"
 
 
 class ADKCaller:
@@ -51,7 +56,7 @@ class ADKCaller:
         self._headers = {"Authorization": auth} if auth else {}
         self._timeout = timeout
 
-    def stream_deltas(self, request: RunAgentInput, model: str) -> Generator[str, None, None]:
+    def stream_deltas(self, request: RunAgentInput, model: str) -> Generator[UpstreamMessage, None, None]:
         payload = {
             "metadata": {
                 "apName": self._ap_name,
@@ -96,27 +101,48 @@ def _classify(exc: httpx.HTTPError) -> UpstreamServiceError:
     return exc_cls(f"chatagent upstream failed: {exc}", service="chatagent", error_code=error_code)
 
 
-def _iter_deltas(resp: httpx.Response) -> Generator[str, None, None]:
+def _iter_deltas(resp: httpx.Response) -> Generator[UpstreamMessage, None, None]:
     for line in resp.iter_lines():
+        line = line.strip()
         if not line:
             continue
+        if line.startswith(_SSE_PREFIX):
+            line = line[_SSE_PREFIX_LEN:]
+        if line == _SSE_DONE:
+            return
         try:
             obj = json.loads(line)
         except json.JSONDecodeError:
             continue
         return_code = obj.get("returnCode")
         if return_code is not None and return_code != _UPSTREAM_SUCCESS_CODE:
+            error_msg = obj.get("returnMessage") or "upstream returned non-success code"
             raise UpstreamServiceError(
-                "chatagent upstream returned non-success code",
+                error_msg,
                 service="chatagent",
                 error_code=HttpErrorCode.CHATAGENT_UPSTREAM_ERROR,
             )
-        data = obj.get("returnData") or {}
-        if data.get("done"):
-            return
-        delta = data.get("delta")
-        if delta:
-            yield delta
+        messages = (obj.get("returnData") or {}).get("messages") or []
+        for raw in messages:
+            yield _parse_message(raw)
+
+
+def _parse_message(raw: dict) -> UpstreamMessage:
+    display_meta = raw.get("displayMeta") or {}
+    message_meta = raw.get("messageMeta") or {}
+    hitl = raw.get("humanInTheLoopMeta") or {}
+    return UpstreamMessage(
+        message_id=raw.get("messageId") or "",
+        role=raw.get("role", "assistant"),
+        content=raw.get("content"),
+        agent_type=message_meta.get("langgraph_node"),
+        tool_name=display_meta.get("toolName"),
+        tool_calls=raw.get("tool_calls") or [],
+        finish_reason=raw.get("finish_reason"),
+        is_interrupt=bool(hitl.get("isInterrupt")),
+        interrupt_message=hitl.get("interruptMessage"),
+        interrupt_content=hitl.get("interruptContent"),
+    )
 
 
 def _last_user_message(messages: list[Message]) -> str:

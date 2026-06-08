@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from unittest.mock import MagicMock
 
 import httpx
@@ -12,6 +11,10 @@ from fastapi.testclient import TestClient
 from ragent.clients.rate_limiter import RateLimiter, RateLimitResult
 from ragent.errors.codes import HttpErrorCode
 from ragent.routers.chatagent_v3 import create_chatagent_v3_router
+from tests.helpers import done_line as _done_line
+from tests.helpers import msg_line as _msg_line
+from tests.helpers import parse_sse_events as _events
+from tests.helpers import resp_mock as _resp_mock
 
 
 def _make_app(*, rate_limiter: RateLimiter | None = None):
@@ -28,13 +31,6 @@ def _make_app(*, rate_limiter: RateLimiter | None = None):
     return app, http_mock
 
 
-def _resp_mock(lines: list[bytes]):
-    m = MagicMock(spec=httpx.Response)
-    m.raise_for_status.return_value = None
-    m.iter_lines.return_value = iter([line.decode() for line in lines])
-    return m
-
-
 def _run_input() -> dict:
     return {
         "threadId": "thread_1",
@@ -47,21 +43,13 @@ def _run_input() -> dict:
     }
 
 
-def _events(text: str) -> list[dict]:
-    return [
-        json.loads(block.removeprefix("data: ").strip())
-        for block in text.strip().split("\n\n")
-        if block.strip()
-    ]
-
-
 def test_v3_streams_twp_ai_event_lifecycle() -> None:
     app, http_mock = _make_app()
     http_mock.send.return_value = _resp_mock(
         [
-            b'{"returnCode":96200,"returnData":{"delta":"The "}}',
-            b'{"returnCode":96200,"returnData":{"delta":"features"}}',
-            b'{"returnCode":96200,"returnData":{"done":true}}',
+            _msg_line("The ", message_id="msg-1"),
+            _msg_line("features", message_id="msg-1"),
+            _done_line(),
         ]
     )
 
@@ -89,7 +77,7 @@ def test_v3_streams_twp_ai_event_lifecycle() -> None:
 
 def test_v3_injects_server_metadata() -> None:
     app, http_mock = _make_app()
-    http_mock.send.return_value = _resp_mock([b'{"returnData":{"done":true}}'])
+    http_mock.send.return_value = _resp_mock([_done_line()])
 
     with TestClient(app) as client:
         client.post(

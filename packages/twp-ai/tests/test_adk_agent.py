@@ -1,9 +1,10 @@
-"""T-CAv3.2 — ADKAgent: twp-ai text lifecycle from a delta-only caller."""
+"""T-CAv3.2 — ADKAgent: AG-UI event mapping from upstream messages."""
 
 import json
 from collections.abc import Generator
 
 from twp_ai.agents.adk import ADKAgent
+from twp_ai.callers.adk import UpstreamMessage
 from twp_ai.schemas import RunAgentInput
 
 
@@ -24,20 +25,31 @@ def _run_input() -> dict:
 
 
 class FakeADKCaller:
-    def __init__(self, deltas: list[str] | None = None, error: Exception | None = None) -> None:
-        self._deltas = deltas or []
+    def __init__(
+        self,
+        messages: list[UpstreamMessage] | None = None,
+        error: Exception | None = None,
+    ) -> None:
+        self._messages = messages or []
         self._error = error
         self.calls: list[tuple[RunAgentInput, str]] = []
 
-    def stream_deltas(self, request: RunAgentInput, model: str) -> Generator[str, None, None]:
+    def stream_deltas(
+        self, request: RunAgentInput, model: str
+    ) -> Generator[UpstreamMessage, None, None]:
         self.calls.append((request, model))
-        yield from self._deltas
+        yield from self._messages
         if self._error is not None:
             raise self._error
 
 
 def test_adk_agent_emits_text_lifecycle() -> None:
-    caller = FakeADKCaller(deltas=["Hello ", "world"])
+    caller = FakeADKCaller(
+        messages=[
+            UpstreamMessage(message_id="msg-1", role="assistant", content="Hello "),
+            UpstreamMessage(message_id="msg-1", role="assistant", content="world"),
+        ]
+    )
     request = RunAgentInput.model_validate(_run_input())
 
     events = _events(list(ADKAgent(caller).run(request, "m")))
@@ -55,11 +67,145 @@ def test_adk_agent_emits_text_lifecycle() -> None:
     deltas = [event["delta"] for event in events if event["type"] == "TEXT_MESSAGE_CONTENT"]
     assert deltas == ["Hello ", "world"]
     message_ids = {event["messageId"] for event in events if "messageId" in event}
-    assert len(message_ids) == 1  # same minted id across start/content/end
+    assert len(message_ids) == 1  # same id across start/content/end
+
+
+def test_adk_agent_uses_upstream_message_id() -> None:
+    caller = FakeADKCaller(
+        messages=[UpstreamMessage(message_id="upstream-42", role="assistant", content="hi")]
+    )
+    request = RunAgentInput.model_validate(_run_input())
+
+    events = _events(list(ADKAgent(caller).run(request, "m")))
+
+    msg_events = [e for e in events if "messageId" in e]
+    assert all(e["messageId"] == "upstream-42" for e in msg_events)
+
+
+def test_adk_agent_multi_agent_produces_separate_message_blocks() -> None:
+    caller = FakeADKCaller(
+        messages=[
+            UpstreamMessage(
+                message_id="plan-1",
+                role="assistant",
+                content="Planning...",
+                agent_type="planner",
+            ),
+            UpstreamMessage(
+                message_id="sum-1",
+                role="assistant",
+                content="Summary.",
+                agent_type="summarizer",
+            ),
+        ]
+    )
+    request = RunAgentInput.model_validate(_run_input())
+
+    events = _events(list(ADKAgent(caller).run(request, "m")))
+
+    types = [e["type"] for e in events]
+    assert types == [
+        "RUN_STARTED",
+        "TEXT_MESSAGE_START",
+        "TEXT_MESSAGE_CONTENT",
+        "TEXT_MESSAGE_END",
+        "TEXT_MESSAGE_START",
+        "TEXT_MESSAGE_CONTENT",
+        "TEXT_MESSAGE_END",
+        "RUN_FINISHED",
+    ]
+    starts = [e for e in events if e["type"] == "TEXT_MESSAGE_START"]
+    assert starts[0]["messageId"] == "plan-1"
+    assert starts[1]["messageId"] == "sum-1"
+
+
+def test_adk_agent_tool_calls_produce_tool_call_events() -> None:
+    caller = FakeADKCaller(
+        messages=[
+            UpstreamMessage(
+                message_id="msg-tc",
+                role="assistant",
+                finish_reason="tool_calls",
+                tool_calls=[
+                    {
+                        "type": "function",
+                        "function": {"name": "search", "arguments": '{"q":"test"}'},
+                    }
+                ],
+            ),
+        ]
+    )
+    request = RunAgentInput.model_validate(_run_input())
+
+    events = _events(list(ADKAgent(caller).run(request, "m")))
+
+    types = [e["type"] for e in events]
+    assert "TOOL_CALL_START" in types
+    assert "TOOL_CALL_ARGS" in types
+    assert "TOOL_CALL_END" in types
+    tc_start = next(e for e in events if e["type"] == "TOOL_CALL_START")
+    assert tc_start["toolCallName"] == "search"
+    assert tc_start["parentMessageId"] == "msg-tc"
+
+
+def test_adk_agent_tool_result_produces_tool_call_result() -> None:
+    caller = FakeADKCaller(
+        messages=[
+            UpstreamMessage(
+                message_id="msg-tc",
+                role="assistant",
+                finish_reason="tool_calls",
+                tool_calls=[
+                    {"type": "function", "function": {"name": "search", "arguments": "{}"}}
+                ],
+            ),
+            UpstreamMessage(
+                message_id="msg-tr",
+                role="tool",
+                content="Search results here",
+                tool_name="search",
+            ),
+        ]
+    )
+    request = RunAgentInput.model_validate(_run_input())
+
+    events = _events(list(ADKAgent(caller).run(request, "m")))
+
+    result = next((e for e in events if e["type"] == "TOOL_CALL_RESULT"), None)
+    assert result is not None
+    assert result["content"] == "Search results here"
+    # tool_call_id should match the TOOL_CALL_START id
+    tc_start = next(e for e in events if e["type"] == "TOOL_CALL_START")
+    assert result["toolCallId"] == tc_start["toolCallId"]
+
+
+def test_adk_agent_hitl_interrupt_surfaces_as_text_message() -> None:
+    caller = FakeADKCaller(
+        messages=[
+            UpstreamMessage(
+                message_id="hitl-1",
+                role="assistant",
+                is_interrupt=True,
+                interrupt_message="Please confirm before proceeding.",
+            ),
+        ]
+    )
+    request = RunAgentInput.model_validate(_run_input())
+
+    events = _events(list(ADKAgent(caller).run(request, "m")))
+
+    types = [e["type"] for e in events]
+    assert "TEXT_MESSAGE_START" in types
+    assert "TEXT_MESSAGE_CONTENT" in types
+    assert "TEXT_MESSAGE_END" in types
+    content = next(e for e in events if e["type"] == "TEXT_MESSAGE_CONTENT")
+    assert content["delta"] == "Please confirm before proceeding."
 
 
 def test_adk_agent_passes_request_and_model_to_caller() -> None:
-    caller = FakeADKCaller(deltas=["x"])
+    caller = FakeADKCaller(
+        messages=[UpstreamMessage(message_id="m", role="assistant", content="x")]
+    )
     request = RunAgentInput.model_validate(_run_input())
 
     list(ADKAgent(caller).run(request, "model-z"))
@@ -72,7 +218,7 @@ def test_adk_agent_caller_error_becomes_run_error() -> None:
     class Boom(Exception):
         error_code = "CHATAGENT_TIMEOUT"
 
-    caller = FakeADKCaller(deltas=[], error=Boom("upstream timed out"))
+    caller = FakeADKCaller(messages=[], error=Boom("upstream timed out"))
     request = RunAgentInput.model_validate(_run_input())
 
     events = _events(list(ADKAgent(caller).run(request, "m")))
@@ -86,7 +232,10 @@ def test_adk_agent_caller_error_becomes_run_error() -> None:
 
 
 def test_adk_agent_error_without_error_code_uses_exception_name() -> None:
-    caller = FakeADKCaller(deltas=["partial"], error=RuntimeError("boom"))
+    caller = FakeADKCaller(
+        messages=[UpstreamMessage(message_id="m", role="assistant", content="partial")],
+        error=RuntimeError("boom"),
+    )
     request = RunAgentInput.model_validate(_run_input())
 
     events = _events(list(ADKAgent(caller).run(request, "m")))

@@ -315,9 +315,18 @@ transport to an `ADKCaller` protocol; the concrete proxy lives ragent-side in
   continuation is not yet implemented.
 
 **Upstream → response conversion:**
-- `{"returnData":{"delta":"…"}}` → `TEXT_MESSAGE_CONTENT` (bracketed by a single
-  `TEXT_MESSAGE_START`/`TEXT_MESSAGE_END`; `messageId` minted by ragent).
-- `{"returnData":{"done":true}}` → `RUN_FINISHED`.
+- Each SSE line is `data: {json}\n\n`; the stream terminates with `data: [Done]`.
+- `returnData.messages[].content` → `TEXT_MESSAGE_CONTENT` (bracketed by
+  `TEXT_MESSAGE_START`/`TEXT_MESSAGE_END`; `messageId` taken from upstream
+  `messages[].messageId`, one block per distinct id).
+- `messageMeta.langgraph_node` (`planner`/`commander`/`summarizer`) → each node
+  gets its own TEXT_MESSAGE block (keyed by its upstream `messageId`).
+- `finish_reason="tool_calls"` + `tool_calls` → `TOOL_CALL_START` / `TOOL_CALL_ARGS`
+  / `TOOL_CALL_END` events; the upstream's tool-result turn (`role="tool"`) →
+  `TOOL_CALL_RESULT`.
+- `humanInTheLoopMeta.isInterrupt=true` → standalone `TEXT_MESSAGE` carrying
+  `interruptMessage` as the delta.
+- `[Done]` sentinel → `RUN_FINISHED`.
 
 **Error contract (breaking change vs v2):** every failure — rate-limit, upstream
 `returnCode != 96200`, 5xx, and timeout — is emitted as a single `RUN_ERROR`
