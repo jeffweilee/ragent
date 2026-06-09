@@ -100,7 +100,7 @@ def _relay(upstream: Generator[UpstreamMessage, None, None]) -> Generator[str, N
                 for i, tc in enumerate(msg.tool_calls):
                     fn = tc.get("function", {})
                     fn_name = fn.get("name", "unknown")
-                    tc_id = f"{msg.message_id}-{i}"
+                    tc_id = tc.get("id") or f"{msg.message_id}-{i}"
                     pending_calls.setdefault(fn_name, []).append(tc_id)
                     yield to_sse(
                         ToolCallStartEvent(

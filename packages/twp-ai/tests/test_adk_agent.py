@@ -128,6 +128,7 @@ def test_adk_agent_tool_calls_produce_tool_call_events() -> None:
                 finish_reason="tool_calls",
                 tool_calls=[
                     {
+                        "id": "call-abc",
                         "type": "function",
                         "function": {"name": "search", "arguments": '{"q":"test"}'},
                     }
@@ -146,6 +147,7 @@ def test_adk_agent_tool_calls_produce_tool_call_events() -> None:
     tc_start = next(e for e in events if e["type"] == "TOOL_CALL_START")
     assert tc_start["toolCallName"] == "search"
     assert tc_start["parentMessageId"] == "msg-tc"
+    assert tc_start["toolCallId"] == "call-abc"
 
 
 def test_adk_agent_tool_result_produces_tool_call_result() -> None:
@@ -156,7 +158,7 @@ def test_adk_agent_tool_result_produces_tool_call_result() -> None:
                 role="assistant",
                 finish_reason="tool_calls",
                 tool_calls=[
-                    {"type": "function", "function": {"name": "search", "arguments": "{}"}}
+                    {"id": "call-xyz", "type": "function", "function": {"name": "search", "arguments": "{}"}}
                 ],
             ),
             UpstreamMessage(

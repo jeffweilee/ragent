@@ -493,24 +493,24 @@ data: {"type":"RUN_FINISHED","runId":"run_1","threadId":"thread_1"}
 
 #### Example 3 — Tool call + tool result
 
-`finish_reason="tool_calls"` + `tool_calls` → `TOOL_CALL_START/ARGS/END`; a subsequent `role="tool"` message → `TOOL_CALL_RESULT`. The tool-call ID (`{messageId}-{index}`) correlates result to call.
+`finish_reason="tool_calls"` + `tool_calls` → `TOOL_CALL_START/ARGS/END`; a subsequent `role="tool"` message → `TOOL_CALL_RESULT`. Each upstream `tool_calls[]` element carries an `id` field — ragent uses that directly as the AG-UI `toolCallId`. If the upstream omits `id` (legacy), ragent falls back to `{messageId}-{index}`. Tool results are correlated back to their call via a FIFO queue keyed on `displayMeta.toolName`.
 
 ```
 # upstream
-data: {"returnCode":96200,"returnData":{"messages":[{"messageId":"msg-tc","role":"assistant","content":null,"finish_reason":"tool_calls","tool_calls":[{"type":"function","function":{"name":"search","arguments":"{\"query\":\"release notes\"}"}}],"displayMeta":{"toolName":"search"}}]}}
+data: {"returnCode":96200,"returnData":{"messages":[{"messageId":"msg-tc","role":"assistant","content":null,"finish_reason":"tool_calls","tool_calls":[{"id":"call-abc","type":"function","function":{"name":"search","arguments":"{\"query\":\"release notes\"}"}}],"displayMeta":{"toolName":"search"}}]}}
 data: {"returnCode":96200,"returnData":{"messages":[{"messageId":"msg-tr","role":"tool","content":"Found 3 results.","displayMeta":{"toolName":"search"}}]}}
 data: [Done]
 
 # ragent response
 data: {"type":"RUN_STARTED","runId":"run_1","threadId":"thread_1"}
 
-data: {"type":"TOOL_CALL_START","toolCallId":"msg-tc-0","toolCallName":"search","parentMessageId":"msg-tc"}
+data: {"type":"TOOL_CALL_START","toolCallId":"call-abc","toolCallName":"search","parentMessageId":"msg-tc"}
 
-data: {"type":"TOOL_CALL_ARGS","toolCallId":"msg-tc-0","delta":"{\"query\":\"release notes\"}"}
+data: {"type":"TOOL_CALL_ARGS","toolCallId":"call-abc","delta":"{\"query\":\"release notes\"}"}
 
-data: {"type":"TOOL_CALL_END","toolCallId":"msg-tc-0"}
+data: {"type":"TOOL_CALL_END","toolCallId":"call-abc"}
 
-data: {"type":"TOOL_CALL_RESULT","messageId":"msg-tr","toolCallId":"msg-tc-0","content":"Found 3 results."}
+data: {"type":"TOOL_CALL_RESULT","messageId":"msg-tr","toolCallId":"call-abc","content":"Found 3 results."}
 
 data: {"type":"RUN_FINISHED","runId":"run_1","threadId":"thread_1"}
 ```

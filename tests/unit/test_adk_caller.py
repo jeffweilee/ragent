@@ -117,7 +117,7 @@ def test_stream_deltas_parses_tool_name() -> None:
                 finish_reason="tool_calls",
                 tool_name="search",
                 tool_calls=[
-                    {"type": "function", "function": {"name": "search", "arguments": "{}"}}
+                    {"id": "call-abc", "type": "function", "function": {"name": "search", "arguments": "{}"}}
                 ],
             ),
             _done_line(),
@@ -129,6 +129,7 @@ def test_stream_deltas_parses_tool_name() -> None:
 
     assert msgs[0].tool_name == "search"
     assert msgs[0].finish_reason == "tool_calls"
+    assert msgs[0].tool_calls[0]["id"] == "call-abc"
     assert msgs[0].tool_calls[0]["function"]["name"] == "search"
 
 
