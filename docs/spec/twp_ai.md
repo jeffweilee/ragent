@@ -1,6 +1,6 @@
 # twp-ai Adapter (`packages/twp-ai`)
 
-> Mounted at `POST /twp/v1/run`. Standard auth applies (`X-User-Id` or `X-Auth-Token`).  
+> Mounted at `POST /twp/v1/run`. Standard auth applies (via `<RAGENT_USER_ID_HEADER>` or `<RAGENT_JWT_HEADER>`).  
 > Full API examples: [`docs/API.md §twp-ai`](../API.md#twp-ai).
 
 ---
@@ -46,6 +46,7 @@ Required fields: `threadId`, `runId`, `state`, `messages`, `tools`, `context`, `
 | `TOOL_CALL_START` | LLM invokes a client-side tool |
 | `TOOL_CALL_ARGS` | Tool argument fragment |
 | `TOOL_CALL_END` | Tool-call block complete |
+| `TOOL_CALL_RESULT` | Tool execution result (server-side tool flows) |
 | `RUN_FINISHED` | Run complete (no error) |
 | `RUN_ERROR` | Run failed; `message`, `code` fields present |
 
