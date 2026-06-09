@@ -217,78 +217,9 @@ Request: `{request_id, feedback_token, query_text, shown_sources, source_app, so
 
 ### 3.4.6 `packages/twp-ai` Adapter
 
-`packages/twp-ai` is the Agent-User Interaction adapter used by frontend
-applications that need page-aware runs plus client-provided tools. Its wire
-contract follows twp-ai protocol shapes while implementing the event types needed
-by the current tool-call flow.
+> Full spec: [docs/spec/twp_ai.md](spec/twp_ai.md) — run-input schema, SSE event types (`RUN_STARTED`/`TEXT_MESSAGE_*`/`TOOL_CALL_*`/`RUN_FINISHED`/`RUN_ERROR`), tool-result boundary.
 
-**Run input:** the endpoint accepts twp-ai run input. Required fields are
-`threadId`, `runId`, `state`, `messages`, `tools`, `context`, and
-`forwardedProps`; `parentRunId` and `model` are optional.
-
-```json
-{
-  "threadId": "thread_1",
-  "runId": "run_1",
-  "parentRunId": null,
-  "state": {
-    "page": {
-      "title": "Edit product"
-    }
-  },
-  "messages": [
-    {
-      "id": "msg_user_1",
-      "role": "user",
-      "content": "Fill the description"
-    }
-  ],
-  "tools": [
-    {
-      "name": "fill_form",
-      "description": "Use only when the user asks to fill or update form fields.",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "description": {
-            "type": "string"
-          }
-        }
-      }
-    }
-  ],
-  "context": [
-    {
-      "description": "Current page",
-      "value": "{\"title\":\"Edit product\",\"fields\":[\"description\"]}"
-    }
-  ],
-  "forwardedProps": {
-    "source": "form-page"
-  },
-  "model": "gptoss-120b"
-}
-```
-
-`context` carries twp-ai contextual items. Tool availability belongs in the
-top-level `tools` array.
-
-**Stream events:** the direct runtime emits twp-ai camelCase SSE payloads
-for `RUN_STARTED`, `TEXT_MESSAGE_START`, `TEXT_MESSAGE_CONTENT`,
-`TEXT_MESSAGE_END`, `TOOL_CALL_START`, `TOOL_CALL_ARGS`, `TOOL_CALL_END`,
-`RUN_FINISHED`, and `RUN_ERROR`. The first direct runtime
-turn lets the LLM decide whether to call a tool (`tool_choice=auto` in the
-OpenAI-compatible caller). Tool arguments may be emitted as a single complete
-`TOOL_CALL_ARGS` delta when the underlying provider adapter only exposes
-accumulated tool-call arguments.
-
-**Tool result boundary:** the direct runtime does not synthesize a tool result
-or run a confirmation turn. After emitting the tool-call lifecycle events it
-finishes the run, yielding control to the frontend. The frontend executes the
-client-side tool and sends the real result back as a `role="tool"` message in a
-continuation run; the runtime translates the prior tool-call and tool-result
-messages into provider-compatible messages so the next LLM turn sees the actual
-outcome.
+Mounted at `POST /twp/v1/run`. Requires `TWP_DEFAULT_MODEL` env var. Standard auth applies. See [`docs/API.md §twp-ai`](API.md#twp-ai) for curl examples.
 
 ---
 
