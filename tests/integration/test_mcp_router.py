@@ -165,13 +165,13 @@ def test_mcp_full_handshake_round_trip(client: TestClient, es_store, es_url: str
             "jsonrpc": "2.0",
             "id": 1,
             "method": "initialize",
-            "params": {"protocolVersion": "2024-11-05", "capabilities": {}},
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {}},
         },
     )
     assert init_resp.status_code == 200
     assert init_resp.headers["content-type"].startswith("application/json")
     init_body = init_resp.json()
-    assert init_body["result"]["protocolVersion"] == "2024-11-05"
+    assert init_body["result"]["protocolVersion"] == "2025-06-18"
     assert init_body["result"]["capabilities"] == {"tools": {}}
 
     # Step 2: tools/list — discovery.
@@ -201,14 +201,17 @@ def test_mcp_full_handshake_round_trip(client: TestClient, es_store, es_url: str
     assert call_body["jsonrpc"] == "2.0"
     assert call_body["id"] == 3
     assert call_body["result"]["isError"] is False
+    # structuredContent carries a seeded document_id (proves the wire reached
+    # run_retrieval and the pipeline returned real results).
+    sources = call_body["result"]["structuredContent"]["sources"]
+    assert sources, "expected at least one retrieved source"
+    assert {s["document_id"] for s in sources} & {"doc-mcp-1", "doc-mcp-2"}
+    # content[0].text is the <context>-wrapped markdown citation digest.
     text = call_body["result"]["content"][0]["text"]
-    # Preamble confirms at least one chunk was retrieved (not an empty result).
-    assert text.startswith("Found ") and "chunk(s)." in text
-    assert not text.startswith("Found 0 chunk(s).")
-    # At least one [資料來源 #N] header with a seeded document_id (proves the wire
-    # reached run_retrieval and the pipeline returned real results).
-    assert "[資料來源 #1]" in text
-    assert "document_id=doc-mcp-1" in text or "document_id=doc-mcp-2" in text
+    assert text.startswith("<context>\n")
+    assert text.endswith("\n</context>")
+    assert "| # | 資料來源 | 來源系統 |" in text
+    assert "### [1]" in text
 
 
 def test_mcp_initialize_then_notifications_initialized(client: TestClient) -> None:
@@ -219,7 +222,7 @@ def test_mcp_initialize_then_notifications_initialized(client: TestClient) -> No
             "jsonrpc": "2.0",
             "id": 1,
             "method": "initialize",
-            "params": {"protocolVersion": "2024-11-05", "capabilities": {}},
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {}},
         },
     )
     notify_resp = client.post(

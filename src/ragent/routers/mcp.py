@@ -52,7 +52,8 @@ class _McpToolError(Exception):
 
 # MCP protocol pin (B47). Code constants, not env-driven — operators flipping
 # these would silently break the contract advertised in `initialize`.
-_MCP_PROTOCOL_VERSION = "2024-11-05"
+# 2025-06-18 is the first revision with tool outputSchema / structuredContent.
+_MCP_PROTOCOL_VERSION = "2025-06-18"
 _MCP_SERVER_NAME = "ragent"
 
 # Defence-in-depth body-size cap. Production ingress (nginx / ALB) is the
@@ -129,39 +130,41 @@ def _validate_retrieve_args(args: Any) -> None:
 
 
 def _header_field(value: str | None) -> str:
-    """Strip CR/LF from a metadata value to keep it on a single header line."""
+    """Strip CR/LF from a metadata value to keep it on a single markdown line."""
     return (value or "").replace("\n", " ").replace("\r", "")
 
 
-def _render_chunks(entries: list[dict]) -> str:
-    """Format retrieve entries as [資料來源 #N]-labelled text for MCP callers.
+def _md_cell(value: str | None) -> str:
+    """Sanitise a value for a markdown table cell: single line, `|` escaped
+    so a malicious title cannot break the table or inject rows."""
+    return _header_field(value).replace("|", "\\|")
 
-    Mirrors the `_render_context()` skeleton used in chat prompt injection so
-    that calling agents can cite chunks with the same [N] convention. Metadata
-    (score, source_app, document_id, title) is included in the header line
-    because MCP callers are agents that need it for citation and filtering —
-    unlike the in-chat LLM where metadata is intentionally hidden.
+
+def _render_context_markdown(entries: list[dict]) -> str:
+    """Render retrieve entries as a <context>-wrapped markdown digest.
+
+    Layout: a user-presentable citation table (#, 資料來源, 來源系統 — no
+    internal fields like document_id/score, those live in structuredContent),
+    then one `### [N]` blockquoted excerpt section per source for LLM
+    grounding. No natural-language wording, so calling LLMs treat the block
+    as injected context data rather than prose to transcribe.
     """
     if not entries:
-        return "Found 0 chunk(s)."
-    parts = [f"Found {len(entries)} chunk(s).\n"]
+        return "<context>\n</context>"
+    rows = ["| # | 資料來源 | 來源系統 |", "|---|---------|---------|"]
+    excerpt_blocks = []
     for i, entry in enumerate(entries, start=1):
-        score = entry.get("score")
-        source_app = _header_field(entry.get("source_app"))
-        doc_id = _header_field(entry.get("document_id"))
-        title = _header_field(entry.get("source_title"))
-        header = f"[資料來源 #{i}]"
-        if score is not None:
-            header += f" score={score:.2f}"
-        if source_app:
-            header += f" | source_app={source_app}"
-        if doc_id:
-            header += f" | document_id={doc_id}"
-        if title:
-            header += f" | title={title}"
+        # Pipe-escaping is a table-cell concern only — headings keep the raw `|`.
+        title = _header_field(entry.get("source_title")) or "(未命名)"
+        cell_title = title.replace("|", "\\|")
+        url = _header_field(entry.get("source_url"))
+        link = f"[{cell_title}]({url})" if url else cell_title
+        rows.append(f"| {i} | {link} | {_md_cell(entry.get('source_app'))} |")
         excerpt = entry.get("excerpt") or ""
-        parts.append(f"{header}\n{excerpt}\n---")
-    return "\n".join(parts)
+        quoted = "\n".join(f"> {line}" for line in excerpt.splitlines() or [""])
+        excerpt_blocks.append(f"### [{i}] {title}\n{quoted}")
+    body = "\n".join(rows) + "\n\n" + "\n\n".join(excerpt_blocks)
+    return f"<context>\n{body}\n</context>"
 
 
 # Stateless handlers — composed before per-router state (the retrieval
@@ -221,8 +224,10 @@ def create_mcp_router(
         if arguments.get("dedupe"):
             docs = dedupe_by_document(docs)
         entries = [doc_to_source_entry(d, max_chars=excerpt_max_chars) for d in docs]
+        # Dual channel: sources JSON for the UI, markdown digest for the LLM.
         return {
-            "content": [{"type": "text", "text": _render_chunks(entries)}],
+            "content": [{"type": "text", "text": _render_context_markdown(entries)}],
+            "structuredContent": {"sources": entries},
             "isError": False,
         }
 
