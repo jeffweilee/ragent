@@ -79,6 +79,33 @@ class ToolCallResultEvent(BaseEvent):
     role: Literal["tool"] = "tool"
 
 
+class ReasoningStartEvent(BaseEvent):
+    type: Literal["REASONING_START"] = "REASONING_START"
+
+
+class ReasoningMessageStartEvent(BaseEvent):
+    type: Literal["REASONING_MESSAGE_START"] = "REASONING_MESSAGE_START"
+    message_id: str
+    # AG-UI aligns the reasoning role on "reasoning" (the ReasoningMessage type in
+    # both SDKs); the TS client's parser rejects "assistant".
+    role: Literal["reasoning"] = "reasoning"
+
+
+class ReasoningMessageContentEvent(BaseEvent):
+    type: Literal["REASONING_MESSAGE_CONTENT"] = "REASONING_MESSAGE_CONTENT"
+    message_id: str
+    delta: str
+
+
+class ReasoningMessageEndEvent(BaseEvent):
+    type: Literal["REASONING_MESSAGE_END"] = "REASONING_MESSAGE_END"
+    message_id: str
+
+
+class ReasoningEndEvent(BaseEvent):
+    type: Literal["REASONING_END"] = "REASONING_END"
+
+
 class RunFinishedEvent(BaseEvent):
     type: Literal["RUN_FINISHED"] = "RUN_FINISHED"
     run_id: str
@@ -104,6 +131,11 @@ Event = Annotated[
     | ToolCallArgsEvent
     | ToolCallEndEvent
     | ToolCallResultEvent
+    | ReasoningStartEvent
+    | ReasoningMessageStartEvent
+    | ReasoningMessageContentEvent
+    | ReasoningMessageEndEvent
+    | ReasoningEndEvent
     | RunFinishedEvent
     | RunErrorEvent,
     Field(discriminator="type"),

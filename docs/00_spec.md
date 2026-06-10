@@ -290,6 +290,54 @@ continuation run; the runtime translates the prior tool-call and tool-result
 messages into provider-compatible messages so the next LLM turn sees the actual
 outcome.
 
+#### 3.4.7 `POST /chatagent/v3` — twp-ai protocol over the ChatAgent upstream
+
+`/chatagent/v3` exposes the **twp-ai protocol wire contract** (request:
+`RunAgentInput`; response: twp-ai SSE event stream) while proxying to the same
+external ChatAgent service as `/chatagent/v2` (shares `CHATAGENT_API_URL`,
+`CHATAGENT_AUTH`, the `chatagent:{user_id}` rate limit, and
+`CHATAGENT_TIMEOUT_SECONDS`). It is a **distinct service** from `/twp/v1/run`
+(which is a native agent host backed by the internal LLM); the two are unrelated
+and may diverge freely. Registered only when `CHATAGENT_API_URL` is set.
+
+It reuses the twp-ai `Agent`/caller abstraction: an `ADKAgent`
+(`packages/twp-ai/src/twp_ai/agents/adk.py`) owns the event flow and delegates
+transport to an `ADKCaller` protocol; the concrete proxy lives ragent-side in
+`src/ragent/clients/adk_caller.py`.
+
+**Request → upstream conversion:**
+- The last `role="user"` message content becomes upstream `inputData.message`.
+- `metadata` is server-injected: `apName` (= `CHATAGENT_AP_NAME`), `user`
+  (resolved caller), `userToken` (raw JWT header), and `session = threadId`.
+- `stream` is always `true`. `model` is **not** forwarded (the upstream decides,
+  matching v2).
+- `tools`/`state`/`context`/`forwardedProps` are accepted; client tool-call
+  continuation is not yet implemented.
+
+**Upstream → response conversion:**
+- Each SSE line is `data: {json}\n\n`; the stream terminates with `data: [Done]`.
+- `returnData.messages[].content` → `TEXT_MESSAGE_CONTENT` (bracketed by
+  `TEXT_MESSAGE_START`/`TEXT_MESSAGE_END`; `messageId` taken from upstream
+  `messages[].messageId`, one block per distinct id).
+- `messageMeta.langgraph_node` (`planner`/`commander`/`summarizer`) → each node
+  gets its own block (keyed by its upstream `messageId`). The `planner` node is
+  the agent's plan/reasoning step and is surfaced as a reasoning block
+  (`REASONING_START` → `REASONING_MESSAGE_START` / `REASONING_MESSAGE_CONTENT`* /
+  `REASONING_MESSAGE_END` → `REASONING_END`) instead of a `TEXT_MESSAGE` block;
+  every other node produces a `TEXT_MESSAGE` block.
+- `finish_reason="tool_calls"` + `tool_calls` → `TOOL_CALL_START` / `TOOL_CALL_ARGS`
+  / `TOOL_CALL_END` events; the upstream's tool-result turn (`role="tool"`) →
+  `TOOL_CALL_RESULT`.
+- `humanInTheLoopMeta.isInterrupt=true` → standalone `TEXT_MESSAGE` carrying
+  `interruptMessage` as the delta.
+- `[Done]` sentinel → `RUN_FINISHED`.
+
+**Error contract (breaking change vs v2):** every failure — rate-limit, upstream
+`returnCode != 96200`, 5xx, and timeout — is emitted as a single `RUN_ERROR`
+event over a `200 text/event-stream` response, with `code` set to
+`CHATAGENT_RATE_LIMITED` / `CHATAGENT_UPSTREAM_ERROR` / `CHATAGENT_TIMEOUT`. v3
+never returns an HTTP `429`/`502`/`504` (v2 does).
+
 ---
 
 ### 3.5 Authentication & Permission

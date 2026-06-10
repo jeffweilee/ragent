@@ -405,6 +405,171 @@ The response `Content-Type` is forwarded from the upstream response (e.g. `appli
 
 Errors: `429 CHATAGENT_RATE_LIMITED` · `502 CHATAGENT_UPSTREAM_ERROR` · `504 CHATAGENT_TIMEOUT`. Request timeout defaults to `CHATAGENT_TIMEOUT_SECONDS` (default 30 s).
 
+### `POST /chatagent/v3` — twp-ai protocol over the ChatAgent upstream (SSE)
+
+Same upstream as v2 (`CHATAGENT_API_URL`, `CHATAGENT_AUTH`, rate limit, `CHATAGENT_TIMEOUT_SECONDS`), but the wire contract is the **twp-ai protocol**: the request is a twp-ai `RunAgentInput` and the response is a twp-ai SSE event stream. ragent converts both directions — it builds the v2 upstream payload from the run input, then maps the upstream's SSE stream into twp-ai AG-UI events. Registered only when `CHATAGENT_API_URL` is set.
+
+**Conversion rules:**
+
+- **Request → upstream:** the last `role="user"` message content becomes `inputData.message`; `metadata` is server-injected (`apName`/`user`/`userToken`/`session`) with `session = threadId`; `stream` is always `true`. `model` is not forwarded (the upstream decides, as in v2). `tools`/`state`/`context`/`forwardedProps` are accepted and may be forwarded; client tool-call continuation is not yet handled.
+- **Upstream → response:** each SSE line is `data: {json}\n\n`; `returnData.messages[].content` → `TEXT_MESSAGE_CONTENT` (bracketed by `TEXT_MESSAGE_START`/`TEXT_MESSAGE_END`; `messageId` taken from upstream `messages[].messageId`). Each distinct upstream node gets its own block; the `planner` node (`messageMeta.langgraph_node`) is the plan/reasoning step and is bracketed by `REASONING_START`/`REASONING_MESSAGE_START`/`REASONING_MESSAGE_CONTENT`/`REASONING_MESSAGE_END`/`REASONING_END` instead, while other nodes (commander/summarizer) produce TEXT_MESSAGE blocks. `finish_reason="tool_calls"` + `tool_calls` → `TOOL_CALL_START/ARGS/END`; `role="tool"` turns → `TOOL_CALL_RESULT`. `humanInTheLoopMeta.isInterrupt=true` → standalone TEXT_MESSAGE with `interruptMessage` as delta. `data: [Done]` sentinel → `RUN_FINISHED`.
+- **Errors are events, not HTTP codes:** rate-limit, upstream non-`96200`, 5xx, and timeout all surface as a single `RUN_ERROR` event over a `200` stream (`code` = `CHATAGENT_RATE_LIMITED` / `CHATAGENT_UPSTREAM_ERROR` / `CHATAGENT_TIMEOUT`). This is a **breaking change** from v2's HTTP `429`/`502`/`504`.
+
+**Request body** (twp-ai `RunAgentInput`; required: `threadId`, `runId`, `messages`, `tools`, `state`, `context`, `forwardedProps`):
+
+```json
+{
+  "threadId": "thread_1",
+  "runId": "run_1",
+  "messages": [{ "id": "m1", "role": "user", "content": "Summarise the release notes." }],
+  "tools": [],
+  "state": null,
+  "context": [],
+  "forwardedProps": null
+}
+```
+
+```bash
+curl -X POST http://localhost:8000/chatagent/v3 \
+  -H "X-Auth-Token: <jwt>" -H "Content-Type: application/json" \
+  -d '{"threadId":"thread_1","runId":"run_1","messages":[{"id":"m1","role":"user","content":"Summarise the release notes."}],"tools":[],"state":null,"context":[],"forwardedProps":null}' \
+  --no-buffer
+```
+
+**Response:** `text/event-stream`. Every upstream `data: {json}` SSE line passes through the conversion pipeline and becomes one or more AG-UI events on the response stream. The stream always opens with `RUN_STARTED` and closes with `RUN_FINISHED` (success) or `RUN_ERROR` (any failure).
+
+#### Example 1 — Simple text reply
+
+Upstream emits a single assistant message in chunks; ragent wraps it in a TEXT_MESSAGE block.
+
+```
+# upstream (ChatAgent SSE — not visible to clients)
+data: {"returnCode":96200,"returnData":{"messages":[{"messageId":"msg-1","role":"assistant","content":"The release notes "}]}}
+data: {"returnCode":96200,"returnData":{"messages":[{"messageId":"msg-1","role":"assistant","content":"cover three areas."}]}}
+data: [Done]
+
+# ragent response (twp-ai AG-UI SSE)
+data: {"type":"RUN_STARTED","runId":"run_1","threadId":"thread_1"}
+
+data: {"type":"TEXT_MESSAGE_START","messageId":"msg-1","role":"assistant"}
+
+data: {"type":"TEXT_MESSAGE_CONTENT","messageId":"msg-1","delta":"The release notes "}
+
+data: {"type":"TEXT_MESSAGE_CONTENT","messageId":"msg-1","delta":"cover three areas."}
+
+data: {"type":"TEXT_MESSAGE_END","messageId":"msg-1"}
+
+data: {"type":"RUN_FINISHED","runId":"run_1","threadId":"thread_1"}
+```
+
+#### Example 2 — Multi-agent (planner → commander → summarizer)
+
+Each upstream `messageId` maps to an independent block. `messageMeta.langgraph_node` (carried in `UpstreamMessage.agent_type`) selects the block type: the **`planner`** node is the agent's plan/reasoning step, surfaced as a `REASONING_*` block (`REASONING_START` → `REASONING_MESSAGE_START`/`CONTENT`*/`END` → `REASONING_END`); every other node (`commander`, `summarizer`, …) becomes a `TEXT_MESSAGE` block.
+
+```
+# upstream
+data: {"returnCode":96200,"returnData":{"messages":[{"messageId":"plan-1","role":"assistant","content":"Planning...","messageMeta":{"langgraph_node":"planner"}}]}}
+data: {"returnCode":96200,"returnData":{"messages":[{"messageId":"cmd-1","role":"assistant","content":"Executing step 1.","messageMeta":{"langgraph_node":"commander"}}]}}
+data: {"returnCode":96200,"returnData":{"messages":[{"messageId":"sum-1","role":"assistant","content":"Done.","messageMeta":{"langgraph_node":"summarizer"}}]}}
+data: [Done]
+
+# ragent response
+data: {"type":"RUN_STARTED","runId":"run_1","threadId":"thread_1"}
+
+data: {"type":"REASONING_START"}
+data: {"type":"REASONING_MESSAGE_START","messageId":"plan-1","role":"reasoning"}
+data: {"type":"REASONING_MESSAGE_CONTENT","messageId":"plan-1","delta":"Planning..."}
+data: {"type":"REASONING_MESSAGE_END","messageId":"plan-1"}
+data: {"type":"REASONING_END"}
+
+data: {"type":"TEXT_MESSAGE_START","messageId":"cmd-1","role":"assistant"}
+data: {"type":"TEXT_MESSAGE_CONTENT","messageId":"cmd-1","delta":"Executing step 1."}
+data: {"type":"TEXT_MESSAGE_END","messageId":"cmd-1"}
+
+data: {"type":"TEXT_MESSAGE_START","messageId":"sum-1","role":"assistant"}
+data: {"type":"TEXT_MESSAGE_CONTENT","messageId":"sum-1","delta":"Done."}
+data: {"type":"TEXT_MESSAGE_END","messageId":"sum-1"}
+
+data: {"type":"RUN_FINISHED","runId":"run_1","threadId":"thread_1"}
+```
+
+#### Example 3 — Tool call + tool result
+
+`finish_reason="tool_calls"` + `tool_calls` → `TOOL_CALL_START/ARGS/END`; a subsequent `role="tool"` message → `TOOL_CALL_RESULT`. Each upstream `tool_calls[]` element carries an `id` field — ragent uses that directly as the AG-UI `toolCallId`. If the upstream omits `id` (legacy), ragent falls back to `{messageId}-{index}`. Tool results are correlated back to their call via a FIFO queue keyed on `displayMeta.toolName`.
+
+```
+# upstream
+data: {"returnCode":96200,"returnData":{"messages":[{"messageId":"msg-tc","role":"assistant","content":null,"finish_reason":"tool_calls","tool_calls":[{"id":"call-abc","type":"function","function":{"name":"search","arguments":"{\"query\":\"release notes\"}"}}],"displayMeta":{"toolName":"search"}}]}}
+data: {"returnCode":96200,"returnData":{"messages":[{"messageId":"msg-tr","role":"tool","content":"Found 3 results.","displayMeta":{"toolName":"search"}}]}}
+data: [Done]
+
+# ragent response
+data: {"type":"RUN_STARTED","runId":"run_1","threadId":"thread_1"}
+
+data: {"type":"TOOL_CALL_START","toolCallId":"call-abc","toolCallName":"search","parentMessageId":"msg-tc"}
+
+data: {"type":"TOOL_CALL_ARGS","toolCallId":"call-abc","delta":"{\"query\":\"release notes\"}"}
+
+data: {"type":"TOOL_CALL_END","toolCallId":"call-abc"}
+
+data: {"type":"TOOL_CALL_RESULT","messageId":"msg-tr","toolCallId":"call-abc","content":"Found 3 results."}
+
+data: {"type":"RUN_FINISHED","runId":"run_1","threadId":"thread_1"}
+```
+
+#### Example 4 — Human-in-the-loop interrupt
+
+`humanInTheLoopMeta.isInterrupt=true` surfaces as a standalone TEXT_MESSAGE containing `interruptMessage` as the delta.
+
+```
+# upstream
+data: {"returnCode":96200,"returnData":{"messages":[{"messageId":"hitl-1","role":"assistant","content":null,"humanInTheLoopMeta":{"isInterrupt":true,"interruptMessage":"Please confirm before deleting all records.","interruptContent":"ctx"}}]}}
+data: [Done]
+
+# ragent response
+data: {"type":"RUN_STARTED","runId":"run_1","threadId":"thread_1"}
+
+data: {"type":"TEXT_MESSAGE_START","messageId":"hitl-1","role":"assistant"}
+
+data: {"type":"TEXT_MESSAGE_CONTENT","messageId":"hitl-1","delta":"Please confirm before deleting all records."}
+
+data: {"type":"TEXT_MESSAGE_END","messageId":"hitl-1"}
+
+data: {"type":"RUN_FINISHED","runId":"run_1","threadId":"thread_1"}
+```
+
+#### Example 5 — Error scenarios
+
+All errors surface as `RUN_ERROR` over the same `200 text/event-stream` response (no HTTP error codes for mid-stream failures).
+
+```
+# upstream non-96200 (e.g. quota exceeded)
+data: {"returnCode":96500,"returnMessage":"quota exceeded","returnData":{}}
+data: [Done]
+
+# ragent response
+data: {"type":"RUN_STARTED","runId":"run_1","threadId":"thread_1"}
+data: {"type":"RUN_ERROR","message":"quota exceeded","code":"CHATAGENT_UPSTREAM_ERROR","runId":"run_1","threadId":"thread_1"}
+```
+
+```
+# upstream timeout (httpx.TimeoutException)
+
+# ragent response
+data: {"type":"RUN_STARTED","runId":"run_1","threadId":"thread_1"}
+data: {"type":"RUN_ERROR","message":"chatagent upstream failed: timed out","code":"CHATAGENT_TIMEOUT","runId":"run_1","threadId":"thread_1"}
+```
+
+```
+# truncated stream (upstream closes without [Done])
+
+# ragent response
+data: {"type":"RUN_STARTED","runId":"run_1","threadId":"thread_1"}
+data: {"type":"RUN_ERROR","message":"upstream closed stream without [Done] sentinel","code":"CHATAGENT_UPSTREAM_ERROR","runId":"run_1","threadId":"thread_1"}
+```
+
+> v3 reuses the twp-ai `Agent`/caller abstraction: an `ADKAgent` (in `packages/twp-ai`) owns the event flow, and a ragent-side `ADKCaller` (`src/ragent/clients/adk_caller.py`) does the upstream proxy. This is a separate service from `/twp/v1/run` (which is a native agent host); the two are unrelated.
+
 ---
 
 ## twp-ai
@@ -462,7 +627,7 @@ data: {"type":"RUN_FINISHED","runId":"r1","threadId":"t1"}
 
 The frontend executes the tool and sends the real result back as a `role="tool"` message in a **continuation run** (same `threadId`); that run preserves the tool-result history into the next LLM turn. Errors surface as `{"type":"RUN_ERROR","message":"...","code":"...","runId":"r1","threadId":"t1"}`.
 
-Event types: `RUN_STARTED` · `TEXT_MESSAGE_START`/`TEXT_MESSAGE_CONTENT`/`TEXT_MESSAGE_END` · `TOOL_CALL_START`/`TOOL_CALL_ARGS`/`TOOL_CALL_END` · `RUN_FINISHED` · `RUN_ERROR`.
+Event types: `RUN_STARTED` · `TEXT_MESSAGE_START`/`TEXT_MESSAGE_CONTENT`/`TEXT_MESSAGE_END` · `REASONING_START`/`REASONING_MESSAGE_START`/`REASONING_MESSAGE_CONTENT`/`REASONING_MESSAGE_END`/`REASONING_END` · `TOOL_CALL_START`/`TOOL_CALL_ARGS`/`TOOL_CALL_END` · `RUN_FINISHED` · `RUN_ERROR`.
 
 ---
 
