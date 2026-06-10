@@ -19,9 +19,8 @@ from collections.abc import Generator
 
 import httpx
 import structlog
-from twp_ai import build_system_prompt
 from twp_ai.callers.adk import UpstreamMessage
-from twp_ai.schemas import Message, RunAgentInput
+from twp_ai.schemas import ContextItem, Message, RunAgentInput
 
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.upstream import UpstreamServiceError, classify_upstream_error
@@ -167,13 +166,32 @@ def _parse_message(raw: dict) -> UpstreamMessage:
 
 
 def _compose_message(request: RunAgentInput) -> str:
-    """Fold the run input's tools/context/state ahead of the user's question.
+    """Prepend the client-supplied context/state ahead of the user's question.
 
-    The upstream proxy carries a single `inputData.message` field, so the
-    twp-ai system prompt (the same one /twp/v1/run builds) is prepended to the
-    last user message rather than sent as a separate `role="system"` turn.
+    The upstream is a general, tool-capable agent that owns its own persona and
+    keeps conversation memory by `session = threadId`, so we deliberately do NOT
+    impose an assistant persona or enumerate tools — we only surface the
+    `context`/`state` the single `inputData.message` field would otherwise drop.
+    With nothing to inject the turn stays a plain pass-through.
     """
-    return f"{build_system_prompt(request)}\n\n{_last_user_message(request.messages)}"
+    user_message = _last_user_message(request.messages)
+    preamble = _context_preamble(request.context, request.state)
+    if not preamble:
+        return user_message
+    return f"{preamble}\n\n{user_message}"
+
+
+def _context_preamble(context: list[ContextItem], state: object) -> str:
+    sections: list[str] = []
+    if context:
+        context_json = json.dumps(
+            [item.model_dump(by_alias=True) for item in context],
+            ensure_ascii=False,
+        )
+        sections.append(f"Context: {context_json}")
+    if state is not None:
+        sections.append(f"State: {json.dumps(state, ensure_ascii=False)}")
+    return "\n\n".join(sections)
 
 
 def _last_user_message(messages: list[Message]) -> str:

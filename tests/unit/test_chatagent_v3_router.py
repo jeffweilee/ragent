@@ -126,7 +126,7 @@ def test_v3_injects_server_metadata() -> None:
     assert payload["metadata"]["user"] == "bob"
     assert payload["metadata"]["userToken"] == "tok-bob"
     assert payload["metadata"]["session"] == "thread_1"
-    assert payload["inputData"]["message"].endswith("What are the features?")
+    assert payload["inputData"]["message"] == "What are the features?"
     assert payload["stream"] is True
 
 

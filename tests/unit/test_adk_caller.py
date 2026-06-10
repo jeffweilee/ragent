@@ -61,7 +61,7 @@ def test_stream_deltas_builds_upstream_payload() -> None:
     assert payload["metadata"]["user"] == "bob"
     assert payload["metadata"]["userToken"] == "tok-bob"
     assert payload["metadata"]["session"] == "thread_1"
-    assert payload["inputData"]["message"].endswith("What are the features?")
+    assert payload["inputData"]["message"] == "What are the features?"
     assert payload["stream"] is True
 
 
@@ -78,10 +78,10 @@ def test_stream_deltas_uses_last_user_message() -> None:
     list(caller.stream_deltas(_request(messages), "m"))
 
     payload = http_mock.build_request.call_args.kwargs["json"]
-    assert payload["inputData"]["message"].endswith("latest question")
+    assert payload["inputData"]["message"] == "latest question"
 
 
-def test_stream_deltas_prepends_system_prompt_with_context() -> None:
+def test_stream_deltas_prepends_context_and_state() -> None:
     http_mock = MagicMock(spec=httpx.Client)
     http_mock.send.return_value = _resp_mock([_done_line()])
     caller = _make_caller(http_mock)
@@ -94,11 +94,51 @@ def test_stream_deltas_prepends_system_prompt_with_context() -> None:
     list(caller.stream_deltas(request, "m"))
 
     message = http_mock.build_request.call_args.kwargs["json"]["inputData"]["message"]
-    assert "save_form: Persist the form" in message
     assert '"value": "checkout"' in message
     assert '"draft": "v1"' in message
+    # Tools are deliberately not folded into the upstream message.
+    assert "save_form" not in message
     # The user's actual question stays at the end, after the folded context.
     assert message.endswith("What are the features?")
+
+
+def test_stream_deltas_prepends_context_only() -> None:
+    http_mock = MagicMock(spec=httpx.Client)
+    http_mock.send.return_value = _resp_mock([_done_line()])
+    caller = _make_caller(http_mock)
+    request = _request(context=[{"description": "current page", "value": "checkout"}])
+
+    list(caller.stream_deltas(request, "m"))
+
+    message = http_mock.build_request.call_args.kwargs["json"]["inputData"]["message"]
+    assert message.startswith("Context: ")
+    assert "State:" not in message
+    assert message.endswith("What are the features?")
+
+
+def test_stream_deltas_prepends_state_only() -> None:
+    http_mock = MagicMock(spec=httpx.Client)
+    http_mock.send.return_value = _resp_mock([_done_line()])
+    caller = _make_caller(http_mock)
+    request = _request(state={"draft": "v1"})
+
+    list(caller.stream_deltas(request, "m"))
+
+    message = http_mock.build_request.call_args.kwargs["json"]["inputData"]["message"]
+    assert message.startswith("State: ")
+    assert "Context:" not in message
+    assert message.endswith("What are the features?")
+
+
+def test_stream_deltas_omits_preamble_when_no_context() -> None:
+    http_mock = MagicMock(spec=httpx.Client)
+    http_mock.send.return_value = _resp_mock([_done_line()])
+    caller = _make_caller(http_mock)
+
+    list(caller.stream_deltas(_request(), "m"))
+
+    payload = http_mock.build_request.call_args.kwargs["json"]
+    assert payload["inputData"]["message"] == "What are the features?"
 
 
 def test_stream_deltas_yields_upstream_messages_until_done() -> None:

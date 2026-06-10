@@ -306,17 +306,20 @@ transport to an `ADKCaller` protocol; the concrete proxy lives ragent-side in
 `src/ragent/clients/adk_caller.py`.
 
 **Request → upstream conversion:**
-- A twp-ai system prompt (the same builder `/twp/v1/run` uses — folding
-  `tools`, `context`, and `state`) is prepended to the last `role="user"`
-  message content, and the combined text becomes upstream `inputData.message`
-  (the upstream wire carries a single `message` field, so there is no separate
-  `role="system"` turn).
+- The upstream is a general, tool-capable agent that owns its own persona and
+  keeps conversation memory by `session`, so v3 imposes **no** assistant
+  persona and does **not** enumerate tools. It only surfaces the client-supplied
+  `context`/`state` that the single-field wire would otherwise drop: a labelled
+  preamble (`Context: {json}` and/or `State: {json}`) is prepended to the last
+  `role="user"` message content, and the combined text becomes upstream
+  `inputData.message`. With no `context` and no `state` the message is the bare
+  user text (a plain pass-through).
 - `metadata` is server-injected: `apName` (= `CHATAGENT_AP_NAME`), `user`
   (resolved caller), `userToken` (raw JWT header), and `session = threadId`.
 - `stream` is always `true`. `model` is **not** forwarded (the upstream decides,
   matching v2).
-- `forwardedProps` is accepted but not forwarded; client tool-call continuation
-  is not yet implemented.
+- `tools`/`forwardedProps` are accepted but not forwarded; client tool-call
+  continuation is not yet implemented.
 
 **Upstream → response conversion:**
 - Each SSE line is `data: {json}\n\n`; the stream terminates with `data: [Done]`.
