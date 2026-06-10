@@ -66,9 +66,9 @@ class Turn:
 def build_system_prompt(request: RunAgentInput) -> str:
     """Fold the run input's tools, context, and state into a system prompt.
 
-    Shared by every handler that needs the LLM to see the client-supplied
-    context/state — the native DirectLLMAgent loop and the ChatAgent upstream
-    proxy alike — so the two paths stay in lock-step.
+    This is the native DirectLLMAgent prompt (form-filling persona + tool-call
+    policy). Upstream-proxy handlers that must not impose a persona build their
+    own preamble instead.
     """
     lines = ["You are a helpful assistant that helps users complete tasks and fill forms.", ""]
 
