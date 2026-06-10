@@ -23,9 +23,10 @@ class rather than subclassing or modifying this one.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Generator
 
-from .._compose import Turn, build_messages, build_system_prompt, build_tool_defs
+from .._compose import Turn, build_messages, build_tool_defs
 from ..callers.protocol import LLMCaller
 from ..events import (
     RunErrorEvent,
@@ -61,7 +62,7 @@ class DirectLLMAgent:
 
         try:
             tool_defs = build_tool_defs(request)
-            messages = build_messages(request, build_system_prompt(request))
+            messages = build_messages(request, _system_prompt(request))
 
             # Turn 1 — LLM talks and/or calls tools
             turn1 = Turn(self._caller.stream_events(messages, tool_defs, model))
@@ -85,3 +86,34 @@ class DirectLLMAgent:
                     thread_id=request.thread_id,
                 )
             )
+
+
+def _system_prompt(request: RunAgentInput) -> str:
+    lines = ["You are a helpful assistant that helps users complete tasks and fill forms.", ""]
+
+    if request.tools:
+        lines.append("Available tools:")
+        for tool in request.tools:
+            lines.append(f"  - {tool.name}: {tool.description}")
+        lines.append("")
+        lines.append(
+            "Only call a tool when the user explicitly asks to change, fill, update, "
+            "submit, clear, or otherwise modify the current application state. "
+            "If the user asks about the page or asks an unrelated question, answer in text."
+        )
+    else:
+        lines.append("Answer the user helpfully.")
+
+    if request.context:
+        lines.append("")
+        context_json = json.dumps(
+            [item.model_dump(by_alias=True) for item in request.context],
+            ensure_ascii=False,
+        )
+        lines.append(f"Context: {context_json}")
+
+    if request.state is not None:
+        lines.append("")
+        lines.append(f"State: {json.dumps(request.state, ensure_ascii=False)}")
+
+    return "\n".join(lines)
