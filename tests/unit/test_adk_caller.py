@@ -130,6 +130,22 @@ def test_stream_deltas_prepends_state_only() -> None:
     assert message.endswith("What are the features?")
 
 
+def test_stream_deltas_preamble_only_when_no_user_message() -> None:
+    http_mock = MagicMock(spec=httpx.Client)
+    http_mock.send.return_value = _resp_mock([_done_line()])
+    caller = _make_caller(http_mock)
+    request = _request(
+        messages=[{"id": "a1", "role": "assistant", "content": "earlier reply"}],
+        context=[{"description": "current page", "value": "checkout"}],
+    )
+
+    list(caller.stream_deltas(request, "m"))
+
+    message = http_mock.build_request.call_args.kwargs["json"]["inputData"]["message"]
+    # No user message to append, so the preamble must not carry a trailing newline.
+    assert message == 'Context: [{"description": "current page", "value": "checkout"}]'
+
+
 def test_stream_deltas_omits_preamble_when_no_context() -> None:
     http_mock = MagicMock(spec=httpx.Client)
     http_mock.send.return_value = _resp_mock([_done_line()])

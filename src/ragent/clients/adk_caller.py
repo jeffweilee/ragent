@@ -178,6 +178,8 @@ def _compose_message(request: RunAgentInput) -> str:
     preamble = _context_preamble(request.context, request.state)
     if not preamble:
         return user_message
+    if not user_message:
+        return preamble
     return f"{preamble}\n\n{user_message}"
 
 

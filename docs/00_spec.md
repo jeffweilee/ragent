@@ -313,7 +313,9 @@ transport to an `ADKCaller` protocol; the concrete proxy lives ragent-side in
   preamble (`Context: {json}` and/or `State: {json}`) is prepended to the last
   `role="user"` message content, and the combined text becomes upstream
   `inputData.message`. With no `context` and no `state` the message is the bare
-  user text (a plain pass-through).
+  user text (a plain pass-through); conversely, when a preamble exists but there
+  is no `role="user"` message content, the message is the bare preamble (no
+  trailing separator).
 - `metadata` is server-injected: `apName` (= `CHATAGENT_AP_NAME`), `user`
   (resolved caller), `userToken` (raw JWT header), and `session = threadId`.
 - `stream` is always `true`. `model` is **not** forwarded (the upstream decides,
