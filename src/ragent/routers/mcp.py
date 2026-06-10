@@ -7,6 +7,7 @@ Sole tool: `retrieve` (wraps POST /retrieve/v1).
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -50,9 +51,11 @@ class _McpToolError(Exception):
         super().__init__(message)
 
 
-# MCP protocol pin (B47). Code constants, not env-driven — operators flipping
-# these would silently break the contract advertised in `initialize`.
-_MCP_PROTOCOL_VERSION = "2024-11-05"
+# MCP protocol revisions (B47/B63). Code constants, not env-driven — operators
+# flipping these would silently break the contract advertised in `initialize`.
+# Newest first; 2025-06-18 is the first revision with tool outputSchema /
+# structuredContent (older clients ignore those additive result fields).
+_SUPPORTED_PROTOCOL_VERSIONS = ("2025-06-18", "2025-03-26", "2024-11-05")
 _MCP_SERVER_NAME = "ragent"
 
 # Defence-in-depth body-size cap. Production ingress (nginx / ALB) is the
@@ -82,9 +85,17 @@ async def _handle_ping(_params: Any) -> dict[str, Any]:
     return {}
 
 
-async def _handle_initialize(_params: Any) -> dict[str, Any]:
+async def _handle_initialize(params: Any) -> dict[str, Any]:
+    # MCP version negotiation: echo the requested revision when supported,
+    # otherwise answer with the latest we speak (mirrors the official SDK).
+    requested = params.get("protocolVersion") if isinstance(params, dict) else None
+    version = (
+        requested
+        if requested in _SUPPORTED_PROTOCOL_VERSIONS
+        else (_SUPPORTED_PROTOCOL_VERSIONS[0])
+    )
     return {
-        "protocolVersion": _MCP_PROTOCOL_VERSION,
+        "protocolVersion": version,
         "capabilities": {"tools": {}},
         "serverInfo": {"name": _MCP_SERVER_NAME, "version": _RAGENT_VERSION},
     }
@@ -128,40 +139,69 @@ def _validate_retrieve_args(args: Any) -> None:
         ) from exc
 
 
+# Corpus text containing literal <context>/</context> tags must not close the
+# wrapper that hosts use to isolate tool context (PR #171 codex review).
+_CONTEXT_TAG_RE = re.compile(r"<(/?context)>", re.IGNORECASE)
+
+
+def _neutralize_context_tags(value: str) -> str:
+    return _CONTEXT_TAG_RE.sub(r"&lt;\1&gt;", value)
+
+
 def _header_field(value: str | None) -> str:
-    """Strip CR/LF from a metadata value to keep it on a single header line."""
-    return (value or "").replace("\n", " ").replace("\r", "")
+    """Sanitise a metadata value for a single markdown line: CR/LF stripped,
+    embedded <context> tags neutralised."""
+    return _neutralize_context_tags((value or "").replace("\n", " ").replace("\r", ""))
 
 
-def _render_chunks(entries: list[dict]) -> str:
-    """Format retrieve entries as [資料來源 #N]-labelled text for MCP callers.
+def _md_cell(value: str | None) -> str:
+    """Sanitise a value for a markdown table cell: single line, `|` escaped
+    so a malicious title cannot break the table or inject rows."""
+    return _header_field(value).replace("|", "\\|")
 
-    Mirrors the `_render_context()` skeleton used in chat prompt injection so
-    that calling agents can cite chunks with the same [N] convention. Metadata
-    (score, source_app, document_id, title) is included in the header line
-    because MCP callers are agents that need it for citation and filtering —
-    unlike the in-chat LLM where metadata is intentionally hidden.
+
+def _safe_link_url(value: str | None) -> str:
+    """Return a linkifiable URL or "" (render plain title instead).
+
+    Only http(s) destinations are linkified — a crafted javascript: URL must
+    not become a clickable link in user-presentable markdown. Characters that
+    terminate a markdown link destination or split a table cell are
+    percent-encoded; the raw URL stays in structuredContent.
+    """
+    # Sanitise before encoding — a CR/LF must become %20, not a raw space.
+    url = _header_field(value).strip()
+    if not url.lower().startswith(("http://", "https://")):
+        return ""
+    for char, encoded in (("(", "%28"), (")", "%29"), (" ", "%20"), ("|", "%7C")):
+        url = url.replace(char, encoded)
+    return url
+
+
+def _render_context_markdown(entries: list[dict]) -> str:
+    """Render retrieve entries as a <context>-wrapped markdown digest.
+
+    Layout: a user-presentable citation table (#, 資料來源, 來源系統 — no
+    internal fields like document_id/score, those live in structuredContent),
+    then one `### [N]` blockquoted excerpt section per source for LLM
+    grounding. No natural-language wording, so calling LLMs treat the block
+    as injected context data rather than prose to transcribe.
     """
     if not entries:
-        return "Found 0 chunk(s)."
-    parts = [f"Found {len(entries)} chunk(s).\n"]
+        return "<context>\n</context>"
+    rows = ["| # | 資料來源 | 來源系統 |", "|---|---------|---------|"]
+    excerpt_blocks = []
     for i, entry in enumerate(entries, start=1):
-        score = entry.get("score")
-        source_app = _header_field(entry.get("source_app"))
-        doc_id = _header_field(entry.get("document_id"))
-        title = _header_field(entry.get("source_title"))
-        header = f"[資料來源 #{i}]"
-        if score is not None:
-            header += f" score={score:.2f}"
-        if source_app:
-            header += f" | source_app={source_app}"
-        if doc_id:
-            header += f" | document_id={doc_id}"
-        if title:
-            header += f" | title={title}"
-        excerpt = entry.get("excerpt") or ""
-        parts.append(f"{header}\n{excerpt}\n---")
-    return "\n".join(parts)
+        # Pipe-escaping is a table-cell concern only — headings keep the raw `|`.
+        title = _header_field(entry.get("source_title")) or "(未命名)"
+        cell_title = title.replace("|", "\\|")
+        url = _safe_link_url(entry.get("source_url"))
+        link = f"[{cell_title}]({url})" if url else cell_title
+        rows.append(f"| {i} | {link} | {_md_cell(entry.get('source_app'))} |")
+        excerpt = _neutralize_context_tags(entry.get("excerpt") or "")
+        quoted = "\n".join(f"> {line}" for line in excerpt.splitlines() or [""])
+        excerpt_blocks.append(f"### [{i}] {title}\n{quoted}")
+    body = "\n".join(rows) + "\n\n" + "\n\n".join(excerpt_blocks)
+    return f"<context>\n{body}\n</context>"
 
 
 # Stateless handlers — composed before per-router state (the retrieval
@@ -221,8 +261,10 @@ def create_mcp_router(
         if arguments.get("dedupe"):
             docs = dedupe_by_document(docs)
         entries = [doc_to_source_entry(d, max_chars=excerpt_max_chars) for d in docs]
+        # Dual channel: sources JSON for the UI, markdown digest for the LLM.
         return {
-            "content": [{"type": "text", "text": _render_chunks(entries)}],
+            "content": [{"type": "text", "text": _render_context_markdown(entries)}],
+            "structuredContent": {"sources": entries},
             "isError": False,
         }
 

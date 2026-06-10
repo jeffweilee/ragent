@@ -6,7 +6,7 @@ Exposes ragent's retrieval pipeline as a **Model Context Protocol** tool so exte
 
 #### 3.8.1 Protocol
 
-- **Transport:** Streamable HTTP, request/response subset (POST only; no server-initiated SSE in P2.5). Pinned MCP spec revision: `"2024-11-05"`.
+- **Transport:** Streamable HTTP, request/response subset (POST only; no server-initiated SSE in P2.5). Supported MCP spec revisions: `"2025-06-18"` (latest; first revision with tool `outputSchema` / `structuredContent` — required by §3.8.3's structured result), `"2025-03-26"`, `"2024-11-05"`. `initialize` echoes the client-requested revision when supported, otherwise answers with the latest (standard MCP version negotiation); the §3.8.3 `structuredContent` field is emitted regardless — older clients ignore additive result fields.
 - **Endpoint:** `POST /mcp/v1` (single endpoint; method dispatched from JSON-RPC `method` field).
 - **Envelope:** JSON-RPC 2.0:
   ```json
@@ -29,8 +29,8 @@ Exposes ragent's retrieval pipeline as a **Model Context Protocol** tool so exte
 |---|---|---|
 | `initialize` | client → server | Capability negotiation. Returns `{protocolVersion, capabilities, serverInfo}`. |
 | `notifications/initialized` | client → server (notification) | Client signals init complete. Server silently accepts. |
-| `tools/list` | client → server | Returns `{tools: [{name, description, annotations?, inputSchema}]}`. |
-| `tools/call` | client → server | Invokes a tool. Returns `{content: [{type, text}], isError}`. |
+| `tools/list` | client → server | Returns `{tools: [{name, description, annotations?, inputSchema, outputSchema?}]}`. |
+| `tools/call` | client → server | Invokes a tool. Returns `{content: [{type, text}], structuredContent, isError}`. |
 | `ping` | bidirectional | Returns `{}`. Optional keepalive. |
 
 Any other method → JSON-RPC error `-32601 Method not found`.
@@ -42,7 +42,7 @@ The sole tool advertised by `tools/list`. Mirrors §3.4.4 `POST /retrieve/v1` se
 ```json
 {
   "name": "retrieve",
-  "description": "Retrieve ranked document chunks from the ragent knowledge corpus. Use when you need to ground a response in the organisation's internal documents — runs hybrid semantic + keyword search and returns raw excerpts with source metadata (score, document_id, title, source_app). Does NOT synthesise an answer: read the returned [資料來源 #N] chunks and compose your response from them. Results are ordered by descending relevance.",
+  "description": "Retrieve ranked document chunks from the ragent knowledge corpus. Use when you need to ground a response in the organisation's internal documents — runs hybrid semantic + keyword search. Results are ordered by descending relevance. structuredContent.sources is the machine-readable source list: pass it to the UI's retrieved-sources panel. The text content is a <context>-delimited block with a citation table and [N] excerpt sections: ground your answer on the excerpts and cite by [N] — do NOT transcribe the <context> block verbatim into your reply. Does NOT synthesise an answer.",
   "annotations": {"readOnlyHint": true},
   "inputSchema": {
     "type": "object",
@@ -56,6 +56,34 @@ The sole tool advertised by `tools/list`. Mirrors §3.4.4 `POST /retrieve/v1` se
       "dedupe":      {"type": "boolean", "default": false, "description": "When true, return at most one chunk per source document (highest-scored). Set true for broad topic coverage across different documents; leave false to allow multiple excerpts from the same document."}
     },
     "required": ["query"]
+  },
+  "outputSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["sources"],
+    "properties": {
+      "sources": {
+        "type": "array",
+        "description": "Retrieved sources ordered by descending relevance. Pass this list to the UI's retrieved-sources panel.",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["document_id", "source_app", "source_id", "source_meta", "type", "source_title", "source_url", "mime_type", "excerpt", "score"],
+          "properties": {
+            "document_id":  {"type": ["string", "null"]},
+            "source_app":   {"type": ["string", "null"]},
+            "source_id":    {"type": ["string", "null"]},
+            "source_meta":  {"type": ["string", "null"]},
+            "type":         {"type": "string"},
+            "source_title": {"type": ["string", "null"]},
+            "source_url":   {"type": ["string", "null"]},
+            "mime_type":    {"type": ["string", "null"]},
+            "excerpt":      {"type": "string"},
+            "score":        {"type": ["number", "null"]}
+          }
+        }
+      }
+    }
   }
 }
 ```
@@ -66,19 +94,24 @@ The sole tool advertised by `tools/list`. Mirrors §3.4.4 `POST /retrieve/v1` se
 2025-03-26+) MAY use this to skip confirmation prompts. Clients on earlier versions silently
 ignore unknown tool fields — this is an additive, backward-compatible extension.
 
-**`tools/call` result shape** (MCP spec compliant):
-```
-Found 2 chunk(s).
+**`tools/call` result shape** (MCP 2025-06-18 structured tool output — a tool declaring `outputSchema` MUST return conforming `structuredContent`; the spec's SHOULD-recommendation of serialized JSON in the text block is intentionally replaced by a markdown digest, which is equally compliant and serves both LLM grounding and direct user display):
 
-[資料來源 #1] score=0.95 | source_app=confluence | document_id=abc123 | title=User Manual
-<excerpt text up to EXCERPT_MAX_CHARS>
----
-[資料來源 #2] score=0.82 | source_app=wiki | document_id=def456 | title=Setup Guide
-<excerpt text>
----
+```json
+{
+  "content": [{"type": "text", "text": "<context>\n| # | 資料來源 | 來源系統 |\n|---|---------|---------|\n| 1 | [User Manual](https://wiki/abc) | confluence |\n\n### [1] User Manual\n> <excerpt up to EXCERPT_MAX_CHARS>\n</context>"}],
+  "structuredContent": {"sources": [{"document_id": "abc123", "source_app": "confluence", "source_id": "SRC-1", "source_meta": "engineering", "type": "knowledge", "source_title": "User Manual", "source_url": "https://wiki/abc", "mime_type": "text/plain", "excerpt": "...", "score": 0.95}]},
+  "isError": false
+}
 ```
 
-`content[0].text` uses the `[資料來源 #N]` + `---` format (aligned with the chat pipeline's `_render_context()` convention) so calling agents can cite chunks with the same `[N]` reference convention. Metadata (score, source_app, document_id, title) appears in the header line — unlike the in-chat LLM path where metadata is intentionally hidden, MCP callers are agents that need it for citation and filtering. Optional metadata fields (score, source_app, document_id, title) are omitted from the header when null/empty. Header metadata fields (source_app, document_id, title) have CR/LF stripped before insertion — a document title containing an embedded newline cannot inject a fake `[資料來源 #N]` header line. Empty results return `"Found 0 chunk(s)."`. `isError: true` is set when the tool itself fails (e.g. retrieval pipeline raises); transport-layer failures still come through `error` envelopes.
+- **`structuredContent.sources`** — full source entries (`doc_to_source_entry()` output, identical to `POST /retrieve/v1` `sources`), validating against the advertised `outputSchema`. This is the machine-readable channel: the calling agent passes it to the frontend's retrieved-sources panel; no re-parsing of the text block.
+- **`content[0].text`** — `<context>…</context>`-wrapped markdown digest with **zero natural-language wording** (no `Found N chunk(s).` preamble), so calling LLMs treat it as injected context data rather than prose to transcribe:
+  - a user-presentable **citation table** (columns `#` / `資料來源` / `來源系統`; `資料來源` is `[title](source_url)` when `source_url` exists, plain title otherwise, `(未命名)` when the title is null). Internal fields (`document_id`, `score`, `source_id`, `mime_type`, `source_meta`) are NOT exposed in the text — they live in `structuredContent` only;
+  - one `### [N] <title>` heading + blockquoted excerpt per source, for LLM grounding with `[N]` citation.
+  - **Sanitisation:** table cells and headings have CR/LF stripped and `|` escaped to `\|` — a malicious title cannot inject fake rows or `### [N]` headings. Only `http(s)` `source_url` values are linkified (a `javascript:` URL renders as plain title text), with `(` `)` space `|` percent-encoded so the link destination cannot end early. Literal `<context>`/`</context>` tags inside titles/excerpts are neutralised to `&lt;…&gt;` so corpus text cannot close the wrapper. Raw values survive untouched in `structuredContent`.
+  - Empty results return `<context>\n</context>` with `structuredContent: {"sources": []}`.
+
+`isError: true` is set when the tool itself fails (e.g. retrieval pipeline raises); transport-layer failures still come through `error` envelopes.
 
 #### 3.8.4 Error codes (JSON-RPC layer)
 
@@ -98,9 +131,9 @@ App-level errors (-32000..-32099) carry `data.error_code` matching the existing 
 
 #### 3.8.5 BDD
 
-- **S58 mcp initialize** — `initialize` with `protocolVersion:"2024-11-05"` → `result.{protocolVersion:"2024-11-05", capabilities:{tools:{}}, serverInfo:{name:"ragent",version:"<semver>"}}`.
-- **S59 mcp tools/list** — `result.tools` has exactly one entry `name:"retrieve"` with `inputSchema` matching §3.8.3.
-- **S60 mcp tools/call retrieve** — Given indexed corpus and `tools/call` with `{name:"retrieve", arguments:{query:"...",top_k:3}}`, When the server processes it, Then `result.content[0].text` contains `[資料來源 #1]` … `[資料來源 #N]` labels (one per chunk, N ≤ 3) separated by `---` dividers with a `Found N chunk(s).` preamble, and `result.isError` is `false`. Empty results return `"Found 0 chunk(s)."`.
+- **S58 mcp initialize** — `initialize` with `protocolVersion:"2025-06-18"` → `result.{protocolVersion:"2025-06-18", capabilities:{tools:{}}, serverInfo:{name:"ragent",version:"<semver>"}}`. A supported older revision (`2025-03-26` / `2024-11-05`) is echoed back; an unsupported revision falls back to `2025-06-18`.
+- **S59 mcp tools/list** — `result.tools` has exactly one entry `name:"retrieve"` with `inputSchema` and `outputSchema` matching §3.8.3.
+- **S60 mcp tools/call retrieve** — Given indexed corpus and `tools/call` with `{name:"retrieve", arguments:{query:"...",top_k:3}}`, When the server processes it, Then `result.structuredContent.sources` carries one full source entry per chunk (N ≤ 3) validating against `outputSchema`, `result.content[0].text` is the `<context>`-wrapped citation table + `### [N]` excerpt blocks with no natural-language wording and no internal fields, and `result.isError` is `false`. Empty results return `structuredContent: {sources: []}` with `<context>\n</context>`.
 - **S60a mcp tools/call retrieve unknown arg** — Given `tools/call` with `{name:"retrieve", arguments:{query:"q", unknown_field:"bad"}}`, Then `error.code` is `-32602` and `error.data.error_code` is `MCP_TOOL_INPUT_INVALID`.
 - **S61 mcp method not found** — Given `{method:"resources/list"}` (unimplemented), Then `error.code` is `-32601`.
 - **S62 mcp tools/call invalid name** — Given `{method:"tools/call", params:{name:"unknown_tool",arguments:{}}}`, Then `error.code` is `-32602` and `error.data.error_code` is `MCP_TOOL_NOT_FOUND`.

@@ -24,7 +24,7 @@ def client() -> TestClient:
 
 
 def test_initialize_returns_pinned_protocol_version(client: TestClient) -> None:
-    """S58 — initialize handshake returns the spec-pinned 2024-11-05 revision."""
+    """S58 — initialize returns the pinned 2025-06-18 revision (structured tool output)."""
     resp = client.post(
         "/mcp/v1",
         json={
@@ -32,7 +32,7 @@ def test_initialize_returns_pinned_protocol_version(client: TestClient) -> None:
             "id": 1,
             "method": "initialize",
             "params": {
-                "protocolVersion": "2024-11-05",
+                "protocolVersion": "2025-06-18",
                 "capabilities": {},
                 "clientInfo": {"name": "test-client", "version": "0.0.1"},
             },
@@ -42,7 +42,7 @@ def test_initialize_returns_pinned_protocol_version(client: TestClient) -> None:
     body = resp.json()
     assert body["jsonrpc"] == "2.0"
     assert body["id"] == 1
-    assert body["result"]["protocolVersion"] == "2024-11-05"
+    assert body["result"]["protocolVersion"] == "2025-06-18"
 
 
 def test_initialize_advertises_tools_capability(client: TestClient) -> None:
@@ -55,7 +55,7 @@ def test_initialize_advertises_tools_capability(client: TestClient) -> None:
             "jsonrpc": "2.0",
             "id": 2,
             "method": "initialize",
-            "params": {"protocolVersion": "2024-11-05", "capabilities": {}},
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {}},
         },
     )
     caps = resp.json()["result"]["capabilities"]
@@ -71,12 +71,45 @@ def test_initialize_server_info(client: TestClient) -> None:
             "jsonrpc": "2.0",
             "id": 3,
             "method": "initialize",
-            "params": {"protocolVersion": "2024-11-05", "capabilities": {}},
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {}},
         },
     )
     info = resp.json()["result"]["serverInfo"]
     assert info["name"] == "ragent"
     assert info["version"] == ragent.__version__
+
+
+@pytest.mark.parametrize("requested", ["2024-11-05", "2025-03-26"])
+def test_initialize_echoes_supported_older_protocol_version(
+    client: TestClient, requested: str
+) -> None:
+    """Per MCP version negotiation, the server echoes a supported requested
+    revision instead of force-upgrading older clients to the latest pin."""
+    resp = client.post(
+        "/mcp/v1",
+        json={
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "initialize",
+            "params": {"protocolVersion": requested, "capabilities": {}},
+        },
+    )
+    assert resp.json()["result"]["protocolVersion"] == requested
+
+
+def test_initialize_unsupported_protocol_version_falls_back_to_latest(
+    client: TestClient,
+) -> None:
+    resp = client.post(
+        "/mcp/v1",
+        json={
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "initialize",
+            "params": {"protocolVersion": "1999-01-01", "capabilities": {}},
+        },
+    )
+    assert resp.json()["result"]["protocolVersion"] == "2025-06-18"
 
 
 def test_initialize_with_null_id_still_responds(client: TestClient) -> None:
@@ -88,7 +121,7 @@ def test_initialize_with_null_id_still_responds(client: TestClient) -> None:
             "jsonrpc": "2.0",
             "id": None,
             "method": "initialize",
-            "params": {"protocolVersion": "2024-11-05", "capabilities": {}},
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {}},
         },
     )
     assert resp.status_code == 200

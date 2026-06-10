@@ -44,16 +44,66 @@ def _build_mcp_input_schema(model: type) -> dict[str, Any]:
     return schema
 
 
+# Matches doc_to_source_entry() output verbatim — every key is always present,
+# nullable when the source document lacks the field.
+_NULLABLE_STRING: dict[str, Any] = {"type": ["string", "null"]}
+
+RETRIEVE_OUTPUT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["sources"],
+    "properties": {
+        "sources": {
+            "type": "array",
+            "description": (
+                "Retrieved sources ordered by descending relevance. "
+                "Pass this list to the UI's retrieved-sources panel."
+            ),
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "document_id",
+                    "source_app",
+                    "source_id",
+                    "source_meta",
+                    "type",
+                    "source_title",
+                    "source_url",
+                    "mime_type",
+                    "excerpt",
+                    "score",
+                ],
+                "properties": {
+                    "document_id": _NULLABLE_STRING,
+                    "source_app": _NULLABLE_STRING,
+                    "source_id": _NULLABLE_STRING,
+                    "source_meta": _NULLABLE_STRING,
+                    "type": {"type": "string"},
+                    "source_title": _NULLABLE_STRING,
+                    "source_url": _NULLABLE_STRING,
+                    "mime_type": _NULLABLE_STRING,
+                    "excerpt": {"type": "string"},
+                    "score": {"type": ["number", "null"]},
+                },
+            },
+        },
+    },
+}
+
 RETRIEVE_TOOL = Tool(
     name="retrieve",
     description=(
         "Retrieve ranked document chunks from the ragent knowledge corpus. "
         "Use when you need to ground a response in the organisation's internal documents — "
-        "runs hybrid semantic + keyword search and returns raw excerpts with source metadata "
-        "(score, document_id, title, source_app). "
-        "Does NOT synthesise an answer: read the returned [資料來源 #N] chunks and "
-        "compose your response from them. Results are ordered by descending relevance."
+        "runs hybrid semantic + keyword search. Results are ordered by descending relevance. "
+        "structuredContent.sources is the machine-readable source list: pass it to the UI's "
+        "retrieved-sources panel. The text content is a <context>-delimited block with a "
+        "citation table and [N] excerpt sections: ground your answer on the excerpts and "
+        "cite by [N] — do NOT transcribe the <context> block verbatim into your reply. "
+        "Does NOT synthesise an answer."
     ),
     annotations=ToolAnnotations(readOnlyHint=True),
     inputSchema=_build_mcp_input_schema(_RetrieveArgs),
+    outputSchema=RETRIEVE_OUTPUT_SCHEMA,
 )

@@ -265,6 +265,28 @@
 | T-MCP2.3 | Behavioral | • **Achieve:** Header metadata fields (source_app, document_id, source_title) have CR/LF stripped to prevent injection of fake `[資料來源 #N]` header lines.<br>• **Deliver:** `tests/unit/test_mcp_tools_call_retrieve.py::test_tools_call_retrieve_sanitizes_newlines_in_header_metadata`; `_header_field()` helper in `routers/mcp.py`; integration test contract updated to `[資料來源 #N]` text format. | [x] | Dev |
 
 
+## Track T-MCP13 — MCP structured tool output (protocol 2025-06-18, B63)
+
+> Source: 2026-06-10 user request.
+> The `[資料來源 #N]` text-only result leaked verbatim into calling agents' replies, and the
+> frontend had no machine-readable channel for a retrieved-sources panel. Adopt MCP 2025-06-18
+> structured tool output: declared `outputSchema` + `structuredContent.sources` (full entries
+> for the UI) alongside a `<context>`-wrapped markdown citation table + excerpt blocks in
+> `content[0].text` (user-presentable, no internal fields, no natural-language wording).
+
+| # | Category | Task | Status | Owner |
+|---|---|---|:---:|---|
+| T-MCP13.1 | Behavioral | • **Achieve:** `tools/list` advertises `outputSchema` on `retrieve` declaring the `structuredContent.sources` contract.<br>• **Deliver:** `tests/unit/test_mcp_tools_list.py::test_retrieve_tool_advertises_output_schema`; `RETRIEVE_OUTPUT_SCHEMA` in `routers/mcp_tools/retrieve.py` passed as `outputSchema=` to the Tool descriptor. | [x] | Dev |
+| T-MCP13.2 | Behavioral | • **Achieve:** `tools/call retrieve` returns `structuredContent: {sources: [...]}` with the full 10-field entries (`doc_to_source_entry()` output); empty result ⇒ `sources: []`.<br>• **Deliver:** `tests/unit/test_mcp_tools_call_retrieve.py::test_tools_call_retrieve_structured_content_sources` + `::test_tools_call_retrieve_empty_result`; `_handle_tools_call` in `routers/mcp.py`. | [x] | Dev |
+| T-MCP13.3 | Behavioral | • **Achieve:** `content[0].text` is a `<context>`-wrapped markdown citation table (`#`/`資料來源`/`來源系統`, title linked to `source_url`, `(未命名)` fallback) + `### [N]` blockquoted excerpt blocks; no internal fields (id/score/mime/source_meta) and no natural-language wording; empty result ⇒ `<context>\n</context>`.<br>• **Deliver:** `::test_tools_call_retrieve_text_is_context_wrapped_citation_table`, `::test_tools_call_retrieve_text_hides_internal_fields`, `::test_tools_call_retrieve_text_format_null_metadata`; `_render_context_markdown()` replaces `_render_chunks()` in `routers/mcp.py`. | [x] | Dev |
+| T-MCP13.4 | Behavioral | • **Achieve:** `structuredContent` validates against the advertised `outputSchema`; markdown table/headings are injection-safe (CR/LF stripped, `\|` escaped) while raw values survive in `structuredContent`.<br>• **Deliver:** `::test_tools_call_retrieve_structured_content_matches_output_schema`, `::test_tools_call_retrieve_sanitizes_markdown_in_text`; `_md_cell()` helper in `routers/mcp.py`. | [x] | Dev |
+| T-MCP13.5 | Behavioral | • **Achieve:** `initialize` advertises `protocolVersion: "2025-06-18"` (first revision with structured tool output).<br>• **Deliver:** `tests/unit/test_mcp_initialize.py` pin updated; `_MCP_PROTOCOL_VERSION` in `routers/mcp.py`; `tests/integration/test_mcp_router.py` round-trip updated to the structured contract. | [x] | Dev |
+| T-MCP13.6 | Behavioral | • **Achieve:** a `\|` in `source_url` cannot split the citation-table row (PR #171 gemini review).<br>• **Deliver:** `::test_tools_call_retrieve_sanitizes_markdown_in_text` extended with a pipe-bearing URL (encoded `%7C` per T-MCP13.7's URL encoding); raw URL still reaches the frontend via `structuredContent`. | [x] | Dev |
+| T-MCP13.7 | Behavioral | • **Achieve:** only `http(s)` `source_url` values are linkified — `javascript:` URLs render as plain title; `(` `)` space `\|` percent-encoded so the link destination cannot end early (PR #171 codex review).<br>• **Deliver:** `::test_tools_call_retrieve_does_not_linkify_non_http_urls`, `::test_tools_call_retrieve_encodes_markdown_breaking_url_chars`; `_safe_link_url()` in `routers/mcp.py`. | [x] | Dev |
+| T-MCP13.8 | Behavioral | • **Achieve:** literal `<context>`/`</context>` tags inside titles/excerpts are neutralised to `&lt;…&gt;` so corpus text cannot prematurely close the wrapper (PR #171 codex review).<br>• **Deliver:** `::test_tools_call_retrieve_neutralizes_context_tags_in_text`; `_neutralize_context_tags()` in `routers/mcp.py`; raw values survive in `structuredContent`. | [x] | Dev |
+| T-MCP13.9 | Behavioral | • **Achieve:** `initialize` negotiates the protocol revision — echoes a supported requested version (`2025-06-18`/`2025-03-26`/`2024-11-05`), falls back to latest for unsupported ones, instead of force-upgrading older clients (PR #171 codex review).<br>• **Deliver:** `tests/unit/test_mcp_initialize.py::test_initialize_echoes_supported_older_protocol_version` + `::test_initialize_unsupported_protocol_version_falls_back_to_latest`; `_SUPPORTED_PROTOCOL_VERSIONS` in `routers/mcp.py`. | [x] | Dev |
+
+
 
 ---
 

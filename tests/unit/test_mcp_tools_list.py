@@ -135,6 +135,36 @@ def test_retrieve_input_schema_all_properties_have_descriptions(client: TestClie
         )
 
 
+def test_retrieve_tool_advertises_output_schema(client: TestClient) -> None:
+    """T-MCP13.1 — outputSchema declares the structuredContent.sources contract.
+
+    Per MCP 2025-06-18, a tool that declares outputSchema MUST return
+    conforming structuredContent; clients use the schema to parse the
+    source list for UI display without re-parsing the text block.
+    """
+    [tool] = client.post(
+        "/mcp/v1", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
+    ).json()["result"]["tools"]
+    schema = tool["outputSchema"]
+    assert schema["type"] == "object"
+    assert schema["required"] == ["sources"]
+    assert schema["additionalProperties"] is False
+    items = schema["properties"]["sources"]["items"]
+    assert items["additionalProperties"] is False
+    assert set(items["properties"]) == {
+        "document_id",
+        "source_app",
+        "source_id",
+        "source_meta",
+        "type",
+        "source_title",
+        "source_url",
+        "mime_type",
+        "excerpt",
+        "score",
+    }
+
+
 def test_retrieve_tool_has_readonly_hint(client: TestClient) -> None:
     """Retrieve never writes data — readOnlyHint must be True.
 
