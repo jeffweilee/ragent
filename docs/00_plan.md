@@ -447,14 +447,17 @@ X-User-Id: alice
 >   `stream_deltas(request, model) -> Generator[str]`. Concrete httpx impl lives ragent-side.
 >
 > **Conversion rules (locked):**
-> - Request: `RunAgentInput.messages` → last `role="user"` message content → upstream `inputData.message`.
+> - Request: `RunAgentInput` → a labelled `context`/`state` preamble (no persona, no tools — the
+>   upstream owns its persona/memory) is prepended to the last `role="user"` message content →
+>   upstream `inputData.message` (single-field wire); no context/state ⇒ bare user text.
 >   metadata injection mirrors v2 (`apName`/`user`/`userToken`/`session`), with `session = threadId`.
 >   `model` not forwarded (upstream decides, same as v2). Always `stream: true`.
 > - Response: upstream `{"returnCode":96200,"returnData":{"delta":...}}` → `TEXT_MESSAGE_CONTENT`;
 >   `{"returnData":{"done":true}}` → `TEXT_MESSAGE_END` + `RUN_FINISHED`. `messageId` minted by ADKAgent.
 > - Errors: **all** failures (rate-limit, timeout, upstream non-96200/5xx) surface as a `RUN_ERROR`
 >   SSE event over a 200 stream — never an HTTP 4xx/5xx code.
-> - tools/state/context/forwardedProps: accepted and passed through; tool-call continuation deferred.
+> - context/state: folded into a labelled preamble prepended to the user message (T-CAv3.6).
+>   tools/forwardedProps: accepted but not forwarded; tool-call continuation deferred.
 
 | # | Category | Task | Status | Owner |
 |---|---|---|:---:|---|
@@ -465,3 +468,4 @@ X-User-Id: alice
 | T-CAv3.W1 | Behavioral | • **Achieve:** Register `/chatagent/v3` in `bootstrap/app.py` under the existing `CHATAGENT_API_URL` guard (shares http_client/auth/rate_limiter/ap_name).<br>• **Deliver:** `app.py` wiring; `tests/integration/test_chatagent_v3_endpoint.py` — full TestClient flow with mocked httpx streaming, RUN_ERROR on upstream failure. | [x] | Dev |
 | T-CAv3.D1 | Structural | • **Achieve:** Document the v3 contract.<br>• **Deliver:** `docs/00_spec.md` (v3 System Interface + Scenario rows), `docs/API.md` (endpoint + samples). No new env var (shares v2 config). | [x] | Dev |
 | T-CAv3.5 | Red+Green | • **Achieve:** Map the upstream `planner` node (the agent's plan/reasoning step) to a reasoning block instead of a `TEXT_MESSAGE` block: `REASONING_START` → `REASONING_MESSAGE_START`/`REASONING_MESSAGE_CONTENT`*/`REASONING_MESSAGE_END` → `REASONING_END`. Streams per-delta; closes the reasoning block at the messageId boundary before any following `TEXT_MESSAGE`. Other nodes unchanged.<br>• **Deliver:** `packages/twp-ai/src/twp_ai/events.py` (5 new events + union); `packages/twp-ai/src/twp_ai/agents/adk.py` (`_relay` block-kind tracking); `packages/twp-ai/tests/test_adk_agent.py` + `tests/unit/test_chatagent_v3_router.py` (reasoning lifecycle, streamed deltas, planner→summarizer transition); `docs/00_spec.md` §3.4.7 + `docs/API.md` Example 2 + event-type list. | [x] | Dev |
+| T-CAv3.6 | Red+Green | • **Achieve:** Surface the client-supplied `context`/`state` (previously dropped) to the upstream by prepending a labelled `Context:`/`State:` preamble to the last user message → `inputData.message`. No persona and no tool enumeration — the upstream is a general, tool-capable agent that owns its persona and keeps memory by `session`; no context/state ⇒ bare user text (plain pass-through).<br>• **Deliver:** `src/ragent/clients/adk_caller.py` (`_compose_message` + `_context_preamble`); `tests/unit/test_adk_caller.py` + `tests/unit/test_chatagent_v3_router.py` (preamble fold, tools excluded, pass-through when empty); `docs/00_spec.md` §3.4.7 + `docs/API.md`. | [x] | Dev |

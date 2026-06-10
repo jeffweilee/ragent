@@ -20,7 +20,7 @@ from collections.abc import Generator
 import httpx
 import structlog
 from twp_ai.callers.adk import UpstreamMessage
-from twp_ai.schemas import Message, RunAgentInput
+from twp_ai.schemas import ContextItem, Message, RunAgentInput
 
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.upstream import UpstreamServiceError, classify_upstream_error
@@ -66,7 +66,7 @@ class ADKCaller:
                 "userToken": self._user_token,
                 "session": request.thread_id,
             },
-            "inputData": {"message": _last_user_message(request.messages)},
+            "inputData": {"message": _compose_message(request)},
             "stream": True,
         }
 
@@ -163,6 +163,37 @@ def _parse_message(raw: dict) -> UpstreamMessage:
         interrupt_message=hitl.get("interruptMessage"),
         interrupt_content=hitl.get("interruptContent"),
     )
+
+
+def _compose_message(request: RunAgentInput) -> str:
+    """Prepend the client-supplied context/state ahead of the user's question.
+
+    The upstream is a general, tool-capable agent that owns its own persona and
+    keeps conversation memory by `session = threadId`, so we deliberately do NOT
+    impose an assistant persona or enumerate tools — we only surface the
+    `context`/`state` the single `inputData.message` field would otherwise drop.
+    With nothing to inject the turn stays a plain pass-through.
+    """
+    user_message = _last_user_message(request.messages)
+    preamble = _context_preamble(request.context, request.state)
+    if not preamble:
+        return user_message
+    if not user_message:
+        return preamble
+    return f"{preamble}\n\n{user_message}"
+
+
+def _context_preamble(context: list[ContextItem], state: object) -> str:
+    sections: list[str] = []
+    if context:
+        context_json = json.dumps(
+            [item.model_dump(by_alias=True) for item in context],
+            ensure_ascii=False,
+        )
+        sections.append(f"Context: {context_json}")
+    if state is not None:
+        sections.append(f"State: {json.dumps(state, ensure_ascii=False)}")
+    return "\n\n".join(sections)
 
 
 def _last_user_message(messages: list[Message]) -> str:

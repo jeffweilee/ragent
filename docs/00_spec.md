@@ -306,12 +306,21 @@ transport to an `ADKCaller` protocol; the concrete proxy lives ragent-side in
 `src/ragent/clients/adk_caller.py`.
 
 **Request → upstream conversion:**
-- The last `role="user"` message content becomes upstream `inputData.message`.
+- The upstream is a general, tool-capable agent that owns its own persona and
+  keeps conversation memory by `session`, so v3 imposes **no** assistant
+  persona and does **not** enumerate tools. It only surfaces the client-supplied
+  `context`/`state` that the single-field wire would otherwise drop: a labelled
+  preamble (`Context: {json}` and/or `State: {json}`) is prepended to the last
+  `role="user"` message content, and the combined text becomes upstream
+  `inputData.message`. With no `context` and no `state` the message is the bare
+  user text (a plain pass-through); conversely, when a preamble exists but there
+  is no `role="user"` message content, the message is the bare preamble (no
+  trailing separator).
 - `metadata` is server-injected: `apName` (= `CHATAGENT_AP_NAME`), `user`
   (resolved caller), `userToken` (raw JWT header), and `session = threadId`.
 - `stream` is always `true`. `model` is **not** forwarded (the upstream decides,
   matching v2).
-- `tools`/`state`/`context`/`forwardedProps` are accepted; client tool-call
+- `tools`/`forwardedProps` are accepted but not forwarded; client tool-call
   continuation is not yet implemented.
 
 **Upstream → response conversion:**
