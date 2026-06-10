@@ -557,14 +557,14 @@ Dual-write: MariaDB `feedback` (truth) → ES `feedback_v1` (serving view). ES f
 
 ## MCP (Phase 2)
 
-`POST /mcp/v1` — Model Context Protocol server (JSON-RPC 2.0, spec `2025-06-18`). Exposes the corpus as a single `retrieve` tool. Full spec: [`docs/spec/mcp_server.md`](docs/spec/mcp_server.md).
+`POST /mcp/v1` — Model Context Protocol server (JSON-RPC 2.0, spec `2025-06-18`; `initialize` echoes a supported older revision — `2025-03-26` / `2024-11-05` — when the client requests one). Exposes the corpus as a single `retrieve` tool. Full spec: [`docs/spec/mcp_server.md`](docs/spec/mcp_server.md).
 
 | Method | Purpose |
 |---|---|
 | `initialize` | Capability negotiation. |
 | `notifications/initialized` | Client signals init complete; server returns 204. |
 | `tools/list` | Returns the `retrieve` tool with Pydantic-derived `inputSchema`, hand-authored `outputSchema` (structured source list), and `annotations: {readOnlyHint: true}`. |
-| `tools/call` | Invokes `retrieve`. Result `structuredContent.sources` is the machine-readable source list (for the frontend's retrieved-sources panel); `content[0].text` is a `<context>`-wrapped markdown citation table + `### [N]` excerpt blocks for LLM grounding (no internal fields like `document_id`/`score`). Unknown args → `-32602 MCP_TOOL_INPUT_INVALID`. |
+| `tools/call` | Invokes `retrieve`. Result `structuredContent.sources` is the machine-readable source list (for the frontend's retrieved-sources panel); `content[0].text` is a `<context>`-wrapped markdown citation table + `### [N]` excerpt blocks for LLM grounding (no internal fields like `document_id`/`score`; cells injection-safe — CR/LF stripped, `\|` escaped; only http(s) `source_url` linkified with markdown-breaking chars percent-encoded; literal `<context>` tags in corpus text neutralised). Unknown args → `-32602 MCP_TOOL_INPUT_INVALID`. |
 | `ping` | Returns `{}`. |
 
 Optional `retrieve` arguments (`source_app`, `source_meta`, `min_score`) must be **omitted** to skip filtering — do not send `null`. The `inputSchema` does not advertise `default: null` for these fields; sending explicit `null` returns `-32602`. For `source_app`, use the exact value returned in a prior `retrieve` result's `source_app` metadata field — omit on the first call to search across all sources.

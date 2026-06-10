@@ -6,7 +6,7 @@ Exposes ragent's retrieval pipeline as a **Model Context Protocol** tool so exte
 
 #### 3.8.1 Protocol
 
-- **Transport:** Streamable HTTP, request/response subset (POST only; no server-initiated SSE in P2.5). Pinned MCP spec revision: `"2025-06-18"` (the first revision with tool `outputSchema` / `structuredContent` — required by §3.8.3's structured result).
+- **Transport:** Streamable HTTP, request/response subset (POST only; no server-initiated SSE in P2.5). Supported MCP spec revisions: `"2025-06-18"` (latest; first revision with tool `outputSchema` / `structuredContent` — required by §3.8.3's structured result), `"2025-03-26"`, `"2024-11-05"`. `initialize` echoes the client-requested revision when supported, otherwise answers with the latest (standard MCP version negotiation); the §3.8.3 `structuredContent` field is emitted regardless — older clients ignore additive result fields.
 - **Endpoint:** `POST /mcp/v1` (single endpoint; method dispatched from JSON-RPC `method` field).
 - **Envelope:** JSON-RPC 2.0:
   ```json
@@ -108,7 +108,7 @@ ignore unknown tool fields — this is an additive, backward-compatible extensio
 - **`content[0].text`** — `<context>…</context>`-wrapped markdown digest with **zero natural-language wording** (no `Found N chunk(s).` preamble), so calling LLMs treat it as injected context data rather than prose to transcribe:
   - a user-presentable **citation table** (columns `#` / `資料來源` / `來源系統`; `資料來源` is `[title](source_url)` when `source_url` exists, plain title otherwise, `(未命名)` when the title is null). Internal fields (`document_id`, `score`, `source_id`, `mime_type`, `source_meta`) are NOT exposed in the text — they live in `structuredContent` only;
   - one `### [N] <title>` heading + blockquoted excerpt per source, for LLM grounding with `[N]` citation.
-  - **Sanitisation:** table cells and headings have CR/LF stripped and `|` escaped to `\|` — a malicious title cannot inject fake rows or `### [N]` headings. Raw values survive untouched in `structuredContent`.
+  - **Sanitisation:** table cells and headings have CR/LF stripped and `|` escaped to `\|` — a malicious title cannot inject fake rows or `### [N]` headings. Only `http(s)` `source_url` values are linkified (a `javascript:` URL renders as plain title text), with `(` `)` space `|` percent-encoded so the link destination cannot end early. Literal `<context>`/`</context>` tags inside titles/excerpts are neutralised to `&lt;…&gt;` so corpus text cannot close the wrapper. Raw values survive untouched in `structuredContent`.
   - Empty results return `<context>\n</context>` with `structuredContent: {"sources": []}`.
 
 `isError: true` is set when the tool itself fails (e.g. retrieval pipeline raises); transport-layer failures still come through `error` envelopes.
@@ -131,7 +131,7 @@ App-level errors (-32000..-32099) carry `data.error_code` matching the existing 
 
 #### 3.8.5 BDD
 
-- **S58 mcp initialize** — `initialize` with `protocolVersion:"2025-06-18"` → `result.{protocolVersion:"2025-06-18", capabilities:{tools:{}}, serverInfo:{name:"ragent",version:"<semver>"}}`.
+- **S58 mcp initialize** — `initialize` with `protocolVersion:"2025-06-18"` → `result.{protocolVersion:"2025-06-18", capabilities:{tools:{}}, serverInfo:{name:"ragent",version:"<semver>"}}`. A supported older revision (`2025-03-26` / `2024-11-05`) is echoed back; an unsupported revision falls back to `2025-06-18`.
 - **S59 mcp tools/list** — `result.tools` has exactly one entry `name:"retrieve"` with `inputSchema` and `outputSchema` matching §3.8.3.
 - **S60 mcp tools/call retrieve** — Given indexed corpus and `tools/call` with `{name:"retrieve", arguments:{query:"...",top_k:3}}`, When the server processes it, Then `result.structuredContent.sources` carries one full source entry per chunk (N ≤ 3) validating against `outputSchema`, `result.content[0].text` is the `<context>`-wrapped citation table + `### [N]` excerpt blocks with no natural-language wording and no internal fields, and `result.isError` is `false`. Empty results return `structuredContent: {sources: []}` with `<context>\n</context>`.
 - **S60a mcp tools/call retrieve unknown arg** — Given `tools/call` with `{name:"retrieve", arguments:{query:"q", unknown_field:"bad"}}`, Then `error.code` is `-32602` and `error.data.error_code` is `MCP_TOOL_INPUT_INVALID`.

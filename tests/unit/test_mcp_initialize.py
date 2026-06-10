@@ -79,6 +79,39 @@ def test_initialize_server_info(client: TestClient) -> None:
     assert info["version"] == ragent.__version__
 
 
+@pytest.mark.parametrize("requested", ["2024-11-05", "2025-03-26"])
+def test_initialize_echoes_supported_older_protocol_version(
+    client: TestClient, requested: str
+) -> None:
+    """Per MCP version negotiation, the server echoes a supported requested
+    revision instead of force-upgrading older clients to the latest pin."""
+    resp = client.post(
+        "/mcp/v1",
+        json={
+            "jsonrpc": "2.0",
+            "id": 5,
+            "method": "initialize",
+            "params": {"protocolVersion": requested, "capabilities": {}},
+        },
+    )
+    assert resp.json()["result"]["protocolVersion"] == requested
+
+
+def test_initialize_unsupported_protocol_version_falls_back_to_latest(
+    client: TestClient,
+) -> None:
+    resp = client.post(
+        "/mcp/v1",
+        json={
+            "jsonrpc": "2.0",
+            "id": 6,
+            "method": "initialize",
+            "params": {"protocolVersion": "1999-01-01", "capabilities": {}},
+        },
+    )
+    assert resp.json()["result"]["protocolVersion"] == "2025-06-18"
+
+
 def test_initialize_with_null_id_still_responds(client: TestClient) -> None:
     """Per JSON-RPC 2.0 §4.1, `id: null` is a request (not a notification);
     server MUST emit a response with id:null."""
