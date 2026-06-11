@@ -48,7 +48,7 @@ class ToolCall(TwpAiModel):
 
 
 class Message(TwpAiModel):
-    id: str
+    id: str | None = None
     role: Literal["developer", "system", "assistant", "user", "tool", "activity", "reasoning"]
     content: Any = None
     name: str | None = None

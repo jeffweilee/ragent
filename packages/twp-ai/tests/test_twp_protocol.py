@@ -77,6 +77,16 @@ def test_run_agent_input_accepts_twp_ai_tool_shape() -> None:
     assert request.forwarded_props == {"source": "test"}
 
 
+def test_run_agent_input_accepts_message_without_id() -> None:
+    body = _run_input()
+    body["messages"] = [{"role": "user", "content": "Fill the description"}]
+
+    request = RunAgentInput.model_validate(body)
+
+    assert request.messages[0].id is None
+    assert request.messages[0].content == "Fill the description"
+
+
 def test_direct_agent_emits_twp_ai_tool_lifecycle_events() -> None:
     caller = FakeCaller()
     request = RunAgentInput.model_validate(_run_input())

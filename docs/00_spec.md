@@ -224,7 +224,11 @@ by the current tool-call flow.
 
 **Run input:** the endpoint accepts twp-ai run input. Required fields are
 `threadId`, `runId`, `state`, `messages`, `tools`, `context`, and
-`forwardedProps`; `parentRunId` and `model` are optional.
+`forwardedProps`; `parentRunId` and `model` are optional. Within each entry of
+`messages`, `id` is optional — the frontend assigns it and ragent never
+consumes it (only `role`/`content`/`toolCalls`/`toolCallId` are read), so a
+freshly-typed user message may omit it. Output-event `messageId`s are taken
+from the upstream `messages[].messageId`, never from this input `id`.
 
 ```json
 {
