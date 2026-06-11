@@ -323,10 +323,12 @@ transport to an `ADKCaller` protocol; the concrete proxy lives ragent-side in
   that is present. With no `context` and no `state` the message is the bare
   user text (a plain pass-through); conversely, when a preamble exists but there
   is no `role="user"` message content, the message is the bare `<hidden>` block
-  (no trailing separator). Wrapper tokens (`<hidden>`/`<context>`/`<state>` and
-  their closing forms) appearing **inside** the serialized `context`/`state`
-  payload are neutralized (`<` → `&lt;`, `>` → `&gt;`) so a hostile value cannot
-  close the block early and leak into the visible history. Concretely:
+  (no trailing separator). Wrapper tokens (`<hidden>`/`<context>`/`<state>`, their
+  closing forms, and whitespace/attribute variants a lenient stripper would honour
+  — e.g. `</hidden >`, `<hidden attr="1">`) appearing **inside** the serialized
+  `context`/`state` payload are neutralized (`<` → `&lt;`, `>` → `&gt;`) so a
+  hostile value cannot close the block early and leak into the visible history.
+  Concretely:
 
   ```
   <hidden>

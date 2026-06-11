@@ -193,7 +193,10 @@ def _compose_message(request: RunAgentInput) -> str:
 # json.dumps does not escape `<`/`>`, so a payload value containing a literal
 # wrapper tag would close the <hidden> block early and break the frontend strip
 # (the same hazard schemas/chat.py and routers/mcp.py neutralize for <context>).
-_WRAPPER_TAG_RE = re.compile(r"<(/?(?:hidden|context|state))>", re.IGNORECASE)
+# A lenient stripper also honours whitespace/attributes (`</hidden >`,
+# `<hidden attr="1">`), so those forms are neutralized too — anything a relaxed
+# HTML/XML parser would accept as one of our wrapper tags.
+_WRAPPER_TAG_RE = re.compile(r"<(/?\s*(?:hidden|context|state)(?:\s+[^>]*)?)>", re.IGNORECASE)
 
 
 def _neutralize_wrapper_tags(value: str) -> str:
