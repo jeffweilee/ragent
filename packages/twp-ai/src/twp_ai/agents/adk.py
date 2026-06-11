@@ -44,11 +44,8 @@ from ..events import (
     ToolCallStartEvent,
     to_sse,
 )
+from ..roles import node_to_role
 from ..schemas import RunAgentInput
-
-# messageMeta.langgraph_node value whose output is the agent's plan/reasoning,
-# surfaced as REASONING_* events instead of a visible TEXT_MESSAGE block.
-_REASONING_NODE = "planner"
 
 
 class ADKAgent:
@@ -113,7 +110,7 @@ def _relay(upstream: Generator[UpstreamMessage, None, None]) -> Generator[str, N
 
         if msg.role == "assistant":
             if msg.content:
-                if msg.agent_type == _REASONING_NODE:
+                if node_to_role(msg.role, msg.agent_type) == "reasoning":
                     if open_msg_id is None:
                         open_msg_id, open_kind = msg.message_id, "reasoning"
                         yield to_sse(ReasoningStartEvent())

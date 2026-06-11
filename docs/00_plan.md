@@ -471,3 +471,31 @@ X-User-Id: alice
 | T-CAv3.D1 | Structural | • **Achieve:** Document the v3 contract.<br>• **Deliver:** `docs/00_spec.md` (v3 System Interface + Scenario rows), `docs/API.md` (endpoint + samples). No new env var (shares v2 config). | [x] | Dev |
 | T-CAv3.5 | Red+Green | • **Achieve:** Map the upstream `planner` node (the agent's plan/reasoning step) to a reasoning block instead of a `TEXT_MESSAGE` block: `REASONING_START` → `REASONING_MESSAGE_START`/`REASONING_MESSAGE_CONTENT`*/`REASONING_MESSAGE_END` → `REASONING_END`. Streams per-delta; closes the reasoning block at the messageId boundary before any following `TEXT_MESSAGE`. Other nodes unchanged.<br>• **Deliver:** `packages/twp-ai/src/twp_ai/events.py` (5 new events + union); `packages/twp-ai/src/twp_ai/agents/adk.py` (`_relay` block-kind tracking); `packages/twp-ai/tests/test_adk_agent.py` + `tests/unit/test_chatagent_v3_router.py` (reasoning lifecycle, streamed deltas, planner→summarizer transition); `docs/00_spec.md` §3.4.7 + `docs/API.md` Example 2 + event-type list. | [x] | Dev |
 | T-CAv3.6 | Red+Green | • **Achieve:** Surface the client-supplied `context`/`state` (previously dropped) to the upstream by prepending a labelled `Context:`/`State:` preamble to the last user message → `inputData.message`. No persona and no tool enumeration — the upstream is a general, tool-capable agent that owns its persona and keeps memory by `session`; no context/state ⇒ bare user text (plain pass-through).<br>• **Deliver:** `src/ragent/clients/adk_caller.py` (`_compose_message` + `_context_preamble`); `tests/unit/test_adk_caller.py` + `tests/unit/test_chatagent_v3_router.py` (preamble fold, tools excluded, pass-through when empty); `docs/00_spec.md` §3.4.7 + `docs/API.md`. | [x] | Dev |
+
+## Track T-CAv3S — ChatAgent v3 session history (twp-ai roles + hidden filtering)
+
+> Source: 2026-06-11 design session. Two linked changes driven by the upstream
+> keeping conversation memory by `session` and persisting every turn verbatim:
+> (1) the `<hidden>` context/state preamble we prepend leaks back out through the
+> read paths, and (2) the session history must be relabelled to twp-ai roles so the
+> mco-clean `@twp/ai` data layer renders it like the v3 stream.
+>
+> **Locked decisions:**
+> - Hidden filtering is **outbound only** (strip on surfaced content); no inbound
+>   sanitization of client-supplied messages this cycle.
+> - The upgraded session surface lives at **`/chatagent/v3/session*`** (the twp-ai
+>   protocol family) — `/chatagent/v2` is already the raw-proxy POST. `/chatagent/v1`
+>   session routes stay live for cutover.
+> - Role mapping reuses the **same `node_to_role` rule as the v3 stream**: `user`→`user`,
+>   `tool`→`tool`, assistant+`planner`→`reasoning`, other assistant nodes→`assistant`.
+
+| # | Category | Task | Status | Owner |
+|---|---|---|:---:|---|
+| T-CAv3S.1 | Structural | • **Achieve:** Extract the upstream-role classifier into a single source of truth shared by the v3 stream and the session mapper.<br>• **Deliver:** `packages/twp-ai/src/twp_ai/roles.py::node_to_role` + `REASONING_NODE`; `agents/adk.py` rewired to it; `packages/twp-ai/tests/test_roles.py`. Existing ADKAgent tests stay green (no behavior change). | [x] | Dev |
+| T-CAv3S.2 | Red+Green | • **Achieve:** Strip `<hidden>…</hidden>` from content surfaced to the client; no-op (no trimming) when no block is present so streaming deltas keep their whitespace.<br>• **Deliver:** `src/ragent/utility/hidden.py::strip_hidden`; `tests/unit/test_hidden.py`; applied in `clients/adk_caller.py::_parse_message`; `tests/unit/test_adk_caller.py` strip case. | [x] | Dev |
+| T-CAv3S.3 | Red+Green | • **Achieve:** Map upstream session history to twp-ai message shape `{id, role, content}` — role via `node_to_role`, content via `strip_hidden`; envelope preserved; payload without a `messages` list passes through.<br>• **Deliver:** `src/ragent/services/chatagent_session.py::map_session_payload`; `tests/unit/test_chatagent_session_mapper.py`. | [x] | Dev |
+| T-CAv3S.4 | Structural | • **Achieve:** Extract the shared session-proxy plumbing (threadpool dispatch, status check, timeout→504/error→502 mapping, optional response `transform`) so v1 and v3 share one copy.<br>• **Deliver:** `src/ragent/routers/_chatagent_proxy.py`; `routers/chatagent.py` (v1) refactored to delegate. v1 unit + integration tests stay green. | [x] | Dev |
+| T-CAv3S.5 | Red+Green | • **Achieve:** Add `/chatagent/v3` session surface — `GET /sessionList` (proxied), `GET /session` (reshaped via `map_session_payload`), `PUT`/`DELETE /session` (proxied).<br>• **Deliver:** `routers/chatagent_v3.py` session routes; `tests/integration/test_chatagent_v3_endpoint.py` — role mapping + hidden strip on GET, sessionList passthrough. | [x] | Dev |
+| T-CAv3S.W1 | Behavioral | • **Achieve:** Wire the two session upstream URLs into the v3 router registration.<br>• **Deliver:** `bootstrap/app.py` v3 registration passes `chatagent_sessionlist_api_url`/`chatagent_session_api_url`. | [x] | Dev |
+| T-CAv3S.D1 | Structural | • **Achieve:** Document the outbound hidden-strip rule and the v3 session surface.<br>• **Deliver:** `docs/00_spec.md` §3.4.7 (outbound strip bullet) + new §3.4.8 (v3 session management). | [x] | Dev |
+| T-CAv3S.FE1 | Red+Green | • **Achieve:** mco-clean `@twp/ai` data layer consumes `/chatagent/v3/session`, preserving `reasoning`/`tool` roles (panel UI unchanged).<br>• **Deliver:** mco-clean `packages/ai` session client + mapper + types. | [ ] | Dev |

@@ -25,6 +25,7 @@ from twp_ai.schemas import ContextItem, Message, RunAgentInput
 
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.upstream import UpstreamServiceError, classify_upstream_error
+from ragent.utility.hidden import strip_hidden
 
 logger = structlog.get_logger(__name__)
 
@@ -152,10 +153,11 @@ def _parse_message(raw: dict) -> UpstreamMessage:
     hitl = raw.get("humanInTheLoopMeta")
     if not isinstance(hitl, dict):
         hitl = {}
+    content = raw.get("content")
     return UpstreamMessage(
         message_id=raw.get("messageId") or "",
         role=raw.get("role", "assistant"),
-        content=raw.get("content"),
+        content=strip_hidden(content) if isinstance(content, str) else content,
         agent_type=message_meta.get("langgraph_node"),
         tool_name=display_meta.get("toolName"),
         tool_calls=raw.get("tool_calls") or [],

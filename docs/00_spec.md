@@ -362,12 +362,44 @@ transport to an `ADKCaller` protocol; the concrete proxy lives ragent-side in
 - `humanInTheLoopMeta.isInterrupt=true` → standalone `TEXT_MESSAGE` carrying
   `interruptMessage` as the delta.
 - `[Done]` sentinel → `RUN_FINISHED`.
+- **Hidden stripping (outbound):** because the upstream keeps conversation memory
+  by `session` and persists every turn verbatim (including the `<hidden>` preamble
+  it was sent), any `<hidden>…</hidden>` block — whitespace/attribute variants
+  included — is stripped from surfaced message content before it reaches the
+  client, so the machine-supplied context never re-enters the rendered
+  conversation. When a message carries no such block its content (including any
+  leading/trailing whitespace of a streaming delta) is left untouched.
 
 **Error contract (breaking change vs v2):** every failure — rate-limit, upstream
 `returnCode != 96200`, 5xx, and timeout — is emitted as a single `RUN_ERROR`
 event over a `200 text/event-stream` response, with `code` set to
 `CHATAGENT_RATE_LIMITED` / `CHATAGENT_UPSTREAM_ERROR` / `CHATAGENT_TIMEOUT`. v3
 never returns an HTTP `429`/`502`/`504` (v2 does).
+
+#### 3.4.8 `/chatagent/v3` session management — twp-ai-shaped history
+
+`/chatagent/v3` also exposes the session-management surface (each route registered
+only when its upstream URL env var is set), proxying the **same** upstream as
+`/chatagent/v1/session*` but returning the persisted history in the **twp-ai
+message shape**. This is the reason the session interface is versioned up: the
+message shape changes, while the upstream wire contract is untouched.
+
+- `GET /chatagent/v3/sessionList` — proxied unchanged (session metadata only; no
+  message bodies, so no reshape).
+- `GET /chatagent/v3/session?session=<id>` — the upstream session envelope
+  (`session`, `sessionName`, …) is preserved, but every `messages[]` entry is
+  reshaped to `{id, role, content}`:
+  - `role` is derived from the upstream role + `messageMeta.langgraph_node` by the
+    **same `node_to_role` rule as the v3 stream** (§3.4.7): `user`→`user`,
+    `tool`→`tool`, assistant+`planner`→`reasoning`, every other assistant
+    node→`assistant`.
+  - `content` has the `<hidden>…</hidden>` block stripped (outbound rule, §3.4.7).
+- `PUT` / `DELETE /chatagent/v3/session` — proxied unchanged (rename / delete; no
+  message bodies).
+
+These are JSON proxy routes (not the SSE stream), so timeout / upstream failures
+map to HTTP `504` / `502` as in v1 — the v3 `RUN_ERROR` framing applies only to
+`POST /chatagent/v3`.
 
 ---
 

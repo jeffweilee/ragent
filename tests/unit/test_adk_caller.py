@@ -214,6 +214,19 @@ def test_stream_deltas_yields_upstream_messages_until_done() -> None:
     assert msgs[1].content == "features"
 
 
+def test_stream_deltas_strips_hidden_block_from_surfaced_content() -> None:
+    # The upstream persists every turn and may replay the user message verbatim,
+    # including the <hidden> context/state preamble — it must not leak back out.
+    replayed = "<hidden>\n<context>[]</context>\n</hidden>\n\nWhat are the features?"
+    http_mock = MagicMock(spec=httpx.Client)
+    http_mock.send.return_value = _resp_mock([_msg_line(replayed, message_id="m1"), _done_line()])
+    caller = _make_caller(http_mock)
+
+    msgs = list(caller.stream_deltas(_request(), "m"))
+
+    assert msgs[0].content == "What are the features?"
+
+
 def test_stream_deltas_parses_agent_type() -> None:
     http_mock = MagicMock(spec=httpx.Client)
     http_mock.send.return_value = _resp_mock(

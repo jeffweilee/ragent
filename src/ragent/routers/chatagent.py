@@ -16,6 +16,7 @@ from ragent.auth.deps import get_user_id
 from ragent.clients.rate_limiter import RateLimiter
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
+from ragent.routers._chatagent_proxy import proxy_get, proxy_write, timeout_error, upstream_error
 from ragent.schemas.chatagent import ChatAgentRequest, SessionDeleteRequest, SessionRenameRequest
 from ragent.utility.id_gen import new_id
 
@@ -29,14 +30,6 @@ def _rate_limit_response(reset_at: float) -> Response:
     resp = problem(429, HttpErrorCode.CHATAGENT_RATE_LIMITED, "Too Many Requests")
     resp.headers["Retry-After"] = str(retry_after)
     return resp
-
-
-def _upstream_error() -> Response:
-    return problem(502, HttpErrorCode.CHATAGENT_UPSTREAM_ERROR, "Bad Gateway")
-
-
-def _timeout_error() -> Response:
-    return problem(504, HttpErrorCode.CHATAGENT_TIMEOUT, "Gateway Timeout")
 
 
 def create_chatagent_router(
@@ -115,23 +108,23 @@ def create_chatagent_router(
                 data = resp.json()
             except httpx.TimeoutException:
                 logger.warning("chatagent.timeout", http_status=504)
-                return _timeout_error()
+                return timeout_error()
             except (httpx.HTTPStatusError, httpx.RequestError, ValueError):
                 logger.warning("chatagent.upstream_error", http_status=502)
-                return _upstream_error()
+                return upstream_error()
 
             return_code = data.get("returnCode") if isinstance(data, dict) else None
             if return_code != _UPSTREAM_OK_CODE:
                 logger.warning(
                     "chatagent.bad_return_code", return_code=return_code, http_status=502
                 )
-                return _upstream_error()
+                return upstream_error()
 
             return_data = data.get("returnData")
             messages = (return_data or {}).get("messages") or []
             if not messages:
                 logger.warning("chatagent.empty_messages", http_status=502)
-                return _upstream_error()
+                return upstream_error()
 
             logger.info("chatagent.request", user_id=user_id, http_status=200)
             return JSONResponse(
@@ -146,44 +139,25 @@ def create_chatagent_router(
             )
 
     async def _proxy_get(url: str, params: dict[str, str], log_prefix: str) -> Response:
-        try:
-            resp = await run_in_threadpool(
-                http_client.get,
-                url,
-                params=params,
-                headers=_headers,
-                timeout=timeout,
-            )
-            resp.raise_for_status()
-            payload = resp.json()
-        except httpx.TimeoutException:
-            logger.warning("chatagent.proxy.timeout", route=log_prefix, http_status=504)
-            return _timeout_error()
-        except (httpx.HTTPStatusError, httpx.RequestError, ValueError):
-            logger.warning("chatagent.proxy.upstream_error", route=log_prefix, http_status=502)
-            return _upstream_error()
-        return JSONResponse(payload)
+        return await proxy_get(
+            http_client=http_client,
+            url=url,
+            params=params,
+            headers=_headers,
+            timeout=timeout,
+            log_prefix=log_prefix,
+        )
 
     async def _proxy_write(method: str, url: str, payload: dict, log_prefix: str) -> Response:
-        try:
-            resp = await run_in_threadpool(
-                http_client.request,
-                method,
-                url,
-                json=payload,
-                headers=_headers,
-                timeout=timeout,
-            )
-            resp.raise_for_status()
-            if resp.status_code == 204 or not resp.content:
-                return Response(status_code=resp.status_code)
-            return JSONResponse(resp.json())
-        except httpx.TimeoutException:
-            logger.warning("chatagent.proxy.timeout", route=log_prefix, http_status=504)
-            return _timeout_error()
-        except (httpx.HTTPStatusError, httpx.RequestError, ValueError):
-            logger.warning("chatagent.proxy.upstream_error", route=log_prefix, http_status=502)
-            return _upstream_error()
+        return await proxy_write(
+            http_client=http_client,
+            method=method,
+            url=url,
+            payload=payload,
+            headers=_headers,
+            timeout=timeout,
+            log_prefix=log_prefix,
+        )
 
     if chatagent_sessionlist_api_url is not None:
 
