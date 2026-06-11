@@ -447,16 +447,18 @@ X-User-Id: alice
 >   `stream_deltas(request, model) -> Generator[str]`. Concrete httpx impl lives ragent-side.
 >
 > **Conversion rules (locked):**
-> - Request: `RunAgentInput` → a labelled `context`/`state` preamble (no persona, no tools — the
->   upstream owns its persona/memory) is prepended to the last `role="user"` message content →
->   upstream `inputData.message` (single-field wire); no context/state ⇒ bare user text.
+> - Request: `RunAgentInput` → a `<hidden>`-wrapped `context`/`state` preamble (no persona, no
+>   tools — the upstream owns its persona/memory) is prepended to the last `role="user"` message
+>   content → upstream `inputData.message` (single-field wire); no context/state ⇒ bare user text.
+>   The `<hidden>` block (short-term fix) lets the frontend strip context/state from rendered
+>   history; wrapper tokens inside the payload are neutralized so it can't close early.
 >   metadata injection mirrors v2 (`apName`/`user`/`userToken`/`session`), with `session = threadId`.
 >   `model` not forwarded (upstream decides, same as v2). Always `stream: true`.
 > - Response: upstream `{"returnCode":96200,"returnData":{"delta":...}}` → `TEXT_MESSAGE_CONTENT`;
 >   `{"returnData":{"done":true}}` → `TEXT_MESSAGE_END` + `RUN_FINISHED`. `messageId` minted by ADKAgent.
 > - Errors: **all** failures (rate-limit, timeout, upstream non-96200/5xx) surface as a `RUN_ERROR`
 >   SSE event over a 200 stream — never an HTTP 4xx/5xx code.
-> - context/state: folded into a labelled preamble prepended to the user message (T-CAv3.6).
+> - context/state: folded into a `<hidden>`-wrapped preamble prepended to the user message (T-CAv3.6).
 >   tools/forwardedProps: accepted but not forwarded; tool-call continuation deferred.
 
 | # | Category | Task | Status | Owner |

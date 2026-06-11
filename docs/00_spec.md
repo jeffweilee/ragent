@@ -313,13 +313,31 @@ transport to an `ADKCaller` protocol; the concrete proxy lives ragent-side in
 - The upstream is a general, tool-capable agent that owns its own persona and
   keeps conversation memory by `session`, so v3 imposes **no** assistant
   persona and does **not** enumerate tools. It only surfaces the client-supplied
-  `context`/`state` that the single-field wire would otherwise drop: a labelled
-  preamble (`Context: {json}` and/or `State: {json}`) is prepended to the last
-  `role="user"` message content, and the combined text becomes upstream
-  `inputData.message`. With no `context` and no `state` the message is the bare
+  `context`/`state` that the single-field wire would otherwise drop: a
+  `<hidden>` preamble wrapping `<context>{json}</context>` and/or
+  `<state>{json}</state>` is prepended to the last `role="user"` message content,
+  and the combined text becomes upstream `inputData.message`. The `<hidden>`
+  block is a short-term fix so the frontend can strip the machine-supplied
+  context/state from the rendered agent history (the upstream agent's system
+  prompt is configured to read the block); a tag is emitted only for the field
+  that is present. With no `context` and no `state` the message is the bare
   user text (a plain pass-through); conversely, when a preamble exists but there
-  is no `role="user"` message content, the message is the bare preamble (no
-  trailing separator).
+  is no `role="user"` message content, the message is the bare `<hidden>` block
+  (no trailing separator). Wrapper tokens (`<hidden>`/`<context>`/`<state>`, their
+  closing forms, and whitespace/attribute variants a lenient stripper would honour
+  — e.g. `</hidden >`, `<hidden attr="1">`) appearing **inside** the serialized
+  `context`/`state` payload are neutralized (`<` → `&lt;`, `>` → `&gt;`) so a
+  hostile value cannot close the block early and leak into the visible history.
+  Concretely:
+
+  ```
+  <hidden>
+  <context>[{"description": "current page", "value": "checkout"}]</context>
+  <state>{"draft": "v1"}</state>
+  </hidden>
+
+  {last user message}
+  ```
 - `metadata` is server-injected: `apName` (= `CHATAGENT_AP_NAME`), `user`
   (resolved caller), `userToken` (raw JWT header), and `session = threadId`.
 - `stream` is always `true`. `model` is **not** forwarded (the upstream decides,

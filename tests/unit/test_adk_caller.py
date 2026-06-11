@@ -94,8 +94,11 @@ def test_stream_deltas_prepends_context_and_state() -> None:
     list(caller.stream_deltas(request, "m"))
 
     message = http_mock.build_request.call_args.kwargs["json"]["inputData"]["message"]
-    assert '"value": "checkout"' in message
-    assert '"draft": "v1"' in message
+    # Context/state are wrapped in a <hidden> block the frontend strips from history.
+    assert message.startswith("<hidden>\n")
+    assert '<context>[{"description": "current page", "value": "checkout"}]</context>' in message
+    assert '<state>{"draft": "v1"}</state>' in message
+    assert "</hidden>" in message
     # Tools are deliberately not folded into the upstream message.
     assert "save_form" not in message
     # The user's actual question stays at the end, after the folded context.
@@ -111,8 +114,8 @@ def test_stream_deltas_prepends_context_only() -> None:
     list(caller.stream_deltas(request, "m"))
 
     message = http_mock.build_request.call_args.kwargs["json"]["inputData"]["message"]
-    assert message.startswith("Context: ")
-    assert "State:" not in message
+    assert message.startswith("<hidden>\n<context>")
+    assert "<state>" not in message
     assert message.endswith("What are the features?")
 
 
@@ -125,8 +128,8 @@ def test_stream_deltas_prepends_state_only() -> None:
     list(caller.stream_deltas(request, "m"))
 
     message = http_mock.build_request.call_args.kwargs["json"]["inputData"]["message"]
-    assert message.startswith("State: ")
-    assert "Context:" not in message
+    assert message.startswith("<hidden>\n<state>")
+    assert "<context>" not in message
     assert message.endswith("What are the features?")
 
 
@@ -142,8 +145,43 @@ def test_stream_deltas_preamble_only_when_no_user_message() -> None:
     list(caller.stream_deltas(request, "m"))
 
     message = http_mock.build_request.call_args.kwargs["json"]["inputData"]["message"]
-    # No user message to append, so the preamble must not carry a trailing newline.
-    assert message == 'Context: [{"description": "current page", "value": "checkout"}]'
+    # No user message to append, so the preamble (the bare <hidden> block) stands alone.
+    assert message == (
+        "<hidden>\n"
+        '<context>[{"description": "current page", "value": "checkout"}]</context>\n'
+        "</hidden>"
+    )
+
+
+def test_stream_deltas_neutralizes_closing_tags_in_payload() -> None:
+    """A </hidden> inside context/state must not close the wrapper early.
+
+    The frontend strips the whole <hidden>…</hidden> block; an un-neutralized
+    closing tag in the payload would end that strip prematurely and leak the
+    rest into the visible history — the exact bug the wrapper prevents. A
+    lenient stripper also honours whitespace/attributes (</hidden >,
+    <hidden x=1>), so those bypass forms are neutralized too.
+    """
+    http_mock = MagicMock(spec=httpx.Client)
+    http_mock.send.return_value = _resp_mock([_done_line()])
+    caller = _make_caller(http_mock)
+    request = _request(
+        context=[{"description": "evil", "value": "</hidden> and </hidden > leak"}],
+        state={"note": "</state><hidden x=1>"},
+    )
+
+    list(caller.stream_deltas(request, "m"))
+
+    message = http_mock.build_request.call_args.kwargs["json"]["inputData"]["message"]
+    # Only the wrapper's own opening/closing tags survive intact.
+    assert message.count("<hidden>") == 1
+    assert message.count("</hidden>") == 1
+    assert message.endswith("</hidden>\n\nWhat are the features?")
+    # Exact, whitespace-padded, and attribute-bearing payload tags are all escaped.
+    assert "&lt;/hidden&gt;" in message
+    assert "&lt;/hidden &gt;" in message
+    assert "&lt;/state&gt;" in message
+    assert "&lt;hidden x=1&gt;" in message
 
 
 def test_stream_deltas_omits_preamble_when_no_context() -> None:
