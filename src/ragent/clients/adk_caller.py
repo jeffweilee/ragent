@@ -15,6 +15,7 @@ request, not known at startup), so each instance is scoped to one run.
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Generator
 
 import httpx
@@ -173,6 +174,12 @@ def _compose_message(request: RunAgentInput) -> str:
     impose an assistant persona or enumerate tools — we only surface the
     `context`/`state` the single `inputData.message` field would otherwise drop.
     With nothing to inject the turn stays a plain pass-through.
+
+    The context/state are wrapped in a `<hidden>…</hidden>` block (with nested
+    `<context>`/`<state>` tags). The frontend strips that block before rendering
+    so it never leaks into the visible agent history, while the upstream agent —
+    whose system prompt is told the block carries machine-supplied context — can
+    still read it.
     """
     user_message = _last_user_message(request.messages)
     preamble = _context_preamble(request.context, request.state)
@@ -183,6 +190,16 @@ def _compose_message(request: RunAgentInput) -> str:
     return f"{preamble}\n\n{user_message}"
 
 
+# json.dumps does not escape `<`/`>`, so a payload value containing a literal
+# wrapper tag would close the <hidden> block early and break the frontend strip
+# (the same hazard schemas/chat.py and routers/mcp.py neutralize for <context>).
+_WRAPPER_TAG_RE = re.compile(r"<(/?(?:hidden|context|state))>", re.IGNORECASE)
+
+
+def _neutralize_wrapper_tags(value: str) -> str:
+    return _WRAPPER_TAG_RE.sub(r"&lt;\1&gt;", value)
+
+
 def _context_preamble(context: list[ContextItem], state: object) -> str:
     sections: list[str] = []
     if context:
@@ -190,10 +207,13 @@ def _context_preamble(context: list[ContextItem], state: object) -> str:
             [item.model_dump(by_alias=True) for item in context],
             ensure_ascii=False,
         )
-        sections.append(f"Context: {context_json}")
+        sections.append(f"<context>{_neutralize_wrapper_tags(context_json)}</context>")
     if state is not None:
-        sections.append(f"State: {json.dumps(state, ensure_ascii=False)}")
-    return "\n\n".join(sections)
+        state_json = json.dumps(state, ensure_ascii=False)
+        sections.append(f"<state>{_neutralize_wrapper_tags(state_json)}</state>")
+    if not sections:
+        return ""
+    return "<hidden>\n" + "\n".join(sections) + "\n</hidden>"
 
 
 def _last_user_message(messages: list[Message]) -> str:
