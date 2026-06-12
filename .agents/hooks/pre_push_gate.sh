@@ -40,6 +40,35 @@ cd "$ROOT"
 # The .pending_full_review marker (if any) is left in place: it belongs to a
 # high-risk code commit that is by definition not in an .md-only push range,
 # so the next code push still requires the full review.
+#
+# The bypass derives CHANGED from the checked-out HEAD, so it is only sound
+# when the push actually targets the current branch (PR #176 review P1:
+# `git push origin other-branch` / `--all` would otherwise ride a markdown-
+# only HEAD past the gates). Any other refspec falls through to the full
+# gates; flags taking a separate value are treated conservatively (their
+# value parses as a refspec, disabling the bypass — never the unsafe way).
+_push_targets_current_branch_only() {
+    local cmd="$1" cur="$2"
+    [[ -z "$cur" || "$cur" == "HEAD" ]] && return 1  # detached HEAD: no bypass
+    local args tok seen_remote=0
+    args="$(printf '%s' "$cmd" | sed -E 's/.*git[[:space:]]+push//; s/[;&|].*$//')"
+    for tok in $args; do
+        case "$tok" in
+            --all|--mirror|--tags|--branches) return 1 ;;
+            -*) continue ;;  # value-less flags; valued flags fail safe below
+            *)
+                if [[ $seen_remote -eq 0 ]]; then
+                    seen_remote=1  # first bare token = remote name
+                else
+                    local src="${tok%%:*}"; src="${src#+}"
+                    [[ "$src" == "$cur" || "$src" == "HEAD" ]] || return 1
+                fi
+                ;;
+        esac
+    done
+    return 0
+}
+
 BASE=""
 if UP="$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)"; then
     BASE="$UP"
@@ -49,7 +78,8 @@ elif git rev-parse --verify origin/HEAD &>/dev/null; then
     BASE="origin/HEAD"
 fi
 
-if [[ -n "$BASE" ]]; then
+CUR_BRANCH="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+if [[ -n "$BASE" ]] && _push_targets_current_branch_only "$CMD" "$CUR_BRANCH"; then
     CHANGED="$(git diff --name-only "$BASE"...HEAD 2>/dev/null || true)"
     if [[ -n "$CHANGED" ]] && ! printf '%s\n' "$CHANGED" | grep -qvE '\.md$'; then
         printf 'Pre-push gate: markdown-only diff vs %s — skipping full-review gate, docker + test-gate (fast-mode review is sufficient for doc-only pushes).\n' "$BASE" >&2
