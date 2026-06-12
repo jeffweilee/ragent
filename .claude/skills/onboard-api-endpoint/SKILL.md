@@ -95,10 +95,10 @@ Before writing tests, update two documents:
    notes. Add a scenario (`S-XX`) if there is a behaviour contract worth
    pinning (happy path, error codes, edge cases).
 
-2. **`docs/00_plan.md`** — append a new task row under the active track:
+2. **`docs/00_plan.md`** — append a new task row under the active track and update the track counter:
    ```
-   | T-XX.N | Red   | • **Achieve:** Pin <endpoint> contract.<br>• **Deliver:** `tests/unit/test_<resource>_router.py` — <what the test covers>. | pending | [x] | QA |
-   | T-XX.N | Green | • **Achieve:** Implement <endpoint>.<br>• **Deliver:** `src/ragent/routers/<resource>.py::<handler>`. | T-XX.N | [ ] | Dev |
+   | T-XX.N | Red   | • **Achieve:** Pin <endpoint> contract.<br>• **Deliver:** `tests/unit/test_<resource>_router.py` — <what the test covers>.<br>• **Success criteria:** `pytest tests/unit/test_<resource>_router.py` exits 0 with all new test IDs collected and the test is failing (red). | [ ] | QA |
+   | T-XX.N | Green | • **Achieve:** Implement <endpoint>.<br>• **Deliver:** `src/ragent/routers/<resource>.py::<handler>`.<br>• **Success criteria:** `pytest tests/unit/test_<resource>_router.py` exits 0; `make test-gate` still green. | [ ] | Dev |
    ```
 
 Never write production code before the spec and plan entries exist — the

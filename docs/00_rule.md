@@ -27,22 +27,39 @@
 
 ### `docs/00_plan.md`: Master TDD Implementation Checklist
 
-**Task column format (mandatory):** every task cell is rendered as a bulleted list (use `<br>•` separators inside the markdown cell). Each task **must** open with two one-line summary bullets, in this order:
+**Two files:**
+- `docs/00_plan.md` — **active work only**: tracks that have at least one `[ ]` item.
+- `docs/00_plan_done.md` — **archive**: tracks move here *in full* only when every item is `[x]` or `[~]`. Never move individual items — entire tracks move as a batch.
+
+**Task column format (mandatory for new items):** every task cell is rendered as a bulleted list (use `<br>•` separators inside the markdown cell). Each task **must** open with three one-line summary bullets, in this order:
 
 1. `• **Achieve:** <one sentence — what the task accomplishes / why>`
 2. `• **Deliver:** <one sentence — concrete artifact: file path, test path, env var, manifest, etc.>`
+3. `• **Success criteria:** <one sentence — observable condition that proves the task is done>`
 
 Any further specifics (constraints, env vars, edge cases, references) follow as additional `•` bullets in the same cell. Do not write the task as a single prose paragraph.
 
-| Phase | Category | Task | Status | Owner |
+> **Note:** Items in `docs/00_plan_done.md` were created before this 3-field rule and are grandfathered with 2 fields (Achieve + Deliver). The 3-field format is required for any new item added from this point forward.
+
+**Track counter (mandatory):** immediately below every track heading, add a bold counter line:
+
+```
+**Counter: 完成 N / 未完成 N / descope N**
+```
+
+Update this counter whenever an item status changes. The counts cover all items in the track — including those archived in `00_plan_done.md` (the archive entry carries the final counter; the active entry reflects the remaining work).
+
+**Status legend:**
+- `[x]` delivered
+- `[ ]` TODO
+- `[~]` descoped / deferred (not doing in this cycle)
+
+**Example task row:**
+
+| # | Category | Task | Status | Owner |
 | :--- | :--- | :--- | :---: | :--- |
-| **Phase 1** | **Analysis** | • **Achieve:** Lock domain boundaries and mission objectives.<br>• **Deliver:** Updated sections in `docs/00_spec.md`. | [ ] | Architect |
-| **Phase 1** | **Design** | • **Achieve:** Translate scenarios into executable behavior contracts.<br>• **Deliver:** Given-When-Then rows under `docs/00_spec.md` §Scenario Testing. | [ ] | QA / PM |
-| **Phase 1** | **Red** | • **Achieve:** Pin behavior with failing tests before any production code.<br>• **Deliver:** Failing test files under `tests/{unit,integration,e2e}/`. | [ ] | QA / Dev |
-| **Phase 1** | **Green** | • **Achieve:** Make the red tests pass with the minimum viable code.<br>• **Deliver:** Production modules under `src/ragent/` matching the test contract. | [ ] | Dev |
-| **Phase 1** | **Refactor** | • **Achieve:** Tidy structure without changing behavior; enforce clean code, idempotency, performance.<br>• **Deliver:** Reviewed diff with green tests; review notes captured in commit/PR. | [ ] | Reviewer |
-| **Phase 2** | **Stability** | • **Achieve:** Production-grade resilience and visibility.<br>• **Deliver:** HA verification report, Prometheus alert rules, Grafana dashboards. | [ ] | SRE |
-| **Phase 2** | **Closure** | • **Achieve:** Close the loop on docs and lessons learned.<br>• **Deliver:** Updated `00_spec.md` / `00_plan.md` + new `00_journal.md` entries. | [ ] | Master |
+| T-XX.1 | Red | • **Achieve:** Pin the `<endpoint>` contract.<br>• **Deliver:** `tests/unit/test_<resource>_router.py` — covers happy path, 422, and upstream error.<br>• **Success criteria:** `pytest tests/unit/test_<resource>_router.py` exits 0 with all new test IDs collected. | [ ] | QA |
+| T-XX.2 | Green | • **Achieve:** Implement `<endpoint>`.<br>• **Deliver:** `src/ragent/routers/<resource>.py::<handler>`.<br>• **Success criteria:** `pytest tests/unit/test_<resource>_router.py` exits 0; `make test-gate` still green. | [ ] | Dev |
 
 
 ### `docs/00_journal.md` (Blameless Team Reflection)

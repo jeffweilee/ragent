@@ -1,7 +1,7 @@
 # Chat Intent 處理機制設計文件
 
 > 更新日期：2026-05-27  
-> 對應實作追蹤：`docs/00_plan.md` Track T-CH、Track T-CH2
+> 對應實作追蹤：`docs/00_plan_done.md` Track T-CH、Track T-CH2（已完成）
 
 ---
 
