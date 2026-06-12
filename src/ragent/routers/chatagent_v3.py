@@ -25,7 +25,7 @@ from ragent.clients.rate_limiter import RateLimiter
 from ragent.errors.codes import HttpErrorCode
 from ragent.routers._chatagent_proxy import proxy_get, proxy_write
 from ragent.schemas.chatagent import SessionDeleteRequest, SessionRenameRequest
-from ragent.services.chatagent_session import map_session_payload
+from ragent.services.chatagent_session import map_session_list_payload, map_session_payload
 from ragent.utility.id_gen import new_id
 
 logger = structlog.get_logger(__name__)
@@ -113,6 +113,7 @@ def create_chatagent_v3_router(
                 params["startTime"] = startTime
             if endTime:
                 params["endTime"] = endTime
+            # strip the machine-context wrapper from each session title.
             return await proxy_get(
                 http_client=http_client,
                 url=chatagent_sessionlist_api_url,
@@ -120,6 +121,7 @@ def create_chatagent_v3_router(
                 headers=_headers,
                 timeout=timeout,
                 log_prefix="v3.sessionlist",
+                transform=map_session_list_payload,
             )
 
     if chatagent_session_api_url is not None:

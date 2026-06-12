@@ -7,7 +7,7 @@ user turn. The v3 session endpoint maps each message to a twp-ai role and strips
 the hidden block before returning it to the client.
 """
 
-from ragent.services.chatagent_session import map_session_payload
+from ragent.services.chatagent_session import map_session_list_payload, map_session_payload
 
 
 def _session(messages: list[dict]) -> dict:
@@ -107,6 +107,38 @@ def test_payload_without_messages_list_is_returned_unchanged() -> None:
 def test_non_dict_payload_is_returned_unchanged() -> None:
     # A malformed upstream (array/scalar) must not raise AttributeError.
     assert map_session_payload([1, 2]) == [1, 2]  # type: ignore[arg-type]
+
+
+def test_session_name_is_stripped_on_get() -> None:
+    # sessionName is derived from the first user turn, which carries the wrapper.
+    payload = {
+        "session": "s1",
+        "sessionName": "<hidden>\n<context>[]</context>\n</hidden>\n\nWhat is X?",
+        "messages": [],
+    }
+
+    out = map_session_payload(payload)
+
+    assert out["sessionName"] == "What is X?"
+
+
+def test_session_list_strips_each_session_name() -> None:
+    payload = {
+        "totalCount": 2,
+        "sessions": [
+            {"session": "s1", "sessionName": "<context>page</context>\n\nFirst"},
+            {"session": "s2", "sessionName": "Plain title"},
+        ],
+    }
+
+    out = map_session_list_payload(payload)
+
+    assert [s["sessionName"] for s in out["sessions"]] == ["First", "Plain title"]
+    assert out["totalCount"] == 2
+
+
+def test_session_list_without_sessions_is_returned_unchanged() -> None:
+    assert map_session_list_payload({"totalCount": 0}) == {"totalCount": 0}
 
 
 def test_explicit_null_role_falls_back_to_assistant() -> None:

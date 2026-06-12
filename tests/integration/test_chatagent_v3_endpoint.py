@@ -99,7 +99,7 @@ def test_v3_session_get_maps_roles_and_strips_hidden():
     http_mock.get.return_value = _get_ok(
         {
             "session": "s1",
-            "sessionName": "chat",
+            "sessionName": "<hidden>\n<context>[]</context>\n</hidden>\n\nWhat is X?",
             "messages": [
                 {
                     "messageId": "u1",
@@ -129,6 +129,7 @@ def test_v3_session_get_maps_roles_and_strips_hidden():
     assert r.status_code == 200
     body = r.json()
     assert body["session"] == "s1"
+    assert body["sessionName"] == "What is X?"
     assert body["messages"] == [
         {"id": "u1", "role": "user", "content": "What is X?"},
         {"id": "p1", "role": "reasoning", "content": "Planning..."},
@@ -137,15 +138,22 @@ def test_v3_session_get_maps_roles_and_strips_hidden():
     ]
 
 
-def test_v3_session_list_proxies_unchanged():
+def test_v3_session_list_strips_session_names():
     app, http_mock = _make_app()
-    http_mock.get.return_value = _get_ok({"sessions": [{"session": "s1", "sessionName": "chat"}]})
+    http_mock.get.return_value = _get_ok(
+        {
+            "sessions": [
+                {"session": "s1", "sessionName": "<context>page</context>\n\nFirst chat"},
+                {"session": "s2", "sessionName": "Plain"},
+            ]
+        }
+    )
 
     with TestClient(app) as client:
         r = client.get("/chatagent/v3/sessionList", headers={"X-User-Id": "alice"})
 
     assert r.status_code == 200
-    assert r.json() == {"sessions": [{"session": "s1", "sessionName": "chat"}]}
+    assert [s["sessionName"] for s in r.json()["sessions"]] == ["First chat", "Plain"]
 
 
 def test_v3_session_rename_forwards_payload():

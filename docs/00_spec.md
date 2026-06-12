@@ -389,11 +389,12 @@ only when its upstream URL env var is set), proxying the **same** upstream as
 message shape**. This is the reason the session interface is versioned up: the
 message shape changes, while the upstream wire contract is untouched.
 
-- `GET /chatagent/v3/sessionList` — proxied unchanged (session metadata only; no
-  message bodies, so no reshape).
+- `GET /chatagent/v3/sessionList` — each entry's `sessionName` has the
+  machine-context wrapper stripped (the upstream derives the title from the first
+  user turn, which carries the block); other metadata is passed through.
 - `GET /chatagent/v3/session?session=<id>` — the upstream session envelope
-  (`session`, `sessionName`, …) is preserved, but every `messages[]` entry is
-  reshaped to `{id, role, content}`:
+  (`session`, …) is preserved, `sessionName` is stripped (same reason as
+  sessionList), and every `messages[]` entry is reshaped to `{id, role, content}`:
   - `role` is derived from the upstream role + `messageMeta.langgraph_node` by the
     **same `node_to_role` rule as the v3 stream** (§3.4.7): `user`→`user`,
     `tool`→`tool`, assistant+`planner`→`reasoning`, every other assistant
