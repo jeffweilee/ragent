@@ -246,6 +246,16 @@ async def ingest_pipeline_task(document_id: str) -> None:
                 document_id=document_id,
                 error_type=type(exc).__name__,
             )
+        except Exception as update_exc:
+            # Even the FAILED write can hit a lock error; escaping here would
+            # crash the task and re-strand the row. Log and exit cleanly —
+            # the reconciler's stale-PENDING sweep is the recovery surface.
+            logger.error(
+                "ingest.promote_failed_terminalization_failed",
+                document_id=document_id,
+                error_type=type(update_exc).__name__,
+                error=str(update_exc),
+            )
         record_pipeline_outcome(
             source_app=doc.source_app, mime_type=doc.mime_type, outcome="failed"
         )

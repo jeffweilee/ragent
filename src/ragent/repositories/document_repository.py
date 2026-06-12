@@ -29,7 +29,8 @@ _MARIADB_RETRYABLE_LOCK_ERRORS = (1213, 1205)
 
 
 def _is_retryable_lock_error(exc: OperationalError) -> bool:
-    return getattr(getattr(exc, "orig", None), "args", (None,))[0] in _MARIADB_RETRYABLE_LOCK_ERRORS
+    args = getattr(getattr(exc, "orig", None), "args", None)
+    return bool(args) and args[0] in _MARIADB_RETRYABLE_LOCK_ERRORS
 
 
 @dataclass

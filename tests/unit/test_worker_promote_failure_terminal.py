@@ -83,3 +83,19 @@ async def test_promote_failure_tolerates_row_already_terminal(
 
     with patch("ragent.bootstrap.composition.get_container", return_value=container):
         await ingest_pipeline_task("DOC001")  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_promote_failure_tolerates_update_status_lock_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """update_status itself raising (e.g. lock error) must not escape the task."""
+    monkeypatch.setenv("INGEST_PIPELINE_TIMEOUT_SECONDS", "5")
+    container = make_ingest_container(_doc())
+    container.doc_repo.promote_to_ready_and_demote_siblings.side_effect = _deadlock_exc()
+    container.doc_repo.update_status.side_effect = _deadlock_exc()
+
+    from ragent.workers.ingest import ingest_pipeline_task
+
+    with patch("ragent.bootstrap.composition.get_container", return_value=container):
+        await ingest_pipeline_task("DOC001")  # must not raise
