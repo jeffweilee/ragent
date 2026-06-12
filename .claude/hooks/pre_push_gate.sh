@@ -6,7 +6,9 @@
 # Integration + e2e are opt-in via `RAGENT_PREPUSH_FULL=1 git push ...`, which
 # restores the original behaviour (docker daemon check + `make test-gate`,
 # which itself excludes tests/e2e; set RAGENT_PREPUSH_FULL=e2e to also include
-# tests/e2e). Markdown-only diffs short-circuit before any of this.
+# tests/e2e). Markdown-only diffs short-circuit before any of this — including
+# the high-risk full-review gate: doc-only pushes need only the fast-mode
+# /simplify + /review already enforced at commit time.
 set -uo pipefail
 
 INPUT="$(cat)"
@@ -29,6 +31,31 @@ fi
 
 ROOT="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
 cd "$ROOT"
+
+# Determine the diff range being pushed. Prefer the upstream tracking ref;
+# fall back to origin/<current-branch>, then origin/HEAD. If we can resolve
+# a base AND every changed path is a markdown file, skip the full-review
+# gate AND docker+test — doc-only pushes can't regress code, so the fast-mode
+# /simplify + /review stamps already consumed at commit time are sufficient.
+# The .pending_full_review marker (if any) is left in place: it belongs to a
+# high-risk code commit that is by definition not in an .md-only push range,
+# so the next code push still requires the full review.
+BASE=""
+if UP="$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)"; then
+    BASE="$UP"
+elif BR="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" && git rev-parse --verify "origin/$BR" &>/dev/null; then
+    BASE="origin/$BR"
+elif git rev-parse --verify origin/HEAD &>/dev/null; then
+    BASE="origin/HEAD"
+fi
+
+if [[ -n "$BASE" ]]; then
+    CHANGED="$(git diff --name-only "$BASE"...HEAD 2>/dev/null || true)"
+    if [[ -n "$CHANGED" ]] && ! printf '%s\n' "$CHANGED" | grep -qvE '\.md$'; then
+        printf 'Pre-push gate: markdown-only diff vs %s — skipping full-review gate, docker + test-gate (fast-mode review is sufficient for doc-only pushes).\n' "$BASE" >&2
+        exit 0
+    fi
+fi
 
 # High-risk full-review gate — if a pre-commit risk classification wrote
 # .pending_full_review, require /simplify --mode full + /review --mode full
@@ -95,27 +122,6 @@ PY
     # remaining pre-push checks (markdown/tests) also pass.
     _CONSUME_PENDING=1
     printf 'Pre-push gate: full-review requirement satisfied — proceeding to test gate.\n' >&2
-fi
-
-# Determine the diff range being pushed. Prefer the upstream tracking ref;
-# fall back to origin/<current-branch>, then origin/HEAD. If we can resolve
-# a base AND every changed path is a markdown file, skip docker+test — the
-# gate exists to catch code regressions, and .md-only pushes can't trip them.
-BASE=""
-if UP="$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)"; then
-    BASE="$UP"
-elif BR="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" && git rev-parse --verify "origin/$BR" &>/dev/null; then
-    BASE="origin/$BR"
-elif git rev-parse --verify origin/HEAD &>/dev/null; then
-    BASE="origin/HEAD"
-fi
-
-if [[ -n "$BASE" ]]; then
-    CHANGED="$(git diff --name-only "$BASE"...HEAD 2>/dev/null || true)"
-    if [[ -n "$CHANGED" ]] && ! printf '%s\n' "$CHANGED" | grep -qvE '\.md$'; then
-        printf 'Pre-push gate: markdown-only diff vs %s — skipping docker + test-gate.\n' "$BASE" >&2
-        exit 0
-    fi
 fi
 
 LOG_DIR="$(mktemp -d -t ragent-prepush-XXXXXX)"
