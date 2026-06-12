@@ -89,11 +89,20 @@
 | `ingest.py` | `/ingest/v1` | Create / Read / List / Delete / Rerun / Upload |
 | `chat.py` | `/chat/v1` | 同步聊天、SSE 串流 |
 | `retrieve.py` | `/retrieve/v1` | 無 LLM 純檢索 |
+| `chatagent.py` | `/chatagent/v1` | ChatAgent 上游代理(POST + sessionList / session GET/PUT/DELETE)|
+| `chatagent_v2.py` | `/chatagent/v2` | ChatAgent raw-proxy(原樣轉發上游 payload,串流/非串流)|
+| `chatagent_v3.py` | `/chatagent/v3` | twp-ai protocol 代理(`RunAgentInput` → AG-UI SSE)+ v3 session 管理(twp-ai message shape)|
+| `_chatagent_proxy.py` | —(共用 helper)| v1/v3 session 路由共用的 proxy_get / proxy_write 轉發與 timeout→504 / error→502 映射 |
 | `feedback.py` | `/feedback/v1` | 使用者回饋 HMAC token 驗證與雙寫 |
 | `mcp.py` | `/mcp/v1` | JSON-RPC 2.0 MCP Tool Server（P2.5）|
+| `mcp_tools/` | —(tool 描述子)| 每個 sub-module 定義一個 MCP tool 的 input model / inputSchema / Tool descriptor |
 | `admin_embedding.py` | `/embedding/v1` | embedding model 生命週期管理（B50；promote/cutover/rollback/commit/abort/state）|
 | `admin_ingest.py` | `/ingest/v1/upload` | multipart 上傳路由（direct route；no `APIRouter` prefix）|
+| `admin_ops.py` | `/ops/v1` | 維運操作(retry)|
 | `health.py` | `/livez`, `/readyz`, `/startupz`, `/metrics` | 健康探針、Prometheus 指標 |
+| `health_probes.py` | —(probe 實作)| `/readyz` 的 MariaDB / ES / Redis / MinIO probe 實作,由 `health.py` 注入 |
+
+> 另有 `/twp/v1` router 由 `packages/twp-ai`(repo 內獨立 package)提供,於 `bootstrap/app.py` 掛載;`/chatagent/v3` 亦依賴該 package 的 `ADKAgent` / schemas 與 ragent 端 `clients/adk_caller.py`。
 
 ---
 
@@ -111,6 +120,7 @@
 | 檔案 | 職責 |
 |---|---|
 | `ingest_service.py` | inline / file / upload ingest 流程協調；supersede 觸發；delete cascade 協調 |
+| `chatagent_session.py` | ChatAgent session payload 轉形:sessionName 的機器情境 wrapper strip、`node_to_role` 角色映射、v3 message reshape(`{id, role, content}`)|
 | `embedding/registry.py` | 活躍 embedding model config 快取（從 DB 讀取；`refresh()` 在 lifespan 呼叫）|
 | `embedding/lifecycle.py` | embedding model 狀態機：draft → staging → active → retired（B50）|
 | `embedding/backfill.py` | backfill 長跑背景 op（enqueue 給 worker）|
@@ -203,6 +213,9 @@
 | `llm.py` | `LLMClient` — chat + stream，token budget |
 | `rerank.py` | `RerankClient` — 重排，fail-open on 5xx（C4）|
 | `rate_limiter.py` | `RateLimiter` — Redis fixed-window per user |
+| `adk_caller.py` | `ADKCaller` — `/chatagent/v3` twp-ai run 的上游代理 backend(`RunAgentInput` → v2 wire → `UpstreamMessage` stream)|
+| `embedding_model_config.py` | embedding model identity 設定(B50);ES `dense_vector.dims` 界限於 boot 驗證 |
+| `unprotect.py` | `UnprotectClient` — 外部 unprotect API 取回原始 binary(T-UP.3)|
 
 ---
 
@@ -220,7 +233,9 @@
 - `retrieve.py`（RetrieveRequest / ChunkEntry / RetrieveResponse）
 - `embedding.py`（PromoteRequest / CutoverRequest）
 - `chat.py`（ChatRequest / ChatResponse / Source / StreamDelta/Done/Error）
+- `chatagent.py`(SessionRenameRequest / SessionDeleteRequest)
 - `feedback.py`（FeedbackRequest / vote / reason enum）
+- `_common.py`(source_app / source_meta 共用 filter 欄位驗證)
 
 ---
 
