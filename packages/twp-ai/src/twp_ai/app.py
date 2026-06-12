@@ -10,6 +10,7 @@ Default: DirectLLMAgent (requires a LLMCaller).
 from __future__ import annotations
 
 import os
+import uuid
 
 from fastapi import APIRouter, FastAPI
 from fastapi.responses import StreamingResponse
@@ -35,6 +36,11 @@ def create_router(
 
     @router.post("/run")
     async def run_agent(body: RunAgentInput) -> StreamingResponse:
+        # The server owns the thread id: assign one when the client omits it so
+        # every run has a concrete session id and RUN_STARTED.thread_id is never
+        # null. (ragent's /chatagent/v3 mints its own Crockford id instead.)
+        if body.thread_id is None:
+            body = body.model_copy(update={"thread_id": uuid.uuid4().hex})
         model = body.model or default_model
 
         def _generate():

@@ -87,6 +87,29 @@ def test_run_agent_input_accepts_message_without_id() -> None:
     assert request.messages[0].content == "Fill the description"
 
 
+def test_run_agent_input_accepts_missing_thread_id() -> None:
+    body = _run_input()
+    del body["threadId"]
+
+    request = RunAgentInput.model_validate(body)
+
+    assert request.thread_id is None
+
+
+def test_run_route_assigns_thread_id_when_omitted() -> None:
+    # Server owns the thread id: an omitted threadId is assigned so RUN_STARTED
+    # never carries a null id.
+    client = TestClient(create_app(DirectLLMAgent(FakeCaller()), default_model="m"))
+    body = _run_input()
+    del body["threadId"]
+
+    response = client.post("/run", json=body)
+
+    first = json.loads(response.text.split("\n\n")[0].removeprefix("data: "))
+    assert first["type"] == "RUN_STARTED"
+    assert first["threadId"]
+
+
 def test_direct_agent_emits_twp_ai_tool_lifecycle_events() -> None:
     caller = FakeCaller()
     request = RunAgentInput.model_validate(_run_input())

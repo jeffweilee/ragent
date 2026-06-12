@@ -26,6 +26,7 @@ from ragent.errors.codes import HttpErrorCode
 from ragent.routers._chatagent_proxy import proxy_get, proxy_write
 from ragent.schemas.chatagent import SessionDeleteRequest, SessionRenameRequest
 from ragent.services.chatagent_session import map_session_payload
+from ragent.utility.id_gen import new_id
 
 logger = structlog.get_logger(__name__)
 
@@ -64,6 +65,14 @@ def create_chatagent_v3_router(
             x_user_id: Annotated[str | None, Depends(get_user_id)] = None,
         ) -> StreamingResponse:
             user_id = x_user_id or "anonymous"
+
+            # Model B — ragent owns the session id. When the client omits it (a
+            # brand-new conversation), mint one here so the upstream always
+            # receives OUR session (it never mints its own) and the assigned id is
+            # echoed back in RUN_STARTED for the client to reuse. Resolve before
+            # any streaming path so RUN_STARTED / RUN_ERROR never carry a null id.
+            if body.thread_id is None:
+                body = body.model_copy(update={"thread_id": new_id()})
 
             if _rate_limited(x_user_id):
                 logger.warning(

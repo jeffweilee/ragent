@@ -43,6 +43,37 @@ def _run_input() -> dict:
     }
 
 
+def test_v3_mints_thread_id_when_omitted() -> None:
+    # Model B: client omits threadId on a new conversation; ragent mints it,
+    # echoes it in RUN_STARTED, and sends it as the upstream session.
+    app, http_mock = _make_app()
+    http_mock.send.return_value = _resp_mock([_msg_line("hi", message_id="m1"), _done_line()])
+    body = _run_input()
+    del body["threadId"]
+
+    with TestClient(app) as client:
+        r = client.post("/chatagent/v3", json=body, headers={"X-User-Id": "alice"})
+
+    events = _events(r.text)
+    minted = events[0]["threadId"]
+    assert minted  # non-empty minted id surfaced to the client
+    sent = http_mock.build_request.call_args.kwargs["json"]
+    assert sent["metadata"]["session"] == minted  # upstream gets ours, not its own
+
+
+def test_v3_uses_supplied_thread_id() -> None:
+    app, http_mock = _make_app()
+    http_mock.send.return_value = _resp_mock([_msg_line("hi", message_id="m1"), _done_line()])
+
+    with TestClient(app) as client:
+        r = client.post("/chatagent/v3", json=_run_input(), headers={"X-User-Id": "alice"})
+
+    events = _events(r.text)
+    assert events[0]["threadId"] == "thread_1"
+    sent = http_mock.build_request.call_args.kwargs["json"]
+    assert sent["metadata"]["session"] == "thread_1"
+
+
 def test_v3_streams_twp_ai_event_lifecycle() -> None:
     app, http_mock = _make_app()
     http_mock.send.return_value = _resp_mock(

@@ -48,6 +48,12 @@ class ToolCall(TwpAiModel):
 
 
 class Message(TwpAiModel):
+    # Client-supplied and OPTIMISTIC: the frontend mints this id (e.g.
+    # `optimistic-<uuid>`) so it can render a message before the upstream has
+    # persisted it. It is NOT authoritative — the proxy ignores it (only the
+    # message text is forwarded) and the upstream assigns the canonical
+    # `messageId` returned in the stream / session history. Never persist, dedup,
+    # or correlate on this value; use the upstream id for any server-side keying.
     id: str | None = None
     role: Literal["developer", "system", "assistant", "user", "tool", "activity", "reasoning"]
     content: Any = None
@@ -65,7 +71,12 @@ class ContextItem(TwpAiModel):
 
 
 class RunAgentInput(TwpAiModel):
-    thread_id: str
+    # Session id. Optional on the wire: a brand-new conversation has none yet, so
+    # the client may omit it and the *server* assigns one (ragent mints it for
+    # /chatagent/v3; see chatagent_v3 router). The assigned id comes back in the
+    # RUN_STARTED event, and the client sends it on every subsequent turn. This
+    # keeps a single owner for the session id (the server), never the upstream.
+    thread_id: str | None = None
     run_id: str
     parent_run_id: str | None = None
     messages: list[Message]

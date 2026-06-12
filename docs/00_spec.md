@@ -340,6 +340,13 @@ transport to an `ADKCaller` protocol; the concrete proxy lives ragent-side in
   ```
 - `metadata` is server-injected: `apName` (= `CHATAGENT_AP_NAME`), `user`
   (resolved caller), `userToken` (raw JWT header), and `session = threadId`.
+- **Session id ownership (Model B):** request `threadId` is **optional**. ragent
+  owns the session id — when the client omits it (a brand-new conversation),
+  ragent mints one (`new_id()`) and uses it as the upstream `session`, so the
+  upstream always receives ours and never mints its own. The resolved id is
+  echoed in `RUN_STARTED.threadId`; the client reuses it on every later turn.
+  Request `messages[].id` is the client's optimistic id — ignored by the proxy;
+  the upstream assigns the authoritative `messageId` returned in the stream.
 - `stream` is always `true`. `model` is **not** forwarded (the upstream decides,
   matching v2).
 - `tools`/`forwardedProps` are accepted but not forwarded; client tool-call
