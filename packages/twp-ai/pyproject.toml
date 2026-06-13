@@ -2,11 +2,10 @@
 name = "twp-ai"
 version = "0.1.0"
 description = "twp-ai — twp-ai event streaming adapter"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 dependencies = [
     "fastapi>=0.115.0",
     "pydantic>=2.0",
-    "uvicorn>=0.30.0",
 ]
 
 [project.optional-dependencies]
