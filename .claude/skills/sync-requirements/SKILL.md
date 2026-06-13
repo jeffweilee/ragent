@@ -60,7 +60,6 @@ uv export \
   --no-hashes \
   --extra dev \
   --group dev \
-  --emit-index-url \
   --output-file requirements.txt
 ```
 
@@ -69,7 +68,6 @@ Flag rationale:
 |------|-----|
 | `--no-hashes` | Private registries often serve packages without SHA-256 hash metadata; hashes would cause `pip install` to fail on CI. |
 | `--extra dev` / `--group dev` | Mirrors Phase 3 — requirements.txt reflects the full dev environment. |
-| `--emit-index-url` | Embeds `--index-url <registry>` (or `--extra-index-url`) at the top of the file so CI `pip install -r requirements.txt` needs no extra flags. |
 | `--output-file requirements.txt` | Writes to project root. |
 
 If you only need a production requirements file (no dev tooling), drop `--extra dev --group dev`.
@@ -86,7 +84,6 @@ wc -l requirements.txt
 
 Confirm:
 - The file is non-empty.
-- If `--emit-index-url` was used, the first line is `--index-url <your-registry>` (or `--extra-index-url`).
 - Key packages from `pyproject.toml` (e.g. `fastapi`, `haystack-ai`) appear in the list.
 
 ---
@@ -94,5 +91,14 @@ Confirm:
 ## Notes
 
 - **Re-running on CI**: set `UV_INDEX_URL` (or `UV_EXTRA_INDEX_URL`) as a CI secret, then call this skill or run the four commands above directly in your pipeline step.
-- **Workspace package `twp-ai`**: `uv export` will pin it by editable path (`-e packages/twp-ai`). If CI does not have the workspace checked out, replace the editable line with a wheel from your registry.
-- **Removing `--emit-index-url`**: safe to drop if the registry URL is already baked into CI via `pip.conf` or a `.pth` file.
+- **Workspace package `twp-ai`（注意）**: `uv export` 輸出的 `requirements.txt` 會將 `twp-ai` 寫成 editable 路徑，例如：
+  ```
+  -e packages/twp-ai
+  ```
+  這在本機可以正常運作，但 **CI 拿到這份 `requirements.txt` 直接跑 `pip install -r requirements.txt` 時會失敗**，因為 CI runner 上沒有 `packages/twp-ai` 這個本地目錄。
+
+  **解法**：在你的 CI pipeline 中，將 `twp-ai` 先打包成 wheel 上傳到你自己的 pip registry，然後在 `requirements.txt` 裡把那一行手動替換（或用 `sed`）成固定版本：
+  ```bash
+  sed -i 's|^-e packages/twp-ai$|twp-ai==<version>|' requirements.txt
+  ```
+  這樣 CI 就能直接從你的 private registry 拉到正確的版本。
