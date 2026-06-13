@@ -23,8 +23,8 @@
 
 | # | Category | Task | Status | Owner |
 |---|---|---|:---:|---|
-| T-SR.1 | Red | • **Achieve:** Expose the bug — verify current demote SQL will demote a newer sibling when an older doc wins via MVCC anomaly.<br>• **Deliver:** `tests/integration/test_worker_atomic_promote.py::test_winner_never_demotes_strictly_newer_sibling` — seeds OLDEST/WINNER/NEWER, forces WINNER to READY (simulating MVCC win), runs sibling-demote directly, asserts OLDER is DELETING and NEWER is still PENDING. Must **fail** against current production code. | [x] | QA |
-| T-SR.2 | Green | • **Achieve:** Patch `_promote_or_demote` so the sibling-demote UPDATE only touches rows with `(created_at, document_id) < (winner.created_at, winner.document_id)`.<br>• **Deliver:** Fixed SQL in `src/ragent/repositories/document_repository.py::_promote_or_demote`; updated B41 note in `docs/00_spec.md`; T-SR.1 test now passes. | [x] | Dev |
+| T-SR.1 | Red | • **Achieve:** Expose the bug — verify current demote SQL will demote a newer sibling when an older doc wins via MVCC anomaly.<br>• **Deliver:** `tests/integration/test_worker_atomic_promote.py::test_winner_never_demotes_strictly_newer_sibling` — seeds OLDEST/WINNER/NEWER, forces WINNER to READY (simulating MVCC win), runs sibling-demote directly, asserts OLDER is DELETING and NEWER is still PENDING. Must **fail** against current production code.<br>• **Success criteria:** Test collected by pytest; OLDEST assertion = DELETING, NEWER assertion = PENDING both pass with the fixed SQL. | [x] | QA |
+| T-SR.2 | Green | • **Achieve:** Patch `_promote_or_demote` so the sibling-demote UPDATE only touches rows with `(created_at, document_id) < (winner.created_at, winner.document_id)`.<br>• **Deliver:** Fixed SQL in `src/ragent/repositories/document_repository.py::_promote_or_demote`; updated B41 note in `docs/00_spec.md`; T-SR.1 test now passes.<br>• **Success criteria:** `make test-gate` green; B41 in `docs/00_spec.md` references the demote guard; the demote UPDATE WHERE clause contains the `(created_at, document_id)` ordering guard. | [x] | Dev |
 
 ---
 
