@@ -190,3 +190,76 @@ async def test_concurrent_promotes_elect_correct_survivor(fresh_engine) -> None:
     b = await repo.get("DOC_B")
     assert a is not None and a.status == "DELETING"
     assert b is not None and b.status == "READY"
+
+
+@pytest.mark.asyncio
+async def test_winner_never_demotes_strictly_newer_sibling(fresh_engine) -> None:
+    """Regression for issue #179: demote UPDATE must not touch rows strictly newer
+    than the winner by (created_at, document_id).
+
+    Direct SQL test: forces the MVCC-anomaly state (older doc won) then runs the
+    production sibling-demote predicate — update this SQL together with
+    `_promote_or_demote` if it ever changes.
+    """
+    repo = DocumentRepository(engine=fresh_engine)
+
+    # Three docs in strict created_at order: OLDEST < WINNER < NEWER.
+    await _seed(repo, "DOC_OLDEST_SR", "SR1", "app")
+    await asyncio.sleep(0.01)
+    await _seed(repo, "DOC_WINNER_SR", "SR1", "app")
+    await asyncio.sleep(0.01)
+    await _seed(repo, "DOC_NEWER_SR", "SR1", "app")
+
+    async with fresh_engine.begin() as conn:
+        # Simulate MVCC anomaly: DOC_WINNER_SR is promoted to READY even though
+        # DOC_NEWER_SR is newer (it was invisible at election time because its
+        # UPLOADED→PENDING claim had not yet committed).
+        await conn.execute(
+            text(
+                "UPDATE documents SET status='READY', updated_at=NOW(6)"
+                " WHERE document_id='DOC_WINNER_SR'"
+            )
+        )
+        # Run the sibling-demote exactly as `_promote_or_demote` does after
+        # rowcount==1.  The WHERE clause here must match the production code
+        # in document_repository.py — update both together if the SQL changes.
+        await conn.execute(
+            text(
+                """
+                UPDATE documents
+                SET status = 'DELETING', updated_at = NOW(6)
+                WHERE source_id = 'SR1'
+                  AND source_app = 'app'
+                  AND document_id != 'DOC_WINNER_SR'
+                  AND status IN ('PENDING', 'READY')
+                  AND (
+                      created_at < (
+                          SELECT c FROM (
+                              SELECT created_at AS c
+                              FROM documents
+                              WHERE document_id = 'DOC_WINNER_SR'
+                          ) AS me
+                      )
+                      OR (
+                          created_at = (
+                              SELECT c FROM (
+                                  SELECT created_at AS c
+                                  FROM documents
+                                  WHERE document_id = 'DOC_WINNER_SR'
+                              ) AS me
+                          )
+                          AND document_id < 'DOC_WINNER_SR'
+                      )
+                  )
+                """
+            )
+        )
+
+    oldest = await repo.get("DOC_OLDEST_SR")
+    newer = await repo.get("DOC_NEWER_SR")
+    assert oldest is not None and oldest.status == "DELETING", (
+        "Strictly older sibling must be demoted"
+    )
+    assert newer is not None and newer.status == "PENDING", (
+        "Strictly newer sibling must NOT be demoted by an older winner (issue #179)"
+    )

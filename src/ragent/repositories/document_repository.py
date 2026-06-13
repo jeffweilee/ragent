@@ -422,6 +422,11 @@ class DocumentRepository:
             )
 
             if promoted.rowcount == 1:
+                # Guard: only demote siblings that are strictly older by
+                # (created_at, document_id) — the same tie-break as the election.
+                # Without this guard an older winner (elected via MVCC snapshot
+                # while a newer sibling's claim was invisible) can demote that
+                # newer sibling via the demote UPDATE's current read (issue #179).
                 await conn.execute(
                     text(
                         """
@@ -431,6 +436,25 @@ class DocumentRepository:
                           AND source_app = :app
                           AND document_id != :id
                           AND status IN ('PENDING', 'READY')
+                          AND (
+                              created_at < (
+                                  SELECT c FROM (
+                                      SELECT created_at AS c
+                                      FROM documents
+                                      WHERE document_id = :id
+                                  ) AS me
+                              )
+                              OR (
+                                  created_at = (
+                                      SELECT c FROM (
+                                          SELECT created_at AS c
+                                          FROM documents
+                                          WHERE document_id = :id
+                                      ) AS me
+                                  )
+                                  AND document_id < :id
+                              )
+                          )
                         """
                     ),
                     {"src": source_id, "app": source_app, "id": document_id},
