@@ -105,6 +105,8 @@ def test_v3_session_get_maps_roles_and_strips_hidden():
                     "messageId": "u1",
                     "role": "user",
                     "content": "<hidden>\n<context>[]</context>\n</hidden>\n\nWhat is X?",
+                    "createTime": "2025-05-01T06:48:55.617Z",
+                    "updateTime": "2025-05-01T06:49:00.000Z",
                 },
                 {
                     "messageId": "p1",
@@ -131,10 +133,34 @@ def test_v3_session_get_maps_roles_and_strips_hidden():
     assert body["session"] == "s1"
     assert body["sessionName"] == "What is X?"
     assert body["messages"] == [
-        {"id": "u1", "role": "user", "content": "What is X?"},
-        {"id": "p1", "role": "reasoning", "content": "Planning..."},
-        {"id": "s1m", "role": "assistant", "content": "Answer."},
-        {"id": "t1", "role": "tool", "content": "tool output"},
+        {
+            "id": "u1",
+            "role": "user",
+            "content": "What is X?",
+            "createTime": "2025-05-01T06:48:55.617Z",
+            "updateTime": "2025-05-01T06:49:00.000Z",
+        },
+        {
+            "id": "p1",
+            "role": "reasoning",
+            "content": "Planning...",
+            "createTime": None,
+            "updateTime": None,
+        },
+        {
+            "id": "s1m",
+            "role": "assistant",
+            "content": "Answer.",
+            "createTime": None,
+            "updateTime": None,
+        },
+        {
+            "id": "t1",
+            "role": "tool",
+            "content": "tool output",
+            "createTime": None,
+            "updateTime": None,
+        },
     ]
 
 
