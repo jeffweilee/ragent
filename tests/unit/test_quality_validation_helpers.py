@@ -143,6 +143,11 @@ def test_is_admin_validation_command_no_user_messages_returns_false() -> None:
     assert is_admin_validation_command(msgs) is False
 
 
+def test_is_admin_validation_command_structured_content_returns_false() -> None:
+    msg = Message(role="user", content=[{"type": "text", "text": "/admin-quality-validation"}])
+    assert is_admin_validation_command([msg]) is False
+
+
 # ---------------------------------------------------------------------------
 # load_questions
 # ---------------------------------------------------------------------------
@@ -167,5 +172,12 @@ def test_load_questions_empty_questions_key_returns_empty() -> None:
     fixture = {"questions": []}
     with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
         yaml.dump(fixture, f)
+        path = f.name
+    assert load_questions(path) == []
+
+
+def test_load_questions_empty_yaml_file_returns_empty() -> None:
+    with tempfile.NamedTemporaryFile(suffix=".yaml", mode="w", delete=False) as f:
+        f.write("")  # empty file — yaml.safe_load returns None
         path = f.name
     assert load_questions(path) == []

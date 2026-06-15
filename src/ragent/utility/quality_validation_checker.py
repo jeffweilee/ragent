@@ -101,12 +101,12 @@ def check_session_messages(messages: list[dict], *, keywords_any: list[str]) -> 
         return violations
 
     for i, msg in enumerate(messages):
-        content = msg.get("content", "")
+        content = msg.get("content") or ""
         if strip_machine_context(content) != content:
             violations.append(f"machine-context tag leaked in session message {i + 1}")
 
     if keywords_any:
-        session_text = " ".join(m.get("content", "") for m in assistant_msgs)
+        session_text = " ".join(m.get("content") or "" for m in assistant_msgs)
         for reason in check_keywords_any(session_text, keywords_any):
             violations.append(f"[session] {reason}")
 

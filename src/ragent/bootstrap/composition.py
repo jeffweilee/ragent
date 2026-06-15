@@ -358,7 +358,7 @@ def build_container() -> Container:
     if _qv_fixture_path:
         from ragent.routers._quality_validation import load_questions as _load_qv
 
-        _qv_questions = _load_qv(_qv_fixture_path) or None
+        _qv_questions = _load_qv(_qv_fixture_path)
     _qv_admin_ids = _list_env("QUALITY_VALIDATION_ADMIN_USER_IDS")
     _qv_base_url = _str_env("QUALITY_VALIDATION_BASE_URL", "http://localhost:8000")
     _qv_jwt_claim = _str_env("QUALITY_VALIDATION_JWT_CLAIM", "sub")

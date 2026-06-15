@@ -575,7 +575,7 @@ data: {"type":"RUN_ERROR","message":"upstream closed stream without [Done] senti
 
 ### `/chatagent/v3` — `/admin-quality-validation` slash command (T-CVQ)
 
-When the last user message in the request body equals `/admin-quality-validation` exactly and `QUALITY_VALIDATION_FIXTURE_PATH` is set, the handler is intercepted **before** rate limiting. The caller's `Authorization` JWT is decoded (no signature check) and the `sub` claim (or the claim named by `QUALITY_VALIDATION_JWT_CLAIM`) must be in `QUALITY_VALIDATION_ADMIN_USER_IDS`.
+When the last user message in the request body equals `/admin-quality-validation` exactly and `QUALITY_VALIDATION_FIXTURE_PATH` is set, the handler is intercepted **before** rate limiting. The caller's JWT is read from the configured `RAGENT_JWT_HEADER` (default `X-Auth-Token`), decoded without signature verification, and the `sub` claim (or the claim named by `QUALITY_VALIDATION_JWT_CLAIM`) must be in `QUALITY_VALIDATION_ADMIN_USER_IDS`.
 
 On auth failure: the stream yields `RUN_STARTED` then `RUN_ERROR` with `code=QUALITY_VALIDATION_FORBIDDEN` and closes.
 On empty suite: `RUN_ERROR` with `code=QUALITY_VALIDATION_NOT_CONFIGURED`.

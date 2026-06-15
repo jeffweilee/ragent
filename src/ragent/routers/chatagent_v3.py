@@ -87,7 +87,7 @@ def create_chatagent_v3_router(
 
             # T-CVQ — admin quality validation slash command intercept
             if quality_validation_questions is not None and _qv_is_command(body.messages):
-                auth_header = request.headers.get("authorization", "")
+                auth_header = request.headers.get(jwt_header.lower(), "")
                 return StreamingResponse(
                     _qv_stream(
                         questions=quality_validation_questions,
@@ -99,6 +99,7 @@ def create_chatagent_v3_router(
                         thread_id=body.thread_id,
                         admin_user_ids=quality_validation_admin_user_ids or [],
                         jwt_claim=quality_validation_jwt_claim,
+                        jwt_header=jwt_header,
                         has_session_endpoint=chatagent_session_api_url is not None,
                     ),
                     media_type="text/event-stream",

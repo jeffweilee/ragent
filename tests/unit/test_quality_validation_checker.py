@@ -257,3 +257,23 @@ def test_check_session_messages_keyword_missing() -> None:
     msgs = _valid_session()
     reasons = check_session_messages(msgs, keywords_any=["安裝", "install"])
     assert any("安裝" in r or "install" in r for r in reasons)
+
+
+def test_check_session_messages_none_content_does_not_raise() -> None:
+    msgs = [
+        {"id": "1", "role": "user", "content": "hi"},
+        {"id": "2", "role": "assistant", "content": None},
+    ]
+    # Should not raise; None content is treated as empty string
+    reasons = check_session_messages(msgs, keywords_any=[])
+    assert reasons == []
+
+
+def test_check_session_messages_none_content_keyword_check_does_not_raise() -> None:
+    msgs = [
+        {"id": "1", "role": "user", "content": "hi"},
+        {"id": "2", "role": "assistant", "content": None},
+    ]
+    # keywords_any path also must not raise when content is None
+    reasons = check_session_messages(msgs, keywords_any=["hello"])
+    assert any("hello" in r for r in reasons)

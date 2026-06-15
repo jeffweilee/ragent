@@ -55,7 +55,7 @@ _RELAY_SKIP = frozenset({"RUN_STARTED", "RUN_FINISHED", "RUN_ERROR"})
 def is_admin_validation_command(messages: list[Message]) -> bool:
     """True when the last user message is the admin validation slash command."""
     last = next((m for m in reversed(messages) if m.role == "user"), None)
-    return last is not None and (last.content or "").strip() == ADMIN_COMMAND
+    return last is not None and isinstance(last.content, str) and last.content.strip() == ADMIN_COMMAND
 
 
 def load_questions(fixture_path: str) -> list[dict]:
@@ -64,7 +64,7 @@ def load_questions(fixture_path: str) -> list[dict]:
 
     try:
         with open(fixture_path, encoding="utf-8") as fh:
-            data = yaml.safe_load(fh)
+            data = yaml.safe_load(fh) or {}
         return data.get("questions", [])
     except Exception as exc:
         logger.error("quality_validation.fixture_load_error", path=fixture_path, error=str(exc))
@@ -101,10 +101,10 @@ def is_admin_user(auth_header: str, admin_user_ids: list[str], jwt_claim: str) -
 # ---------------------------------------------------------------------------
 
 
-def _build_auth_headers(user_id: str, auth_header: str) -> dict[str, str]:
+def _build_auth_headers(user_id: str, auth_header: str, jwt_header: str) -> dict[str, str]:
     headers: dict[str, str] = {"X-User-Id": user_id}
     if auth_header:
-        headers["Authorization"] = auth_header
+        headers[jwt_header] = auth_header
     return headers
 
 
@@ -114,6 +114,7 @@ def _call_chatagent_v3(
     question: str,
     user_id: str,
     auth_header: str,
+    jwt_header: str,
 ) -> tuple[list[dict], str]:
     """POST to /chatagent/v3, collect all SSE events. Returns (events, thread_id)."""
     run_id = new_id()
@@ -130,7 +131,7 @@ def _call_chatagent_v3(
             "context": [],
             "forwardedProps": None,
         },
-        headers=_build_auth_headers(user_id, auth_header),
+        headers=_build_auth_headers(user_id, auth_header, jwt_header),
     )
     resp = http_client.send(req, stream=True)
     resp.raise_for_status()
@@ -157,12 +158,13 @@ def _call_session(
     thread_id: str,
     user_id: str,
     auth_header: str,
+    jwt_header: str,
 ) -> list[dict]:
     """GET /chatagent/v3/session and return the messages list."""
     resp = http_client.get(
         f"{base_url}/chatagent/v3/session",
         params={"session": thread_id},
-        headers=_build_auth_headers(user_id, auth_header),
+        headers=_build_auth_headers(user_id, auth_header, jwt_header),
         timeout=15.0,
     )
     if resp.status_code != 200:
@@ -253,6 +255,7 @@ def admin_quality_validation_stream(
     thread_id: str,
     admin_user_ids: list[str],
     jwt_claim: str,
+    jwt_header: str,
     has_session_endpoint: bool,
 ) -> Generator[str, None, None]:
     """
@@ -296,7 +299,7 @@ def admin_quality_validation_stream(
 
         try:
             events, q_thread_id = _call_chatagent_v3(
-                http_client, base_url, question_text, user_id, auth_header
+                http_client, base_url, question_text, user_id, auth_header, jwt_header
             )
         except Exception as exc:
             logger.error("quality_validation.chatagent_error", question_id=q["id"], error=str(exc))
@@ -332,7 +335,7 @@ def admin_quality_validation_stream(
             continue
 
         try:
-            messages = _call_session(http_client, base_url, q_thread_id, user_id, auth_header)
+            messages = _call_session(http_client, base_url, q_thread_id, user_id, auth_header, jwt_header)
         except Exception as exc:
             session_results.append((False, [f"HTTP error calling /chatagent/v3/session: {exc}"]))
             continue
