@@ -29,7 +29,15 @@ def test_user_message_keeps_user_role_and_strips_hidden() -> None:
 
     out = map_session_payload(payload)
 
-    assert out["messages"] == [{"id": "m1", "role": "user", "content": "What is X?"}]
+    assert out["messages"] == [
+        {
+            "id": "m1",
+            "role": "user",
+            "content": "What is X?",
+            "createTime": None,
+            "updateTime": None,
+        }
+    ]
 
 
 def test_legacy_bare_context_block_is_stripped() -> None:
@@ -46,7 +54,15 @@ def test_legacy_bare_context_block_is_stripped() -> None:
 
     out = map_session_payload(payload)
 
-    assert out["messages"] == [{"id": "m1", "role": "user", "content": "What is X?"}]
+    assert out["messages"] == [
+        {
+            "id": "m1",
+            "role": "user",
+            "content": "What is X?",
+            "createTime": None,
+            "updateTime": None,
+        }
+    ]
 
 
 def test_double_encoded_content_is_unwrapped_then_stripped() -> None:
@@ -172,3 +188,35 @@ def test_explicit_null_role_falls_back_to_assistant() -> None:
     payload = _session([{"messageId": "m1", "role": None, "content": "x"}])
 
     assert map_session_payload(payload)["messages"][0]["role"] == "assistant"
+
+
+def test_message_carries_upstream_create_and_update_time() -> None:
+    # The upstream persists each turn with createTime/updateTime; the reshaped
+    # message must surface them so the client can render per-message timestamps.
+    payload = _session(
+        [
+            {
+                "messageId": "m1",
+                "role": "user",
+                "content": "What is X?",
+                "createTime": "2025-05-01T06:48:55.617Z",
+                "updateTime": "2025-05-01T06:49:00.000Z",
+            }
+        ]
+    )
+
+    out = map_session_payload(payload)
+
+    assert out["messages"][0]["createTime"] == "2025-05-01T06:48:55.617Z"
+    assert out["messages"][0]["updateTime"] == "2025-05-01T06:49:00.000Z"
+
+
+def test_message_without_timestamps_yields_null_fields() -> None:
+    # A malformed upstream message missing the timestamps must not raise; the
+    # fields pass through as null rather than vanishing from the shape.
+    payload = _session([{"messageId": "m1", "role": "user", "content": "x"}])
+
+    out = map_session_payload(payload)
+
+    assert out["messages"][0]["createTime"] is None
+    assert out["messages"][0]["updateTime"] is None

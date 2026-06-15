@@ -82,4 +82,8 @@ def _map_message(raw: dict[str, Any]) -> dict[str, Any]:
         "id": raw.get("messageId") or "",
         "role": node_to_role(raw.get("role") or "assistant", langgraph_node),
         "content": _clean_text(content) if isinstance(content, str) else content,
+        # Pass the upstream persistence timestamps through so the client can
+        # render per-message create/update times (null when upstream omits them).
+        "createTime": raw.get("createTime"),
+        "updateTime": raw.get("updateTime"),
     }

@@ -321,7 +321,10 @@ message shape changes, while the upstream wire contract is untouched.
   user turn, which carries the block); other metadata is passed through.
 - `GET /chatagent/v3/session?session=<id>` — the upstream session envelope
   (`session`, …) is preserved, `sessionName` is stripped (same reason as
-  sessionList), and every `messages[]` entry is reshaped to `{id, role, content}`:
+  sessionList), and every `messages[]` entry is reshaped to
+  `{id, role, content, createTime, updateTime}`:
+  - `createTime` / `updateTime` are the upstream persistence timestamps passed
+    through verbatim (null when the upstream omits them).
   - `role` is derived from the upstream role + `messageMeta.langgraph_node` by the
     **same `node_to_role` rule as the v3 stream** (§3.4.7): `user`→`user`,
     `tool`→`tool`, assistant+`planner`→`reasoning`, every other assistant
