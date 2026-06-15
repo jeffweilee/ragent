@@ -57,6 +57,8 @@
 | `AUTH_TOKEN_EXPIRED`                 | 401             | JWT `exp` claim is in the past (T8.1a) | Auth middleware T8.2a |
 | `AUTH_CLAIM_MISSING`                 | 401             | `<RAGENT_JWT_CLAIM_USER_ID>` claim absent or empty (T8.1a) | Auth middleware T8.2a |
 | `AUTH_TOKEN_INVALID`                 | 401             | JWT absent, malformed, bad signature, wrong `iss`/`aud`, or any other JWKS failure (T8.1a) | Auth middleware T8.2a |
+| `QUALITY_VALIDATION_FORBIDDEN`       | SSE `RUN_ERROR` | `/admin-quality-validation` caller not in configured admin user ID list (T-CVQ.1) | Router `_quality_validation.py` |
+| `QUALITY_VALIDATION_NOT_CONFIGURED`  | SSE `RUN_ERROR` | `/admin-quality-validation` invoked but question suite is empty (T-CVQ.1) | Router `_quality_validation.py` |
 
 ---
 

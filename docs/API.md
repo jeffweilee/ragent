@@ -573,6 +573,18 @@ data: {"type":"RUN_ERROR","message":"upstream closed stream without [Done] senti
 
 > v3 reuses the twp-ai `Agent`/caller abstraction: an `ADKAgent` (in `packages/twp-ai`) owns the event flow, and a ragent-side `ADKCaller` (`src/ragent/clients/adk_caller.py`) does the upstream proxy. This is a separate service from `/twp/v1/run` (which is a native agent host); the two are unrelated.
 
+### `/chatagent/v3` — `/admin-quality-validation` slash command (T-CVQ)
+
+When the last user message in the request body equals `/admin-quality-validation` exactly and `QUALITY_VALIDATION_FIXTURE_PATH` is set, the handler is intercepted **before** rate limiting. The caller's `Authorization` JWT is decoded (no signature check) and the `sub` claim (or the claim named by `QUALITY_VALIDATION_JWT_CLAIM`) must be in `QUALITY_VALIDATION_ADMIN_USER_IDS`.
+
+On auth failure: the stream yields `RUN_STARTED` then `RUN_ERROR` with `code=QUALITY_VALIDATION_FORBIDDEN` and closes.
+On empty suite: `RUN_ERROR` with `code=QUALITY_VALIDATION_NOT_CONFIGURED`.
+On success: `RUN_STARTED` → per-question `TEXT_MESSAGE` (question injection) + relayed agent SSE → summary `TEXT_MESSAGE` (驗收摘要) → `RUN_FINISHED`.
+
+**Env vars:** `QUALITY_VALIDATION_FIXTURE_PATH` (path to YAML), `QUALITY_VALIDATION_ADMIN_USER_IDS` (comma-separated user IDs), `QUALITY_VALIDATION_BASE_URL` (default `http://localhost:8000`), `QUALITY_VALIDATION_JWT_CLAIM` (default `sub`).
+
+---
+
 ### `/chatagent/v3/session*` — Session management (twp-ai-shaped history)
 
 Same upstream and registration env vars as the `/chatagent/v1/session*` routes (`CHATAGENT_SESSIONLIST_API_URL` / `CHATAGENT_SESSION_API_URL`), but the persisted history is returned in the **twp-ai message shape**. These are JSON proxy routes (not SSE), so timeout / upstream failures map to HTTP `504` / `502` as in v1 — the v3 `RUN_ERROR` framing applies only to `POST /chatagent/v3`. Full contract: `docs/00_spec.md §3.4.8`.

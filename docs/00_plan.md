@@ -74,3 +74,26 @@
 | T-CAv3S.B2 | Red+Green | • **Achieve:** Session-id ownership (Model B) — `RunAgentInput.thread_id` optional; v3 mints `new_id()` when absent (single owner = ragent; upstream never mints), echoes it in `RUN_STARTED`; native `/twp/v1/run` defaults a uuid so RUN_STARTED is never null. Document `messages[].id` as client-optimistic / ignored.<br>• **Deliver:** `packages/twp-ai/src/twp_ai/schemas.py` (optional `thread_id` + `Message.id` comment); `app.py` native default; `routers/chatagent_v3.py` mint; `tests/unit/test_chatagent_v3_router.py` + `packages/twp-ai/tests/test_twp_protocol.py`; `docs/00_spec.md` §3.4.7. | [x] | Dev |
 | T-CAv3S.BC2 | Red+Green | • **Achieve:** Strip the machine-context wrapper from `sessionName` too — the upstream derives the title from the first user turn (which carries the block), so it leaked into the session list and session GET title.<br>• **Deliver:** `services/chatagent_session.py` (`_strip_session_name`, `map_session_list_payload`, `sessionName` stripped in `map_session_payload`); `routers/chatagent_v3.py` sessionList `transform`; `tests/unit/test_chatagent_session_mapper.py` + `tests/integration/test_chatagent_v3_endpoint.py`; `docs/00_spec.md` §3.4.8. | [x] | Dev |
 | T-CAv3S.BC3 | Red+Green | • **Achieve:** Decode JSON-double-encoded `content`/`sessionName` before the wrapper strip — the upstream stores some values as a quoted string with literal `\n` escapes, so a leading `"` and `\n\n` survived the strip (`"\n\n<message>"`).<br>• **Deliver:** `services/chatagent_session.py` (`_unwrap_json_string` + `_clean_text`, applied to content + sessionName); `tests/unit/test_chatagent_session_mapper.py` double-encoded cases. | [x] | Dev |
+
+---
+
+## Track T-CVQ — Admin Conversation Quality Validation
+
+> Admin slash command `/admin-quality-validation` inside the chatagent/v3 interface.
+> Validates the live upstream agent with a static question suite and returns
+> P1 (SSE stream protocol + keyword) and P2 (session messages) results inline
+> in the same conversation, without any separate tooling.
+>
+> **Locked decisions:**
+> - Questions are static in `config/quality_validation.yaml` (no DB storage).
+> - Intercept is inside `chatagent_v3.py` — no new router needed.
+> - Self-HTTP to `QUALITY_VALIDATION_BASE_URL` (default `localhost:8000`) for
+>   P1 and P2 calls — tests the real client-facing API, not internal services.
+> - JWT admin claim check is soft (no signature verification); full JWKS check
+>   deferred to P2 auth phase.
+
+**Counter: 完成 1 / 未完成 0 / descope 0**
+
+| # | Category | Task | Status | Owner |
+|---|---|---|:---:|---|
+| T-CVQ.1 | Behavioral | • **Achieve:** Intercept `/admin-quality-validation` in chatagent/v3, validate JWT admin claim, run 3-question suite via self-HTTP, relay SSE, validate protocol + keywords, validate session messages, emit summary.<br>• **Deliver:** `config/quality_validation.yaml` (Q1 打招呼 / Q2 SDK快速開始 / Q3 資訊不足); `src/ragent/utility/quality_validation_checker.py` (pure checkers); `src/ragent/routers/_quality_validation.py` (stream generator); `chatagent_v3.py` intercept; `composition.py` + `app.py` wiring; `tests/unit/test_quality_validation_checker.py` (28 tests).<br>• **Success criteria:** `make test-gate` green; `QUALITY_VALIDATION_FIXTURE_PATH=config/quality_validation.yaml QUALITY_VALIDATION_ADMIN_USER_IDS=<id> uv run python -m ragent.api` — type `/admin-quality-validation` in chat → see Q1/Q2/Q3 responses + 驗收摘要. | [x] | Dev |

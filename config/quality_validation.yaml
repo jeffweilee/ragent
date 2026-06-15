@@ -1,0 +1,36 @@
+# Admin quality validation fixture (T-CVQ).
+# Triggered by typing /admin-quality-validation in the chatagent/v3 interface.
+# Admin user IDs are configured via QUALITY_VALIDATION_ADMIN_USER_IDS env var.
+
+questions:
+  - id: q1
+    label: "打招呼"
+    question: "你好"
+    expect_no_tool_calls: true
+    max_seconds: 15
+
+  - id: q2
+    label: "SDK 快速開始"
+    question: "如何開始使用這個 SDK？"
+    expect_keywords_any:
+      - "安裝"
+      - "install"
+      - "import"
+      - "初始化"
+    max_seconds: 30
+
+  - id: q3
+    label: "資訊不足"
+    question: "這個 SDK 的下季度 roadmap 是什麼？"
+    expect_keywords_any:
+      - "找不到"
+      - "無法"
+      - "沒有相關"
+      - "不確定"
+      - "抱歉"
+      - "無相關"
+    expect_no_keywords:
+      - "規劃中"
+      - "即將推出"
+      - "下季度計畫"
+    max_seconds: 20

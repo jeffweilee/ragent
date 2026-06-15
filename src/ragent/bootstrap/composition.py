@@ -62,6 +62,11 @@ class Container:
     chatagent_session_api_url: str | None = None
     chatagent_ap_name: str = "ragent"
     chatagent_auth: str | None = None
+    # T-CVQ — admin quality validation
+    quality_validation_questions: list[dict] | None = None  # None = feature disabled
+    quality_validation_admin_user_ids: list[str] | None = None
+    quality_validation_base_url: str = "http://localhost:8000"
+    quality_validation_jwt_claim: str = "sub"
 
 
 def build_container() -> Container:
@@ -345,6 +350,18 @@ def build_container() -> Container:
     chatagent_ap_name = os.environ.get("CHATAGENT_AP_NAME", "ragent")
     chatagent_auth = os.environ.get("CHATAGENT_AUTH") or None
 
+    # T-CVQ — quality validation (only wired when QUALITY_VALIDATION_FIXTURE_PATH is set)
+    _qv_fixture_path = os.environ.get("QUALITY_VALIDATION_FIXTURE_PATH", "")
+    _qv_questions: list[dict] | None = None
+    if _qv_fixture_path:
+        from ragent.routers._quality_validation import load_questions as _load_qv
+
+        _qv_questions = _load_qv(_qv_fixture_path) or None
+    _qv_admin_ids_raw = os.environ.get("QUALITY_VALIDATION_ADMIN_USER_IDS", "")
+    _qv_admin_ids = [uid.strip() for uid in _qv_admin_ids_raw.split(",") if uid.strip()]
+    _qv_base_url = os.environ.get("QUALITY_VALIDATION_BASE_URL", "http://localhost:8000")
+    _qv_jwt_claim = os.environ.get("QUALITY_VALIDATION_JWT_CLAIM", "sub")
+
     return Container(
         token_managers=(llm_tm, embedding_tm, rerank_tm),
         embedding_client=embedding_client,
@@ -381,6 +398,10 @@ def build_container() -> Container:
         chatagent_session_api_url=chatagent_session_api_url,
         chatagent_ap_name=chatagent_ap_name,
         chatagent_auth=chatagent_auth,
+        quality_validation_questions=_qv_questions,
+        quality_validation_admin_user_ids=_qv_admin_ids or None,
+        quality_validation_base_url=_qv_base_url,
+        quality_validation_jwt_claim=_qv_jwt_claim,
     )
 
 

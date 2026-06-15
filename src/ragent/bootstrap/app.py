@@ -473,6 +473,10 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
                 rate_limit_window=container.rate_limit_window,
                 jwt_header=str_env("RAGENT_JWT_HEADER", _DEFAULT_JWT_HEADER),
                 timeout=_float_env("CHATAGENT_TIMEOUT_SECONDS", 30.0),
+                quality_validation_questions=container.quality_validation_questions,
+                quality_validation_admin_user_ids=container.quality_validation_admin_user_ids,
+                quality_validation_base_url=container.quality_validation_base_url,
+                quality_validation_jwt_claim=container.quality_validation_jwt_claim,
             )
         )
     if container.feedback_hmac_secret is not None:

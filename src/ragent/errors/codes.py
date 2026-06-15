@@ -72,6 +72,10 @@ class HttpErrorCode(StrEnum):
     CHATAGENT_UPSTREAM_ERROR = "CHATAGENT_UPSTREAM_ERROR"
     CHATAGENT_TIMEOUT = "CHATAGENT_TIMEOUT"
 
+    # Admin quality validation (SSE RUN_ERROR codes, T-CVQ).
+    QUALITY_VALIDATION_FORBIDDEN = "QUALITY_VALIDATION_FORBIDDEN"  # caller not in admin list
+    QUALITY_VALIDATION_NOT_CONFIGURED = "QUALITY_VALIDATION_NOT_CONFIGURED"  # empty question suite
+
     # LLM stream interrupt (502) — stream closed before [DONE] sentinel.
     LLM_STREAM_INTERRUPTED = "LLM_STREAM_INTERRUPTED"
 

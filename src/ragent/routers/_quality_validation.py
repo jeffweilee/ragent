@@ -1,0 +1,357 @@
+"""T-CVQ — Admin quality validation stream helper.
+
+Intercepts the /admin-quality-validation slash command inside the
+chatagent/v3 POST handler.  Runs the configured question suite against
+the live /chatagent/v3 and /chatagent/v3/session endpoints (self-HTTP),
+relays the upstream SSE as-is (minus lifecycle wrappers), and appends a
+validation summary TEXT_MESSAGE at the end.
+
+All I/O uses the shared httpx.Client from the composition root — no extra
+HTTP client is needed.
+"""
+
+from __future__ import annotations
+
+import base64
+import json
+import time
+from collections.abc import Generator
+
+import httpx
+import structlog
+from twp_ai.events import (
+    RunErrorEvent,
+    RunFinishedEvent,
+    RunStartedEvent,
+    TextMessageContentEvent,
+    TextMessageEndEvent,
+    TextMessageStartEvent,
+    to_sse,
+)
+from twp_ai.schemas import Message
+
+from ragent.errors.codes import HttpErrorCode
+from ragent.utility.id_gen import new_id
+from ragent.utility.quality_validation_checker import (
+    check_keywords_any,
+    check_no_keywords,
+    check_protocol,
+    check_session_messages,
+    collect_text,
+    parse_sse_line,
+)
+
+logger = structlog.get_logger(__name__)
+
+ADMIN_COMMAND = "/admin-quality-validation"
+_RELAY_SKIP = frozenset({"RUN_STARTED", "RUN_FINISHED", "RUN_ERROR"})
+
+
+# ---------------------------------------------------------------------------
+# Public helpers consumed by chatagent_v3.py
+# ---------------------------------------------------------------------------
+
+
+def is_admin_validation_command(messages: list[Message]) -> bool:
+    """True when the last user message is the admin validation slash command."""
+    user_msgs = [m for m in messages if m.role == "user"]
+    if not user_msgs:
+        return False
+    return (user_msgs[-1].content or "").strip() == ADMIN_COMMAND
+
+
+def load_questions(fixture_path: str) -> list[dict]:
+    """Load question suite from a YAML file.  Returns empty list on error."""
+    import yaml  # lazy import — only used at startup
+
+    try:
+        with open(fixture_path, encoding="utf-8") as fh:
+            data = yaml.safe_load(fh)
+        return data.get("questions", [])
+    except Exception as exc:
+        logger.error("quality_validation.fixture_load_error", path=fixture_path, error=str(exc))
+        return []
+
+
+# ---------------------------------------------------------------------------
+# JWT admin claim check (soft — no signature verification)
+# ---------------------------------------------------------------------------
+
+
+def _decode_jwt_claim(auth_header: str, claim: str) -> str | None:
+    """Extract a claim from a JWT without verifying the signature."""
+    try:
+        token = auth_header.removeprefix("Bearer ").strip()
+        _, payload_b64, _ = token.split(".", 2)
+        padding = (4 - len(payload_b64) % 4) % 4
+        payload = json.loads(base64.urlsafe_b64decode(payload_b64 + "=" * padding))
+        return payload.get(claim) or payload.get("user_id") or payload.get("sub")
+    except Exception:
+        return None
+
+
+def is_admin_user(auth_header: str, admin_user_ids: list[str], jwt_claim: str) -> bool:
+    """True if the JWT claim user_id is in the configured admin list."""
+    if not admin_user_ids or not auth_header:
+        return False
+    user_id = _decode_jwt_claim(auth_header, jwt_claim)
+    return user_id in admin_user_ids
+
+
+# ---------------------------------------------------------------------------
+# Self-HTTP calls
+# ---------------------------------------------------------------------------
+
+
+def _build_auth_headers(user_id: str, auth_header: str) -> dict[str, str]:
+    headers: dict[str, str] = {"X-User-Id": user_id}
+    if auth_header:
+        headers["Authorization"] = auth_header
+    return headers
+
+
+def _call_chatagent_v3(
+    http_client: httpx.Client,
+    base_url: str,
+    question: str,
+    user_id: str,
+    auth_header: str,
+) -> tuple[list[dict], str]:
+    """POST to /chatagent/v3, collect all SSE events. Returns (events, thread_id)."""
+    run_id = new_id()
+    thread_id = new_id()
+    req = http_client.build_request(
+        "POST",
+        f"{base_url.rstrip('/')}/chatagent/v3",
+        json={
+            "runId": run_id,
+            "threadId": thread_id,
+            "messages": [{"id": new_id(), "role": "user", "content": question}],
+            "tools": [],
+            "state": None,
+            "context": [],
+            "forwardedProps": None,
+        },
+        headers=_build_auth_headers(user_id, auth_header),
+    )
+    resp = http_client.send(req, stream=True)
+
+    events: list[dict] = []
+    minted_thread_id = thread_id
+    try:
+        for line in resp.iter_lines():
+            event = parse_sse_line(line)
+            if event is None:
+                continue
+            events.append(event)
+            if event.get("type") == "RUN_STARTED":
+                minted_thread_id = event.get("threadId") or thread_id
+    finally:
+        resp.close()
+
+    return events, minted_thread_id
+
+
+def _call_session(
+    http_client: httpx.Client,
+    base_url: str,
+    thread_id: str,
+    user_id: str,
+    auth_header: str,
+) -> list[dict]:
+    """GET /chatagent/v3/session and return the messages list."""
+    resp = http_client.get(
+        f"{base_url.rstrip('/')}/chatagent/v3/session",
+        params={"session": thread_id},
+        headers=_build_auth_headers(user_id, auth_header),
+        timeout=15.0,
+    )
+    if resp.status_code != 200:
+        return []
+
+    data = resp.json()
+    return data if isinstance(data, list) else data.get("messages", [])
+
+
+# ---------------------------------------------------------------------------
+# Text-block injection & event relay
+# ---------------------------------------------------------------------------
+
+
+def _yield_text(message_id: str, content: str) -> Generator[str, None, None]:
+    yield to_sse(TextMessageStartEvent(message_id=message_id))
+    yield to_sse(TextMessageContentEvent(message_id=message_id, delta=content))
+    yield to_sse(TextMessageEndEvent(message_id=message_id))
+
+
+def _relay_events(events: list[dict]) -> Generator[str, None, None]:
+    """Yield SSE strings for all non-lifecycle events (original JSON, not re-serialised)."""
+    for event in events:
+        if event.get("type") in _RELAY_SKIP:
+            continue
+        yield f"data: {json.dumps(event)}\n\n"
+
+
+# ---------------------------------------------------------------------------
+# Summary builder
+# ---------------------------------------------------------------------------
+
+
+def _build_summary(
+    questions: list[dict],
+    stream_results: list[tuple[bool, list[str]]],
+    session_results: list[tuple[bool, list[str]]],
+    elapsed_ms: int,
+) -> str:
+    total = len(questions)
+    overall_passed = sum(
+        1
+        for (s_ok, _), (p_ok, _) in zip(stream_results, session_results, strict=False)
+        if s_ok and p_ok
+    )
+
+    lines = [
+        "\n━━━ 驗收摘要 ━━━",
+        f"總題數：{total}　通過：{overall_passed}　失敗：{total - overall_passed}",
+        f"耗時：{elapsed_ms} ms\n",
+    ]
+
+    for q, (s_ok, s_reasons), (p_ok, p_reasons) in zip(
+        questions, stream_results, session_results, strict=False
+    ):
+        icon = "✅" if (s_ok and p_ok) else "❌"
+        lines.append(f"{icon} {q['id'].upper()} — {q['label']}")
+        if s_ok and p_ok:
+            lines.append("   通過")
+        for r in s_reasons:
+            lines.append(f"   [Stream] {r}")
+        for r in p_reasons:
+            lines.append(f"   [Session] {r}")
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Main generator
+# ---------------------------------------------------------------------------
+
+
+def admin_quality_validation_stream(
+    *,
+    questions: list[dict],
+    user_id: str,
+    auth_header: str,
+    http_client: httpx.Client,
+    base_url: str,
+    run_id: str,
+    thread_id: str,
+    admin_user_ids: list[str],
+    jwt_claim: str,
+    has_session_endpoint: bool,
+) -> Generator[str, None, None]:
+    """
+    Main generator for the /admin-quality-validation slash command.
+
+    Lifecycle:
+      RUN_STARTED → [per-question: inject user msg, relay agent SSE] →
+      [summary TEXT_MESSAGE] → RUN_FINISHED
+    """
+    if not is_admin_user(auth_header, admin_user_ids, jwt_claim):
+        yield to_sse(RunStartedEvent(run_id=run_id, thread_id=thread_id))
+        yield to_sse(
+            RunErrorEvent(
+                run_id=run_id,
+                thread_id=thread_id,
+                message="Forbidden: caller is not a configured admin user",
+                code=HttpErrorCode.QUALITY_VALIDATION_FORBIDDEN,
+            )
+        )
+        return
+
+    if not questions:
+        yield to_sse(RunStartedEvent(run_id=run_id, thread_id=thread_id))
+        yield to_sse(
+            RunErrorEvent(
+                run_id=run_id,
+                thread_id=thread_id,
+                message="No questions configured in quality_validation.yaml",
+                code=HttpErrorCode.QUALITY_VALIDATION_NOT_CONFIGURED,
+            )
+        )
+        return
+
+    yield to_sse(RunStartedEvent(run_id=run_id, thread_id=thread_id))
+
+    logger.info("quality_validation.run.started", user_id=user_id, total_questions=len(questions))
+    start_time = time.monotonic()
+
+    stream_results: list[tuple[bool, list[str]]] = []
+    thread_ids: list[str] = []
+
+    for q in questions:
+        question_text = q["question"]
+
+        yield from _yield_text(new_id(), f"User: {question_text}")
+
+        try:
+            events, q_thread_id = _call_chatagent_v3(
+                http_client, base_url, question_text, user_id, auth_header
+            )
+        except Exception as exc:
+            logger.error("quality_validation.chatagent_error", question_id=q["id"], error=str(exc))
+            stream_results.append((False, [f"HTTP error calling /chatagent/v3: {exc}"]))
+            thread_ids.append("")
+            continue
+
+        thread_ids.append(q_thread_id)
+        yield from _relay_events(events)
+
+        violations = check_protocol(
+            events, expect_no_tool_calls=q.get("expect_no_tool_calls", False)
+        )
+        text = collect_text(events)
+        violations += check_keywords_any(text, q.get("expect_keywords_any", []))
+        violations += check_no_keywords(text, q.get("expect_no_keywords", []))
+        stream_results.append((not violations, violations))
+
+        logger.info(
+            "quality_validation.run.question_result",
+            question_id=q["id"],
+            stream_passed=not violations,
+        )
+
+    session_results: list[tuple[bool, list[str]]] = []
+
+    for i, q in enumerate(questions):
+        q_thread_id = thread_ids[i] if i < len(thread_ids) else ""
+
+        if not has_session_endpoint or not q_thread_id:
+            reason = (
+                "session endpoint not configured" if not has_session_endpoint else "no thread_id"
+            )
+            session_results.append((False, [reason]))
+            continue
+
+        try:
+            messages = _call_session(http_client, base_url, q_thread_id, user_id, auth_header)
+        except Exception as exc:
+            session_results.append((False, [f"HTTP error calling /chatagent/v3/session: {exc}"]))
+            continue
+
+        if not messages:
+            session_results.append((False, ["session returned no messages (HTTP error or empty)"]))
+            continue
+
+        violations = check_session_messages(messages, keywords_any=q.get("expect_keywords_any", []))
+        session_results.append((not violations, violations))
+
+    elapsed_ms = int((time.monotonic() - start_time) * 1000)
+    summary = _build_summary(questions, stream_results, session_results, elapsed_ms)
+    yield from _yield_text(new_id(), summary)
+
+    logger.info(
+        "quality_validation.run.finished",
+        user_id=user_id,
+        elapsed_ms=elapsed_ms,
+    )
+    yield to_sse(RunFinishedEvent(run_id=run_id, thread_id=thread_id))
