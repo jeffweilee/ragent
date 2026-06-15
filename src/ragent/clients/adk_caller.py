@@ -21,7 +21,7 @@ from collections.abc import Generator
 import httpx
 import structlog
 from twp_ai.callers.adk import UpstreamMessage
-from twp_ai.schemas import ContextItem, Message, RunAgentInput
+from twp_ai.schemas import ContextItem, Message, RunAgentInput, Tool
 
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.upstream import UpstreamServiceError, classify_upstream_error
@@ -183,14 +183,53 @@ def _compose_message(request: RunAgentInput) -> str:
     so it never leaks into the visible agent history, while the upstream agent —
     whose system prompt is told the block carries machine-supplied context — can
     still read it.
+
+    When the latest turn is a frontend tool result (a continuation run), the
+    message instead carries that result so the upstream resumes the suspended
+    AGENTIC_UI_TOOL call rather than re-answering the old user question.
     """
+    tool_results = _trailing_tool_results(request.messages)
+    if tool_results:
+        return _format_tool_results(tool_results)
     user_message = _last_user_message(request.messages)
-    preamble = _context_preamble(request.context, request.state)
+    preamble = _context_preamble(request.context, request.state, request.tools)
     if not preamble:
         return user_message
     if not user_message:
         return preamble
     return f"{preamble}\n\n{user_message}"
+
+
+def _trailing_tool_results(messages: list[Message]) -> list[Message]:
+    """The run-ending block of `role="tool"` messages (frontend tool results).
+
+    A continuation run appends the executed tool result(s) after the assistant's
+    tool-call turn; only that trailing block is forwarded (earlier turns already
+    live in the upstream's session memory).
+    """
+    trailing: list[Message] = []
+    for message in reversed(messages):
+        if message.role != "tool":
+            break
+        trailing.append(message)
+    trailing.reverse()
+    return trailing
+
+
+def _format_tool_results(results: list[Message]) -> str:
+    """Render frontend tool results as the upstream resume payload.
+
+    NOTE: the exact upstream resume wire is pending confirmation (P0-0-3); the
+    `<tool_results>` machine-context block is isolated here so only this function
+    changes once the upstream format is fixed. Each entry carries the `toolCallId`
+    (camelCase, matching the twp-ai wire and spec §3.4.7) so the upstream
+    correlates the result with its suspended call.
+    """
+    payload = json.dumps(
+        [{"toolCallId": r.tool_call_id, "content": r.content} for r in results],
+        ensure_ascii=False,
+    )
+    return f"<hidden>\n<tool_results>{_neutralize_wrapper_tags(payload)}</tool_results>\n</hidden>"
 
 
 # json.dumps does not escape `<`/`>`, so a payload value containing a literal
@@ -199,14 +238,16 @@ def _compose_message(request: RunAgentInput) -> str:
 # A lenient stripper also honours whitespace/attributes (`</hidden >`,
 # `<hidden attr="1">`), so those forms are neutralized too — anything a relaxed
 # HTML/XML parser would accept as one of our wrapper tags.
-_WRAPPER_TAG_RE = re.compile(r"<(/?\s*(?:hidden|context|state)(?:\s+[^>]*)?)>", re.IGNORECASE)
+_WRAPPER_TAG_RE = re.compile(
+    r"<(/?\s*(?:hidden|context|state|tool_results|tools)(?:\s+[^>]*)?)>", re.IGNORECASE
+)
 
 
 def _neutralize_wrapper_tags(value: str) -> str:
     return _WRAPPER_TAG_RE.sub(r"&lt;\1&gt;", value)
 
 
-def _context_preamble(context: list[ContextItem], state: object) -> str:
+def _context_preamble(context: list[ContextItem], state: object, tools: list[Tool]) -> str:
     sections: list[str] = []
     if context:
         context_json = json.dumps(
@@ -217,6 +258,15 @@ def _context_preamble(context: list[ContextItem], state: object) -> str:
     if state is not None:
         state_json = json.dumps(state, ensure_ascii=False)
         sections.append(f"<state>{_neutralize_wrapper_tags(state_json)}</state>")
+    if tools:
+        # The per-request client tool catalog: the upstream's pre-registered
+        # AGENTIC_UI_TOOL dispatcher picks a tool from here and the relay unwraps
+        # its call back into the real frontend tool (see twp_ai.client_tools).
+        tools_json = json.dumps(
+            [tool.model_dump(by_alias=True) for tool in tools],
+            ensure_ascii=False,
+        )
+        sections.append(f"<tools>{_neutralize_wrapper_tags(tools_json)}</tools>")
     if not sections:
         return ""
     return "<hidden>\n" + "\n".join(sections) + "\n</hidden>"

@@ -26,6 +26,7 @@ from __future__ import annotations
 from collections.abc import Generator
 
 from ..callers.adk import ADKCaller, UpstreamMessage
+from ..client_tools import AGENTIC_UI_TOOL_NAME, unwrap_agentic_ui_call
 from ..events import (
     ReasoningEndEvent,
     ReasoningMessageContentEvent,
@@ -132,6 +133,12 @@ def _relay(upstream: Generator[UpstreamMessage, None, None]) -> Generator[str, N
                 for i, tc in enumerate(msg.tool_calls):
                     fn = tc.get("function", {})
                     fn_name = fn.get("name", "unknown")
+                    fn_args = fn.get("arguments")
+                    if fn_name == AGENTIC_UI_TOOL_NAME:
+                        # Unwrap the client-side dispatcher so the frontend sees the
+                        # real tool. A malformed envelope raises ValueError BEFORE any
+                        # lifecycle event is emitted → a single RUN_ERROR (run.run()).
+                        fn_name, fn_args = unwrap_agentic_ui_call(fn_args or "")
                     tc_id = tc.get("id") or f"{msg.message_id}-{i}"
                     pending_calls.setdefault(fn_name, []).append(tc_id)
                     yield to_sse(
@@ -141,8 +148,8 @@ def _relay(upstream: Generator[UpstreamMessage, None, None]) -> Generator[str, N
                             parent_message_id=msg.message_id,
                         )
                     )
-                    if fn.get("arguments"):
-                        yield to_sse(ToolCallArgsEvent(tool_call_id=tc_id, delta=fn["arguments"]))
+                    if fn_args:
+                        yield to_sse(ToolCallArgsEvent(tool_call_id=tc_id, delta=fn_args))
                     yield to_sse(ToolCallEndEvent(tool_call_id=tc_id))
 
         elif msg.role == "tool" and msg.content is not None:

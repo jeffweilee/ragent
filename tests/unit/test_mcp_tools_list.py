@@ -1,5 +1,6 @@
-"""T-MCP.5 — Pin `tools/list` contract (S59) — exactly one tool `retrieve`
-with inputSchema matching spec §3.8.3 verbatim.
+"""T-MCP.5 / T-CAUI.4 — Pin the `tools/list` contract (S59): the `retrieve` tool
+with inputSchema matching spec §3.8.3 verbatim, plus the `AGENTIC_UI_TOOL`
+client-side dispatcher.
 """
 
 from __future__ import annotations
@@ -21,7 +22,17 @@ def client() -> TestClient:
         yield c
 
 
-def test_tools_list_returns_exactly_one_tool(client: TestClient) -> None:
+def _tools(client: TestClient) -> list[dict]:
+    return client.post("/mcp/v1", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}).json()[
+        "result"
+    ]["tools"]
+
+
+def _tool(client: TestClient, name: str) -> dict:
+    return next(t for t in _tools(client) if t["name"] == name)
+
+
+def test_tools_list_returns_registered_tools(client: TestClient) -> None:
     resp = client.post(
         "/mcp/v1",
         json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
@@ -32,11 +43,11 @@ def test_tools_list_returns_exactly_one_tool(client: TestClient) -> None:
     assert body["id"] == 1
     tools = body["result"]["tools"]
     assert isinstance(tools, list)
-    assert len(tools) == 1
+    assert {t["name"] for t in tools} == {"retrieve", "AGENTIC_UI_TOOL"}
 
 
 def test_tools_list_deep_equals_model_dump(client: TestClient) -> None:
-    """S59: tools/list response deep-equals RETRIEVE_TOOL.model_dump(exclude_none=True).
+    """S59: the retrieve entry deep-equals RETRIEVE_TOOL.model_dump(exclude_none=True).
 
     Pins the wire format against the mcp.types.Tool descriptor derived from
     _RetrieveArgs, so any drift between the registry and the serialised response
@@ -44,28 +55,29 @@ def test_tools_list_deep_equals_model_dump(client: TestClient) -> None:
     """
     from ragent.routers.mcp_tools.retrieve import RETRIEVE_TOOL
 
-    [tool] = client.post(
-        "/mcp/v1", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-    ).json()["result"]["tools"]
-    assert tool == RETRIEVE_TOOL.model_dump(exclude_none=True)
+    assert _tool(client, "retrieve") == RETRIEVE_TOOL.model_dump(exclude_none=True)
 
 
 def test_tools_list_advertises_retrieve_tool(client: TestClient) -> None:
-    resp = client.post(
-        "/mcp/v1",
-        json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"},
-    )
-    [tool] = resp.json()["result"]["tools"]
+    tool = _tool(client, "retrieve")
     assert tool["name"] == "retrieve"
     assert isinstance(tool["description"], str)
     assert "retriev" in tool["description"].lower()  # description mentions retrieval
 
 
+def test_tools_list_advertises_agentic_ui_tool(client: TestClient) -> None:
+    """T-CAUI.4 — the client-side dispatcher is advertised with its envelope schema."""
+    tool = _tool(client, "AGENTIC_UI_TOOL")
+    schema = tool["inputSchema"]
+    assert schema["type"] == "object"
+    assert schema["required"] == ["tool_name", "arguments"]
+    assert schema["properties"]["tool_name"]["type"] == "string"
+    assert schema["properties"]["arguments"]["type"] == "object"
+
+
 def test_retrieve_input_schema_required_fields(client: TestClient) -> None:
     """S59 — `query` is the only required input field per §3.8.3."""
-    [tool] = client.post(
-        "/mcp/v1", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-    ).json()["result"]["tools"]
+    tool = _tool(client, "retrieve")
     schema = tool["inputSchema"]
     assert schema["type"] == "object"
     assert schema["required"] == ["query"]
@@ -73,9 +85,7 @@ def test_retrieve_input_schema_required_fields(client: TestClient) -> None:
 
 def test_retrieve_input_schema_property_types(client: TestClient) -> None:
     """S59 — each property in §3.8.3 has the documented type + bounds."""
-    [tool] = client.post(
-        "/mcp/v1", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-    ).json()["result"]["tools"]
+    tool = _tool(client, "retrieve")
     props = tool["inputSchema"]["properties"]
 
     assert props["query"]["type"] == "string"
@@ -108,9 +118,7 @@ def test_retrieve_optional_fields_have_no_null_default(client: TestClient) -> No
     would receive -32602 before retrieval runs.  Optionality is expressed via
     absence from "required", not via default:null.
     """
-    [tool] = client.post(
-        "/mcp/v1", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-    ).json()["result"]["tools"]
+    tool = _tool(client, "retrieve")
     props = tool["inputSchema"]["properties"]
     for name in ("source_app", "source_meta", "min_score"):
         assert props[name].get("default") is not None or "default" not in props[name], (
@@ -125,9 +133,7 @@ def test_retrieve_input_schema_all_properties_have_descriptions(client: TestClie
     Descriptions are the primary signal an AI agent uses to decide which
     argument to pass; a missing description silently degrades agent accuracy.
     """
-    [tool] = client.post(
-        "/mcp/v1", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-    ).json()["result"]["tools"]
+    tool = _tool(client, "retrieve")
     props = tool["inputSchema"]["properties"]
     for name, prop in props.items():
         assert "description" in prop and prop["description"], (
@@ -142,9 +148,7 @@ def test_retrieve_tool_advertises_output_schema(client: TestClient) -> None:
     conforming structuredContent; clients use the schema to parse the
     source list for UI display without re-parsing the text block.
     """
-    [tool] = client.post(
-        "/mcp/v1", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-    ).json()["result"]["tools"]
+    tool = _tool(client, "retrieve")
     schema = tool["outputSchema"]
     assert schema["type"] == "object"
     assert schema["required"] == ["sources"]
@@ -172,7 +176,5 @@ def test_retrieve_tool_has_readonly_hint(client: TestClient) -> None:
     read-only tools (protocol 2025-03-26+). Clients on earlier versions
     ignore unknown fields, so this is backward compatible.
     """
-    [tool] = client.post(
-        "/mcp/v1", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"}
-    ).json()["result"]["tools"]
+    tool = _tool(client, "retrieve")
     assert tool.get("annotations", {}).get("readOnlyHint") is True

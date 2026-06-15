@@ -280,6 +280,69 @@ def test_adk_agent_tool_result_produces_tool_call_result() -> None:
     assert result["toolCallId"] == tc_start["toolCallId"]
 
 
+def test_adk_agent_unwraps_agentic_ui_tool_call() -> None:
+    """An AGENTIC_UI_TOOL dispatch surfaces as the inner frontend tool call."""
+    caller = FakeADKCaller(
+        messages=[
+            UpstreamMessage(
+                message_id="msg-tc",
+                role="assistant",
+                finish_reason="tool_calls",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "AGENTIC_UI_TOOL",
+                            "arguments": json.dumps(
+                                {"tool_name": "fill_form", "arguments": {"description": "copy"}}
+                            ),
+                        },
+                    }
+                ],
+            ),
+        ]
+    )
+    request = RunAgentInput.model_validate(_run_input())
+
+    events = _events(list(ADKAgent(caller).run(request, "m")))
+
+    tc_start = next(e for e in events if e["type"] == "TOOL_CALL_START")
+    # The frontend sees the real tool, never the dispatcher; id is carried through.
+    assert tc_start["toolCallName"] == "fill_form"
+    assert tc_start["toolCallId"] == "call_1"
+    args = next(e for e in events if e["type"] == "TOOL_CALL_ARGS")
+    assert json.loads(args["delta"]) == {"description": "copy"}
+    assert args["toolCallId"] == "call_1"
+    assert "AGENTIC_UI_TOOL" not in json.dumps(events)
+
+
+def test_adk_agent_malformed_agentic_ui_tool_becomes_run_error() -> None:
+    caller = FakeADKCaller(
+        messages=[
+            UpstreamMessage(
+                message_id="msg-tc",
+                role="assistant",
+                finish_reason="tool_calls",
+                tool_calls=[
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "AGENTIC_UI_TOOL", "arguments": "{not json"},
+                    }
+                ],
+            ),
+        ]
+    )
+    request = RunAgentInput.model_validate(_run_input())
+
+    events = _events(list(ADKAgent(caller).run(request, "m")))
+
+    assert events[-1]["type"] == "RUN_ERROR"
+    # No half-emitted tool-call lifecycle for the bad dispatch.
+    assert "TOOL_CALL_START" not in [e["type"] for e in events]
+
+
 def test_adk_agent_hitl_interrupt_surfaces_as_text_message() -> None:
     caller = FakeADKCaller(
         messages=[

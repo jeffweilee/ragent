@@ -37,7 +37,8 @@ Any other method → JSON-RPC error `-32601 Method not found`.
 
 #### 3.8.3 The `retrieve` tool
 
-The sole tool advertised by `tools/list`. Mirrors §3.4.4 `POST /retrieve/v1` semantics:
+One of two tools advertised by `tools/list` (the other is `AGENTIC_UI_TOOL`,
+§3.8.3a). Mirrors §3.4.4 `POST /retrieve/v1` semantics:
 
 ```json
 {
@@ -113,6 +114,18 @@ ignore unknown tool fields — this is an additive, backward-compatible extensio
 
 `isError: true` is set when the tool itself fails (e.g. retrieval pipeline raises); transport-layer failures still come through `error` envelopes.
 
+#### 3.8.3a The `AGENTIC_UI_TOOL` tool
+
+A **client-side** dispatcher advertised by `tools/list` so the `/chatagent/v3`
+upstream (which only invokes pre-registered tools) can call per-request frontend
+tools (§3.4.7). `inputSchema` is `{type:object, required:[tool_name, arguments],
+properties:{tool_name:string, arguments:object}}`. The upstream chooses a frontend
+tool from the `<tools>` catalog injected into the user turn, then emits an
+`AGENTIC_UI_TOOL` call and **suspends**; ragent's ADK relay unwraps the envelope so
+the frontend executes the real tool. It is **never executed server-side**: a
+`tools/call AGENTIC_UI_TOOL` returns a soft `{isError: true}` result (not a
+JSON-RPC error, not retrieval) directing the caller to execute it on the frontend.
+
 #### 3.8.4 Error codes (JSON-RPC layer)
 
 | Code | Meaning | Origin |
@@ -132,7 +145,8 @@ App-level errors (-32000..-32099) carry `data.error_code` matching the existing 
 #### 3.8.5 BDD
 
 - **S58 mcp initialize** — `initialize` with `protocolVersion:"2025-06-18"` → `result.{protocolVersion:"2025-06-18", capabilities:{tools:{}}, serverInfo:{name:"ragent",version:"<semver>"}}`. A supported older revision (`2025-03-26` / `2024-11-05`) is echoed back; an unsupported revision falls back to `2025-06-18`.
-- **S59 mcp tools/list** — `result.tools` has exactly one entry `name:"retrieve"` with `inputSchema` and `outputSchema` matching §3.8.3.
+- **S59 mcp tools/list** — `result.tools` advertises `retrieve` (with `inputSchema`/`outputSchema` matching §3.8.3) and the `AGENTIC_UI_TOOL` client-side dispatcher (§3.8.3a).
+- **S59a mcp tools/call AGENTIC_UI_TOOL** — Given `tools/call` with `{name:"AGENTIC_UI_TOOL", arguments:{...}}`, Then the result is a soft `{isError: true}` (no JSON-RPC error, retrieval pipeline not invoked) — the dispatcher is client-side (§3.8.3a).
 - **S60 mcp tools/call retrieve** — Given indexed corpus and `tools/call` with `{name:"retrieve", arguments:{query:"...",top_k:3}}`, When the server processes it, Then `result.structuredContent.sources` carries one full source entry per chunk (N ≤ 3) validating against `outputSchema`, `result.content[0].text` is the `<context>`-wrapped citation table + `### [N]` excerpt blocks with no natural-language wording and no internal fields, and `result.isError` is `false`. Empty results return `structuredContent: {sources: []}` with `<context>\n</context>`.
 - **S60a mcp tools/call retrieve unknown arg** — Given `tools/call` with `{name:"retrieve", arguments:{query:"q", unknown_field:"bad"}}`, Then `error.code` is `-32602` and `error.data.error_code` is `MCP_TOOL_INPUT_INVALID`.
 - **S61 mcp method not found** — Given `{method:"resources/list"}` (unimplemented), Then `error.code` is `-32601`.

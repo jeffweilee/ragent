@@ -61,3 +61,18 @@ Within each entry of `messages`, `id` is optional — the frontend assigns it an
 ## Tool result boundary
 
 The direct runtime does **not** synthesize a tool result or run a confirmation turn. After emitting the tool-call lifecycle events it finishes the run, yielding control to the frontend. The frontend executes the tool and sends the result back as a `role="tool"` message in a continuation run; the runtime translates prior tool-call and tool-result messages into provider-compatible messages so the next LLM turn sees the actual outcome.
+
+---
+
+## Client tools over the ADK upstream (`AGENTIC_UI_TOOL`)
+
+`ADKAgent` (used by `/chatagent/v3`) proxies an upstream that owns its own tool
+loop and only invokes tools pre-registered in its own registry — it cannot accept
+the per-request `tools`. `twp_ai.client_tools.AGENTIC_UI_TOOL_NAME` is a single
+generic dispatcher pre-registered upstream: it calls `AGENTIC_UI_TOOL` with the
+chosen frontend tool wrapped as `{tool_name, arguments}`, and `_relay` unwraps that
+(`unwrap_agentic_ui_call`) so the frontend receives a normal `TOOL_CALL_*`
+lifecycle for the real tool (same `toolCallId`; it never sees the dispatcher). A
+malformed envelope surfaces as `RUN_ERROR`. The per-request tool catalog and the
+continuation/resume forwarding live ragent-side in `clients/adk_caller.py`; the
+full contract is in `docs/00_spec.md` §3.4.7.

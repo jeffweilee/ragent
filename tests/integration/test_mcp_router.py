@@ -180,7 +180,9 @@ def test_mcp_full_handshake_round_trip(client: TestClient, es_store, es_url: str
         json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
     )
     list_body = list_resp.json()
-    [tool] = list_body["result"]["tools"]
+    tool_names = {t["name"] for t in list_body["result"]["tools"]}
+    assert tool_names == {"retrieve", "AGENTIC_UI_TOOL"}
+    tool = next(t for t in list_body["result"]["tools"] if t["name"] == "retrieve")
     assert tool["name"] == "retrieve"
 
     # Step 3: tools/call retrieve — actually invoke the pipeline.

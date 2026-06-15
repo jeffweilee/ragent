@@ -276,8 +276,24 @@ transport to an `ADKCaller` protocol; the concrete proxy lives ragent-side in
   the upstream assigns the authoritative `messageId` returned in the stream.
 - `stream` is always `true`. `model` is **not** forwarded (the upstream decides,
   matching v2).
-- `tools`/`forwardedProps` are accepted but not forwarded; client tool-call
-  continuation is not yet implemented.
+- `forwardedProps` is accepted but not forwarded.
+- **Client-side tools (`AGENTIC_UI_TOOL` dispatcher):** the upstream cannot accept
+  per-request `tools`; it only invokes tools pre-registered in its own registry. So
+  a single generic client-side tool, **`AGENTIC_UI_TOOL`** (advertised by ragent's
+  `/mcp/v1` `tools/list`, §3.8), is pre-registered upstream. The per-request `tools`
+  catalog is folded into the user turn's `<hidden>` block as a `<tools>` section
+  (alongside `<context>`/`<state>`; same neutralisation + frontend strip). The
+  upstream picks a tool and calls `AGENTIC_UI_TOOL` with `{tool_name, arguments}`;
+  the relay **unwraps** that envelope so the frontend receives a normal
+  `TOOL_CALL_*` lifecycle for the real tool (it never sees `AGENTIC_UI_TOOL`), with
+  the upstream's `toolCallId` carried through. A malformed envelope → `RUN_ERROR`.
+- **Continuation / resume:** when the latest turn is a frontend tool result
+  (`role="tool"`), the trailing tool-result block is forwarded upstream (a
+  `<tool_results>` machine-context payload carrying each `toolCallId` + content) so
+  the upstream resumes the suspended call instead of re-answering the prior user
+  question; earlier turns already live in the upstream's session memory. The run
+  otherwise terminates after the tool-call events (`RUN_FINISHED`), parity with
+  `/twp/v1/run` — whether a follow-up run happens is the frontend's decision.
 
 **Upstream → response conversion:**
 - Each SSE line is `data: {json}\n\n`; the stream terminates with `data: [Done]`.
@@ -292,7 +308,8 @@ transport to an `ADKCaller` protocol; the concrete proxy lives ragent-side in
   every other node produces a `TEXT_MESSAGE` block.
 - `finish_reason="tool_calls"` + `tool_calls` → `TOOL_CALL_START` / `TOOL_CALL_ARGS`
   / `TOOL_CALL_END` events; the upstream's tool-result turn (`role="tool"`) →
-  `TOOL_CALL_RESULT`.
+  `TOOL_CALL_RESULT`. An `AGENTIC_UI_TOOL` call is unwrapped first (see above) so
+  the emitted name/args are the inner frontend tool's.
 - `humanInTheLoopMeta.isInterrupt=true` → standalone `TEXT_MESSAGE` carrying
   `interruptMessage` as the delta.
 - `[Done]` sentinel → `RUN_FINISHED`.

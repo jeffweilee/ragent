@@ -1,7 +1,8 @@
 """MCP server router — `POST /mcp/v1` JSON-RPC 2.0 (§3.8, B47).
 
 Methods: initialize / notifications/initialized / tools/list / tools/call / ping.
-Sole tool: `retrieve` (wraps POST /retrieve/v1).
+Tools: `retrieve` (wraps POST /retrieve/v1) and `AGENTIC_UI_TOOL` (client-side
+dispatcher, §3.8.3a — advertised only; `tools/call` for it is rejected).
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response
 from jsonschema import Draft7Validator, ValidationError
 from mcp.types import Tool
+from twp_ai.client_tools import AGENTIC_UI_TOOL_NAME
 
 from ragent import __version__ as _RAGENT_VERSION
 from ragent.errors.codes import HttpErrorCode
@@ -29,6 +31,7 @@ from ragent.pipelines.retrieve import (
     doc_to_source_entry,
     run_retrieval,
 )
+from ragent.routers.mcp_tools.agentic_ui import AGENTIC_UI_TOOL
 from ragent.routers.mcp_tools.retrieve import RETRIEVE_TOOL
 from ragent.utility.env import int_env
 
@@ -102,7 +105,24 @@ async def _handle_initialize(params: Any) -> dict[str, Any]:
 
 
 # To add a new tool: import its Tool descriptor from mcp_tools/, append here.
-_ALL_TOOLS: list[Tool] = [RETRIEVE_TOOL]
+_ALL_TOOLS: list[Tool] = [RETRIEVE_TOOL, AGENTIC_UI_TOOL]
+
+# AGENTIC_UI_TOOL is client-side (the frontend executes it). The upstream
+# discovers it via tools/list and emits-and-suspends; it must never reach our
+# tools/call. If it does (a misrouted call), answer with a soft isError result
+# rather than running retrieval or raising a JSON-RPC error.
+_CLIENT_SIDE_TOOL_RESULT: dict[str, Any] = {
+    "content": [
+        {
+            "type": "text",
+            "text": (
+                "AGENTIC_UI_TOOL is a client-side tool executed by the frontend; "
+                "it must not be invoked server-side."
+            ),
+        }
+    ],
+    "isError": True,
+}
 _ALL_TOOLS_BY_NAME: dict[str, Tool] = {t.name: t for t in _ALL_TOOLS}
 # Precomputed once at module load; tools/list is read-only and the registry
 # never changes at runtime.
@@ -240,6 +260,8 @@ def create_mcp_router(
                 HttpErrorCode.MCP_TOOL_NOT_FOUND.value,
                 f"unknown tool: {name!r}",
             )
+        if name == AGENTIC_UI_TOOL_NAME:
+            return _CLIENT_SIDE_TOOL_RESULT
         arguments = params.get("arguments") or {}
         _validate_retrieve_args(arguments)
         try:
