@@ -113,13 +113,18 @@ def test_v3_session_get_maps_roles_and_strips_hidden():
                     "role": "assistant",
                     "content": "Planning...",
                     "messageMeta": {"langgraph_node": "planner"},
+                    "createTime": "2025-05-01T06:48:56.000Z",
+                    "updateTime": "2025-05-01T06:48:56.000Z",
                 },
                 {
                     "messageId": "s1m",
                     "role": "assistant",
                     "content": "Answer.",
                     "messageMeta": {"langgraph_node": "summarizer"},
+                    "createTime": "2025-05-01T06:48:57.000Z",
+                    "updateTime": "2025-05-01T06:48:57.000Z",
                 },
+                # t1 carries no timestamps — exercises the null fallback path.
                 {"messageId": "t1", "role": "tool", "content": "tool output"},
             ],
         }
@@ -144,15 +149,15 @@ def test_v3_session_get_maps_roles_and_strips_hidden():
             "id": "p1",
             "role": "reasoning",
             "content": "Planning...",
-            "createTime": None,
-            "updateTime": None,
+            "createTime": "2025-05-01T06:48:56.000Z",
+            "updateTime": "2025-05-01T06:48:56.000Z",
         },
         {
             "id": "s1m",
             "role": "assistant",
             "content": "Answer.",
-            "createTime": None,
-            "updateTime": None,
+            "createTime": "2025-05-01T06:48:57.000Z",
+            "updateTime": "2025-05-01T06:48:57.000Z",
         },
         {
             "id": "t1",
