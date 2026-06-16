@@ -1,6 +1,6 @@
 # chatagent_v3 — twp-ai Protocol over ChatAgent Upstream
 
-> Part of `docs/00_spec.md §3.4`. Standard: `docs/00_rule.md`.
+> Part of [docs/00_spec.md §3.4](../00_spec.md#34-chat-pipeline). Standard: [docs/00_rule.md](../00_rule.md).
 
 ---
 
