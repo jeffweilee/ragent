@@ -351,7 +351,10 @@ def test_call_session_retries_on_non_200_then_succeeds(mock_sleep: MagicMock) ->
 def test_call_session_retries_on_empty_messages_then_succeeds(mock_sleep: MagicMock) -> None:
     messages = [{"role": "assistant", "content": "answer"}]
     http_client = MagicMock(spec=httpx.Client)
-    http_client.get.side_effect = [_session_resp(body={"messages": []}), _make_session_mock(messages)]
+    http_client.get.side_effect = [
+        _session_resp(body={"messages": []}),
+        _make_session_mock(messages),
+    ]
 
     result = _call_session(http_client, "http://localhost:8000", "t1", "u1", "", "X-Auth-Token")
 
@@ -363,7 +366,10 @@ def test_call_session_retries_on_empty_messages_then_succeeds(mock_sleep: MagicM
 def test_call_session_null_messages_treated_as_empty(mock_sleep: MagicMock) -> None:
     messages = [{"role": "assistant", "content": "answer"}]
     http_client = MagicMock(spec=httpx.Client)
-    http_client.get.side_effect = [_session_resp(body={"messages": None}), _make_session_mock(messages)]
+    http_client.get.side_effect = [
+        _session_resp(body={"messages": None}),
+        _make_session_mock(messages),
+    ]
 
     result = _call_session(http_client, "http://localhost:8000", "t1", "u1", "", "X-Auth-Token")
 
