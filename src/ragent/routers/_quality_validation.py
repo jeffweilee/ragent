@@ -165,9 +165,7 @@ def _call_session(
     auth_header: str,
     jwt_header: str,
 ) -> list[dict]:
-    """GET /chatagent/v3/session and return the messages list.
-
-    Retries with backoff because the upstream may persist the session
+    """Retries with backoff because the upstream may persist the session
     asynchronously after the SSE stream closes (especially for tool-call
     heavy questions).
     """
@@ -389,7 +387,9 @@ def admin_quality_validation_stream(
             continue
 
         if not messages:
-            session_results.append((False, ["session returned no messages (HTTP error or empty)"], 0))
+            session_results.append(
+                (False, ["session returned no messages (HTTP error or empty)"], 0)
+            )
             continue
 
         violations = check_session_messages(messages, keywords_any=q.get("expect_keywords_any", []))

@@ -17,7 +17,6 @@ from ragent.routers._quality_validation import (
 )
 from tests.unit.conftest import make_jwt as _make_jwt
 
-
 # ---------------------------------------------------------------------------
 # _decode_jwt_claim
 # ---------------------------------------------------------------------------

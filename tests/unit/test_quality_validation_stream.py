@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from unittest.mock import MagicMock, call, patch
 
 import httpx
@@ -327,23 +326,11 @@ def test_admin_stream_chatagent_http_error_recorded() -> None:
 # ---------------------------------------------------------------------------
 
 
-def _non_200_resp(status: int = 502) -> MagicMock:
+def _session_resp(status: int = 200, body: object = None) -> MagicMock:
     resp = MagicMock(spec=httpx.Response)
     resp.status_code = status
-    return resp
-
-
-def _empty_session_resp() -> MagicMock:
-    resp = MagicMock(spec=httpx.Response)
-    resp.status_code = 200
-    resp.json.return_value = {"messages": []}
-    return resp
-
-
-def _null_messages_resp() -> MagicMock:
-    resp = MagicMock(spec=httpx.Response)
-    resp.status_code = 200
-    resp.json.return_value = {"messages": None}
+    if status == 200:
+        resp.json.return_value = body
     return resp
 
 
@@ -351,7 +338,7 @@ def _null_messages_resp() -> MagicMock:
 def test_call_session_retries_on_non_200_then_succeeds(mock_sleep: MagicMock) -> None:
     messages = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
     http_client = MagicMock(spec=httpx.Client)
-    http_client.get.side_effect = [_non_200_resp(), _make_session_mock(messages)]
+    http_client.get.side_effect = [_session_resp(status=502), _make_session_mock(messages)]
 
     result = _call_session(http_client, "http://localhost:8000", "t1", "u1", "", "X-Auth-Token")
 
@@ -364,7 +351,7 @@ def test_call_session_retries_on_non_200_then_succeeds(mock_sleep: MagicMock) ->
 def test_call_session_retries_on_empty_messages_then_succeeds(mock_sleep: MagicMock) -> None:
     messages = [{"role": "assistant", "content": "answer"}]
     http_client = MagicMock(spec=httpx.Client)
-    http_client.get.side_effect = [_empty_session_resp(), _make_session_mock(messages)]
+    http_client.get.side_effect = [_session_resp(body={"messages": []}), _make_session_mock(messages)]
 
     result = _call_session(http_client, "http://localhost:8000", "t1", "u1", "", "X-Auth-Token")
 
@@ -376,7 +363,7 @@ def test_call_session_retries_on_empty_messages_then_succeeds(mock_sleep: MagicM
 def test_call_session_null_messages_treated_as_empty(mock_sleep: MagicMock) -> None:
     messages = [{"role": "assistant", "content": "answer"}]
     http_client = MagicMock(spec=httpx.Client)
-    http_client.get.side_effect = [_null_messages_resp(), _make_session_mock(messages)]
+    http_client.get.side_effect = [_session_resp(body={"messages": None}), _make_session_mock(messages)]
 
     result = _call_session(http_client, "http://localhost:8000", "t1", "u1", "", "X-Auth-Token")
 
@@ -387,7 +374,7 @@ def test_call_session_null_messages_treated_as_empty(mock_sleep: MagicMock) -> N
 @patch("ragent.routers._quality_validation.time.sleep")
 def test_call_session_exhausts_retries_returns_empty(mock_sleep: MagicMock) -> None:
     http_client = MagicMock(spec=httpx.Client)
-    http_client.get.return_value = _non_200_resp()
+    http_client.get.return_value = _session_resp(status=502)
 
     result = _call_session(http_client, "http://localhost:8000", "t1", "u1", "", "X-Auth-Token")
 
