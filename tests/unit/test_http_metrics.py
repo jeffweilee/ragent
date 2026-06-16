@@ -6,7 +6,8 @@ Asserts:
 - Health/metrics paths are excluded from `http_requests_total` (probe traffic
   must not drown real RPS in dashboards).
 - Health/metrics paths bypass the X-User-Id auth middleware.
-- pyproject.toml pins prometheus-fastapi-instrumentator<8.0.0 (compat guard).
+- pyproject.toml pins prometheus-fastapi-instrumentator<8.0.0 and
+  fastapi<0.137.0 (compat guards against _IncludedRouter AttributeError).
 """
 
 from __future__ import annotations
@@ -14,7 +15,6 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-import tomllib
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.routing import Match
@@ -69,25 +69,50 @@ def test_excluded_handlers_not_tracked(app_with_metrics: FastAPI) -> None:
     assert 'handler="/metrics"' not in body
 
 
+def _load_pyproject() -> dict:
+    try:
+        import tomllib
+    except ImportError:
+        pytest.skip("tomllib not available (Python <3.11)")
+    return tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
+
+
 def test_pyproject_pins_instrumentator_below_v8() -> None:
     """pyproject.toml must cap prometheus-fastapi-instrumentator below 8.0.0.
 
-    8.0.0 requires starlette>=1.0.0 which allows fastapi>=0.137.1 to be
-    resolved. FastAPI 0.137.1 adds _IncludedRouter (a dataclass with no .path
-    attribute) to app.routes. _get_route_name in routing.py accesses
-    route.path unconditionally, raising AttributeError on every first request.
+    8.0.0 requires starlette>=1.0.0 which pulls in additional incompatible
+    packages. fastapi>=0.137.0 also introduces _IncludedRouter regardless of
+    starlette version — see test_pyproject_pins_fastapi_below_0137.
     """
     from packaging.requirements import Requirement
 
-    pyproject = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
-    deps: list[str] = pyproject["project"]["dependencies"]
+    deps: list[str] = _load_pyproject()["project"]["dependencies"]
     pfi = next((d for d in deps if d.startswith("prometheus-fastapi-instrumentator")), None)
     assert pfi is not None, "prometheus-fastapi-instrumentator missing from dependencies"
     req = Requirement(pfi)
     assert not req.specifier.contains("8.0.0"), (
-        f"Add an upper-bound <8.0.0 to prevent the starlette>=1.0.0 → "
-        f"fastapi>=0.137.1 → _IncludedRouter AttributeError upgrade chain. "
-        f"Current constraint: {pfi!r}"
+        f"prometheus-fastapi-instrumentator must be pinned <8.0.0. Current constraint: {pfi!r}"
+    )
+
+
+def test_pyproject_pins_fastapi_below_0137() -> None:
+    """pyproject.toml must cap fastapi below 0.137.0.
+
+    FastAPI 0.137.0 introduces _IncludedRouter (a @dataclass with no .path
+    attribute) into app.routes. _get_route_name in prometheus-fastapi-
+    instrumentator accesses route.path unconditionally, crashing every first
+    request with AttributeError. fastapi 0.137.1 only requires starlette>=0.46.0,
+    so it can coexist with the 7.x instrumentator pin — both caps are needed.
+    """
+    from packaging.requirements import Requirement
+
+    deps: list[str] = _load_pyproject()["project"]["dependencies"]
+    fa = next((d for d in deps if d.startswith("fastapi")), None)
+    assert fa is not None, "fastapi missing from dependencies"
+    req = Requirement(fa)
+    assert not req.specifier.contains("0.137.0"), (
+        f"fastapi must be pinned <0.137.0 to prevent _IncludedRouter "
+        f"AttributeError in _get_route_name. Current constraint: {fa!r}"
     )
 
 
@@ -95,8 +120,8 @@ def test_get_route_name_raises_on_pathless_route() -> None:
     """_get_route_name accesses route.path unconditionally — crash on _IncludedRouter.
 
     Documents the upstream bug: any route object that matches but carries no
-    .path attribute triggers AttributeError. The version pin in pyproject.toml
-    prevents the fastapi version that introduces such routes from being installed.
+    .path attribute triggers AttributeError. Both version pins in pyproject.toml
+    prevent the fastapi version that introduces such routes from being installed.
     """
     from prometheus_fastapi_instrumentator.routing import _get_route_name
 
