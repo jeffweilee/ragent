@@ -144,7 +144,7 @@ def _check_message_blocks(
     end_type: str,
 ) -> list[str]:
     violations: list[str] = []
-    open_blocks: dict[str, bool] = {}  # message_id → has_content
+    open_blocks: dict[str, bool] = {}
 
     for e in events:
         t = e.get("type")

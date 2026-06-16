@@ -79,6 +79,16 @@ def _install_stable_provider() -> None:
 _install_stable_provider()
 
 
+def make_jwt(payload: dict) -> str:
+    """Build an unsigned JWT for unit tests."""
+    import base64
+    import json
+
+    header = base64.urlsafe_b64encode(b'{"alg":"HS256"}').rstrip(b"=").decode()
+    body = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
+    return f"Bearer {header}.{body}.fakesig"
+
+
 @pytest.fixture()
 def otel_exporter():
     inner = InMemorySpanExporter()

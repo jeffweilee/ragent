@@ -581,6 +581,8 @@ On auth failure: the stream yields `RUN_STARTED` then `RUN_ERROR` with `code=QUA
 On empty suite: `RUN_ERROR` with `code=QUALITY_VALIDATION_NOT_CONFIGURED`.
 On success: `RUN_STARTED` → per-question `TEXT_MESSAGE` (question injection) + relayed agent SSE → summary `TEXT_MESSAGE` (驗收摘要) → `RUN_FINISHED`. Relayed events are serialised with `ensure_ascii=False` so non-ASCII characters (e.g. Chinese) are preserved as UTF-8 rather than `\uXXXX` escape sequences.
 
+The 驗收摘要 TEXT_MESSAGE shows per-question: question text (≤80 chars), `expect_keywords_any` / `expect_no_keywords` lists, stream pass/fail, and session message count (`Session N 則訊息 通過/失敗`). The session check retries up to 4 times with 1 s / 2 s / 4 s backoff to tolerate asynchronous upstream session persistence after tool-call-heavy streams.
+
 **Env vars:** `QUALITY_VALIDATION_FIXTURE_PATH` (path to YAML), `QUALITY_VALIDATION_ADMIN_USER_IDS` (comma-separated user IDs), `QUALITY_VALIDATION_BASE_URL` (default `http://localhost:8000`), `QUALITY_VALIDATION_JWT_CLAIM` (default `sub`).
 
 ---

@@ -2,26 +2,21 @@
 
 from __future__ import annotations
 
-import base64
 import json
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, call, patch
 
 import httpx
 
 from ragent.routers._quality_validation import (
     _build_auth_headers,
     _build_summary,
+    _call_session,
     _relay_events,
     _yield_run_error,
     _yield_text,
     admin_quality_validation_stream,
 )
-
-
-def _make_jwt(payload: dict) -> str:
-    header = base64.urlsafe_b64encode(b'{"alg":"HS256"}').rstrip(b"=").decode()
-    body = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
-    return f"Bearer {header}.{body}.fakesig"
+from tests.unit.conftest import make_jwt as _make_jwt
 
 
 def _q(qid: str, **kwargs: object) -> dict:
@@ -113,18 +108,38 @@ def test_relay_events_filters_run_error() -> None:
 def test_build_summary_all_pass() -> None:
     questions = [_q("q1"), _q("q2")]
     stream_results = [(True, []), (True, [])]
-    session_results = [(True, []), (True, [])]
+    session_results = [(True, [], 4), (True, [], 3)]
     summary = _build_summary(questions, stream_results, session_results, 500)
     assert "通過：2" in summary
     assert "失敗：0" in summary
     assert "✅" in summary
     assert "500 ms" in summary
+    assert "Session 4 則訊息 通過" in summary
+    assert "Session 3 則訊息 通過" in summary
+
+
+def test_build_summary_shows_question_text() -> None:
+    questions = [_q("q1", question="What is RAGent?", expect_keywords_any=["ragent"])]
+    stream_results = [(True, [])]
+    session_results = [(True, [], 2)]
+    summary = _build_summary(questions, stream_results, session_results, 100)
+    assert "What is RAGent?" in summary
+    assert "期望含有：ragent" in summary
+    assert "Session 2 則訊息 通過" in summary
+
+
+def test_build_summary_shows_no_keywords() -> None:
+    questions = [_q("q1", question="hi?", expect_no_keywords=["bad"])]
+    stream_results = [(True, [])]
+    session_results = [(True, [], 2)]
+    summary = _build_summary(questions, stream_results, session_results, 50)
+    assert "期望不含：bad" in summary
 
 
 def test_build_summary_partial_fail_shows_reasons() -> None:
     questions = [_q("q1"), _q("q2")]
     stream_results = [(True, []), (False, ["keyword missing"])]
-    session_results = [(True, []), (True, [])]
+    session_results = [(True, [], 3), (True, [], 2)]
     summary = _build_summary(questions, stream_results, session_results, 100)
     assert "通過：1" in summary
     assert "失敗：1" in summary
@@ -135,10 +150,11 @@ def test_build_summary_partial_fail_shows_reasons() -> None:
 def test_build_summary_session_fail_shown() -> None:
     questions = [_q("q1")]
     stream_results = [(True, [])]
-    session_results = [(False, ["leaked context"])]
+    session_results = [(False, ["leaked context"], 0)]
     summary = _build_summary(questions, stream_results, session_results, 200)
     assert "❌" in summary
     assert "leaked context" in summary
+    assert "Session 無訊息 失敗" in summary
 
 
 # ---------------------------------------------------------------------------
@@ -221,7 +237,7 @@ def _make_session_mock(messages: list[dict]) -> MagicMock:
 def test_admin_stream_happy_path_all_pass() -> None:
     token = _make_jwt({"sub": "admin-1"})
     http_client = MagicMock(spec=httpx.Client)
-    http_client.build_request.return_value = MagicMock()
+    http_client.build_request.return_value = MagicMock(spec=httpx.Request)
     http_client.send.return_value = _make_sse_mock("ragent is great")
     http_client.get.return_value = _make_session_mock(
         [
@@ -255,7 +271,7 @@ def test_admin_stream_happy_path_all_pass() -> None:
 def test_admin_stream_no_session_endpoint_reports_not_configured() -> None:
     token = _make_jwt({"sub": "admin-1"})
     http_client = MagicMock(spec=httpx.Client)
-    http_client.build_request.return_value = MagicMock()
+    http_client.build_request.return_value = MagicMock(spec=httpx.Request)
     http_client.send.return_value = _make_sse_mock("ragent is great")
 
     questions = [_q("q1", expect_keywords_any=["ragent"])]
@@ -282,7 +298,7 @@ def test_admin_stream_no_session_endpoint_reports_not_configured() -> None:
 def test_admin_stream_chatagent_http_error_recorded() -> None:
     token = _make_jwt({"sub": "admin-1"})
     http_client = MagicMock(spec=httpx.Client)
-    http_client.build_request.return_value = MagicMock()
+    http_client.build_request.return_value = MagicMock(spec=httpx.Request)
     http_client.send.side_effect = httpx.ConnectError("connection refused")
 
     questions = [_q("q1")]
@@ -304,3 +320,90 @@ def test_admin_stream_chatagent_http_error_recorded() -> None:
     assert "RUN_STARTED" in events[0]
     assert "RUN_FINISHED" in events[-1]
     assert any("失敗" in e for e in events)
+
+
+# ---------------------------------------------------------------------------
+# _call_session — retry behaviour
+# ---------------------------------------------------------------------------
+
+
+def _non_200_resp(status: int = 502) -> MagicMock:
+    resp = MagicMock(spec=httpx.Response)
+    resp.status_code = status
+    return resp
+
+
+def _empty_session_resp() -> MagicMock:
+    resp = MagicMock(spec=httpx.Response)
+    resp.status_code = 200
+    resp.json.return_value = {"messages": []}
+    return resp
+
+
+def _null_messages_resp() -> MagicMock:
+    resp = MagicMock(spec=httpx.Response)
+    resp.status_code = 200
+    resp.json.return_value = {"messages": None}
+    return resp
+
+
+@patch("ragent.routers._quality_validation.time.sleep")
+def test_call_session_retries_on_non_200_then_succeeds(mock_sleep: MagicMock) -> None:
+    messages = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
+    http_client = MagicMock(spec=httpx.Client)
+    http_client.get.side_effect = [_non_200_resp(), _make_session_mock(messages)]
+
+    result = _call_session(http_client, "http://localhost:8000", "t1", "u1", "", "X-Auth-Token")
+
+    assert result == messages
+    assert http_client.get.call_count == 2
+    mock_sleep.assert_called_once_with(1.0)
+
+
+@patch("ragent.routers._quality_validation.time.sleep")
+def test_call_session_retries_on_empty_messages_then_succeeds(mock_sleep: MagicMock) -> None:
+    messages = [{"role": "assistant", "content": "answer"}]
+    http_client = MagicMock(spec=httpx.Client)
+    http_client.get.side_effect = [_empty_session_resp(), _make_session_mock(messages)]
+
+    result = _call_session(http_client, "http://localhost:8000", "t1", "u1", "", "X-Auth-Token")
+
+    assert result == messages
+    mock_sleep.assert_called_once_with(1.0)
+
+
+@patch("ragent.routers._quality_validation.time.sleep")
+def test_call_session_null_messages_treated_as_empty(mock_sleep: MagicMock) -> None:
+    messages = [{"role": "assistant", "content": "answer"}]
+    http_client = MagicMock(spec=httpx.Client)
+    http_client.get.side_effect = [_null_messages_resp(), _make_session_mock(messages)]
+
+    result = _call_session(http_client, "http://localhost:8000", "t1", "u1", "", "X-Auth-Token")
+
+    assert result == messages
+    mock_sleep.assert_called_once_with(1.0)
+
+
+@patch("ragent.routers._quality_validation.time.sleep")
+def test_call_session_exhausts_retries_returns_empty(mock_sleep: MagicMock) -> None:
+    http_client = MagicMock(spec=httpx.Client)
+    http_client.get.return_value = _non_200_resp()
+
+    result = _call_session(http_client, "http://localhost:8000", "t1", "u1", "", "X-Auth-Token")
+
+    assert result == []
+    assert http_client.get.call_count == 4  # 3 retries + 1 final
+    assert mock_sleep.call_args_list == [call(1.0), call(2.0), call(4.0)]
+
+
+def test_call_session_first_attempt_succeeds_no_sleep() -> None:
+    messages = [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]
+    http_client = MagicMock(spec=httpx.Client)
+    http_client.get.return_value = _make_session_mock(messages)
+
+    with patch("ragent.routers._quality_validation.time.sleep") as mock_sleep:
+        result = _call_session(http_client, "http://localhost:8000", "t1", "u1", "", "X-Auth-Token")
+
+    assert result == messages
+    assert http_client.get.call_count == 1
+    mock_sleep.assert_not_called()

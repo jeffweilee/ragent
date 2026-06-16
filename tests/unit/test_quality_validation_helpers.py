@@ -15,17 +15,7 @@ from ragent.routers._quality_validation import (
     is_admin_validation_command,
     load_questions,
 )
-
-# ---------------------------------------------------------------------------
-# JWT helpers
-# ---------------------------------------------------------------------------
-
-
-def _make_jwt(payload: dict) -> str:
-    """Build a fake JWT (unsigned) for testing."""
-    header = base64.urlsafe_b64encode(b'{"alg":"HS256"}').rstrip(b"=").decode()
-    body = base64.urlsafe_b64encode(json.dumps(payload).encode()).rstrip(b"=").decode()
-    return f"Bearer {header}.{body}.fakesig"
+from tests.unit.conftest import make_jwt as _make_jwt
 
 
 # ---------------------------------------------------------------------------

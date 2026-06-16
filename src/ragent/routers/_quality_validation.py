@@ -154,6 +154,9 @@ def _call_chatagent_v3(
     return events, minted_thread_id
 
 
+_SESSION_RETRY_DELAYS = (1.0, 2.0, 4.0)
+
+
 def _call_session(
     http_client: httpx.Client,
     base_url: str,
@@ -162,18 +165,43 @@ def _call_session(
     auth_header: str,
     jwt_header: str,
 ) -> list[dict]:
-    """GET /chatagent/v3/session and return the messages list."""
-    resp = http_client.get(
-        f"{base_url}/chatagent/v3/session",
-        params={"session": thread_id},
-        headers=_build_auth_headers(user_id, auth_header, jwt_header),
-        timeout=15.0,
-    )
-    if resp.status_code != 200:
-        return []
+    """GET /chatagent/v3/session and return the messages list.
 
-    data = resp.json()
-    return data if isinstance(data, list) else data.get("messages", [])
+    Retries with backoff because the upstream may persist the session
+    asynchronously after the SSE stream closes (especially for tool-call
+    heavy questions).
+    """
+    url = f"{base_url}/chatagent/v3/session"
+    headers = _build_auth_headers(user_id, auth_header, jwt_header)
+
+    for attempt, delay in enumerate((*_SESSION_RETRY_DELAYS, None), start=1):
+        resp = http_client.get(url, params={"session": thread_id}, headers=headers, timeout=15.0)
+        if resp.status_code != 200:
+            logger.warning(
+                "quality_validation.session.non_200",
+                thread_id=thread_id,
+                status=resp.status_code,
+                attempt=attempt,
+            )
+            if delay is not None:
+                time.sleep(delay)
+            continue
+
+        data = resp.json()
+        messages = data if isinstance(data, list) else (data.get("messages") or [])
+        if messages:
+            return messages
+
+        logger.warning(
+            "quality_validation.session.empty",
+            thread_id=thread_id,
+            attempt=attempt,
+            data_keys=list(data.keys()) if isinstance(data, dict) else type(data).__name__,
+        )
+        if delay is not None:
+            time.sleep(delay)
+
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -210,13 +238,13 @@ def _relay_events(events: list[dict]) -> Generator[str, None, None]:
 def _build_summary(
     questions: list[dict],
     stream_results: list[tuple[bool, list[str]]],
-    session_results: list[tuple[bool, list[str]]],
+    session_results: list[tuple[bool, list[str], int]],
     elapsed_ms: int,
 ) -> str:
     total = len(questions)
     overall_passed = sum(
         1
-        for (s_ok, _), (p_ok, _) in zip(stream_results, session_results, strict=False)
+        for (s_ok, _), (p_ok, _, _) in zip(stream_results, session_results, strict=False)
         if s_ok and p_ok
     )
 
@@ -226,13 +254,29 @@ def _build_summary(
         f"耗時：{elapsed_ms} ms\n",
     ]
 
-    for q, (s_ok, s_reasons), (p_ok, p_reasons) in zip(
+    for q, (s_ok, s_reasons), (p_ok, p_reasons, msg_count) in zip(
         questions, stream_results, session_results, strict=False
     ):
         icon = "✅" if (s_ok and p_ok) else "❌"
         lines.append(f"{icon} {q['id'].upper()} — {q['label']}")
-        if s_ok and p_ok:
-            lines.append("   通過")
+
+        question_text = q.get("question", "")
+        if len(question_text) > 80:
+            question_text = question_text[:77] + "…"
+        lines.append(f"   問：{question_text}")
+
+        kw_any = q.get("expect_keywords_any", [])
+        kw_no = q.get("expect_no_keywords", [])
+        if kw_any:
+            lines.append(f"   期望含有：{', '.join(kw_any)}")
+        if kw_no:
+            lines.append(f"   期望不含：{', '.join(kw_no)}")
+
+        session_label = f"Session {msg_count} 則訊息" if msg_count else "Session 無訊息"
+        stream_label = "Stream 通過" if s_ok else "Stream 失敗"
+        session_ok_label = f"{session_label} 通過" if p_ok else f"{session_label} 失敗"
+        lines.append(f"   {stream_label}｜{session_ok_label}")
+
         for r in s_reasons:
             lines.append(f"   [Stream] {r}")
         for r in p_reasons:
@@ -326,14 +370,14 @@ def admin_quality_validation_stream(
             stream_passed=not violations,
         )
 
-    session_results: list[tuple[bool, list[str]]] = []
+    session_results: list[tuple[bool, list[str], int]] = []
 
     for q, q_thread_id in zip(questions, thread_ids, strict=False):
         if not has_session_endpoint or not q_thread_id:
             reason = (
                 "session endpoint not configured" if not has_session_endpoint else "no thread_id"
             )
-            session_results.append((False, [reason]))
+            session_results.append((False, [reason], 0))
             continue
 
         try:
@@ -341,15 +385,15 @@ def admin_quality_validation_stream(
                 http_client, base_url, q_thread_id, user_id, auth_header, jwt_header
             )
         except Exception as exc:
-            session_results.append((False, [f"HTTP error calling /chatagent/v3/session: {exc}"]))
+            session_results.append((False, [f"HTTP error calling /chatagent/v3/session: {exc}"], 0))
             continue
 
         if not messages:
-            session_results.append((False, ["session returned no messages (HTTP error or empty)"]))
+            session_results.append((False, ["session returned no messages (HTTP error or empty)"], 0))
             continue
 
         violations = check_session_messages(messages, keywords_any=q.get("expect_keywords_any", []))
-        session_results.append((not violations, violations))
+        session_results.append((not violations, violations, len(messages)))
 
     elapsed_ms = int((time.monotonic() - start_time) * 1000)
     summary = _build_summary(questions, stream_results, session_results, elapsed_ms)
