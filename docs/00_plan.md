@@ -74,3 +74,12 @@
 | T-CAv3S.B2 | Red+Green | • **Achieve:** Session-id ownership (Model B) — `RunAgentInput.thread_id` optional; v3 mints `new_id()` when absent (single owner = ragent; upstream never mints), echoes it in `RUN_STARTED`; native `/twp/v1/run` defaults a uuid so RUN_STARTED is never null. Document `messages[].id` as client-optimistic / ignored.<br>• **Deliver:** `packages/twp-ai/src/twp_ai/schemas.py` (optional `thread_id` + `Message.id` comment); `app.py` native default; `routers/chatagent_v3.py` mint; `tests/unit/test_chatagent_v3_router.py` + `packages/twp-ai/tests/test_twp_protocol.py`; `docs/00_spec.md` §3.4.7. | [x] | Dev |
 | T-CAv3S.BC2 | Red+Green | • **Achieve:** Strip the machine-context wrapper from `sessionName` too — the upstream derives the title from the first user turn (which carries the block), so it leaked into the session list and session GET title.<br>• **Deliver:** `services/chatagent_session.py` (`_strip_session_name`, `map_session_list_payload`, `sessionName` stripped in `map_session_payload`); `routers/chatagent_v3.py` sessionList `transform`; `tests/unit/test_chatagent_session_mapper.py` + `tests/integration/test_chatagent_v3_endpoint.py`; `docs/00_spec.md` §3.4.8. | [x] | Dev |
 | T-CAv3S.BC3 | Red+Green | • **Achieve:** Decode JSON-double-encoded `content`/`sessionName` before the wrapper strip — the upstream stores some values as a quoted string with literal `\n` escapes, so a leading `"` and `\n\n` survived the strip (`"\n\n<message>"`).<br>• **Deliver:** `services/chatagent_session.py` (`_unwrap_json_string` + `_clean_text`, applied to content + sessionName); `tests/unit/test_chatagent_session_mapper.py` double-encoded cases. | [x] | Dev |
+
+
+---
+
+## Track T-MC — Metrics Compatibility
+
+| # | Category | Task | Status | Owner |
+|---|---|---|:---:|---|
+| T-MC.1 | Red+Green | • **Achieve:** Guard against `prometheus-fastapi-instrumentator>=8.0.0` which requires `starlette>=1.0.0`, resolving `fastapi>=0.137.1`. That FastAPI version adds `_IncludedRouter` (no `.path`) to `app.routes`, crashing `_get_route_name` on every first request with `AttributeError`.<br>• **Deliver:** Upper-bound pin `<8.0.0` in `pyproject.toml`; regression tests in `tests/unit/test_http_metrics.py` (`test_pyproject_pins_instrumentator_below_v8`, `test_get_route_name_raises_on_pathless_route`).<br>• **Success criteria:** `uv run pytest tests/unit/test_http_metrics.py` green; `pyproject.toml` dependency reads `prometheus-fastapi-instrumentator>=7.0.0,<8.0.0`. | [x] | Dev |

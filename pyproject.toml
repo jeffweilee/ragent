@@ -17,7 +17,10 @@ dependencies = [
     "opentelemetry-instrumentation-fastapi>=0.46b0",
     "opentelemetry-sdk>=1.25.0",
     "prometheus-client>=0.21.0",
-    "prometheus-fastapi-instrumentator>=7.0.0",
+    # <8.0.0: v8 requires starlette>=1.0.0 which resolves fastapi>=0.137.1;
+    # that version adds _IncludedRouter (no .path) to app.routes, crashing
+    # _get_route_name on every first request (AttributeError).
+    "prometheus-fastapi-instrumentator>=7.0.0,<8.0.0",
     "aiomysql>=0.2.0",
     "pymysql>=1.1.3",
     "sqlalchemy>=2.0",
