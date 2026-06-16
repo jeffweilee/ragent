@@ -233,6 +233,12 @@ def _relay_events(events: list[dict]) -> Generator[str, None, None]:
 # ---------------------------------------------------------------------------
 
 
+def _check_row(lines: list[str], label: str, passed: bool, details: list[str]) -> None:
+    lines.append(f"   {'✅' if passed else '❌'} {label}")
+    for d in details:
+        lines.append(f"      - {d}")
+
+
 def _build_summary(
     questions: list[dict],
     stream_results: list[tuple[bool, list[str], list[str]]],
@@ -270,22 +276,13 @@ def _build_summary(
         if kw_no:
             lines.append(f"   期望不含：{', '.join(kw_no)}")
 
-        proto_icon = "✅" if not proto_violations else "❌"
-        lines.append(f"   {proto_icon} Protocol")
-        for v in proto_violations:
-            lines.append(f"      - {v}")
+        _check_row(lines, "Protocol", not proto_violations, proto_violations)
 
         if kw_any or kw_no:
-            kw_icon = "✅" if not kw_violations else "❌"
-            lines.append(f"   {kw_icon} Stream 關鍵字")
-            for v in kw_violations:
-                lines.append(f"      - {v}")
+            _check_row(lines, "Stream 關鍵字", not kw_violations, kw_violations)
 
         session_label = f"Session {msg_count} 則訊息" if msg_count else "Session 無訊息"
-        session_icon = "✅" if p_ok else "❌"
-        lines.append(f"   {session_icon} {session_label}")
-        for r in p_reasons:
-            lines.append(f"      - {r}")
+        _check_row(lines, session_label, p_ok, p_reasons)
 
     return "\n".join(lines)
 
@@ -367,13 +364,13 @@ def admin_quality_validation_stream(
         text = collect_text(events)
         kw_violations = check_keywords_any(text, q.get("expect_keywords_any", []))
         kw_violations += check_no_keywords(text, q.get("expect_no_keywords", []))
-        all_violations = proto_violations + kw_violations
-        stream_results.append((not all_violations, proto_violations, kw_violations))
+        passed = not proto_violations and not kw_violations
+        stream_results.append((passed, proto_violations, kw_violations))
 
         logger.info(
             "quality_validation.run.question_result",
             question_id=q["id"],
-            stream_passed=not all_violations,
+            stream_passed=passed,
         )
 
     session_results: list[tuple[bool, list[str], int]] = []
