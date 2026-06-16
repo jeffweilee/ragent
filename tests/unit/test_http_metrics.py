@@ -79,7 +79,7 @@ def test_pyproject_pins_instrumentator_below_v8() -> None:
     """
     from packaging.requirements import Requirement
 
-    pyproject = tomllib.loads(_PYPROJECT.read_text())
+    pyproject = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))
     deps: list[str] = pyproject["project"]["dependencies"]
     pfi = next((d for d in deps if d.startswith("prometheus-fastapi-instrumentator")), None)
     assert pfi is not None, "prometheus-fastapi-instrumentator missing from dependencies"
