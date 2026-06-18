@@ -7,7 +7,10 @@ verbatim. Its stored history therefore carries raw upstream roles
 v3 session endpoint surfaces a clean history: each message is relabelled to a
 twp-ai role (shared `node_to_role` rule — identical to the v3 stream) and the
 machine-context wrapper (`<hidden>`, or a legacy bare `<context>` for sessions
-created before v3) is stripped from its content.
+created before v3) is stripped from its content. Human-in-the-loop interrupt
+turns (`humanInTheLoopMeta.isInterrupt`) are dropped entirely: like the v3
+stream (which surfaces them via `RUN_FINISHED.outcome`, not the message flow),
+they are transient approval prompts, not conversation messages.
 
 The transform preserves the upstream session envelope (`session`, …) and
 rewrites `messages[]`. `sessionName` is also stripped because the upstream
@@ -51,8 +54,22 @@ def map_session_payload(payload: dict[str, Any]) -> dict[str, Any]:
     out = _strip_session_name(payload)
     messages = out.get("messages")
     if isinstance(messages, list):
-        out = {**out, "messages": [_map_message(m) for m in messages if isinstance(m, dict)]}
+        # Drop human-in-the-loop interrupt turns: they are transient approval
+        # prompts (surfaced live via RUN_FINISHED.outcome), not conversation
+        # messages, so they must not render in the persisted history — same
+        # control-plane treatment as the v3 stream.
+        out = {
+            **out,
+            "messages": [
+                _map_message(m) for m in messages if isinstance(m, dict) and not _is_interrupt(m)
+            ],
+        }
     return out
+
+
+def _is_interrupt(raw: dict[str, Any]) -> bool:
+    hitl = raw.get("humanInTheLoopMeta")
+    return isinstance(hitl, dict) and bool(hitl.get("isInterrupt"))
 
 
 def map_session_list_payload(payload: dict[str, Any]) -> dict[str, Any]:

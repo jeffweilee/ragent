@@ -225,6 +225,32 @@ def test_v3_session_get_maps_roles_and_strips_hidden():
     ]
 
 
+def test_v3_session_get_drops_interrupt_turns():
+    app, http_mock = _make_app()
+    http_mock.get.return_value = _get_ok(
+        {
+            "session": "s1",
+            "sessionName": "chat",
+            "messages": [
+                {"messageId": "u1", "role": "user", "content": "delete all"},
+                {
+                    "messageId": "hitl-1",
+                    "role": "assistant",
+                    "content": "Confirm?",
+                    "humanInTheLoopMeta": {"isInterrupt": True, "interruptMessage": "Confirm?"},
+                },
+                {"messageId": "a1", "role": "assistant", "content": "Done."},
+            ],
+        }
+    )
+
+    with TestClient(app) as client:
+        r = client.get("/chatagent/v3/session?session=s1", headers={"X-User-Id": "alice"})
+
+    assert r.status_code == 200
+    assert [m["id"] for m in r.json()["messages"]] == ["u1", "a1"]
+
+
 def test_v3_session_list_strips_session_names():
     app, http_mock = _make_app()
     http_mock.get.return_value = _get_ok(

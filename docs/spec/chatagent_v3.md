@@ -136,7 +136,11 @@ message shape changes, while the upstream wire contract is untouched.
   user turn, which carries the block); other metadata is passed through.
 - `GET /chatagent/v3/session?session=<id>` — the upstream session envelope
   (`session`, …) is preserved, `sessionName` is stripped (same reason as
-  sessionList), and every `messages[]` entry is reshaped to
+  sessionList), **human-in-the-loop interrupt turns (`humanInTheLoopMeta.isInterrupt=true`)
+  are dropped entirely** (they are transient approval prompts surfaced live via
+  `RUN_FINISHED.outcome`, §3.4.7 — not conversation messages, so they must not
+  render in history; this keeps the read consistent with the stream), and every
+  remaining `messages[]` entry is reshaped to
   `{id, role, content, createTime, updateTime}`:
   - `createTime` / `updateTime` are the upstream persistence timestamps passed
     through verbatim (null when the upstream omits them).
