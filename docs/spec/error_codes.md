@@ -31,6 +31,7 @@
 | `INGEST_NOT_RERUNNABLE`              | 409         | `/rerun` on a document in `READY` or `DELETING` state | Router (rerun endpoint) |
 | `MISSING_USER_ID`                    | 422         | User-id header absent or empty after JWT verification | Identity middleware |
 | `CHAT_RATE_LIMITED`                  | 429 + `Retry-After` | Per-user fixed-window quota exceeded on `/chat/v1[/stream]` (B31, S37) | Router-level Depends T3.16 |
+| `CHATAGENT_INVALID_RESUME`           | SSE-error only | `/chatagent/v3` resume carries >1 `resolved` interrupt — upstream takes a single `lastMessageId` (emitted as `RUN_ERROR` over a 200 stream) | `ADKCaller` resume validation |
 | `EMBEDDING_LIFECYCLE_INVALID_STATE`  | 409         | Embedding model state-machine transition rejected (B50) | Embedding lifecycle router |
 | `EMBEDDING_CUTOVER_PREFLIGHT_FAILED` | 409         | Cutover preflight (warmup / similarity gate) failed (B50) | Embedding lifecycle router |
 | `EMBEDDING_INVALID_CONFIG`           | 422         | Invalid promote payload (B50) | Embedding lifecycle router |

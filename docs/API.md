@@ -411,8 +411,8 @@ Same upstream as v2 (`CHATAGENT_API_URL`, `CHATAGENT_AUTH`, rate limit, `CHATAGE
 
 **Conversion rules:**
 
-- **Request → upstream:** the upstream is a general, tool-capable agent with its own persona and conversation memory (keyed by `session`), so v3 imposes no persona and does not enumerate tools — it only folds the client-supplied `context`/`state` that the single-field wire would otherwise drop. A `<hidden>` preamble wrapping `<context>{json}</context>` and/or `<state>{json}</state>` is prepended to the last `role="user"` message content and the combined text becomes `inputData.message`; with no context and no state the message is the bare user text. The frontend strips the `<hidden>` block before rendering history, and wrapper tokens appearing inside the serialized values are entity-escaped so a payload value cannot close the block early (spec §3.4.7). `metadata` is server-injected (`apName`/`user`/`userToken`/`session`) with `session = threadId`; `stream` is always `true`. `model` is not forwarded (the upstream decides, as in v2). `tools`/`forwardedProps` are accepted but not forwarded; client tool-call continuation is not yet handled.
-- **Upstream → response:** each SSE line is `data: {json}\n\n`; `returnData.messages[].content` → `TEXT_MESSAGE_CONTENT` (bracketed by `TEXT_MESSAGE_START`/`TEXT_MESSAGE_END`; `messageId` taken from upstream `messages[].messageId`). Each distinct upstream node gets its own block; the `planner` node (`messageMeta.langgraph_node`) is the plan/reasoning step and is bracketed by `REASONING_START`/`REASONING_MESSAGE_START`/`REASONING_MESSAGE_CONTENT`/`REASONING_MESSAGE_END`/`REASONING_END` instead, while other nodes (commander/summarizer) produce TEXT_MESSAGE blocks. `finish_reason="tool_calls"` + `tool_calls` → `TOOL_CALL_START/ARGS/END`; `role="tool"` turns → `TOOL_CALL_RESULT`. `humanInTheLoopMeta.isInterrupt=true` → standalone TEXT_MESSAGE with `interruptMessage` as delta. `data: [Done]` sentinel → `RUN_FINISHED`.
+- **Request → upstream:** the upstream is a general, tool-capable agent with its own persona and conversation memory (keyed by `session`), so v3 imposes no persona and does not enumerate tools — it only folds the client-supplied `context`/`state` that the single-field wire would otherwise drop. A `<hidden>` preamble wrapping `<context>{json}</context>` and/or `<state>{json}</state>` is prepended to the last `role="user"` message content and the combined text becomes `inputData.message`; with no context and no state the message is the bare user text. The frontend strips the `<hidden>` block before rendering history, and wrapper tokens appearing inside the serialized values are entity-escaped so a payload value cannot close the block early (spec §3.4.7). `metadata` is server-injected (`apName`/`user`/`userToken`/`session`) with `session = threadId`; `stream` is always `true`. `model` is not forwarded (the upstream decides, as in v2). `tools`/`forwardedProps` are accepted but not forwarded; client tool-call continuation is not yet handled. Optional `resume` (`[{interruptId, status, payload?}]`) answers a prior human-in-the-loop interrupt: `resolved` sends `inputData={lastMessageId, message:""}` (the upstream supports go / no-go only, so `payload` is dropped); `cancelled` makes no upstream call. More than one `resolved` per request is a `RUN_ERROR` (`CHATAGENT_INVALID_RESUME`).
+- **Upstream → response:** each SSE line is `data: {json}\n\n`; `returnData.messages[].content` → `TEXT_MESSAGE_CONTENT` (bracketed by `TEXT_MESSAGE_START`/`TEXT_MESSAGE_END`; `messageId` taken from upstream `messages[].messageId`). Each distinct upstream node gets its own block; the `planner` node (`messageMeta.langgraph_node`) is the plan/reasoning step and is bracketed by `REASONING_START`/`REASONING_MESSAGE_START`/`REASONING_MESSAGE_CONTENT`/`REASONING_MESSAGE_END`/`REASONING_END` instead, while other nodes (commander/summarizer) produce TEXT_MESSAGE blocks. `finish_reason="tool_calls"` + `tool_calls` → `TOOL_CALL_START/ARGS/END`; `role="tool"` turns → `TOOL_CALL_RESULT`. `humanInTheLoopMeta.isInterrupt=true` ends the run with `RUN_FINISHED.outcome={type:"interrupt", interrupts:[{id, reason, message?, toolCallId?, metadata?}]}` (the interrupt message's own content / tool-call deltas still stream). `data: [Done]` sentinel → `RUN_FINISHED` (`outcome={type:"success"}` when no interrupt fired).
 - **Errors are events, not HTTP codes:** rate-limit, upstream non-`96200`, 5xx, and timeout all surface as a single `RUN_ERROR` event over a `200` stream (`code` = `CHATAGENT_RATE_LIMITED` / `CHATAGENT_UPSTREAM_ERROR` / `CHATAGENT_TIMEOUT`). This is a **breaking change** from v2's HTTP `429`/`502`/`504`.
 
 **Request body** (twp-ai `RunAgentInput`; required: `runId`, `messages`, `tools`, `state`, `context`, `forwardedProps`; optional: `threadId`):
@@ -439,7 +439,7 @@ curl -X POST http://localhost:8000/chatagent/v3 \
   --no-buffer
 ```
 
-**Response:** `text/event-stream`. Every upstream `data: {json}` SSE line passes through the conversion pipeline and becomes one or more AG-UI events on the response stream. The stream always opens with `RUN_STARTED` and closes with `RUN_FINISHED` (success) or `RUN_ERROR` (any failure).
+**Response:** `text/event-stream`. Every upstream `data: {json}` SSE line passes through the conversion pipeline and becomes one or more AG-UI events on the response stream. The stream always opens with `RUN_STARTED` and closes with `RUN_FINISHED` (carrying `outcome` = `success` or `interrupt`) or `RUN_ERROR` (any failure).
 
 #### Example 1 — Simple text reply
 
@@ -462,7 +462,7 @@ data: {"type":"TEXT_MESSAGE_CONTENT","messageId":"msg-1","delta":"cover three ar
 
 data: {"type":"TEXT_MESSAGE_END","messageId":"msg-1"}
 
-data: {"type":"RUN_FINISHED","runId":"run_1","threadId":"thread_1"}
+data: {"type":"RUN_FINISHED","runId":"run_1","threadId":"thread_1","outcome":{"type":"success"}}
 ```
 
 #### Example 2 — Multi-agent (planner → commander → summarizer)
@@ -493,7 +493,7 @@ data: {"type":"TEXT_MESSAGE_START","messageId":"sum-1","role":"assistant"}
 data: {"type":"TEXT_MESSAGE_CONTENT","messageId":"sum-1","delta":"Done."}
 data: {"type":"TEXT_MESSAGE_END","messageId":"sum-1"}
 
-data: {"type":"RUN_FINISHED","runId":"run_1","threadId":"thread_1"}
+data: {"type":"RUN_FINISHED","runId":"run_1","threadId":"thread_1","outcome":{"type":"success"}}
 ```
 
 #### Example 3 — Tool call + tool result
@@ -517,28 +517,33 @@ data: {"type":"TOOL_CALL_END","toolCallId":"call-abc"}
 
 data: {"type":"TOOL_CALL_RESULT","messageId":"msg-tr","toolCallId":"call-abc","content":"Found 3 results."}
 
-data: {"type":"RUN_FINISHED","runId":"run_1","threadId":"thread_1"}
+data: {"type":"RUN_FINISHED","runId":"run_1","threadId":"thread_1","outcome":{"type":"success"}}
 ```
 
 #### Example 4 — Human-in-the-loop interrupt
 
-`humanInTheLoopMeta.isInterrupt=true` surfaces as a standalone TEXT_MESSAGE containing `interruptMessage` as the delta.
+`humanInTheLoopMeta.isInterrupt=true` ends the run with `RUN_FINISHED.outcome={type:"interrupt", interrupts:[…]}`. The pending tool call still streams (so the FE can render what it is approving); the interrupt prompt rides in `interrupts[].message`, not a TEXT_MESSAGE.
 
 ```
 # upstream
-data: {"returnCode":96200,"returnData":{"messages":[{"messageId":"hitl-1","role":"assistant","content":null,"humanInTheLoopMeta":{"isInterrupt":true,"interruptMessage":"Please confirm before deleting all records.","interruptContent":"ctx"}}]}}
+data: {"returnCode":96200,"returnData":{"messages":[{"messageId":"hitl-1","role":"assistant","content":null,"finish_reason":"tool_calls","tool_calls":[{"id":"call-del","type":"function","function":{"name":"delete_all","arguments":"{}"}}],"displayMeta":{"toolName":"delete_all"},"humanInTheLoopMeta":{"isInterrupt":true,"interruptMessage":"Please confirm before deleting all records."}}]}}
 data: [Done]
 
 # ragent response
 data: {"type":"RUN_STARTED","runId":"run_1","threadId":"thread_1"}
 
-data: {"type":"TEXT_MESSAGE_START","messageId":"hitl-1","role":"assistant"}
+data: {"type":"TOOL_CALL_START","toolCallId":"call-del","toolCallName":"delete_all","parentMessageId":"hitl-1"}
 
-data: {"type":"TEXT_MESSAGE_CONTENT","messageId":"hitl-1","delta":"Please confirm before deleting all records."}
+data: {"type":"TOOL_CALL_END","toolCallId":"call-del"}
 
-data: {"type":"TEXT_MESSAGE_END","messageId":"hitl-1"}
+data: {"type":"RUN_FINISHED","runId":"run_1","threadId":"thread_1","outcome":{"type":"interrupt","interrupts":[{"id":"hitl-1","reason":"tool_calls","message":"Please confirm before deleting all records.","toolCallId":"call-del","metadata":{"toolName":"delete_all"}}]}}
+```
 
-data: {"type":"RUN_FINISHED","runId":"run_1","threadId":"thread_1"}
+The client answers by resending the run with a `resume` array. `resolved` continues the upstream run (`inputData={"lastMessageId":"hitl-1","message":""}`); `cancelled` finishes with a `success` outcome and makes no upstream call.
+
+```
+# client → ragent (resolve)
+{"threadId":"thread_1","runId":"run_2","messages":[...],"tools":[],"state":null,"context":[],"forwardedProps":null,"resume":[{"interruptId":"hitl-1","status":"resolved"}]}
 ```
 
 #### Example 5 — Error scenarios

@@ -65,6 +65,47 @@ def test_legacy_bare_context_block_is_stripped() -> None:
     ]
 
 
+def test_interrupt_turn_is_filtered_from_history() -> None:
+    # An upstream HITL interrupt turn is a transient approval prompt, not a
+    # conversation message — consistent with the v3 stream (where it goes to
+    # RUN_FINISHED.outcome, never the message flow), it must not render in history.
+    payload = _session(
+        [
+            {"messageId": "u1", "role": "user", "content": "delete everything"},
+            {
+                "messageId": "hitl-1",
+                "role": "assistant",
+                "content": "Confirm?",
+                "humanInTheLoopMeta": {"isInterrupt": True, "interruptMessage": "Confirm?"},
+            },
+            {"messageId": "a1", "role": "assistant", "content": "Done."},
+        ]
+    )
+
+    out = map_session_payload(payload)
+
+    ids = [m["id"] for m in out["messages"]]
+    assert ids == ["u1", "a1"]  # the interrupt turn is dropped
+
+
+def test_non_interrupt_hitl_meta_is_not_filtered() -> None:
+    # humanInTheLoopMeta present but isInterrupt false/absent stays in history.
+    payload = _session(
+        [
+            {
+                "messageId": "a1",
+                "role": "assistant",
+                "content": "hi",
+                "humanInTheLoopMeta": {"isInterrupt": False},
+            }
+        ]
+    )
+
+    out = map_session_payload(payload)
+
+    assert [m["id"] for m in out["messages"]] == ["a1"]
+
+
 def test_double_encoded_content_is_unwrapped_then_stripped() -> None:
     # Upstream stores content JSON-double-encoded: a quoted string with literal
     # \n escapes. Decode that layer first, else `"\n\nWhat is X?"` survives.

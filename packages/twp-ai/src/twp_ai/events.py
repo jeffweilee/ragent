@@ -106,10 +106,43 @@ class ReasoningEndEvent(BaseEvent):
     type: Literal["REASONING_END"] = "REASONING_END"
 
 
+class Interrupt(BaseEvent):
+    """A human-in-the-loop pause the run is waiting on.
+
+    Carried inside RUN_FINISHED.outcome when the upstream flags
+    `humanInTheLoopMeta.isInterrupt`. `id` (the upstream messageId) is echoed
+    back as the resume `interruptId`; `reason` is the upstream `finish_reason`
+    (or "interrupt" when the turn carries no tool call).
+    """
+
+    id: str
+    reason: str
+    message: str | None = None
+    tool_call_id: str | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class RunFinishedSuccess(BaseEvent):
+    type: Literal["success"] = "success"
+
+
+class RunFinishedInterrupt(BaseEvent):
+    type: Literal["interrupt"] = "interrupt"
+    interrupts: list[Interrupt]
+
+
+RunFinishedOutcome = Annotated[
+    RunFinishedSuccess | RunFinishedInterrupt, Field(discriminator="type")
+]
+
+
 class RunFinishedEvent(BaseEvent):
     type: Literal["RUN_FINISHED"] = "RUN_FINISHED"
     run_id: str
     thread_id: str
+    # Present on /chatagent/v3 (always success | interrupt); omitted on the
+    # native agents that never set it (exclude_none drops the None default).
+    outcome: RunFinishedOutcome | None = None
 
 
 class RunErrorEvent(BaseEvent):

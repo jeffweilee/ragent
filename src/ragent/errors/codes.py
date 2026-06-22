@@ -71,6 +71,9 @@ class HttpErrorCode(StrEnum):
     CHATAGENT_RATE_LIMITED = "CHATAGENT_RATE_LIMITED"
     CHATAGENT_UPSTREAM_ERROR = "CHATAGENT_UPSTREAM_ERROR"
     CHATAGENT_TIMEOUT = "CHATAGENT_TIMEOUT"
+    # v3 resume payload the upstream cannot honour (>1 resolved interrupt — the
+    # upstream takes a single lastMessageId). Surfaces as a RUN_ERROR over 200.
+    CHATAGENT_INVALID_RESUME = "CHATAGENT_INVALID_RESUME"
 
     # LLM stream interrupt (502) — stream closed before [DONE] sentinel.
     LLM_STREAM_INTERRUPTED = "LLM_STREAM_INTERRUPTED"

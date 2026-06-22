@@ -223,9 +223,9 @@ Mounted at `POST /twp/v1/run`. Requires `TWP_DEFAULT_MODEL` env var. Standard au
 
 #### 3.4.7–3.4.8 `POST /chatagent/v3` — twp-ai protocol and session management
 
-> Full spec: [docs/spec/chatagent_v3.md](spec/chatagent_v3.md) — request/upstream conversion, session-id ownership (Model B), SSE event mapping (`TEXT_MESSAGE`/`REASONING`/`TOOL_CALL_*`/`RUN_ERROR`), error contract, and session-history reshaping (role mapping, machine-context strip, backward-compat legacy `<context>` strip).
+> Full spec: [docs/spec/chatagent_v3.md](spec/chatagent_v3.md) — request/upstream conversion, session-id ownership (Model B), SSE event mapping (`TEXT_MESSAGE`/`REASONING`/`TOOL_CALL_*`/`RUN_ERROR`), human-in-the-loop interrupts (`RUN_FINISHED.outcome` + `resume`), error contract, and session-history reshaping (role mapping, machine-context strip, backward-compat legacy `<context>` strip).
 
-Registered only when `CHATAGENT_API_URL` is set. Shares `CHATAGENT_API_URL`, rate limit, and timeout with `/chatagent/v2`. Every failure is emitted as `RUN_ERROR` over `200 text/event-stream` (v3 never returns HTTP 429/502/504). Session routes (`/sessionList`, `/session` GET/PUT/DELETE) are JSON proxies with twp-ai role mapping applied; failures use HTTP 504/502 (not `RUN_ERROR`). See [`docs/API.md §ChatAgent`](API.md#chatagent) for curl examples.
+Registered only when `CHATAGENT_API_URL` is set. Shares `CHATAGENT_API_URL`, rate limit, and timeout with `/chatagent/v2`. Every failure is emitted as `RUN_ERROR` over `200 text/event-stream` (v3 never returns HTTP 429/502/504). Human-in-the-loop: an upstream `isInterrupt` ends the run with `RUN_FINISHED.outcome={type:"interrupt", interrupts:[…]}` (success otherwise); the client answers via request `resume` (`resolved` → upstream `lastMessageId`; `cancelled` → no upstream call). Session routes (`/sessionList`, `/session` GET/PUT/DELETE) are JSON proxies with twp-ai role mapping applied; failures use HTTP 504/502 (not `RUN_ERROR`). See [`docs/API.md §ChatAgent`](API.md#chatagent) for curl examples.
 
 ---
 

@@ -280,14 +280,29 @@ def test_adk_agent_tool_result_produces_tool_call_result() -> None:
     assert result["toolCallId"] == tc_start["toolCallId"]
 
 
-def test_adk_agent_hitl_interrupt_surfaces_as_text_message() -> None:
+def test_adk_agent_success_outcome_on_normal_finish() -> None:
+    caller = FakeADKCaller(
+        messages=[UpstreamMessage(message_id="msg-1", role="assistant", content="hi")]
+    )
+    request = RunAgentInput.model_validate(_run_input())
+
+    events = _events(list(ADKAgent(caller).run(request, "m")))
+
+    finished = next(e for e in events if e["type"] == "RUN_FINISHED")
+    assert finished["outcome"] == {"type": "success"}
+
+
+def test_adk_agent_hitl_interrupt_surfaces_in_run_finished_outcome() -> None:
     caller = FakeADKCaller(
         messages=[
             UpstreamMessage(
                 message_id="hitl-1",
                 role="assistant",
+                finish_reason="tool_calls",
+                tool_calls=[{"id": "tc-9", "function": {"name": "book", "arguments": "{}"}}],
                 is_interrupt=True,
                 interrupt_message="Please confirm before proceeding.",
+                display_meta={"agentName": "planner"},
             ),
         ]
     )
@@ -295,12 +310,93 @@ def test_adk_agent_hitl_interrupt_surfaces_as_text_message() -> None:
 
     events = _events(list(ADKAgent(caller).run(request, "m")))
 
+    # The pending tool call still streams so the FE can render the approval.
     types = [e["type"] for e in events]
-    assert "TEXT_MESSAGE_START" in types
-    assert "TEXT_MESSAGE_CONTENT" in types
-    assert "TEXT_MESSAGE_END" in types
+    assert "TOOL_CALL_START" in types
+    assert "TEXT_MESSAGE_START" not in types  # interrupt prompt is not a text block
+    finished = next(e for e in events if e["type"] == "RUN_FINISHED")
+    assert finished["outcome"]["type"] == "interrupt"
+    interrupt = finished["outcome"]["interrupts"][0]
+    assert interrupt == {
+        "id": "hitl-1",
+        "reason": "tool_calls",
+        "message": "Please confirm before proceeding.",
+        "toolCallId": "tc-9",
+        "metadata": {"agentName": "planner"},
+    }
+
+
+def test_adk_agent_interrupt_tool_call_id_matches_streamed_fallback() -> None:
+    """A tool call with no upstream id must carry the SAME synthetic id on the
+    TOOL_CALL_START event and in the interrupt outcome, so the FE can correlate."""
+    caller = FakeADKCaller(
+        messages=[
+            UpstreamMessage(
+                message_id="hitl-x",
+                role="assistant",
+                finish_reason="tool_calls",
+                tool_calls=[{"function": {"name": "book", "arguments": "{}"}}],  # no "id"
+                is_interrupt=True,
+                interrupt_message="Confirm?",
+            ),
+        ]
+    )
+    request = RunAgentInput.model_validate(_run_input())
+
+    events = _events(list(ADKAgent(caller).run(request, "m")))
+
+    tc_start = next(e for e in events if e["type"] == "TOOL_CALL_START")
+    finished = next(e for e in events if e["type"] == "RUN_FINISHED")
+    interrupt = finished["outcome"]["interrupts"][0]
+    assert tc_start["toolCallId"] == "hitl-x-0"
+    assert interrupt["toolCallId"] == tc_start["toolCallId"]
+
+
+def test_adk_agent_interrupt_with_content_streams_text_and_records_interrupt() -> None:
+    caller = FakeADKCaller(
+        messages=[
+            UpstreamMessage(
+                message_id="hitl-3",
+                role="assistant",
+                content="I can delete these. ",
+                is_interrupt=True,
+                interrupt_message="Confirm?",
+            ),
+        ]
+    )
+    request = RunAgentInput.model_validate(_run_input())
+
+    events = _events(list(ADKAgent(caller).run(request, "m")))
+
+    # The assistant's visible text still streams as a normal text block …
     content = next(e for e in events if e["type"] == "TEXT_MESSAGE_CONTENT")
-    assert content["delta"] == "Please confirm before proceeding."
+    assert content["delta"] == "I can delete these. "
+    # … and the interrupt is still surfaced in the outcome.
+    finished = next(e for e in events if e["type"] == "RUN_FINISHED")
+    assert finished["outcome"]["type"] == "interrupt"
+    assert finished["outcome"]["interrupts"][0]["message"] == "Confirm?"
+
+
+def test_adk_agent_interrupt_without_tool_call_defaults_reason() -> None:
+    caller = FakeADKCaller(
+        messages=[
+            UpstreamMessage(
+                message_id="hitl-2",
+                role="assistant",
+                is_interrupt=True,
+                interrupt_message="Confirm?",
+            ),
+        ]
+    )
+    request = RunAgentInput.model_validate(_run_input())
+
+    events = _events(list(ADKAgent(caller).run(request, "m")))
+
+    finished = next(e for e in events if e["type"] == "RUN_FINISHED")
+    interrupt = finished["outcome"]["interrupts"][0]
+    assert interrupt["reason"] == "interrupt"
+    assert "toolCallId" not in interrupt  # no tool call → omitted
+    assert "metadata" not in interrupt  # no displayMeta → omitted
 
 
 def test_adk_agent_passes_request_and_model_to_caller() -> None:

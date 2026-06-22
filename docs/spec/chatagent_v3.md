@@ -61,6 +61,20 @@ transport to an `ADKCaller` protocol; the concrete proxy lives ragent-side in
   matching v2).
 - `tools`/`forwardedProps` are accepted but not forwarded; client tool-call
   continuation is not yet implemented.
+- **Human-in-the-loop resume:** request `resume` is optional —
+  `Array<{interruptId, status: "resolved" | "cancelled", payload?}>` answering a
+  prior `RUN_FINISHED` interrupt. When present, the turn answers the interrupt
+  instead of sending a new user message:
+  - `status="resolved"` → upstream `inputData` becomes
+    `{"lastMessageId": interruptId, "message": ""}` (the upstream only supports
+    go / no-go, so `payload` is accepted but **not** forwarded). The composed
+    user message / `<hidden>` preamble is **not** sent on a resume turn.
+  - `status="cancelled"` → no upstream call is made; the run finishes with a
+    `success` outcome and an empty body.
+  - The upstream takes a single `lastMessageId`, so **more than one `resolved`**
+    interrupt in one request is rejected as a `RUN_ERROR`
+    (`CHATAGENT_INVALID_RESUME`). One `resolved` alongside any number of
+    `cancelled` entries is fine.
 
 **Upstream → response conversion:**
 - Each SSE line is `data: {json}\n\n`; the stream terminates with `data: [Done]`.
@@ -76,9 +90,24 @@ transport to an `ADKCaller` protocol; the concrete proxy lives ragent-side in
 - `finish_reason="tool_calls"` + `tool_calls` → `TOOL_CALL_START` / `TOOL_CALL_ARGS`
   / `TOOL_CALL_END` events; the upstream's tool-result turn (`role="tool"`) →
   `TOOL_CALL_RESULT`.
-- `humanInTheLoopMeta.isInterrupt=true` → standalone `TEXT_MESSAGE` carrying
-  `interruptMessage` as the delta.
-- `[Done]` sentinel → `RUN_FINISHED`.
+- `humanInTheLoopMeta.isInterrupt=true` → the run pauses. The interrupt does
+  **not** get its own block; instead it is collected into `RUN_FINISHED.outcome`
+  (below). The interrupt message's own `content` / `tool_calls` still stream
+  normally (so the frontend can render the pending tool call it must approve).
+- `[Done]` sentinel → `RUN_FINISHED`. Every v3 `RUN_FINISHED` carries an
+  `outcome` (a breaking add vs the native `/twp/v1` agents, which omit it):
+  - `outcome = {"type": "success"}` when the turn produced no interrupt.
+  - `outcome = {"type": "interrupt", "interrupts": [Interrupt, …]}` when one or
+    more upstream messages flagged `isInterrupt`. Each `Interrupt` is
+    `{id, reason, message?, toolCallId?, metadata?}`:
+    - `id` = upstream `messageId` (echoed back as the resume `interruptId`).
+    - `reason` = upstream `finish_reason`, or `"interrupt"` when the turn carries
+      no tool call.
+    - `message` = `humanInTheLoopMeta.interruptMessage` (omitted when absent).
+    - `toolCallId` = `tool_calls[0].id` (omitted when the turn has no tool call).
+    - `metadata` = the raw `displayMeta` object (omitted when absent).
+    - `responseSchema` / `expiresAt` are reserved in the wire type but not
+      populated — the upstream does not yet emit them.
 - **No `<hidden>` stripping on the stream:** the SSE deltas are the upstream
   agent's own generated output (assistant text / reasoning / tool); the
   `<hidden>` context/state preamble exists only on the user turn sent upstream
@@ -86,10 +115,11 @@ transport to an `ADKCaller` protocol; the concrete proxy lives ragent-side in
   here. Hidden stripping applies only to the session-history read (§3.4.8 below).
 
 **Error contract (breaking change vs v2):** every failure — rate-limit, upstream
-`returnCode != 96200`, 5xx, and timeout — is emitted as a single `RUN_ERROR`
-event over a `200 text/event-stream` response, with `code` set to
-`CHATAGENT_RATE_LIMITED` / `CHATAGENT_UPSTREAM_ERROR` / `CHATAGENT_TIMEOUT`. v3
-never returns an HTTP `429`/`502`/`504` (v2 does).
+`returnCode != 96200`, 5xx, timeout, and an invalid `resume` (>1 resolved) — is
+emitted as a single `RUN_ERROR` event over a `200 text/event-stream` response,
+with `code` set to `CHATAGENT_RATE_LIMITED` / `CHATAGENT_UPSTREAM_ERROR` /
+`CHATAGENT_TIMEOUT` / `CHATAGENT_INVALID_RESUME`. v3 never returns an HTTP
+`429`/`502`/`504` (v2 does).
 
 ---
 
@@ -106,7 +136,11 @@ message shape changes, while the upstream wire contract is untouched.
   user turn, which carries the block); other metadata is passed through.
 - `GET /chatagent/v3/session?session=<id>` — the upstream session envelope
   (`session`, …) is preserved, `sessionName` is stripped (same reason as
-  sessionList), and every `messages[]` entry is reshaped to
+  sessionList), **human-in-the-loop interrupt turns (`humanInTheLoopMeta.isInterrupt=true`)
+  are dropped entirely** (they are transient approval prompts surfaced live via
+  `RUN_FINISHED.outcome`, §3.4.7 — not conversation messages, so they must not
+  render in history; this keeps the read consistent with the stream), and every
+  remaining `messages[]` entry is reshaped to
   `{id, role, content, createTime, updateTime}`:
   - `createTime` / `updateTime` are the upstream persistence timestamps passed
     through verbatim (null when the upstream omits them).

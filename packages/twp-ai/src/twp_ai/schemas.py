@@ -70,6 +70,20 @@ class ContextItem(TwpAiModel):
     value: str
 
 
+class ResumeItem(TwpAiModel):
+    """One human-in-the-loop interrupt the client is answering.
+
+    `interrupt_id` echoes the `Interrupt.id` (upstream messageId) the run paused
+    on. `resolved` continues the upstream run (sent as `lastMessageId`);
+    `cancelled` drops it with no upstream call. `payload` is accepted but not
+    forwarded — the upstream only supports go / no-go for now.
+    """
+
+    interrupt_id: str
+    status: Literal["resolved", "cancelled"]
+    payload: Any = None
+
+
 class RunAgentInput(TwpAiModel):
     # Session id. Optional on the wire: a brand-new conversation has none yet, so
     # the client may omit it and the *server* assigns one (ragent mints it for
@@ -85,3 +99,6 @@ class RunAgentInput(TwpAiModel):
     context: list[ContextItem]
     forwarded_props: Any
     model: str | None = None
+    # Human-in-the-loop continuation. When present, this turn answers a prior
+    # interrupt instead of sending a new user message (see ResumeItem).
+    resume: list[ResumeItem] | None = None

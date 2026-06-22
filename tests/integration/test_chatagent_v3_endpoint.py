@@ -80,6 +80,62 @@ def test_v3_full_stream_round_trip():
     )
 
 
+def test_v3_interrupt_ends_run_with_interrupt_outcome():
+    app, http_mock = _make_app()
+    http_mock.send.return_value = _resp_mock(
+        [
+            _msg_line(
+                None,
+                message_id="hitl-1",
+                finish_reason="tool_calls",
+                tool_calls=[{"id": "tc-1", "function": {"name": "book", "arguments": "{}"}}],
+                hitl={"isInterrupt": True, "interruptMessage": "Confirm booking?"},
+            ),
+            _done_line(),
+        ]
+    )
+
+    with TestClient(app) as client:
+        r = client.post("/chatagent/v3", json=_run_input(), headers={"X-User-Id": "alice"})
+
+    assert r.status_code == 200
+    events = _events(r.text)
+    finished = next(e for e in events if e["type"] == "RUN_FINISHED")
+    assert finished["outcome"]["type"] == "interrupt"
+    interrupt = finished["outcome"]["interrupts"][0]
+    assert interrupt["id"] == "hitl-1"
+    assert interrupt["message"] == "Confirm booking?"
+    assert interrupt["toolCallId"] == "tc-1"
+
+
+def test_v3_resume_resolved_continues_upstream():
+    app, http_mock = _make_app()
+    http_mock.send.return_value = _resp_mock([_msg_line("done", message_id="m2"), _done_line()])
+    body = {**_run_input(), "resume": [{"interruptId": "hitl-1", "status": "resolved"}]}
+
+    with TestClient(app) as client:
+        r = client.post("/chatagent/v3", json=body, headers={"X-User-Id": "alice"})
+
+    assert r.status_code == 200
+    payload = http_mock.build_request.call_args.kwargs["json"]
+    assert payload["inputData"] == {"lastMessageId": "hitl-1", "message": ""}
+    assert [e["type"] for e in _events(r.text)][-1] == "RUN_FINISHED"
+
+
+def test_v3_resume_cancelled_finishes_without_upstream():
+    app, http_mock = _make_app()
+    body = {**_run_input(), "resume": [{"interruptId": "hitl-1", "status": "cancelled"}]}
+
+    with TestClient(app) as client:
+        r = client.post("/chatagent/v3", json=body, headers={"X-User-Id": "alice"})
+
+    assert r.status_code == 200
+    http_mock.send.assert_not_called()
+    events = _events(r.text)
+    assert [e["type"] for e in events] == ["RUN_STARTED", "RUN_FINISHED"]
+    assert events[-1]["outcome"] == {"type": "success"}
+
+
 def test_v3_upstream_timeout_emits_run_error():
     app, http_mock = _make_app()
     http_mock.send.side_effect = httpx.TimeoutException("t/o")
@@ -167,6 +223,32 @@ def test_v3_session_get_maps_roles_and_strips_hidden():
             "updateTime": None,
         },
     ]
+
+
+def test_v3_session_get_drops_interrupt_turns():
+    app, http_mock = _make_app()
+    http_mock.get.return_value = _get_ok(
+        {
+            "session": "s1",
+            "sessionName": "chat",
+            "messages": [
+                {"messageId": "u1", "role": "user", "content": "delete all"},
+                {
+                    "messageId": "hitl-1",
+                    "role": "assistant",
+                    "content": "Confirm?",
+                    "humanInTheLoopMeta": {"isInterrupt": True, "interruptMessage": "Confirm?"},
+                },
+                {"messageId": "a1", "role": "assistant", "content": "Done."},
+            ],
+        }
+    )
+
+    with TestClient(app) as client:
+        r = client.get("/chatagent/v3/session?session=s1", headers={"X-User-Id": "alice"})
+
+    assert r.status_code == 200
+    assert [m["id"] for m in r.json()["messages"]] == ["u1", "a1"]
 
 
 def test_v3_session_list_strips_session_names():

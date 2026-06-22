@@ -35,6 +35,16 @@ _SSE_PREFIX_LEN = len(_SSE_PREFIX)
 _SSE_DONE = "[Done]"
 
 
+class ResumeValidationError(Exception):
+    """A /chatagent/v3 resume payload the upstream cannot honour.
+
+    Carries `error_code` so ADKAgent surfaces it as a RUN_ERROR (v3 maps every
+    failure onto a 200 stream, never an HTTP 4xx).
+    """
+
+    error_code = HttpErrorCode.CHATAGENT_INVALID_RESUME
+
+
 class ADKCaller:
     """twp-ai upstream proxy backend for the ChatAgent service."""
 
@@ -60,6 +70,11 @@ class ADKCaller:
     def stream_deltas(
         self, request: RunAgentInput, model: str
     ) -> Generator[UpstreamMessage, None, None]:
+        input_data = _resume_input_data(request)
+        if input_data is None:
+            # All interrupts were cancelled — no upstream call; the run finishes
+            # successfully with an empty body.
+            return
         payload = {
             "metadata": {
                 "apName": self._ap_name,
@@ -67,7 +82,7 @@ class ADKCaller:
                 "userToken": self._user_token,
                 "session": request.thread_id,
             },
-            "inputData": {"message": _compose_message(request)},
+            "inputData": input_data,
             "stream": True,
         }
 
@@ -161,12 +176,34 @@ def _parse_message(raw: dict) -> UpstreamMessage:
         content=raw.get("content"),
         agent_type=message_meta.get("langgraph_node"),
         tool_name=display_meta.get("toolName"),
+        display_meta=display_meta or None,
         tool_calls=raw.get("tool_calls") or [],
         finish_reason=raw.get("finish_reason"),
         is_interrupt=bool(hitl.get("isInterrupt")),
         interrupt_message=hitl.get("interruptMessage"),
         interrupt_content=hitl.get("interruptContent"),
     )
+
+
+def _resume_input_data(request: RunAgentInput) -> dict | None:
+    """Build the upstream `inputData` for a turn.
+
+    A normal turn sends `{message}`. A resume turn answers a prior interrupt:
+    `resolved` continues the upstream run via `{lastMessageId, message: ""}`
+    (the upstream only supports go / no-go, so `payload` is dropped); a turn
+    whose interrupts are all `cancelled` returns ``None`` so no upstream call is
+    made. More than one `resolved` interrupt is rejected — the upstream takes a
+    single `lastMessageId`.
+    """
+    resume = request.resume
+    if not resume:
+        return {"message": _compose_message(request)}
+    resolved = [item for item in resume if item.status == "resolved"]
+    if len(resolved) > 1:
+        raise ResumeValidationError("resume accepts at most one resolved interrupt per turn")
+    if not resolved:
+        return None
+    return {"lastMessageId": resolved[0].interrupt_id, "message": ""}
 
 
 def _compose_message(request: RunAgentInput) -> str:

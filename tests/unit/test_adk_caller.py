@@ -8,7 +8,7 @@ import httpx
 import pytest
 from twp_ai.schemas import RunAgentInput
 
-from ragent.clients.adk_caller import ADKCaller
+from ragent.clients.adk_caller import ADKCaller, ResumeValidationError
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.upstream import UpstreamServiceError, UpstreamTimeoutError
 from tests.helpers import done_line as _done_line
@@ -23,6 +23,7 @@ def _request(
     tools: list[dict] | None = None,
     state: object = None,
     context: list[dict] | None = None,
+    resume: list[dict] | None = None,
 ) -> RunAgentInput:
     return RunAgentInput.model_validate(
         {
@@ -34,6 +35,7 @@ def _request(
             "state": state,
             "context": context or [],
             "forwardedProps": None,
+            "resume": resume,
         }
     )
 
@@ -374,3 +376,70 @@ def test_stream_deltas_truncated_stream_raises_service_error() -> None:
     with pytest.raises(UpstreamServiceError) as exc:
         list(caller.stream_deltas(_request(), "m"))
     assert exc.value.error_code == HttpErrorCode.CHATAGENT_UPSTREAM_ERROR
+
+
+def test_stream_deltas_parses_display_meta() -> None:
+    http_mock = MagicMock(spec=httpx.Client)
+    http_mock.send.return_value = _resp_mock(
+        [_msg_line("hi", message_id="msg-1", tool_name="book"), _done_line()]
+    )
+    caller = _make_caller(http_mock)
+
+    msgs = list(caller.stream_deltas(_request(), "m"))
+
+    assert msgs[0].display_meta == {"toolName": "book"}
+
+
+def test_stream_deltas_resume_resolved_sends_last_message_id() -> None:
+    http_mock = MagicMock(spec=httpx.Client)
+    http_mock.send.return_value = _resp_mock([_done_line()])
+    caller = _make_caller(http_mock)
+    request = _request(resume=[{"interruptId": "hitl-1", "status": "resolved"}])
+
+    list(caller.stream_deltas(request, "m"))
+
+    payload = http_mock.build_request.call_args.kwargs["json"]
+    assert payload["inputData"] == {"lastMessageId": "hitl-1", "message": ""}
+    assert payload["metadata"]["session"] == "thread_1"
+
+
+def test_stream_deltas_resume_drops_payload() -> None:
+    """The upstream only supports go / no-go — resume payload is not forwarded."""
+    http_mock = MagicMock(spec=httpx.Client)
+    http_mock.send.return_value = _resp_mock([_done_line()])
+    caller = _make_caller(http_mock)
+    request = _request(
+        resume=[{"interruptId": "hitl-1", "status": "resolved", "payload": {"x": 1}}]
+    )
+
+    list(caller.stream_deltas(request, "m"))
+
+    payload = http_mock.build_request.call_args.kwargs["json"]
+    assert "payload" not in payload["inputData"]
+
+
+def test_stream_deltas_resume_cancelled_skips_upstream() -> None:
+    http_mock = MagicMock(spec=httpx.Client)
+    caller = _make_caller(http_mock)
+    request = _request(resume=[{"interruptId": "hitl-1", "status": "cancelled"}])
+
+    msgs = list(caller.stream_deltas(request, "m"))
+
+    assert msgs == []
+    http_mock.send.assert_not_called()
+
+
+def test_stream_deltas_resume_multiple_resolved_raises() -> None:
+    http_mock = MagicMock(spec=httpx.Client)
+    caller = _make_caller(http_mock)
+    request = _request(
+        resume=[
+            {"interruptId": "hitl-1", "status": "resolved"},
+            {"interruptId": "hitl-2", "status": "resolved"},
+        ]
+    )
+
+    with pytest.raises(ResumeValidationError) as exc:
+        list(caller.stream_deltas(request, "m"))
+    assert exc.value.error_code == HttpErrorCode.CHATAGENT_INVALID_RESUME
+    http_mock.send.assert_not_called()

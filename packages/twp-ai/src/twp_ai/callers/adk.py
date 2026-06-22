@@ -32,6 +32,7 @@ class UpstreamMessage:
     content: str | None = None
     agent_type: str | None = None  # messageMeta.langgraph_node: planner | commander | summarizer
     tool_name: str | None = None  # displayMeta.toolName
+    display_meta: dict | None = None  # raw displayMeta — surfaced as Interrupt.metadata
     tool_calls: list[dict] = field(default_factory=list)
     finish_reason: str | None = None
     is_interrupt: bool = False

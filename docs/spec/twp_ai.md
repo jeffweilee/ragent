@@ -9,7 +9,7 @@
 
 ## Run input
 
-Required fields: `threadId`, `runId`, `state`, `messages`, `tools`, `context`, `forwardedProps`. Optional: `parentRunId`, `model` (falls back to `TWP_DEFAULT_MODEL` env var).
+Required fields: `threadId`, `runId`, `state`, `messages`, `tools`, `context`, `forwardedProps`. Optional: `parentRunId`, `model` (falls back to `TWP_DEFAULT_MODEL` env var), `resume` (human-in-the-loop continuation — consumed only by the `/chatagent/v3` ADK proxy; the native runtime ignores it; see [chatagent_v3.md](chatagent_v3.md)).
 
 Within each entry of `messages`, `id` is optional — the frontend assigns it and ragent never consumes it (only `role`/`content`/`toolCalls`/`toolCallId` are read), so a freshly-typed user message may omit it. Output-event `messageId`s are taken from the upstream `messages[].messageId`, never from this input `id`.
 
@@ -51,7 +51,7 @@ Within each entry of `messages`, `id` is optional — the frontend assigns it an
 | `TOOL_CALL_ARGS` | Tool argument fragment |
 | `TOOL_CALL_END` | Tool-call block complete |
 | `TOOL_CALL_RESULT` | Tool execution result (server-side tool flows) |
-| `RUN_FINISHED` | Run complete (no error) |
+| `RUN_FINISHED` | Run complete (no error). The `/chatagent/v3` ADK proxy adds an `outcome` field (`{type:"success"}` or `{type:"interrupt", interrupts:[…]}`); the native runtime omits it. |
 | `RUN_ERROR` | Run failed; `message`, `code` fields present |
 
 `tool_choice=auto` — the LLM decides whether to call a tool. `TOOL_CALL_ARGS` may be emitted as a single complete delta when the underlying provider adapter only exposes accumulated arguments.
