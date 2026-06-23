@@ -48,16 +48,20 @@ make test-gate    # unit + integration only (pre-commit gate)
 src/ragent/
   api.py / worker.py / reconciler.py  — three process entrypoints
   bootstrap/        — composition root, app factory, schema init, logging
-  commands/         — slash commands Depends for chat agent route
-  routers/          — FastAPI routers: ingest, chat, retrieve, feedback, mcp, health
-  services/         — business logic: IngestService
-  repositories/     — DB access: DocumentRepository
+  routers/          — FastAPI routers: ingest, chat, retrieve, feedback, mcp, health, admin
+  services/         — business logic: IngestService, embedding lifecycle
+  repositories/     — DB access: DocumentRepository, FeedbackRepository
   pipelines/        — Haystack pipelines: ingest, retrieval
-  plugins/          — extractor plugins: VectorExtractor, StubGraphExtractor
+  extractors/       — pluggable extractors: VectorExtractor, StubGraphExtractor
+  workers/          — TaskIQ task entrypoints: ingest, backfill, heartbeat
   clients/          — 3rd-party clients: EmbeddingClient, LLMClient, RerankClient
   mcp_hub/          — standalone FastMCP hub (separate process)
   storage/          — MinIO site registry
   auth/             — JWT verification, permission deps
+  middleware/       — request logging, TaskIQ context propagation
+  security/         — archive (zip bomb) guard
+  errors/           — error codes, RFC 9457 problem details
+  utility/          — env/datetime helpers, feedback token HMAC
   schemas/          — Pydantic request/response models
 migrations/         — Alembic SQL + schema.sql snapshot
 resources/es/       — Elasticsearch index/pipeline/alias definitions

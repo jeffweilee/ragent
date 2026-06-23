@@ -44,7 +44,7 @@
 >   header. TTL 5 min; expired/unknown buffer → `RUN_ERROR(CHATAGENT_STREAM_EXPIRED)`,
 >   client falls back to `GET /chatagent/v3/session`.
 
-**Counter: 完成 5 / 未完成 1 / descope 0**
+**Counter: 完成 6 / 未完成 1 / descope 0**
 
 | # | Category | Task | Status | Owner |
 |---|---|---|:---:|---|

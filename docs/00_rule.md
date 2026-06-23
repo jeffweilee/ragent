@@ -39,7 +39,7 @@
 
 Any further specifics (constraints, env vars, edge cases, references) follow as additional `•` bullets in the same cell. Do not write the task as a single prose paragraph.
 
-> **Note:** Items in `docs/00_plan_done.md` were created before this 3-field rule and are grandfathered with 2 fields (Achieve + Deliver). The 3-field format is required for any new item added from this point forward.
+> **Note:** Items already present in `docs/00_plan.md` or `docs/00_plan_done.md` before this 3-field rule was introduced are grandfathered with 2 fields (Achieve + Deliver) — do not retrofit a Success criteria bullet onto historical rows. The 3-field format is required for any new item added from this point forward.
 
 **Track counter (mandatory):** immediately below every track heading, add a bold counter line:
 
