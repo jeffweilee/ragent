@@ -307,16 +307,16 @@ Auth / Utility / Security 為橫切層；MCP Hub 為獨立 process
 | 項目 | 說明 |
 |---|---|
 | **路徑** | `src/ragent/workers/` |
-| **責任** | `@broker.task` 定義；worker process（`python -m ragent.worker`）的進入點，承接 `ingest.pipeline`／`embedding.backfill`／heartbeat。Task body 呼叫 `pipelines/`、`repositories/`，不含自身業務規則之外的邏輯。 |
-| **允許依賴** | `bootstrap/`（`broker`、`metrics`、共用 `Container`）、`pipelines/`、`repositories/`、`errors/`、`utility/`。 |
+| **責任** | `@broker.task` 定義；worker process（`python -m ragent.worker`）的進入點，承接 `ingest.pipeline`／`ingest.backfill_candidate`／heartbeat。Task body 呼叫 `pipelines/`、`repositories/`、`services/`，不含自身業務規則之外的邏輯。 |
+| **允許依賴** | `bootstrap/`（`broker`、`metrics`、共用 `Container`）、`pipelines/`、`repositories/`、`services/`、`schemas/`、`errors/`、`utility/`。 |
 | **禁止事項** | ❌ 不得在 task body 內跨 external call 持有 DB transaction（同 `00_spec.md §3.1` locking）。❌ 不得被 `routers/`、`services/` 直接 import（只能透過 `kiq()` 派送）。❌ 不得讀取 `os.environ`。 |
 
 **模組清單：**
 
 | 檔案 | 職責 |
 |---|---|
-| `ingest.py` | `ingest.pipeline` task — TX-A claim → pipeline body（pipelines/ingest）→ TX-B 終態；`ingest.supersede` 選舉 |
-| `backfill.py` | `embedding.backfill` task（T-EM-R.9）— scroll stable_index、補嵌入到 candidate_index |
+| `ingest.py` | `ingest.pipeline` task — TX-A claim → pipeline body（pipelines/ingest）→ TX-B 終態；`ingest.supersede` 選舉（呼叫 `services/ingest_service.IngestService`） |
+| `backfill.py` | `ingest.backfill_candidate` task（T-EM-R.9）— scroll stable_index、補嵌入到 candidate_index |
 | `heartbeat.py` | PENDING row 30s heartbeat 背景迴圈 |
 
 ---
@@ -359,7 +359,7 @@ Errors      → (stdlib only)
 Utility     → (stdlib only)
 Security    → (stdlib only)
 Bootstrap   → 全部（唯一可以組裝所有層的地方）
-Workers     → Bootstrap(broker/metrics/Container), Pipelines, Repositories, Errors, Utility
+Workers     → Bootstrap(broker/metrics/Container), Pipelines, Repositories, Services, Schemas, Errors, Utility
 Reconciler  → Repositories, Bootstrap(Container), Errors, Utility
 MCP Hub     → Utility, Errors（完全獨立 subprocess）
 
