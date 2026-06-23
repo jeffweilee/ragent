@@ -9,7 +9,7 @@ over a 200 stream, never as an HTTP 4xx/5xx code.
 from __future__ import annotations
 
 import time
-from collections.abc import Generator
+from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor
 from typing import Annotated
 
@@ -17,12 +17,11 @@ import httpx
 import structlog
 from fastapi import APIRouter, Depends, Header, Request, Response
 from fastapi.responses import StreamingResponse
-from twp_ai.agents.adk import ADKAgent
+from twp_ai.agent import Agent
 from twp_ai.events import RunErrorEvent, to_sse
 from twp_ai.schemas import RunAgentInput
 
 from ragent.auth.deps import get_user_id
-from ragent.clients.adk_caller import ADKCaller
 from ragent.clients.chat_stream_store import ChatStreamStore
 from ragent.clients.rate_limiter import RateLimiter
 from ragent.errors.codes import HttpErrorCode
@@ -33,6 +32,12 @@ from ragent.utility.id_gen import new_id
 
 logger = structlog.get_logger(__name__)
 
+# (user_id, user_token) -> Agent. Built once in the composition root (closing
+# over the upstream http_client/api_url/ap_name/auth/timeout) and called per
+# request, since the underlying caller carries per-request user/token state
+# and so cannot be injected as a singleton Agent instance.
+AgentFactory = Callable[[str, str], Agent]
+
 
 def create_chatagent_v3_router(
     http_client: httpx.Client,
@@ -41,6 +46,8 @@ def create_chatagent_v3_router(
     chatagent_api_url: str | None = None,
     chatagent_sessionlist_api_url: str | None = None,
     chatagent_session_api_url: str | None = None,
+    *,
+    agent_factory: AgentFactory,
     rate_limiter: RateLimiter | None = None,
     rate_limit: int = 60,
     rate_limit_window: int = 60,
@@ -108,16 +115,7 @@ def create_chatagent_v3_router(
                 )
 
             raw_token = request.headers.get(jwt_header.lower()) or ""
-            caller = ADKCaller(
-                http_client=http_client,
-                api_url=chatagent_api_url,
-                ap_name=chatagent_ap_name,
-                user_id=user_id,
-                user_token=raw_token,
-                auth=chatagent_auth,
-                timeout=timeout,
-            )
-            agent = ADKAgent(caller)
+            agent = agent_factory(user_id, raw_token)
             logger.info("chatagent_v3.request", user_id=user_id)
 
             # No store wired (e.g. Redis down at boot): fall back to the legacy
@@ -294,7 +292,7 @@ def _spawn_producer(
     pool: ThreadPoolExecutor,
     store: ChatStreamStore,
     key: str,
-    agent: ADKAgent,
+    agent: Agent,
     body: RunAgentInput,
     model: str,
 ) -> None:
@@ -302,7 +300,7 @@ def _spawn_producer(
 
     Running off the request task (not awaited) is deliberate: it survives client
     disconnect — so the answer finishes and stays resumable within the TTL. The
-    pool bounds how many can run at once. ADKAgent.run never raises (it ends every
+    pool bounds how many can run at once. Agent.run never raises (it ends every
     run with RUN_FINISHED/RUN_ERROR), so the worst case is a finished buffer;
     mark_done always runs to close it.
     """

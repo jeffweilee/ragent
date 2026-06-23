@@ -13,6 +13,7 @@ from ragent.routers.chatagent_v3 import create_chatagent_v3_router
 from tests.helpers import done_line as _done_line
 from tests.helpers import msg_line as _msg_line
 from tests.helpers import parse_sse_events as _events
+from tests.helpers import real_agent_factory as _real_agent_factory
 from tests.helpers import resp_mock as _resp_mock
 
 
@@ -27,6 +28,9 @@ def _make_app():
             chatagent_api_url="http://upstream",
             chatagent_sessionlist_api_url="http://sessionlist",
             chatagent_session_api_url="http://session",
+            agent_factory=_real_agent_factory(
+                http_mock, api_url="http://upstream", ap_name="IntegAP", auth="Bearer up"
+            ),
         )
     )
     return app, http_mock

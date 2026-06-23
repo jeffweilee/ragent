@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from unittest.mock import MagicMock
 
 import fakeredis
@@ -17,6 +18,7 @@ from tests.helpers import done_line as _done_line
 from tests.helpers import msg_line as _msg_line
 from tests.helpers import parse_sse_events as _events
 from tests.helpers import parse_sse_ids as _ids
+from tests.helpers import real_agent_factory as _real_agent_factory
 from tests.helpers import resp_mock as _resp_mock
 
 
@@ -33,6 +35,9 @@ def _make_app(
         chatagent_ap_name="TestAP",
         chatagent_auth="Bearer up",
         chatagent_api_url="http://upstream",
+        agent_factory=_real_agent_factory(
+            http_mock, api_url="http://upstream", ap_name="TestAP", auth="Bearer up"
+        ),
         rate_limiter=rate_limiter,
         chat_stream_store=chat_stream_store,
         stream_idle_timeout=stream_idle_timeout,
@@ -378,3 +383,48 @@ def test_v3_reconnect_is_owner_scoped() -> None:
 
     events = _events(r.text)
     assert events[-1]["code"] == HttpErrorCode.CHATAGENT_STREAM_EXPIRED
+
+
+def test_v3_router_does_not_import_concrete_agent_or_caller_classes() -> None:
+    # SOLID/DIP regression: the router must depend only on the injected
+    # `agent_factory` callable (typed against the twp_ai.agent.Agent Protocol),
+    # never on a concrete Agent/Caller implementation. Swapping the upstream
+    # brain must not require touching this module.
+    import ragent.routers.chatagent_v3 as router_module
+
+    source = inspect.getsource(router_module)
+    assert "ADKAgent" not in source
+    assert "ADKCaller" not in source
+
+
+def test_v3_post_uses_injected_agent_factory_not_a_hardcoded_backend() -> None:
+    # A stub Agent satisfying only the Protocol must work — proving the
+    # router never constructs its own caller/agent internally.
+    calls: list[tuple[str, str]] = []
+
+    class _StubAgent:
+        def run(self, request, model):
+            calls.append((request.thread_id or "", model))
+            yield _done_line()
+
+    def _factory(user_id: str, user_token: str):
+        return _StubAgent()
+
+    http_mock = MagicMock(spec=httpx.Client)
+    app = FastAPI()
+    app.include_router(
+        create_chatagent_v3_router(
+            http_client=http_mock,
+            chatagent_ap_name="TestAP",
+            chatagent_auth="Bearer up",
+            chatagent_api_url="http://upstream",
+            agent_factory=_factory,
+        )
+    )
+
+    with TestClient(app) as client:
+        r = client.post("/chatagent/v3", json=_run_input(), headers={"X-User-Id": "alice"})
+
+    assert r.status_code == 200
+    assert calls  # the injected stub agent's run() was actually invoked
+    http_mock.send.assert_not_called()  # the router itself never talks to ADK

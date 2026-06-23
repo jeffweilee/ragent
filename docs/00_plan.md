@@ -94,3 +94,36 @@
 | T-CAv3S.HITL1 | Red+Green | • **Achieve:** Human-in-the-loop interrupt outcome — an upstream `humanInTheLoopMeta.isInterrupt` no longer emits a standalone TEXT_MESSAGE; instead the run ends with `RUN_FINISHED.outcome={type:"interrupt", interrupts:[{id,reason,message?,toolCallId?,metadata?}]}` (success outcome otherwise). The interrupt message's own content / tool-call deltas still stream. `outcome` is emitted only on the v3 ADK path (native `/twp/v1` omits it). **PR #192 review:** the interrupt `toolCallId` reuses the stream's synthetic `{message_id}-{index}` fallback via a shared `_tool_call_id` helper, so a tool call missing an upstream `id` correlates with its `TOOL_CALL_START`.<br>• **Deliver:** `packages/twp-ai/src/twp_ai/events.py` (`Interrupt`, `RunFinishedSuccess`/`Interrupt` outcome union, `RunFinishedEvent.outcome`); `callers/adk.py` (`UpstreamMessage.display_meta`); `agents/adk.py` (collect interrupts → outcome; `_tool_call_id` helper); `clients/adk_caller.py` (`display_meta` populated); `packages/twp-ai/tests/test_adk_agent.py` + `tests/integration/test_chatagent_v3_endpoint.py`; `docs/spec/chatagent_v3.md` §3.4.7, `docs/00_spec.md`, `docs/API.md`. | [x] | Dev |
 | T-CAv3S.HITL2 | Red+Green | • **Achieve:** Resume a paused run — `RunAgentInput.resume` (`[{interruptId, status, payload?}]`). `resolved` → upstream `inputData={lastMessageId, message:""}` (payload accepted but not forwarded — upstream is go/no-go only); `cancelled` → no upstream call, `success` outcome; >1 `resolved` → `RUN_ERROR` (`CHATAGENT_INVALID_RESUME`).<br>• **Deliver:** `packages/twp-ai/src/twp_ai/schemas.py` (`ResumeItem` + `RunAgentInput.resume`); `clients/adk_caller.py` (`_resume_input_data`, `ResumeValidationError`); `errors/codes.py` (`CHATAGENT_INVALID_RESUME`); `tests/unit/test_adk_caller.py` + `tests/integration/test_chatagent_v3_endpoint.py`; `docs/spec/chatagent_v3.md`, `docs/00_rule_third_party_api.md` (`lastMessageId` pin), `docs/API.md`. | [x] | Dev |
 | T-CAv3S.HITL3 | Red+Green | • **Achieve:** Drop human-in-the-loop interrupt turns from the `GET /chatagent/v3/session` history — a persisted `humanInTheLoopMeta.isInterrupt=true` turn was mapped (via the `node_to_role`/`"assistant"` default) into a stray assistant message; it is a transient approval prompt (surfaced live via `RUN_FINISHED.outcome`, HITL1), not a conversation message, so it must not render in history. Keeps the read consistent with the stream.<br>• **Deliver:** `services/chatagent_session.py` (`_is_interrupt`, filter in `map_session_payload`); `tests/unit/test_chatagent_session_mapper.py` + `tests/integration/test_chatagent_v3_endpoint.py`; `docs/spec/chatagent_v3.md` §3.4.8. | [x] | Dev |
+
+---
+
+## Track T-CAv3.DIP — ChatAgent v3 Agent-Backend DIP/OCP Refactor (brain-swap readiness)
+
+> Source: 2026-06-23 SOLID review. `routers/chatagent_v3.py` inline-imported and
+> constructed the concrete `ADKAgent`/`ADKCaller` classes inside the POST handler —
+> a DIP/OCP violation, since `packages/twp-ai` already ships a generic `Agent`
+> Protocol used correctly at `/twp/v1` (`DirectLLMAgent(RagentCaller(...))`).
+> `/chatagent/v3` needed the same pattern, adapted for one constraint: `ADKCaller`
+> carries per-request state (`user_id`/`user_token`), so the router receives an
+> **`AgentFactory`** (`Callable[[str, str], Agent]`) built once in the composition
+> root and called per request, instead of a singleton `Agent` instance.
+>
+> **Locked decisions:**
+> - Session-history data portability across a future backend swap is explicitly
+>   **out of scope** this cycle — documented as a known limitation in
+>   `docs/chatagent_agent_backend.md` rather than solved.
+> - `services/chatagent_session.py`'s `node_to_role` wire-format coupling is left
+>   as-is (behavior unchanged); only its module docstring gains a note that it and
+>   `clients/adk_caller.py` are the same backend-adapter pair.
+
+**Counter: 完成 7 / 未完成 0 / descope 0**
+
+| # | Category | Task | Status | Owner |
+|---|---|---|:---:|---|
+| T-CAv3.DIP.1 | Structural | • **Achieve:** Router depends only on `twp_ai.agent.Agent` Protocol via a new `AgentFactory = Callable[[str, str], Agent]` type alias — removed direct imports of `ADKAgent`/`ADKCaller`; `create_chatagent_v3_router(..., agent_factory: AgentFactory)` replaces inline construction; `_spawn_producer`'s `agent` param retyped to `Agent`.<br>• **Deliver:** `src/ragent/routers/chatagent_v3.py`. | [x] | Dev |
+| T-CAv3.DIP.2 | Structural | • **Achieve:** Composition root assembles the `(user_id, user_token) -> Agent` factory closure — the only layer permitted to construct concrete `ADKAgent`/`ADKCaller`.<br>• **Deliver:** `src/ragent/bootstrap/composition.py::_build_chatagent_agent_factory()`; `Container.chatagent_agent_factory: AgentFactory | None`; `tests/unit/test_chatagent_agent_factory.py`. | [x] | Dev |
+| T-CAv3.DIP.3 | Structural | • **Achieve:** Wire the factory into v3 router registration; assert it is set whenever v3 is enabled (`chatagent_api_url is not None`).<br>• **Deliver:** `src/ragent/bootstrap/app.py`. | [x] | Dev |
+| T-CAv3.DIP.4 | Structural | • **Achieve:** Note the `chatagent_session.py` ↔ `adk_caller.py` backend-adapter pairing in the module docstring (no logic change).<br>• **Deliver:** `src/ragent/services/chatagent_session.py`. | [x] | Dev |
+| T-CAv3.DIP.5 | Red+Green | • **Achieve:** Regression tests proving the router has zero source-level dependency on concrete `Agent`/`Caller` classes and that POST uses whatever `agent_factory` returns (stub `Agent` swap-in).<br>• **Deliver:** `tests/unit/test_chatagent_v3_router.py`; `tests/integration/test_chatagent_v3_endpoint.py`; `tests/helpers.py::real_agent_factory` (delegates to `_build_chatagent_agent_factory` — no duplicated closure logic). | [x] | Dev |
+| T-CAv3.DIP.D1 | Structural | • **Achieve:** Document the `Agent` Protocol injection pattern and brain-swap runbook.<br>• **Deliver:** `docs/chatagent_agent_backend.md`. | [x] | Dev |
+| T-CAv3.DIP.D2 | Structural | • **Achieve:** Update the dependency-direction rule table to forbid `Routers → concrete Agent/Caller classes` and allow `Routers → AgentFactory` / `Bootstrap → concrete Agent/Caller classes`.<br>• **Deliver:** `docs/00_domain_map.md` §2.2, §2.7, §三. | [x] | Dev |
