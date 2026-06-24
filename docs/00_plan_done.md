@@ -935,3 +935,43 @@
 |---|---|---|:---:|---|
 | T-SR.1 | Red | • **Achieve:** Expose the bug — verify current demote SQL will demote a newer sibling when an older doc wins via MVCC anomaly.<br>• **Deliver:** `tests/integration/test_worker_atomic_promote.py::test_winner_never_demotes_strictly_newer_sibling` — seeds OLDEST/WINNER/NEWER, forces WINNER to READY (simulating MVCC win), runs sibling-demote directly, asserts OLDER is DELETING and NEWER is still PENDING. Must **fail** against current production code.<br>• **Success criteria:** Test collected by pytest; OLDEST assertion = DELETING, NEWER assertion = PENDING both pass with the fixed SQL. | [x] | QA |
 | T-SR.2 | Green | • **Achieve:** Patch `_promote_or_demote` so the sibling-demote UPDATE only touches rows with `(created_at, document_id) < (winner.created_at, winner.document_id)`.<br>• **Deliver:** Fixed SQL in `src/ragent/repositories/document_repository.py::_promote_or_demote`; updated B41 note in `docs/00_spec.md`; T-SR.1 test now passes.<br>• **Success criteria:** `make test-gate` green; B41 in `docs/00_spec.md` references the demote guard; the demote UPDATE WHERE clause contains the `(created_at, document_id)` ordering guard. | [x] | Dev |
+
+---
+
+## Track T-CAv3.DIP — ChatAgent v3 Agent-Backend DIP/OCP Refactor (brain-swap readiness)
+
+> Source: 2026-06-23 SOLID review. `routers/chatagent_v3.py` inline-imported and
+> constructed the concrete `ADKAgent`/`ADKCaller` classes inside the POST handler —
+> a DIP/OCP violation, since `packages/twp-ai` already ships a generic `Agent`
+> Protocol used correctly at `/twp/v1` (`DirectLLMAgent(RagentCaller(...))`).
+> `/chatagent/v3` needed the same pattern, adapted for one constraint: `ADKCaller`
+> carries per-request state (`user_id`/`user_token`), so the router receives an
+> **`AgentFactory`** (`Callable[[str, str], Agent]`) built once in the composition
+> root and called per request, instead of a singleton `Agent` instance.
+>
+> **Locked decisions:**
+> - Session-history data portability across a future backend swap is explicitly
+>   **out of scope** this cycle — documented as a known limitation in
+>   `docs/chatagent_agent_backend.md` rather than solved.
+> - `services/chatagent_session.py`'s `node_to_role` wire-format coupling is left
+>   as-is (behavior unchanged); only its module docstring gains a note that it and
+>   `clients/adk_caller.py` are the same backend-adapter pair.
+> - A follow-up review (PR #194, `gemini-code-assist[bot]` + `chatgpt-codex-connector[bot]`)
+>   found the outer `assert container.chatagent_agent_factory is not None` in
+>   `app.py` was scoped to the wrong gate (`any([...])` over all three v3 URLs
+>   instead of `chatagent_api_url is not None`), crashing startup for session-only
+>   deployments. Fixed by making `agent_factory` an `Optional` router parameter
+>   with the assert moved to its actual call site inside the POST handler, where
+>   the narrower gate already holds. See `docs/00_journal.md` 2026-06-23 entry.
+
+**Counter: 完成 7 / 未完成 0 / descope 0**
+
+| # | Category | Task | Status | Owner |
+|---|---|---|:---:|---|
+| T-CAv3.DIP.1 | Structural | • **Achieve:** Router depends only on `twp_ai.agent.Agent` Protocol via a new `AgentFactory = Callable[[str, str], Agent]` type alias — removed direct imports of `ADKAgent`/`ADKCaller`; `create_chatagent_v3_router(..., agent_factory: AgentFactory | None = None)` replaces inline construction; `_spawn_producer`'s `agent` param retyped to `Agent`.<br>• **Deliver:** `src/ragent/routers/chatagent_v3.py`.<br>• **Success criteria:** `grep -n "ADKAgent\|ADKCaller" src/ragent/routers/chatagent_v3.py` returns no matches; `pytest tests/unit/test_chatagent_v3_router.py` exits 0. | [x] | Dev |
+| T-CAv3.DIP.2 | Structural | • **Achieve:** Composition root assembles the `(user_id, user_token) -> Agent` factory closure — the only layer permitted to construct concrete `ADKAgent`/`ADKCaller`.<br>• **Deliver:** `src/ragent/bootstrap/composition.py::_build_chatagent_agent_factory()`; `Container.chatagent_agent_factory: AgentFactory | None`; `tests/unit/test_chatagent_agent_factory.py`.<br>• **Success criteria:** `pytest tests/unit/test_chatagent_agent_factory.py` exits 0; `_build_chatagent_agent_factory` is the only function in `src/ragent/` importing `ADKAgent`/`ADKCaller`. | [x] | Dev |
+| T-CAv3.DIP.3 | Structural | • **Achieve:** Wire the factory into v3 router registration; the assert that `agent_factory` is set lives at its call site inside the POST handler (where `chatagent_api_url is not None` already holds), not at the broader router-registration gate — fixes a startup crash for session-only deployments (PR #194 review) where the outer `any([...])` gate is broader than the factory-build gate.<br>• **Deliver:** `src/ragent/bootstrap/app.py`; `src/ragent/routers/chatagent_v3.py` (inner `assert agent_factory is not None`).<br>• **Success criteria:** `pytest tests/unit/test_chatagent_v3_router.py::test_v3_router_builds_without_agent_factory_when_post_route_disabled` exits 0 — building the router with only `chatagent_session_api_url` set and no `agent_factory` does not raise. | [x] | Dev |
+| T-CAv3.DIP.4 | Structural | • **Achieve:** Note the `chatagent_session.py` ↔ `adk_caller.py` backend-adapter pairing in the module docstring (no logic change).<br>• **Deliver:** `src/ragent/services/chatagent_session.py`.<br>• **Success criteria:** Module docstring of `chatagent_session.py` references `adk_caller.py` as its backend-adapter pair; `pytest tests/unit/test_chatagent_session_mapper.py` exits 0 (behavior unchanged). | [x] | Dev |
+| T-CAv3.DIP.5 | Red+Green | • **Achieve:** Regression tests proving the router has zero source-level dependency on concrete `Agent`/`Caller` classes and that POST uses whatever `agent_factory` returns (stub `Agent` swap-in).<br>• **Deliver:** `tests/unit/test_chatagent_v3_router.py`; `tests/integration/test_chatagent_v3_endpoint.py`; `tests/helpers.py::real_agent_factory` (delegates to `_build_chatagent_agent_factory` — no duplicated closure logic).<br>• **Success criteria:** `pytest tests/unit/test_chatagent_v3_router.py tests/integration/test_chatagent_v3_endpoint.py` exits 0, including the stub-`Agent` swap-in test and the session-only-deployment regression test. | [x] | Dev |
+| T-CAv3.DIP.D1 | Structural | • **Achieve:** Document the `Agent` Protocol injection pattern and brain-swap runbook.<br>• **Deliver:** `docs/chatagent_agent_backend.md`.<br>• **Success criteria:** `docs/chatagent_agent_backend.md` exists, documents the `Agent` Protocol, the `ADKAgent` vs `DirectLLMAgent` comparison, the brain-swap checklist, and the session-history-portability known limitation. | [x] | Dev |
+| T-CAv3.DIP.D2 | Structural | • **Achieve:** Update the dependency-direction rule table to forbid `Routers → concrete Agent/Caller classes` and allow `Routers → AgentFactory` / `Bootstrap → concrete Agent/Caller classes`.<br>• **Deliver:** `docs/00_domain_map.md` §2.2, §2.7, §三.<br>• **Success criteria:** `docs/00_domain_map.md` §三 lists `Routers → concrete Agent/Caller classes` as forbidden and `Routers → AgentFactory` / `Bootstrap → concrete Agent/Caller classes` as allowed. | [x] | Dev |

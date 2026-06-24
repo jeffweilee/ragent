@@ -7,6 +7,9 @@ from unittest.mock import MagicMock
 
 import httpx
 
+from ragent.bootstrap.composition import _build_chatagent_agent_factory
+from ragent.routers.chatagent_v3 import AgentFactory
+
 
 def sse_line(payload: dict) -> str:
     return f"data: {json.dumps(payload)}"
@@ -70,3 +73,23 @@ def parse_sse_ids(text: str) -> list[str]:
         for line in block.splitlines()
         if line.startswith("id: ")
     ]
+
+
+def real_agent_factory(
+    http_client: httpx.Client,
+    *,
+    api_url: str,
+    ap_name: str,
+    auth: str | None,
+    timeout: float = 30.0,
+) -> AgentFactory:
+    """Build an ``AgentFactory`` that wires the real ``ADKAgent``/``ADKCaller``.
+
+    Mirrors the production wiring in ``composition.py`` so router tests keep
+    exercising the actual ADK backend, just constructed via the injected
+    factory instead of inline inside the router.
+    """
+
+    return _build_chatagent_agent_factory(
+        http_client, api_url=api_url, ap_name=ap_name, auth=auth, timeout=timeout
+    )

@@ -22,6 +22,10 @@ Some upstream `content`/`sessionName` values are JSON-double-encoded (a quoted
 string with literal `\\n` escapes). That layer is decoded first, otherwise the
 wrapper strip sees a leading `"` and literal `\\n` (not whitespace) and leaves
 `"\\n\\n<message>"` behind.
+
+This module and `ragent/clients/adk_caller.py` are the same backend-adapter
+pair: swapping the upstream agent to a different wire format means replacing
+both together, not just one.
 """
 
 from __future__ import annotations

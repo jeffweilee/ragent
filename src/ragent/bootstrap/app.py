@@ -468,6 +468,7 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
                 chatagent_api_url=container.chatagent_api_url,
                 chatagent_sessionlist_api_url=container.chatagent_sessionlist_api_url,
                 chatagent_session_api_url=container.chatagent_session_api_url,
+                agent_factory=container.chatagent_agent_factory,
                 rate_limiter=container.rate_limiter,
                 rate_limit=container.rate_limit,
                 rate_limit_window=container.rate_limit_window,

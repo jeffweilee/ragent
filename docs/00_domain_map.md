@@ -91,7 +91,7 @@
 | `retrieve.py` | `/retrieve/v1` | 無 LLM 純檢索 |
 | `chatagent.py` | `/chatagent/v1` | ChatAgent 上游代理(POST + sessionList / session GET/PUT/DELETE)|
 | `chatagent_v2.py` | `/chatagent/v2` | ChatAgent raw-proxy(原樣轉發上游 payload,串流/非串流)|
-| `chatagent_v3.py` | `/chatagent/v3` | twp-ai protocol 代理(`RunAgentInput` → AG-UI SSE)+ v3 session 管理(twp-ai message shape)|
+| `chatagent_v3.py` | `/chatagent/v3` | twp-ai protocol 代理(`RunAgentInput` → AG-UI SSE)+ v3 session 管理(twp-ai message shape)。POST handler 依賴注入的 `agent_factory: AgentFactory`（`Callable[[user_id, user_token], twp_ai.agent.Agent]`），**不**直接 import `ADKAgent`/`ADKCaller` 等具體類別（T-CAv3.DIP）。 |
 | `_chatagent_proxy.py` | —(共用 helper)| v1/v3 session 路由共用的 proxy_get / proxy_write 轉發與 timeout→504 / error→502 映射 |
 | `feedback.py` | `/feedback/v1` | 使用者回饋 HMAC token 驗證與雙寫 |
 | `mcp.py` | `/mcp/v1` | JSON-RPC 2.0 MCP Tool Server（P2.5）|
@@ -102,7 +102,7 @@
 | `health.py` | `/livez`, `/readyz`, `/startupz`, `/metrics` | 健康探針、Prometheus 指標 |
 | `health_probes.py` | —(probe 實作)| `/readyz` 的 MariaDB / ES / Redis / MinIO probe 實作,由 `health.py` 注入 |
 
-> 另有 `/twp/v1` router 由 `packages/twp-ai`(repo 內獨立 package)提供,於 `bootstrap/app.py` 掛載;`/chatagent/v3` 亦依賴該 package 的 `ADKAgent` / schemas 與 ragent 端 `clients/adk_caller.py`。
+> 另有 `/twp/v1` router 由 `packages/twp-ai`(repo 內獨立 package)提供,於 `bootstrap/app.py` 掛載;`/chatagent/v3` 依賴該 package 的 `twp_ai.agent.Agent` Protocol 與 schemas,具體實作(`ADKAgent` + ragent 端 `clients/adk_caller.py`)由 `bootstrap/composition.py::_build_chatagent_agent_factory()` 組裝成 `agent_factory` 後注入,router 本身不 import 具體類別。詳見 `docs/chatagent_agent_backend.md`。
 
 ---
 
@@ -213,7 +213,7 @@
 | `llm.py` | `LLMClient` — chat + stream，token budget |
 | `rerank.py` | `RerankClient` — 重排，fail-open on 5xx（C4）|
 | `rate_limiter.py` | `RateLimiter` — Redis fixed-window per user |
-| `adk_caller.py` | `ADKCaller` — `/chatagent/v3` twp-ai run 的上游代理 backend(`RunAgentInput` → v2 wire → `UpstreamMessage` stream)|
+| `adk_caller.py` | `ADKCaller` — `/chatagent/v3` twp-ai run 的上游代理 backend(`RunAgentInput` → v2 wire → `UpstreamMessage` stream)。由 `bootstrap/composition.py::_build_chatagent_agent_factory()` 組裝注入,router 不再直接 import。|
 | `embedding_model_config.py` | embedding model identity 設定(B50);ES `dense_vector.dims` 界限於 boot 驗證 |
 | `unprotect.py` | `UnprotectClient` — 外部 unprotect API 取回原始 binary(T-UP.3)|
 
@@ -378,6 +378,9 @@ Bootstrap   → 全部（唯一可以組裝所有層的地方）
 Reconciler  → Repositories, Bootstrap(Container), Errors, Utility
 MCP Hub     → Utility, Errors（完全獨立 subprocess）
 
+Routers → AgentFactory（`twp_ai.agent.Agent` Protocol 的型別別名，由 Bootstrap 注入的 callable）（✅，T-CAv3.DIP）
+Bootstrap → Agent/Caller 的具體類別（組裝 factory closure，如 `_build_chatagent_agent_factory()`）（✅，Composition Root 是唯一允許依賴具體實作的層）
+
 ❌ 禁止反向依賴：
   Repositories → Services（❌）
   Pipelines    → Services 或 Repositories（❌）
@@ -386,6 +389,7 @@ MCP Hub     → Utility, Errors（完全獨立 subprocess）
   Schemas      → 任何 ragent 業務模組（❌）
   Errors       → 任何 ragent 業務模組（❌）
   Utility      → 任何 ragent 業務模組（❌）
+  Routers      → Agent/Caller 的具體類別（❌；曾是 `chatagent_v3.py` 的違規模式，已於 T-CAv3.DIP 重構移除）
 ```
 
 ---

@@ -595,6 +595,8 @@ data: {"type":"RUN_ERROR","message":"upstream closed stream without [Done] senti
 
 Same upstream and registration env vars as the `/chatagent/v1/session*` routes (`CHATAGENT_SESSIONLIST_API_URL` / `CHATAGENT_SESSION_API_URL`), but the persisted history is returned in the **twp-ai message shape**. These are JSON proxy routes (not SSE), so timeout / upstream failures map to HTTP `504` / `502` as in v1 — the v3 `RUN_ERROR` framing applies only to `POST /chatagent/v3`. Full contract: `docs/00_spec.md §3.4.8`.
 
+These session routes register independently of `POST /chatagent/v3`: a session-only deployment (only `CHATAGENT_SESSIONLIST_API_URL`/`CHATAGENT_SESSION_API_URL` set, `CHATAGENT_API_URL` unset) starts cleanly with just the session routes registered — `POST /chatagent/v3` (and its `Agent` factory) is omitted entirely rather than crashing at startup.
+
 - `GET /chatagent/v3/sessionList?startTime=&endTime=` — as v1, but each entry's `sessionName` has the machine-context wrapper stripped.
 - `GET /chatagent/v3/session?session=<id>` — `sessionName` stripped as above; every `messages[]` entry is reshaped to `{id, role, content, createTime, updateTime}` (`id` = upstream `messageId`; `role` via the same `node_to_role` rule as the v3 stream; machine-context wrapper stripped from `content`; `createTime`/`updateTime` = upstream persistence timestamps passed through, null when absent).
 - `PUT /chatagent/v3/session` / `DELETE /chatagent/v3/session` — rename / delete, proxied unchanged (same bodies as v1).

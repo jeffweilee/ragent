@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ragent.bootstrap.auth_mode import AuthMode, parse_auth_mode
+
+if TYPE_CHECKING:
+    from ragent.routers.chatagent_v3 import AgentFactory
 from ragent.utility.env import bool_env as _bool_env
 from ragent.utility.env import float_env as _float_env
 from ragent.utility.env import int_env as _int_env
@@ -65,6 +68,44 @@ class Container:
     # T-CAv3R — resumable v3 stream buffer (Redis Stream). None disables
     # resumability (the v3 POST falls back to a connection-bound stream).
     chat_stream_store: Any = None
+    # T-CAv3.DIP — (user_id, user_token) -> twp_ai.agent.Agent. None when v3 is
+    # disabled (chatagent_api_url unset); set whenever v3 is enabled.
+    chatagent_agent_factory: AgentFactory | None = None
+
+
+def _build_chatagent_agent_factory(
+    http_client: Any,
+    *,
+    api_url: str,
+    ap_name: str,
+    auth: str | None,
+    timeout: float,
+) -> AgentFactory:
+    """Assemble the (user_id, user_token) -> Agent closure for /chatagent/v3.
+
+    The composition root is the only layer allowed to construct concrete
+    Agent/Caller classes (DIP). ADKCaller carries per-request user/token
+    state, so it cannot be a singleton instance like RagentCaller — the
+    router instead receives this factory and calls it per request.
+    """
+    from twp_ai.agent import Agent
+    from twp_ai.agents.adk import ADKAgent
+
+    from ragent.clients.adk_caller import ADKCaller
+
+    def factory(user_id: str, user_token: str) -> Agent:
+        caller = ADKCaller(
+            http_client=http_client,
+            api_url=api_url,
+            ap_name=ap_name,
+            user_id=user_id,
+            user_token=user_token,
+            auth=auth,
+            timeout=timeout,
+        )
+        return ADKAgent(caller)
+
+    return factory
 
 
 def build_container() -> Container:
@@ -349,10 +390,18 @@ def build_container() -> Container:
     chatagent_auth = os.environ.get("CHATAGENT_AUTH") or None
     # Only stand up the resumable-stream buffer when v3 is configured.
     chat_stream_store = None
+    chatagent_agent_factory = None
     if chatagent_api_url is not None:
         from ragent.clients.chat_stream_store import ChatStreamStore
 
         chat_stream_store = ChatStreamStore.from_env()
+        chatagent_agent_factory = _build_chatagent_agent_factory(
+            http,
+            api_url=chatagent_api_url,
+            ap_name=chatagent_ap_name,
+            auth=chatagent_auth,
+            timeout=_float_env("CHATAGENT_TIMEOUT_SECONDS", 30.0),
+        )
 
     return Container(
         token_managers=(llm_tm, embedding_tm, rerank_tm),
@@ -391,6 +440,7 @@ def build_container() -> Container:
         chatagent_ap_name=chatagent_ap_name,
         chatagent_auth=chatagent_auth,
         chat_stream_store=chat_stream_store,
+        chatagent_agent_factory=chatagent_agent_factory,
     )
 
 
