@@ -329,6 +329,73 @@ def test_v3_reconnect_uses_latest_run_not_a_stale_client_run_id() -> None:
     assert events[0]["content"] == "second question"  # latest run, not "the features"
 
 
+def test_v3_stale_retry_does_not_rewind_current_pointer() -> None:
+    # A retried POST for an OLDER run (lock already held → not elected) must not
+    # rewind the thread's current pointer back to it.
+    store = _store()
+    app, http_mock = _make_app(chat_stream_store=store)
+    http_mock.send.return_value = _resp_mock([_msg_line("hi", message_id="m1"), _done_line()])
+
+    body2 = _run_input()
+    body2["runId"] = "run_2"
+    body2["messages"] = [{"id": "m2", "role": "user", "content": "second question"}]
+
+    with TestClient(app) as client:
+        client.post("/chatagent/v3", json=_run_input(), headers={"X-User-Id": "alice"})  # run_1
+        client.post("/chatagent/v3", json=body2, headers={"X-User-Id": "alice"})  # run_2
+        client.post(
+            "/chatagent/v3", json=_run_input(), headers={"X-User-Id": "alice"}
+        )  # stale run_1
+        r = client.get(
+            "/chatagent/v3/reconnect",
+            params={"thread_id": "thread_1"},
+            headers={"X-User-Id": "alice"},
+        )
+
+    assert store.get_current("alice", "thread_1") == "run_2"
+    assert _events(r.text)[0]["content"] == "second question"
+
+
+def test_v3_reconnect_omits_user_message_for_hitl_resume_turn() -> None:
+    # A HITL resume turn carries no new question — reconnect must not replay the
+    # last historical user message as a USER_MESSAGE.
+    store = _store()
+    app, http_mock = _make_app(chat_stream_store=store)
+    http_mock.send.return_value = _resp_mock([_msg_line("resumed", message_id="m1"), _done_line()])
+
+    body = _run_input()
+    body["resume"] = [{"interruptId": "int-1", "status": "resolved"}]
+
+    with TestClient(app) as client:
+        client.post("/chatagent/v3", json=body, headers={"X-User-Id": "alice"})
+        r = client.get(
+            "/chatagent/v3/reconnect",
+            params={"thread_id": "thread_1"},
+            headers={"X-User-Id": "alice"},
+        )
+
+    types = [e["type"] for e in _events(r.text)]
+    assert "USER_MESSAGE" not in types
+    assert types[0] == "RUN_STARTED"
+
+
+def test_v3_reconnect_replays_user_turn_for_zero_cursor() -> None:
+    # "0" is a truthy from-start sentinel; the user turn must still be replayed.
+    store = _store()
+    app, http_mock = _make_app(chat_stream_store=store)
+    http_mock.send.return_value = _resp_mock([_msg_line("hi", message_id="m1"), _done_line()])
+
+    with TestClient(app) as client:
+        client.post("/chatagent/v3", json=_run_input(), headers={"X-User-Id": "alice"})
+        r = client.get(
+            "/chatagent/v3/reconnect",
+            params={"thread_id": "thread_1"},
+            headers={"X-User-Id": "alice", "Last-Event-ID": "0"},
+        )
+
+    assert _events(r.text)[0]["type"] == "USER_MESSAGE"
+
+
 def test_v3_reconnect_unknown_thread_emits_stream_expired() -> None:
     store = _store()
     app, _ = _make_app(chat_stream_store=store)

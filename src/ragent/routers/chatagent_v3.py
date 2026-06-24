@@ -139,13 +139,18 @@ def create_chatagent_v3_router(
                 return StreamingResponse(
                     agent.run(body, body.model or ""), media_type="text/event-stream"
                 )
-            # Point the thread at this run so reconnect resolves it server-side
-            # (never trusting a client-supplied run_id, which can be stale).
-            chat_stream_store.set_current(user_id, body.thread_id or "", body.run_id)
             if started:
+                # Only an ELECTED run advances the pointer — a stale retry of an
+                # older run_id returns started=False and must not rewind the thread
+                # to it (the pointer already holds the newest run).
+                chat_stream_store.set_current(user_id, body.thread_id or "", body.run_id)
                 # Stash the user turn (the live stream omits it) so reconnect can
-                # restore the question without relying on client storage.
-                chat_stream_store.stash_user_input(key, _last_user_text(body))
+                # restore the question without relying on client storage. A HITL
+                # `resume`/`cancel` turn carries no new question (upstream gets an
+                # empty message), so stashing the last historical user turn would
+                # make reconnect replay the previous question as a new one.
+                if not body.resume:
+                    chat_stream_store.stash_user_input(key, _last_user_text(body))
                 _spawn_producer(
                     producer_pool, chat_stream_store, key, agent, body, body.model or ""
                 )
@@ -194,10 +199,15 @@ def create_chatagent_v3_router(
                 logger.info("chatagent_v3.reconnect_expired", user_id=user_id, run_id=run_id)
                 return expired()
             logger.info("chatagent_v3.reconnect", user_id=user_id, run_id=run_id)
-            # On a from-start replay (no cursor — already validated above), prepend
-            # the stashed user turn so the question is restored from the server (the
-            # live stream never carried it). An incremental resume already has it.
-            user_text = None if last_event_id else chat_stream_store.get_user_input(key)
+            # On a from-start replay, prepend the stashed user turn so the question
+            # is restored from the server (the live stream never carried it). Use
+            # is_from_start, not falsiness: "0"/"-" are truthy from-start cursors.
+            # An incremental resume already has the user turn.
+            user_text = (
+                chat_stream_store.get_user_input(key)
+                if chat_stream_store.is_from_start(last_event_id)
+                else None
+            )
             return StreamingResponse(
                 _reconnect_stream(
                     chat_stream_store,

@@ -104,6 +104,15 @@ def test_is_valid_cursor_accepts_sentinels_and_entry_ids_rejects_garbage() -> No
     assert ChatStreamStore.is_valid_cursor("'; FLUSHALL") is False
 
 
+def test_is_from_start_treats_truthy_sentinels_as_from_start() -> None:
+    # "0" and "-" are truthy strings — a plain falsiness check would miss them.
+    assert ChatStreamStore.is_from_start(None) is True
+    assert ChatStreamStore.is_from_start("") is True
+    assert ChatStreamStore.is_from_start("0") is True
+    assert ChatStreamStore.is_from_start("-") is True
+    assert ChatStreamStore.is_from_start("1718000000000-3") is False
+
+
 def test_current_pointer_round_trips_and_is_owner_scoped() -> None:
     store = _store()
     assert store.get_current("alice", "t") is None

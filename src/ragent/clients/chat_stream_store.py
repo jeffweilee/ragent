@@ -59,6 +59,15 @@ class ChatStreamStore:
         return f"{_CURRENT_PREFIX}{user_id}:{thread_id}"
 
     @staticmethod
+    def is_from_start(last_id: str | None) -> bool:
+        """True for a from-start replay cursor (`None`/``""``/``"0"``/``"-"``).
+
+        Note ``"0"`` and ``"-"`` are truthy strings, so callers must use this, not
+        a plain falsiness check, to decide whether to replay the user turn.
+        """
+        return last_id in _FROM_START
+
+    @staticmethod
     def is_valid_cursor(last_id: str | None) -> bool:
         """A start sentinel or a well-formed Redis entry id.
 
