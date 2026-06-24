@@ -18,7 +18,7 @@ import structlog
 from fastapi import APIRouter, Depends, Header, Request, Response
 from fastapi.responses import StreamingResponse
 from twp_ai.agent import Agent
-from twp_ai.events import RunErrorEvent, to_sse
+from twp_ai.events import RunErrorEvent, UserMessageEvent, to_sse
 from twp_ai.schemas import RunAgentInput
 
 from ragent.auth.deps import get_user_id
@@ -139,7 +139,13 @@ def create_chatagent_v3_router(
                 return StreamingResponse(
                     agent.run(body, body.model or ""), media_type="text/event-stream"
                 )
+            # Point the thread at this run so reconnect resolves it server-side
+            # (never trusting a client-supplied run_id, which can be stale).
+            chat_stream_store.set_current(user_id, body.thread_id or "", body.run_id)
             if started:
+                # Stash the user turn (the live stream omits it) so reconnect can
+                # restore the question without relying on client storage.
+                chat_stream_store.stash_user_input(key, _last_user_text(body))
                 _spawn_producer(
                     producer_pool, chat_stream_store, key, agent, body, body.model or ""
                 )
@@ -153,44 +159,51 @@ def create_chatagent_v3_router(
         @router.get("/reconnect")
         async def chatagent_v3_reconnect(
             thread_id: str,
-            run_id: str,
             x_user_id: Annotated[str | None, Depends(get_user_id)] = None,
             last_event_id: Annotated[str | None, Header()] = None,
         ) -> StreamingResponse:
             user_id = x_user_id or "anonymous"
+
+            def expired() -> StreamingResponse:
+                return StreamingResponse(
+                    _error_stream(
+                        "stream no longer resumable",
+                        HttpErrorCode.CHATAGENT_STREAM_EXPIRED,
+                        "",
+                        thread_id,
+                    ),
+                    media_type="text/event-stream",
+                )
+
             # Reject a malformed Last-Event-ID up front: an arbitrary string would
             # make the XRANGE cursor raise inside the stream and 500. No store
             # wired falls through here too.
             if chat_stream_store is None or not chat_stream_store.is_valid_cursor(last_event_id):
-                return StreamingResponse(
-                    _error_stream(
-                        "stream no longer resumable",
-                        HttpErrorCode.CHATAGENT_STREAM_EXPIRED,
-                        run_id,
-                        thread_id,
-                    ),
-                    media_type="text/event-stream",
-                )
-            # Owner is baked into the key, so a missing key also covers another
-            # user reconnecting to a run that is not theirs. is_resumable also
-            # accepts a run whose producer holds the lock but hasn't written yet.
+                return expired()
+            # The thread's CURRENT run is resolved server-side — a client-supplied
+            # run_id could be stale (another tab/device started a newer run) and
+            # resurrect an old, already-persisted turn. Owner is in the pointer key,
+            # so this is also per-user scoped.
+            run_id = chat_stream_store.get_current(user_id, thread_id)
+            if run_id is None:
+                return expired()
             key = chat_stream_store.key(user_id, thread_id, run_id)
+            # is_resumable accepts a run whose producer holds the lock but hasn't
+            # written its first frame yet (startup race).
             if not chat_stream_store.is_resumable(key):
                 logger.info("chatagent_v3.reconnect_expired", user_id=user_id, run_id=run_id)
-                return StreamingResponse(
-                    _error_stream(
-                        "stream no longer resumable",
-                        HttpErrorCode.CHATAGENT_STREAM_EXPIRED,
-                        run_id,
-                        thread_id,
-                    ),
-                    media_type="text/event-stream",
-                )
+                return expired()
             logger.info("chatagent_v3.reconnect", user_id=user_id, run_id=run_id)
+            # On a from-start replay (no cursor — already validated above), prepend
+            # the stashed user turn so the question is restored from the server (the
+            # live stream never carried it). An incremental resume already has it.
+            user_text = None if last_event_id else chat_stream_store.get_user_input(key)
             return StreamingResponse(
-                _consume_stream(
+                _reconnect_stream(
                     chat_stream_store,
                     key,
+                    run_id,
+                    user_text,
                     last_event_id or "0",
                     stream_idle_timeout,
                     stream_poll_interval,
@@ -287,6 +300,28 @@ def _error_stream(
     message: str, code: HttpErrorCode, run_id: str, thread_id: str | None
 ) -> Generator[str, None, None]:
     yield to_sse(RunErrorEvent(message=message, code=code, run_id=run_id, thread_id=thread_id))
+
+
+def _last_user_text(body: RunAgentInput) -> str:
+    for message in reversed(body.messages):
+        if message.role == "user" and message.content is not None:
+            return str(message.content)
+    return ""
+
+
+def _reconnect_stream(
+    store: ChatStreamStore,
+    key: str,
+    run_id: str,
+    user_text: str | None,
+    last_id: str,
+    idle_timeout: float,
+    poll_interval: float,
+) -> Generator[str, None, None]:
+    """Replay a run for reconnect: the stashed user turn first, then the buffer."""
+    if user_text:
+        yield to_sse(UserMessageEvent(message_id=f"{run_id}-user", content=user_text))
+    yield from _consume_stream(store, key, last_id, idle_timeout, poll_interval)
 
 
 def _spawn_producer(

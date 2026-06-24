@@ -56,6 +56,33 @@
 | T-CAv3R.D1 | Structural | • **Achieve:** Document the resumable-stream contract + reconnect endpoint.<br>• **Deliver:** `docs/spec/chatagent_v3.md` §3.4.7 resumable-stream block; `docs/00_spec.md` pointer if needed. | [x] | Dev |
 | T-CAv3R.FE1 | Red+Green | • **Achieve:** mco-clean `@twp/ai` persists `{threadId, runId, lastEventId}` for an in-flight run, reconnects via `GET /chatagent/v3/reconnect` (sends `Last-Event-ID` header) on remount, clears the marker on terminal frame, and falls back to `GET /chatagent/v3/session` on `CHATAGENT_STREAM_EXPIRED`. **(frontend — out of this backend cycle)** | [ ] | Dev |
 
+### Sub-track T-CAv3R2 — server-authoritative reconnect (robustness follow-up)
+
+> Source: 2026-06-24 design review. The merged reconnect trusted a **client-supplied
+> `run_id`**, which can be stale (another tab/device started a newer run) and would
+> resurrect an old, already-persisted turn out of order. And the live stream never
+> carries the user turn, so a refresh mid-generation showed the answer with no
+> question. Fix: make the **server** the authority on "the thread's current run",
+> and stash the user turn so reconnect can replay it — no reliance on client state.
+>
+> **Locked decisions:**
+> - reconnect takes **`thread_id` only**; resolves the run from a per-thread
+>   `chatcurrent:{user}:{thread}` pointer (set on POST). Per-user → owner-scoped.
+> - The run's user turn is stashed (`…:{run}:user`) and replayed as a new
+>   `USER_MESSAGE` twp-ai event on a from-start reconnect (not on incremental).
+> - This avoids any cross-source (session vs buffer) dedup on the FE: the FE shows
+>   session history + (gated) the one in-flight turn from reconnect, never merging.
+
+**Counter: 完成 4 / 未完成 1 / descope 0**
+
+| # | Category | Task | Status | Owner |
+|---|---|---|:---:|---|
+| T-CAv3R2.1 | Red+Green | • **Achieve:** `ChatStreamStore` — per-thread current-run pointer (`set_current`/`get_current`, distinct `chatcurrent:` prefix so a `run_id` named `current` cannot collide) + user-turn stash (`stash_user_input`/`get_user_input`); both fail-soft on Redis error.<br>• **Deliver:** `src/ragent/clients/chat_stream_store.py`; `tests/unit/test_chat_stream_store.py`. | [x] | Dev |
+| T-CAv3R2.2 | Red+Green | • **Achieve:** `USER_MESSAGE` twp-ai event (`{messageId, content, role:"user"}`) added to the event union.<br>• **Deliver:** `packages/twp-ai/src/twp_ai/events.py`; `packages/twp-ai/tests/test_twp_protocol.py`. | [x] | Dev |
+| T-CAv3R2.3 | Red+Green | • **Achieve:** v3 POST records the current-run pointer + stashes the last user-turn text (electing producer only). | [x] | Dev |
+| T-CAv3R2.4 | Red+Green | • **Achieve:** `GET /chatagent/v3/reconnect` drops the `run_id` param; resolves the current run server-side; emits the stashed `USER_MESSAGE` first on a from-start replay; unknown/other-user thread → `CHATAGENT_STREAM_EXPIRED`.<br>• **Deliver:** `routers/chatagent_v3.py` (`_reconnect_stream`, `_last_user_text`); `tests/unit/test_chatagent_v3_router.py` (current-run resolve, latest-not-stale, user-turn replay); `docs/spec/chatagent_v3.md` §3.4.7, `docs/API.md`. | [x] | Dev |
+| T-CAv3R2.FE1 | Red+Green | • **Achieve:** mco-clean reconnect flow — on mount load `GET /session`, then `GET /reconnect?thread_id` (no client run_id); render the leading `USER_MESSAGE`; gate against session by last-user-turn content to avoid the grace-window overlap. **(frontend — out of this backend cycle)** | [ ] | Dev |
+
 ---
 
 ## Track T-CAv3S — ChatAgent v3 Session History (twp-ai roles + hidden filtering)

@@ -130,23 +130,36 @@ the client connection** so a refresh/disconnect does not abort generation:
   the same `runId` never double-runs) tees every twp-ai SSE frame into the Redis
   Stream `chatstream:{user_id}:{thread_id}:{run_id}` via `XADD`, then writes an
   `eos` sentinel and sets the TTL. `ADKAgent.run` never raises, so the buffer
-  always closes with a terminal `RUN_FINISHED`/`RUN_ERROR` frame.
+  always closes with a terminal `RUN_FINISHED`/`RUN_ERROR` frame. The POST also
+  records two recovery aids: a per-thread **current-run pointer**
+  `chatcurrent:{user}:{thread} = runId` (so reconnect resolves the run
+  server-side) and the run's **user turn** at `…:{run}:user` (the live stream
+  carries only the assistant side, so the question must be stashed to be
+  replayable).
 - The POST response and `GET /reconnect` are **consumers**: they replay the
   buffer with `XRANGE` (polling, not blocking — one cursor loop serves both the
   live stream and a cross-replica reconnect, since the producer may run on a
   different pod) and attach each Redis entry id as the SSE `id:` line. They stop
   at the `eos` sentinel, or after `CHATAGENT_STREAM_IDLE_TIMEOUT_SECONDS` of no
   progress (a producer that died without closing).
-- `GET /chatagent/v3/reconnect?thread_id&run_id` — header `Last-Event-ID` is the
-  **exclusive** resume cursor (the last entry the client saw); omit it to replay
-  from the start. A malformed `Last-Event-ID` (not a `<ms>-<seq>` entry id) is
-  rejected up front — it would otherwise make the XRANGE cursor raise — as a
-  `RUN_ERROR(CHATAGENT_STREAM_EXPIRED)`, never a 500. The owner is baked into the
-  key, so a run belonging to another user — or one whose buffer has aged out past
-  the TTL — yields the same `RUN_ERROR(CHATAGENT_STREAM_EXPIRED)`, the client's cue
-  to fall back to `GET /chatagent/v3/session` for the completed history (§3.4.8).
-  A run whose producer holds the start lock but has not written its first frame
-  yet (startup race) is still treated as reconnectable.
+- `GET /chatagent/v3/reconnect?thread_id` — **resolves the thread's current run
+  server-side** from the `chatcurrent:` pointer; it deliberately does **not**
+  accept a client `run_id`, which can be stale (another tab/device started a
+  newer run) and would resurrect an old, already-persisted turn. On a from-start
+  replay it first emits a `USER_MESSAGE` event reconstructed from the stashed
+  user turn (so a client that lost local state on refresh recovers the question
+  from the server, not from possibly-stale storage), then replays the buffer.
+  Header `Last-Event-ID` is the **exclusive** resume cursor (the last entry the
+  client saw); omit it to replay from the start (an incremental resume does not
+  re-emit the user turn). A malformed `Last-Event-ID` (not a `<ms>-<seq>` entry
+  id) is rejected up front — it would otherwise make the XRANGE cursor raise — as
+  a `RUN_ERROR(CHATAGENT_STREAM_EXPIRED)`, never a 500. The pointer is per-user,
+  so another user resolves no run; a thread with no current run, or one whose
+  buffer has aged out past the TTL, yields the same
+  `RUN_ERROR(CHATAGENT_STREAM_EXPIRED)`, the client's cue to fall back to
+  `GET /chatagent/v3/session` for the completed history (§3.4.8). A run whose
+  producer holds the start lock but has not written its first frame yet (startup
+  race) is still treated as reconnectable.
 - Buffer retention is bounded by `REDIS_STREAM_TTL_SECONDS` (default 300s) and
   `REDIS_STREAM_MAXLEN` (default 10000, approximate trim). With no store wired —
   **or when the stream Redis is unreachable** (`try_start` cannot acquire the

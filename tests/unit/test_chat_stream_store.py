@@ -102,3 +102,40 @@ def test_is_valid_cursor_accepts_sentinels_and_entry_ids_rejects_garbage() -> No
     assert ChatStreamStore.is_valid_cursor("invalid-id") is False
     assert ChatStreamStore.is_valid_cursor("1718000000000") is False
     assert ChatStreamStore.is_valid_cursor("'; FLUSHALL") is False
+
+
+def test_current_pointer_round_trips_and_is_owner_scoped() -> None:
+    store = _store()
+    assert store.get_current("alice", "t") is None
+    store.set_current("alice", "t", "run_1")
+    store.set_current("alice", "t", "run_2")  # latest wins
+    assert store.get_current("alice", "t") == "run_2"
+    assert store.get_current("bob", "t") is None  # another user never sees it
+
+
+def test_current_pointer_cannot_collide_with_a_run_id_named_current() -> None:
+    # The pointer uses a distinct prefix, not a suffix on the buffer key.
+    store = _store()
+    store.set_current("alice", "t", "run_1")
+    key = ChatStreamStore.key("alice", "t", "current")
+    store.append(key, "data: x\n\n")  # a buffer whose run_id is literally "current"
+    assert store.get_current("alice", "t") == "run_1"  # untouched
+
+
+def test_user_input_stash_round_trips() -> None:
+    store = _store()
+    key = ChatStreamStore.key("alice", "t", "r")
+    assert store.get_user_input(key) is None
+    store.stash_user_input(key, "what are the features?")
+    assert store.get_user_input(key) == "what are the features?"
+
+
+def test_current_and_stash_fail_soft_on_redis_error() -> None:
+    redis = MagicMock()
+    redis.set.side_effect = redis_lib.ConnectionError("down")
+    redis.get.side_effect = redis_lib.ConnectionError("down")
+    store = ChatStreamStore(redis)
+    store.set_current("a", "t", "r")  # does not raise
+    store.stash_user_input(ChatStreamStore.key("a", "t", "r"), "x")  # does not raise
+    assert store.get_current("a", "t") is None
+    assert store.get_user_input(ChatStreamStore.key("a", "t", "r")) is None

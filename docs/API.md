@@ -445,14 +445,15 @@ When the resumable-stream buffer is enabled (Redis reachable), each frame also c
 
 ### `GET /chatagent/v3/reconnect` — Resume an in-flight run (SSE)
 
-Rejoin a run started by `POST /chatagent/v3` after a disconnect/refresh and receive the remaining frames. The `Last-Event-ID` header is the **exclusive** resume cursor (the last `id:` the client saw); omit it to replay from the start.
+Rejoin the thread's current in-flight run after a disconnect/refresh and receive the remaining frames. Takes **only `thread_id`** — the server resolves the current run itself (it does **not** accept a client `run_id`, which can be stale, e.g. a newer run was started in another tab). On a from-start replay the stream **opens with a `USER_MESSAGE` event** reconstructed from the run's stashed user turn (the live stream never carries the user message), so a client that lost local state on refresh recovers the question from the server. The `Last-Event-ID` header is the **exclusive** resume cursor (the last `id:` the client saw); omit it to replay from the start — an incremental resume does not re-emit `USER_MESSAGE`.
 
 ```
-curl "http://localhost:8000/chatagent/v3/reconnect?thread_id=thread_1&run_id=run_1" \
-  -H "X-Auth-Token: <jwt>" -H "Last-Event-ID: 1718000000000-3" --no-buffer
+curl "http://localhost:8000/chatagent/v3/reconnect?thread_id=thread_1" \
+  -H "X-Auth-Token: <jwt>" --no-buffer
+# USER_MESSAGE event shape: {"type":"USER_MESSAGE","messageId":"<run>-user","content":"…","role":"user"}
 ```
 
-**Response:** `text/event-stream`, same frames as the original run (each with its `id:`), closing at the buffered terminal frame. If the buffer is gone — TTL expired, never existed, or owned by another user — the response is a single `RUN_ERROR` with `code = CHATAGENT_STREAM_EXPIRED`; the client should then load completed history via `GET /chatagent/v3/session`. Full contract: `docs/spec/chatagent_v3.md §3.4.7`.
+**Response:** `text/event-stream` — optional leading `USER_MESSAGE`, then the same frames as the original run (each with its `id:`), closing at the buffered terminal frame. If there is no resumable run — TTL expired, the thread has no current run, or it belongs to another user — the response is a single `RUN_ERROR` with `code = CHATAGENT_STREAM_EXPIRED`; the client should then load completed history via `GET /chatagent/v3/session`. Full contract: `docs/spec/chatagent_v3.md §3.4.7`.
 
 #### Example 1 — Simple text reply
 

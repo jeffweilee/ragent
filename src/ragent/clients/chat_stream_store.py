@@ -27,6 +27,7 @@ import structlog
 logger = structlog.get_logger(__name__)
 
 _KEY_PREFIX = "chatstream:"
+_CURRENT_PREFIX = "chatcurrent:"  # per-thread pointer → the latest run_id
 _FROM_START = ("0", "-", "", None)
 _FIELD_FRAME = "frame"  # XADD field holding one SSE frame string
 _FIELD_EOS = "eos"  # XADD field marking the terminal sentinel (no frame)
@@ -46,6 +47,16 @@ class ChatStreamStore:
     @staticmethod
     def _lock_key(key: str) -> str:
         return f"{key}:lock"
+
+    @staticmethod
+    def _userinput_key(key: str) -> str:
+        return f"{key}:user"
+
+    @staticmethod
+    def _current_key(user_id: str, thread_id: str) -> str:
+        # Distinct prefix (not a suffix on the buffer key) so a client-supplied
+        # run_id can never collide with the pointer.
+        return f"{_CURRENT_PREFIX}{user_id}:{thread_id}"
 
     @staticmethod
     def is_valid_cursor(last_id: str | None) -> bool:
@@ -68,6 +79,46 @@ class ChatStreamStore:
             return bool(self._redis.set(self._lock_key(key), "1", nx=True, ex=self._ttl))
         except redis_lib.RedisError as exc:
             logger.warning("chat_stream_store.unavailable", op="try_start", error=str(exc))
+            return None
+
+    def set_current(self, user_id: str, thread_id: str, run_id: str) -> None:
+        """Point the thread at its latest run so reconnect resolves it server-side.
+
+        The reconnect endpoint trusts this, not a client-supplied run_id (which can
+        be stale — e.g. another tab started a newer run). Best-effort: a Redis blip
+        here only costs resumability of this run, never the request. The pointer's
+        TTL is set here (not at completion), so — like the producer lock — a single
+        run that streams longer than the TTL stops being reconnectable mid-flight;
+        once it finishes it is served from session history instead.
+        """
+        try:
+            self._redis.set(self._current_key(user_id, thread_id), run_id, ex=self._ttl)
+        except redis_lib.RedisError as exc:
+            logger.warning("chat_stream_store.unavailable", op="set_current", error=str(exc))
+
+    def get_current(self, user_id: str, thread_id: str) -> str | None:
+        try:
+            return self._redis.get(self._current_key(user_id, thread_id))
+        except redis_lib.RedisError as exc:
+            logger.warning("chat_stream_store.unavailable", op="get_current", error=str(exc))
+            return None
+
+    def stash_user_input(self, key: str, text: str) -> None:
+        """Keep the run's user turn so reconnect can replay it.
+
+        The live stream only carries the assistant side; without this, a client
+        that lost its local state on refresh would see the answer with no question.
+        """
+        try:
+            self._redis.set(self._userinput_key(key), text, ex=self._ttl)
+        except redis_lib.RedisError as exc:
+            logger.warning("chat_stream_store.unavailable", op="stash_user_input", error=str(exc))
+
+    def get_user_input(self, key: str) -> str | None:
+        try:
+            return self._redis.get(self._userinput_key(key))
+        except redis_lib.RedisError as exc:
+            logger.warning("chat_stream_store.unavailable", op="get_user_input", error=str(exc))
             return None
 
     def append(self, key: str, frame: str) -> str:

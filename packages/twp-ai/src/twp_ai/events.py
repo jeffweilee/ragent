@@ -36,6 +36,22 @@ class RunStartedEvent(BaseEvent):
     input: Any | None = None
 
 
+class UserMessageEvent(BaseEvent):
+    """The run's user turn, replayed on reconnect only.
+
+    The live stream never carries the user message (it is in the POST body), so a
+    client that lost its local state on refresh would otherwise see the assistant
+    answer with no question. `/chatagent/v3/reconnect` emits this first, from the
+    stashed input, so the question is restored from the server — not from possibly
+    stale client storage.
+    """
+
+    type: Literal["USER_MESSAGE"] = "USER_MESSAGE"
+    message_id: str
+    content: str
+    role: Literal["user"] = "user"
+
+
 class TextMessageStartEvent(BaseEvent):
     type: Literal["TEXT_MESSAGE_START"] = "TEXT_MESSAGE_START"
     message_id: str
@@ -157,6 +173,7 @@ class RunErrorEvent(BaseEvent):
 # Extend this when adding new event types.
 Event = Annotated[
     RunStartedEvent
+    | UserMessageEvent
     | TextMessageStartEvent
     | TextMessageContentEvent
     | TextMessageEndEvent

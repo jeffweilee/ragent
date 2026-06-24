@@ -210,3 +210,16 @@ def test_run_route_streams_agent_events() -> None:
     assert response.headers["content-type"].startswith("text/event-stream")
     assert '"RUN_STARTED"' in response.text
     assert agent.seen_model == "model-default"
+
+
+def test_user_message_event_serialises_to_sse() -> None:
+    from twp_ai.events import UserMessageEvent, to_sse
+
+    frame = to_sse(UserMessageEvent(message_id="run_1-user", content="what are the features?"))
+    payload = json.loads(frame.removeprefix("data: ").strip())
+    assert payload == {
+        "type": "USER_MESSAGE",
+        "messageId": "run_1-user",
+        "content": "what are the features?",
+        "role": "user",
+    }
