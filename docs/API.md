@@ -750,7 +750,7 @@ Per-user reusable instruction presets (a persona / system instruction the user c
 ```json
 { "name": "Pirate", "description": "answer like a pirate", "instructions": "Always answer in pirate slang.", "enabled": true }
 ```
-`description` defaults `""`; `enabled` defaults `true`. **Response:** `201` with the full skill:
+`description` defaults `""`; `enabled` defaults `true`. Field limits: `name` ≤ 128 chars, `description` ≤ 512, `instructions` ≤ 16,384 (stored as `MEDIUMTEXT`); over-limit input → `422 SKILL_VALIDATION`. **Response:** `201` with the full skill:
 ```json
 { "skill_id": "01J9...", "name": "Pirate", "description": "answer like a pirate",
   "instructions": "Always answer in pirate slang.", "enabled": true,

@@ -88,18 +88,21 @@ CREATE TABLE IF NOT EXISTS feedback (
 -- Every skill is private to its owner; every query filters by user_id.
 -- Surrogate id PK; skill_id is the CHAR(26) business key (UNIQUE);
 -- (user_id, name) UNIQUE so the DB refuses duplicate names per owner.
+-- instructions is MEDIUMTEXT (not TEXT): 16,384 chars * 4 bytes/utf8mb4 char
+-- = 65,536 B exceeds TEXT's 65,535 B limit. (user_id, created_at, id) backs the
+-- newest-first list without a filesort; point lookups use uq_skill_id.
 CREATE TABLE IF NOT EXISTS skills (
   id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   skill_id     CHAR(26)      NOT NULL,
   user_id      VARCHAR(64)   NOT NULL,
   name         VARCHAR(128)  NOT NULL,
   description  VARCHAR(512)  NOT NULL DEFAULT '',
-  instructions TEXT          NOT NULL,
+  instructions MEDIUMTEXT    NOT NULL,
   enabled      BOOLEAN       NOT NULL DEFAULT TRUE,
   created_at   DATETIME(6)   NOT NULL,
   updated_at   DATETIME(6)   NOT NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uq_skill_id (skill_id),
   UNIQUE KEY uq_user_name (user_id, name),
-  KEY idx_user_skill (user_id, skill_id)
+  KEY idx_user_created (user_id, created_at, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
