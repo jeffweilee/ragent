@@ -55,6 +55,16 @@ def test_mark_done_appends_eos_sentinel_and_sets_ttl() -> None:
     assert store._redis.ttl(key) > 0  # noqa: SLF001 — asserting the TTL was set
 
 
+def test_is_done_false_while_running_true_after_mark_done() -> None:
+    store = _store()
+    key = ChatStreamStore.key("alice", "t", "r")
+    assert store.is_done(key) is False  # no entries yet
+    store.append(key, "data: a\n\n")
+    assert store.is_done(key) is False  # still running (last entry is a frame)
+    store.mark_done(key)
+    assert store.is_done(key) is True  # eos is now the last entry
+
+
 def test_is_resumable_false_before_anything_true_after_append() -> None:
     store = _store()
     key = ChatStreamStore.key("alice", "t", "r")

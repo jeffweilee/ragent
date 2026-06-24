@@ -130,6 +130,22 @@ class ChatStreamStore:
             logger.warning("chat_stream_store.unavailable", op="get_user_input", error=str(exc))
             return None
 
+    def is_done(self, key: str) -> bool:
+        """True once the run has finished — the ``eos`` sentinel is the last entry.
+
+        reconnect serves only a *still-running* run. A finished run is (within the
+        fast upstream write) already in session, so reconnect returns expired and
+        the client takes it from `GET /session` — no buffer/session overlap to
+        de-duplicate. The buffer may linger briefly for the live consumer to drain;
+        this check, not the buffer's existence, decides reconnect.
+        """
+        try:
+            tail = self._redis.xrevrange(key, max="+", min="-", count=1)
+        except redis_lib.RedisError as exc:
+            logger.warning("chat_stream_store.unavailable", op="is_done", error=str(exc))
+            return False
+        return bool(tail) and _FIELD_EOS in tail[0][1]
+
     def append(self, key: str, frame: str) -> str:
         """Buffer one SSE frame; returns the entry id used as the SSE ``id:``."""
         return self._redis.xadd(key, {_FIELD_FRAME: frame}, maxlen=self._maxlen, approximate=True)

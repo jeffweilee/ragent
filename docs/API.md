@@ -453,7 +453,7 @@ curl "http://localhost:8000/chatagent/v3/reconnect?thread_id=thread_1" \
 # USER_MESSAGE event shape: {"type":"USER_MESSAGE","messageId":"<run>-user","content":"…","role":"user"}
 ```
 
-**Response:** `text/event-stream` — optional leading `USER_MESSAGE`, then the same frames as the original run (each with its `id:`), closing at the buffered terminal frame. If there is no resumable run — TTL expired, the thread has no current run, or it belongs to another user — the response is a single `RUN_ERROR` with `code = CHATAGENT_STREAM_EXPIRED`; the client should then load completed history via `GET /chatagent/v3/session`. Full contract: `docs/spec/chatagent_v3.md §3.4.7`.
+**Response:** `text/event-stream` — optional leading `USER_MESSAGE`, then the same frames as the original run (each with its `id:`). Reconnect serves **only a still-running run**: once the run has finished, the response is a single `RUN_ERROR` with `code = CHATAGENT_STREAM_EXPIRED` (the finished turn is already in `GET /session`, so there is no overlap to de-duplicate). The same `STREAM_EXPIRED` is returned when the thread has no current run, the buffer's TTL expired, or it belongs to another user. In all of these cases the client loads the turn from `GET /chatagent/v3/session`. Full contract: `docs/spec/chatagent_v3.md §3.4.7`.
 
 #### Example 1 — Simple text reply
 

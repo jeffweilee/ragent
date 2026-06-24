@@ -160,6 +160,15 @@ the client connection** so a refresh/disconnect does not abort generation:
   `GET /chatagent/v3/session` for the completed history (§3.4.8). A run whose
   producer holds the start lock but has not written its first frame yet (startup
   race) is still treated as reconnectable.
+  - **Only a still-running run is replayed.** Once the run finishes (the `eos`
+    sentinel is the buffer's last entry) reconnect returns
+    `RUN_ERROR(CHATAGENT_STREAM_EXPIRED)` even though the buffer still lingers for
+    the live consumer to drain. The upstream persists the turn right after the
+    stream ends, so a finished run is (essentially) already in `GET /session`;
+    refusing it here means the client takes that turn from session and there is no
+    buffer/session overlap to de-duplicate. The only cost is a brief window — the
+    upstream write latency — where a just-finished turn is in neither surface; the
+    next reload picks it up from session.
 - Buffer retention is bounded by `REDIS_STREAM_TTL_SECONDS` (default 300s) and
   `REDIS_STREAM_MAXLEN` (default 10000, approximate trim). With no store wired —
   **or when the stream Redis is unreachable** (`try_start` cannot acquire the

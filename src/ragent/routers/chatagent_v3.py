@@ -198,6 +198,13 @@ def create_chatagent_v3_router(
             if not chat_stream_store.is_resumable(key):
                 logger.info("chatagent_v3.reconnect_expired", user_id=user_id, run_id=run_id)
                 return expired()
+            # A FINISHED run is (within the fast upstream write) already in session,
+            # so reconnect refuses it — the client loads it from GET /session, and
+            # there is no buffer/session overlap to de-duplicate. Only a still-running
+            # run is replayed.
+            if chat_stream_store.is_done(key):
+                logger.info("chatagent_v3.reconnect_done", user_id=user_id, run_id=run_id)
+                return expired()
             logger.info("chatagent_v3.reconnect", user_id=user_id, run_id=run_id)
             # On a from-start replay, prepend the stashed user turn so the question
             # is restored from the server (the live stream never carried it). Use
