@@ -307,9 +307,11 @@ def test_stream_deltas_timeout_raises_timeout_error() -> None:
         list(caller.stream_deltas(_request(), "m"))
     assert exc.value.error_code == HttpErrorCode.CHATAGENT_TIMEOUT
     # The raw httpx exception text (may carry upstream host/port) must never
-    # reach the client-visible message — only the server-side log.
+    # reach the client-visible message or the server log — only bounded
+    # metadata (error type) is logged.
     assert "10.0.5.23" not in str(exc.value)
-    assert any("10.0.5.23" in str(r.get("detail", "")) for r in logs)
+    assert all("10.0.5.23" not in str(r) for r in logs)
+    assert any(r.get("error_type") == "TimeoutException" for r in logs)
 
 
 def test_stream_deltas_mid_stream_timeout_raises_timeout_error() -> None:
@@ -339,15 +341,17 @@ def test_stream_deltas_request_error_raises_service_error() -> None:
     with structlog.testing.capture_logs() as logs, pytest.raises(UpstreamServiceError) as exc:
         list(caller.stream_deltas(_request(), "m"))
     assert exc.value.error_code == HttpErrorCode.CHATAGENT_UPSTREAM_ERROR
-    # The raw httpx connection detail must not leak into the client message.
+    # The raw httpx connection detail must not leak into the client message
+    # or the server log — only bounded metadata (error type) is logged.
     assert "10.0.5.23" not in str(exc.value)
-    assert any("10.0.5.23" in str(r.get("detail", "")) for r in logs)
+    assert all("10.0.5.23" not in str(r) for r in logs)
+    assert any(r.get("error_type") == "RequestError" for r in logs)
 
 
-def test_stream_deltas_non_96200_logs_return_message_but_raises_generic_error() -> None:
+def test_stream_deltas_non_96200_logs_return_code_but_raises_generic_error() -> None:
     """returnMessage is untrusted upstream content (observed carrying the
     upstream's own traceback fragments) — it must never reach the client
-    message verbatim, only the server-side log."""
+    message or the server log, only the bounded returnCode."""
     http_mock = MagicMock(spec=httpx.Client)
     http_mock.send.return_value = _resp_mock(
         [_sse_line({"returnCode": 96500, "returnMessage": "quota exceeded", "returnData": {}})]
@@ -358,7 +362,8 @@ def test_stream_deltas_non_96200_logs_return_message_but_raises_generic_error() 
         list(caller.stream_deltas(_request(), "m"))
     assert exc.value.error_code == HttpErrorCode.CHATAGENT_UPSTREAM_ERROR
     assert "quota exceeded" not in str(exc.value)
-    assert any(r.get("upstream_message") == "quota exceeded" for r in logs)
+    assert all("quota exceeded" not in str(r) for r in logs)
+    assert any(r.get("return_code") == 96500 for r in logs)
 
 
 def test_stream_deltas_strips_sse_data_prefix() -> None:

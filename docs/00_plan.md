@@ -11,29 +11,6 @@
 
 ---
 
-## Track T-EB — ChatAgent v3 Error Boundary Hardening
-
-> Source: 2026-06-25 chat session — found that `/chatagent/v3` could surface
-> raw, unsanitized error text to the client over the `RUN_ERROR` SSE event:
-> (A) the upstream's own `returnMessage` field (untrusted external content,
-> observed carrying upstream traceback fragments) was relayed verbatim into
-> the exception message; (B) `ADKAgent.run`/`DirectLLMAgent.run` caught a bare
-> `except Exception` and forwarded `str(exc)` + `type(exc).__name__` for ANY
-> exception, including unclassified internal bugs; (C) `_classify()` embedded
-> the raw httpx exception string (host/port/connection detail) the same way.
-> Fix: any exception surfaced to the client must carry an `error_code` we
-> assigned ourselves with a message we authored ourselves — raw upstream or
-> Python-native exception text goes to the server log only.
-
-**Counter: 完成 2 / 未完成 0 / descope 0**
-
-| # | Category | Task | Status | Owner |
-|---|---|---|:---:|---|
-| T-EB.1 | Red+Green | • **Achieve:** `adk_caller.py` no longer puts the raw upstream `returnMessage` (A) or the raw httpx exception string (C) into a client-visible `UpstreamServiceError` message — both become a fixed, authored string; the raw detail is logged via `structlog` instead.<br>• **Deliver:** `src/ragent/clients/adk_caller.py`; `tests/unit/test_adk_caller.py`. | [x] | Dev |
-| T-EB.2 | Red+Green | • **Achieve:** `ADKAgent.run` / `DirectLLMAgent.run` (twp-ai) distinguish classified exceptions (carry `error_code` — message authored by us, safe to expose) from unclassified ones (generic `"internal error"` / `INTERNAL_ERROR`, real exception logged via stdlib `logging`, never sent to the client).<br>• **Deliver:** `packages/twp-ai/src/twp_ai/agents/adk.py`; `packages/twp-ai/src/twp_ai/agents/direct.py`; `packages/twp-ai/tests/test_adk_agent.py`; `packages/twp-ai/tests/test_twp_protocol.py`. | [x] | Dev |
-
----
-
 ## Track T-ICU — ICU Analyzer Convergence
 
 **Counter: 完成 3 / 未完成 1 / descope 0**
