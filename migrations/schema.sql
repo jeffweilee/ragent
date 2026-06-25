@@ -1,5 +1,5 @@
 -- schema.sql — consolidated snapshot reflecting alembic head (spec B3).
--- Latest migration folded in: 012_documents_status_created_index.sql
+-- Latest migration folded in: 013_chat_attachments.sql
 -- Updated in lockstep with every NNN_*.sql migration file.
 -- Apply directly: mysql -u user -p ragent < schema.sql
 -- Or via Alembic:  alembic upgrade head  (produces identical schema)
@@ -82,4 +82,36 @@ CREATE TABLE IF NOT EXISTS feedback (
   updated_at      DATETIME(6)  NOT NULL,
   UNIQUE KEY uq_user_req_app_src (user_id, request_id, source_app, source_id),
   CONSTRAINT ck_vote_unit CHECK (vote IN (-1, 1))
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 013_chat_attachments.sql: chat-attachment metadata + per-AST-variant
+-- storage pointers (T-CAT.7). No `introduced_run_id` — the
+-- `<hidden><attachments>` block already binds the attachment to its turn.
+CREATE TABLE IF NOT EXISTS chat_attachments (
+  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  attachment_id CHAR(26)     NOT NULL,
+  thread_id     VARCHAR(64)  NOT NULL,
+  create_user   VARCHAR(64)  NOT NULL,
+  filename      VARCHAR(256) NOT NULL,
+  mime_type     VARCHAR(128) NOT NULL,
+  size_bytes    BIGINT UNSIGNED NOT NULL,
+  status        ENUM('UPLOADED','READY','FAILED') NOT NULL DEFAULT 'UPLOADED',
+  created_at    DATETIME(6)  NOT NULL,
+  updated_at    DATETIME(6)  NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_attachment_id (attachment_id),
+  INDEX idx_thread_created (thread_id, created_at),
+  INDEX idx_create_user_attachment (create_user, attachment_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS chat_attachment_artifacts (
+  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  attachment_id CHAR(26)     NOT NULL,
+  ast_type      ENUM('complete','simplified') NOT NULL,
+  storage_key   VARCHAR(256) NOT NULL,
+  created_at    DATETIME(6)  NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_attachment_ast_type (attachment_id, ast_type),
+  CONSTRAINT fk_artifact_attachment FOREIGN KEY (attachment_id)
+    REFERENCES chat_attachments (attachment_id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

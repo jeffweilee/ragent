@@ -50,6 +50,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    op.execute("DROP TABLE IF EXISTS chat_attachment_artifacts")
+    op.execute("DROP TABLE IF EXISTS chat_attachments")
     op.execute("DROP TABLE IF EXISTS feedback")
     op.execute("DROP TABLE IF EXISTS system_settings")
     op.execute("DROP TABLE IF EXISTS documents")
