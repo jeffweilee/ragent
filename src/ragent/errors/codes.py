@@ -82,6 +82,11 @@ class HttpErrorCode(StrEnum):
     # LLM stream interrupt (502) — stream closed before [DONE] sentinel.
     LLM_STREAM_INTERRUPTED = "LLM_STREAM_INTERRUPTED"
 
+    # Chat attachments (415 / 413 / 422).
+    ATTACHMENT_MIME_UNSUPPORTED = "ATTACHMENT_MIME_UNSUPPORTED"  # 415
+    ATTACHMENT_TOO_LARGE = "ATTACHMENT_TOO_LARGE"  # 413
+    ATTACHMENT_PARSE_FAILED = "ATTACHMENT_PARSE_FAILED"  # 422
+
     # Embedding-model lifecycle (B50, main). 409 on state-machine rejection;
     # 409 on cutover preflight failure; 422 on invalid promote payload;
     # 422 on field-name collision with a still-mapped retired field.
