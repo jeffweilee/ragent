@@ -428,14 +428,48 @@ def test_adk_agent_caller_error_becomes_run_error() -> None:
     assert events[-1]["threadId"] == "thread_1"
 
 
-def test_adk_agent_error_without_error_code_uses_exception_name() -> None:
+def test_adk_agent_unclassified_error_yields_generic_run_error() -> None:
+    """An exception with no `error_code` attribute is an unexpected internal
+    bug, not a designed-to-expose failure — its raw text (which may contain
+    anything a buggy code path interpolated) must never reach the client."""
     caller = FakeADKCaller(
         messages=[UpstreamMessage(message_id="m", role="assistant", content="partial")],
-        error=RuntimeError("boom"),
+        error=RuntimeError("boom: secret_token=abc123"),
     )
     request = RunAgentInput.model_validate(_run_input())
 
     events = _events(list(ADKAgent(caller).run(request, "m")))
 
     assert events[-1]["type"] == "RUN_ERROR"
-    assert events[-1]["code"] == "RuntimeError"
+    assert events[-1]["code"] == "INTERNAL_ERROR"
+    assert events[-1]["message"] == "internal error"
+    assert "boom" not in events[-1]["message"]
+    assert "secret_token" not in events[-1]["message"]
+
+
+def test_adk_agent_unclassified_error_is_logged_server_side(
+    captured_logger_text, describe_logger_state
+) -> None:
+    caller = FakeADKCaller(messages=[], error=RuntimeError("boom: secret_token=abc123"))
+    request = RunAgentInput.model_validate(_run_input())
+
+    with captured_logger_text("twp_ai.agents.adk") as stream:
+        list(ADKAgent(caller).run(request, "m"))
+
+    assert "secret_token" in stream.getvalue(), describe_logger_state("twp_ai.agents.adk")
+
+
+def test_adk_agent_classified_error_does_not_log(caplog) -> None:
+    """A designed-to-expose error (has error_code) is not a bug — no need to
+    log it as an unhandled exception."""
+
+    class Boom(Exception):
+        error_code = "CHATAGENT_TIMEOUT"
+
+    caller = FakeADKCaller(messages=[], error=Boom("upstream timed out"))
+    request = RunAgentInput.model_validate(_run_input())
+
+    with caplog.at_level("ERROR"):
+        list(ADKAgent(caller).run(request, "m"))
+
+    assert caplog.records == []

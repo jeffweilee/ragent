@@ -569,17 +569,20 @@ All errors surface as `RUN_ERROR` over the same `200 text/event-stream` response
 data: {"returnCode":96500,"returnMessage":"quota exceeded","returnData":{}}
 data: [Done]
 
-# ragent response
+# ragent response — the raw returnMessage is logged server-side only
+# (untrusted upstream content, observed carrying upstream traceback
+# fragments); the client always gets the fixed, authored message below.
 data: {"type":"RUN_STARTED","runId":"run_1","threadId":"thread_1"}
-data: {"type":"RUN_ERROR","message":"quota exceeded","code":"CHATAGENT_UPSTREAM_ERROR","runId":"run_1","threadId":"thread_1"}
+data: {"type":"RUN_ERROR","message":"chatagent upstream request failed","code":"CHATAGENT_UPSTREAM_ERROR","runId":"run_1","threadId":"thread_1"}
 ```
 
 ```
 # upstream timeout (httpx.TimeoutException)
 
-# ragent response
+# ragent response — the raw httpx exception text (may carry upstream
+# host/port) is logged server-side only.
 data: {"type":"RUN_STARTED","runId":"run_1","threadId":"thread_1"}
-data: {"type":"RUN_ERROR","message":"chatagent upstream failed: timed out","code":"CHATAGENT_TIMEOUT","runId":"run_1","threadId":"thread_1"}
+data: {"type":"RUN_ERROR","message":"chatagent upstream request failed","code":"CHATAGENT_TIMEOUT","runId":"run_1","threadId":"thread_1"}
 ```
 
 ```

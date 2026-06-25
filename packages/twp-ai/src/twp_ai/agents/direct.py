@@ -24,12 +24,12 @@ class rather than subclassing or modifying this one.
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import Generator
 
 from .._compose import Turn, build_messages, build_tool_defs
 from ..callers.protocol import LLMCaller
 from ..events import (
-    RunErrorEvent,
     RunFinishedEvent,
     RunStartedEvent,
     ToolCallArgsEvent,
@@ -38,6 +38,9 @@ from ..events import (
     to_sse,
 )
 from ..schemas import RunAgentInput
+from ._run_error import run_error_event
+
+logger = logging.getLogger(__name__)
 
 
 class DirectLLMAgent:
@@ -79,12 +82,7 @@ class DirectLLMAgent:
 
         except Exception as exc:
             yield to_sse(
-                RunErrorEvent(
-                    message=str(exc),
-                    code=type(exc).__name__,
-                    run_id=run_id,
-                    thread_id=request.thread_id,
-                )
+                run_error_event(exc, run_id=run_id, thread_id=request.thread_id, logger=logger)
             )
 
 

@@ -154,7 +154,7 @@ def test_stream_retries_3_times_on_error():
 
 def test_stream_raises_upstream_service_error_after_3_failures():
     http = MagicMock()
-    http.post.side_effect = Exception("fail")
+    http.post.side_effect = Exception("boom")
     client = LLMClient(
         api_url="https://llm.example.com",
         http=http,
@@ -166,7 +166,10 @@ def test_stream_raises_upstream_service_error_after_3_failures():
     assert exc_info.value.service == "llm"
     assert exc_info.value.error_code == "LLM_ERROR"
     assert exc_info.value.http_status == 502
-    assert "fail" in str(exc_info.value)
+    # The raw exception text must not leak into the client-visible message —
+    # it's still available server-side via __cause__ for logging/debugging.
+    assert "boom" not in str(exc_info.value)
+    assert "boom" in str(exc_info.value.__cause__)
     assert http.post.call_count == 3
 
 

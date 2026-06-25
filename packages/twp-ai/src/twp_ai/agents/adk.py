@@ -26,6 +26,7 @@ surfaces as a single RUN_ERROR event.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Generator
 
 from ..callers.adk import ADKCaller, UpstreamMessage
@@ -36,7 +37,6 @@ from ..events import (
     ReasoningMessageEndEvent,
     ReasoningMessageStartEvent,
     ReasoningStartEvent,
-    RunErrorEvent,
     RunFinishedEvent,
     RunFinishedInterrupt,
     RunFinishedSuccess,
@@ -52,6 +52,9 @@ from ..events import (
 )
 from ..roles import node_to_role
 from ..schemas import RunAgentInput
+from ._run_error import run_error_event
+
+logger = logging.getLogger(__name__)
 
 
 class ADKAgent:
@@ -81,11 +84,8 @@ class ADKAgent:
             )
         except Exception as exc:
             yield to_sse(
-                RunErrorEvent(
-                    message=str(exc),
-                    code=getattr(exc, "error_code", None) or type(exc).__name__,
-                    run_id=request.run_id,
-                    thread_id=request.thread_id,
+                run_error_event(
+                    exc, run_id=request.run_id, thread_id=request.thread_id, logger=logger
                 )
             )
 

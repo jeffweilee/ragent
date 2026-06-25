@@ -212,6 +212,53 @@ def test_run_route_streams_agent_events() -> None:
     assert agent.seen_model == "model-default"
 
 
+class _BoomCaller:
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+
+    def stream_events(self, messages, tools, model):
+        raise self._error
+        yield  # pragma: no cover — never reached, makes this a generator
+
+
+def test_direct_agent_unclassified_error_yields_generic_run_error() -> None:
+    caller = _BoomCaller(RuntimeError("boom: secret_token=abc123"))
+    request = RunAgentInput.model_validate(_run_input())
+
+    events = _events(list(DirectLLMAgent(caller).run(request, "model-a")))
+
+    assert events[-1]["type"] == "RUN_ERROR"
+    assert events[-1]["code"] == "INTERNAL_ERROR"
+    assert events[-1]["message"] == "internal error"
+    assert "secret_token" not in events[-1]["message"]
+
+
+def test_direct_agent_classified_error_exposes_message_and_code() -> None:
+    class Boom(Exception):
+        error_code = "LLM_TIMEOUT"
+
+    caller = _BoomCaller(Boom("llm call timed out"))
+    request = RunAgentInput.model_validate(_run_input())
+
+    events = _events(list(DirectLLMAgent(caller).run(request, "model-a")))
+
+    assert events[-1]["type"] == "RUN_ERROR"
+    assert events[-1]["code"] == "LLM_TIMEOUT"
+    assert events[-1]["message"] == "llm call timed out"
+
+
+def test_direct_agent_unclassified_error_is_logged_server_side(
+    captured_logger_text, describe_logger_state
+) -> None:
+    caller = _BoomCaller(RuntimeError("boom: secret_token=abc123"))
+    request = RunAgentInput.model_validate(_run_input())
+
+    with captured_logger_text("twp_ai.agents.direct") as stream:
+        list(DirectLLMAgent(caller).run(request, "model-a"))
+
+    assert "secret_token" in stream.getvalue(), describe_logger_state("twp_ai.agents.direct")
+
+
 def test_user_message_event_serialises_to_sse() -> None:
     from twp_ai.events import UserMessageEvent, to_sse
 

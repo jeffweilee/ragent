@@ -15,6 +15,10 @@ from ragent.utility.env import float_env_or
 
 logger = structlog.get_logger(__name__)
 _tracer = trace.get_tracer(__name__)
+# Client-visible message for retry exhaustion. Never interpolate the raw
+# upstream exception text here — `last_exc` may carry httpx URL/host/port
+# detail; the real exception goes to the server log via `error_type` only.
+_LLM_GENERIC_MESSAGE = "llm upstream request failed"
 
 
 class LLMClient:
@@ -79,7 +83,7 @@ class LLMClient:
                 error_code=error_code,
             )
             raise exc_cls(
-                f"llm stream failed after retries: {last_exc}",
+                _LLM_GENERIC_MESSAGE,
                 service="llm",
                 error_code=error_code,
             ) from last_exc
@@ -180,7 +184,7 @@ class LLMClient:
                 error_code=error_code,
             )
             raise exc_cls(
-                f"llm stream_with_tools failed after retries: {last_exc}",
+                _LLM_GENERIC_MESSAGE,
                 service="llm",
                 error_code=error_code,
             ) from last_exc
@@ -336,7 +340,7 @@ class LLMClient:
                 error_code=error_code,
             )
             raise exc_cls(
-                f"llm chat failed after retries: {last_exc}",
+                _LLM_GENERIC_MESSAGE,
                 service="llm",
                 error_code=error_code,
             ) from last_exc

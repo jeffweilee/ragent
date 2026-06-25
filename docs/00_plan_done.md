@@ -975,3 +975,29 @@
 | T-CAv3.DIP.5 | Red+Green | • **Achieve:** Regression tests proving the router has zero source-level dependency on concrete `Agent`/`Caller` classes and that POST uses whatever `agent_factory` returns (stub `Agent` swap-in).<br>• **Deliver:** `tests/unit/test_chatagent_v3_router.py`; `tests/integration/test_chatagent_v3_endpoint.py`; `tests/helpers.py::real_agent_factory` (delegates to `_build_chatagent_agent_factory` — no duplicated closure logic).<br>• **Success criteria:** `pytest tests/unit/test_chatagent_v3_router.py tests/integration/test_chatagent_v3_endpoint.py` exits 0, including the stub-`Agent` swap-in test and the session-only-deployment regression test. | [x] | Dev |
 | T-CAv3.DIP.D1 | Structural | • **Achieve:** Document the `Agent` Protocol injection pattern and brain-swap runbook.<br>• **Deliver:** `docs/chatagent_agent_backend.md`.<br>• **Success criteria:** `docs/chatagent_agent_backend.md` exists, documents the `Agent` Protocol, the `ADKAgent` vs `DirectLLMAgent` comparison, the brain-swap checklist, and the session-history-portability known limitation. | [x] | Dev |
 | T-CAv3.DIP.D2 | Structural | • **Achieve:** Update the dependency-direction rule table to forbid `Routers → concrete Agent/Caller classes` and allow `Routers → AgentFactory` / `Bootstrap → concrete Agent/Caller classes`.<br>• **Deliver:** `docs/00_domain_map.md` §2.2, §2.7, §三.<br>• **Success criteria:** `docs/00_domain_map.md` §三 lists `Routers → concrete Agent/Caller classes` as forbidden and `Routers → AgentFactory` / `Bootstrap → concrete Agent/Caller classes` as allowed. | [x] | Dev |
+
+---
+
+### Track T-EB — ChatAgent v3 Error Boundary Hardening
+
+> Closed 2026-06-25 (PR #202).
+
+> Source: 2026-06-25 chat session — found that `/chatagent/v3` could surface
+> raw, unsanitized error text to the client over the `RUN_ERROR` SSE event:
+> (A) the upstream's own `returnMessage` field (untrusted external content,
+> observed carrying upstream traceback fragments) was relayed verbatim into
+> the exception message; (B) `ADKAgent.run`/`DirectLLMAgent.run` caught a bare
+> `except Exception` and forwarded `str(exc)` + `type(exc).__name__` for ANY
+> exception, including unclassified internal bugs; (C) `_classify()` embedded
+> the raw httpx exception string (host/port/connection detail) the same way.
+> Fix: any exception surfaced to the client must carry an `error_code` we
+> assigned ourselves with a message we authored ourselves — raw upstream or
+> Python-native exception text goes to the server log only.
+
+**Counter: 完成 3 / 未完成 0 / descope 0**
+
+| # | Category | Task | Status | Owner |
+|---|---|---|:---:|---|
+| T-EB.1 | Red+Green | • **Achieve:** `adk_caller.py` no longer puts the raw upstream `returnMessage` (A) or the raw httpx exception string (C) into a client-visible `UpstreamServiceError` message — both become a fixed, authored string; the raw detail is logged via `structlog` instead.<br>• **Deliver:** `src/ragent/clients/adk_caller.py`; `tests/unit/test_adk_caller.py`.<br>• **Success criteria:** `pytest tests/unit/test_adk_caller.py` exits 0; the raw upstream `returnMessage` / httpx exception text is asserted absent from `str(exc)`. | [x] | Dev |
+| T-EB.2 | Red+Green | • **Achieve:** `ADKAgent.run` / `DirectLLMAgent.run` (twp-ai) distinguish classified exceptions (carry `error_code` — message authored by us, safe to expose) from unclassified ones (generic `"internal error"` / `INTERNAL_ERROR`, real exception logged via stdlib `logging`, never sent to the client).<br>• **Deliver:** `packages/twp-ai/src/twp_ai/agents/adk.py`; `packages/twp-ai/src/twp_ai/agents/direct.py`; `packages/twp-ai/tests/test_adk_agent.py`; `packages/twp-ai/tests/test_twp_protocol.py`.<br>• **Success criteria:** `pytest packages/twp-ai/tests/test_adk_agent.py packages/twp-ai/tests/test_twp_protocol.py` exits 0; unclassified-exception tests assert the generic message/code and that the real exception text reaches `caplog` only. | [x] | Dev |
+| T-EB.3 | Red+Green | • **Achieve:** Close two residual leak paths found in PR #202 review (`chatgpt-codex-connector[bot]`): `LLMClient.stream`/`stream_with_tools`/`chat` interpolated raw `last_exc` text into the `error_code`-classified `UpstreamServiceError` message, which `run_error_event()` then trusted as author-safe and forwarded verbatim to `RUN_ERROR.message`; and `adk_caller.py`'s server logs carried the raw upstream `returnMessage` / httpx exception text in string values the structlog denylist cannot scrub (it only drops by key name).<br>• **Deliver:** `src/ragent/clients/llm.py`; `src/ragent/clients/adk_caller.py`; `tests/unit/test_llm_client.py`; `tests/unit/test_llm_client_chat.py`; `tests/unit/test_adk_caller.py`.<br>• **Success criteria:** `pytest tests/unit/test_llm_client.py tests/unit/test_llm_client_chat.py tests/unit/test_adk_caller.py` exits 0; no test asserts raw exception/upstream text in either the client-visible message or the captured structlog records. | [x] | Dev |

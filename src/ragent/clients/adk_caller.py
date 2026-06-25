@@ -33,6 +33,11 @@ _HTTPX_ERRORS = (httpx.TimeoutException, httpx.HTTPStatusError, httpx.RequestErr
 _SSE_PREFIX = "data: "
 _SSE_PREFIX_LEN = len(_SSE_PREFIX)
 _SSE_DONE = "[Done]"
+# Client-visible message for any upstream failure. Never interpolate upstream
+# or httpx exception text here — both are untrusted/uncontrolled content (the
+# upstream has been observed returning its own traceback fragments in
+# returnMessage); the raw detail goes to the server log only, via `logger`.
+_UPSTREAM_GENERIC_MESSAGE = "chatagent upstream request failed"
 
 
 class ResumeValidationError(Exception):
@@ -115,8 +120,12 @@ def _classify(exc: httpx.HTTPError) -> UpstreamServiceError:
         error_code=HttpErrorCode.CHATAGENT_UPSTREAM_ERROR,
         timeout_code=HttpErrorCode.CHATAGENT_TIMEOUT,
     )
-    logger.warning("chatagent_v3.upstream_error", http_status=exc_cls.http_status)
-    return exc_cls(f"chatagent upstream failed: {exc}", service="chatagent", error_code=error_code)
+    logger.warning(
+        "chatagent_v3.upstream_error",
+        http_status=exc_cls.http_status,
+        error_type=type(exc).__name__,
+    )
+    return exc_cls(_UPSTREAM_GENERIC_MESSAGE, service="chatagent", error_code=error_code)
 
 
 def _iter_deltas(resp: httpx.Response) -> Generator[UpstreamMessage, None, None]:
@@ -138,9 +147,9 @@ def _iter_deltas(resp: httpx.Response) -> Generator[UpstreamMessage, None, None]
             continue
         return_code = obj.get("returnCode")
         if return_code is not None and return_code != _UPSTREAM_SUCCESS_CODE:
-            error_msg = obj.get("returnMessage") or "upstream returned non-success code"
+            logger.warning("chatagent_v3.upstream_return_error", return_code=return_code)
             raise UpstreamServiceError(
-                error_msg,
+                _UPSTREAM_GENERIC_MESSAGE,
                 service="chatagent",
                 error_code=HttpErrorCode.CHATAGENT_UPSTREAM_ERROR,
             )
