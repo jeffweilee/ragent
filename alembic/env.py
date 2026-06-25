@@ -6,7 +6,11 @@ from sqlalchemy import create_engine, pool
 
 config = context.config
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # disable_existing_loggers=False: stdlib's default (True) disables every
+    # already-created logger not listed in alembic.ini's [loggers] section —
+    # this silently kills app loggers (e.g. twp_ai.agents.*) created at
+    # import time whenever a migration runs mid-process (e.g. in tests).
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 
 def _sync_dsn() -> str:
