@@ -32,3 +32,24 @@ def captured_logger_text() -> Callable[[str], contextlib.AbstractContextManager[
             logger.removeHandler(handler)
 
     return _capture
+
+
+@pytest.fixture
+def describe_logger_state() -> Callable[[str], str]:
+    """Snapshot a logger's capture-relevant state for a failed-assertion message.
+
+    Diagnostic aid for the CI-only flake on the two unclassified-error
+    server-side-logging tests: a directly attached handler still saw no
+    output in CI, so this surfaces whether the logger itself is disabled,
+    above-level, or globally suppressed via ``logging.disable()``.
+    """
+
+    def _describe(logger_name: str) -> str:
+        logger = logging.getLogger(logger_name)
+        return (
+            f"handlers={logger.handlers!r} disabled={logger.disabled} "
+            f"effective_level={logger.getEffectiveLevel()} "
+            f"manager_disable={logging.Logger.manager.disable}"
+        )
+
+    return _describe

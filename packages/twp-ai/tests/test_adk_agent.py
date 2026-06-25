@@ -447,14 +447,16 @@ def test_adk_agent_unclassified_error_yields_generic_run_error() -> None:
     assert "secret_token" not in events[-1]["message"]
 
 
-def test_adk_agent_unclassified_error_is_logged_server_side(captured_logger_text) -> None:
+def test_adk_agent_unclassified_error_is_logged_server_side(
+    captured_logger_text, describe_logger_state
+) -> None:
     caller = FakeADKCaller(messages=[], error=RuntimeError("boom: secret_token=abc123"))
     request = RunAgentInput.model_validate(_run_input())
 
     with captured_logger_text("twp_ai.agents.adk") as stream:
         list(ADKAgent(caller).run(request, "m"))
 
-    assert "secret_token" in stream.getvalue()
+    assert "secret_token" in stream.getvalue(), describe_logger_state("twp_ai.agents.adk")
 
 
 def test_adk_agent_classified_error_does_not_log(caplog) -> None:
