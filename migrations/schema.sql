@@ -1,5 +1,5 @@
 -- schema.sql — consolidated snapshot reflecting alembic head (spec B3).
--- Latest migration folded in: 014_chat_attachments_async.sql
+-- Latest migration folded in: 015_chat_artifact_ast_type_to_variant.sql
 -- Updated in lockstep with every NNN_*.sql migration file.
 -- Apply directly: mysql -u user -p ragent < schema.sql
 -- Or via Alembic:  alembic upgrade head  (produces identical schema)
@@ -111,11 +111,11 @@ CREATE TABLE IF NOT EXISTS chat_attachments (
 CREATE TABLE IF NOT EXISTS chat_attachment_artifacts (
   id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   attachment_id CHAR(26)     NOT NULL,
-  ast_type      ENUM('complete','simplified') NOT NULL,
+  variant       ENUM('complete','simplified') NOT NULL,
   storage_key   VARCHAR(256) NOT NULL,
   created_at    DATETIME(6)  NOT NULL,
   PRIMARY KEY (id),
-  UNIQUE KEY uq_attachment_ast_type (attachment_id, ast_type),
+  UNIQUE KEY uq_attachment_variant (attachment_id, variant),
   CONSTRAINT fk_artifact_attachment FOREIGN KEY (attachment_id)
     REFERENCES chat_attachments (attachment_id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

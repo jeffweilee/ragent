@@ -37,7 +37,7 @@ def _row(**kwargs) -> dict:
 def _artifact_row(**kwargs) -> dict:
     base = dict(
         attachment_id="ATTAAAAAAAAAAAAAAAAAAAAAA",
-        ast_type="complete",
+        variant="complete",
         storage_key="chat_attachments/ATT.../complete.json",
         created_at=_dt("2026-01-01T00:00:00"),
     )
@@ -275,7 +275,7 @@ async def test_add_artifact_executes_insert():
     conn.execute.assert_called_once()
     params = conn.execute.call_args[0][1]
     assert params["attachment_id"] == "ATT001"
-    assert params["ast_type"] == "complete"
+    assert params["variant"] == "complete"
     assert params["storage_key"] == "chat_attachments/ATT001/complete.json"
 
 
@@ -286,15 +286,15 @@ async def test_add_artifact_executes_insert():
 
 async def test_get_artifacts_returns_rows():
     rows = [
-        _artifact_row(ast_type="complete", storage_key="key-complete"),
-        _artifact_row(ast_type="simplified", storage_key="key-simplified"),
+        _artifact_row(variant="complete", storage_key="key-complete"),
+        _artifact_row(variant="simplified", storage_key="key-simplified"),
     ]
     engine, _ = _mock_engine(rows=rows)
     repo = AttachmentRepository(engine)
     results = await repo.get_artifacts("ATT001")
     assert len(results) == 2
     assert all(isinstance(r, ArtifactRow) for r in results)
-    assert {r.ast_type for r in results} == {"complete", "simplified"}
+    assert {r.variant for r in results} == {"complete", "simplified"}
 
 
 async def test_get_artifacts_returns_empty_for_missing():

@@ -31,9 +31,7 @@ class ASTCipher:
     def __init__(self, key_manager: _HasDek) -> None:
         self._aesgcm = AESGCM(key_manager.dek)
 
-    def encrypt_ast(
-        self, plaintext: str, *, attachment_id: str, ast_type: str, created_at: str
-    ) -> dict[str, Any]:
+    def encrypt_ast(self, plaintext: str) -> dict[str, Any]:
         nonce = os.urandom(_NONCE_BYTES)
         ciphertext = self._aesgcm.encrypt(nonce, plaintext.encode("utf-8"), None)
         return {
@@ -41,11 +39,6 @@ class ASTCipher:
             "algorithm": _ALGORITHM,
             "nonce": nonce.hex(),
             "ciphertext": ciphertext.hex(),
-            "metadata": {
-                "attachment_id": attachment_id,
-                "ast_type": ast_type,
-                "created_at": created_at,
-            },
         }
 
     def decrypt_ast(self, envelope: dict[str, Any]) -> str:

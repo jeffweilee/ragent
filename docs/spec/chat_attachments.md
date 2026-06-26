@@ -92,12 +92,7 @@ Both AST variants are encrypted before being written to storage.
   "version": "1.0",
   "algorithm": "AES-256-GCM",
   "nonce": "<hex>",
-  "ciphertext": "<hex, GCM tag included>",
-  "metadata": {
-    "attachment_id": "att_xxx",
-    "ast_type": "complete" | "simplified",
-    "created_at": "2026-06-25T10:30:00Z"
-  }
+  "ciphertext": "<hex, GCM tag included>"
 }
 ```
 
@@ -263,12 +258,12 @@ authorization check.
 | `ATTACHMENT_PARSE_FAILED` | 422 | `chat_attachment` pipeline raised during AST build |
 | `ATTACHMENT_NOT_FOUND` | 404 | `GET /chatagent/v3/attachments/{id}` on unknown id (T-CAT.W2) |
 
-## 10. DB schema (`014_chat_attachments_async.sql`, folds `013_chat_attachments.sql`)
+## 10. DB schema (`015_chat_artifact_ast_type_to_variant.sql`, folds `013_chat_attachments.sql` + `014_chat_attachments_async.sql`)
 
 `chat_attachments` (id, thread_id, create_user, filename, mime_type,
 size_bytes, `status ENUM('UPLOADED','PROCESSING','READY','FAILED')`,
 `error_code VARCHAR(64) NULL`, `error_reason VARCHAR(255) NULL`,
-created_at) + `chat_attachment_artifacts` (attachment_id FK, ast_type,
+created_at) + `chat_attachment_artifacts` (attachment_id FK, variant,
 storage_key, created_at). No `introduced_run_id` column — the `<hidden>`
 block already binds the attachment to its turn. `error_code`/`error_reason`
 mirror `documents.error_code`/`error_reason` (`006_documents_error_code.sql`)

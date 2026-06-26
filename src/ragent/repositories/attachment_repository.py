@@ -50,7 +50,7 @@ class AttachmentRow:
 @dataclass
 class ArtifactRow:
     attachment_id: str
-    ast_type: str
+    variant: str
     storage_key: str
     created_at: datetime.datetime
 
@@ -58,7 +58,7 @@ class ArtifactRow:
     def from_mapping(cls, m: Any) -> ArtifactRow:
         return cls(
             attachment_id=m["attachment_id"],
-            ast_type=m["ast_type"],
+            variant=m["variant"],
             storage_key=m["storage_key"],
             created_at=m["created_at"],
         )
@@ -201,17 +201,17 @@ class AttachmentRepository:
     # chat_attachment_artifacts — CRUD
     # ------------------------------------------------------------------
 
-    async def add_artifact(self, attachment_id: str, ast_type: str, storage_key: str) -> None:
+    async def add_artifact(self, attachment_id: str, variant: str, storage_key: str) -> None:
         await self._execute(
             text(
                 """
                 INSERT INTO chat_attachment_artifacts
-                    (attachment_id, ast_type, storage_key, created_at)
+                    (attachment_id, variant, storage_key, created_at)
                 VALUES
-                    (:attachment_id, :ast_type, :storage_key, NOW(6))
+                    (:attachment_id, :variant, :storage_key, NOW(6))
                 """
             ),
-            {"attachment_id": attachment_id, "ast_type": ast_type, "storage_key": storage_key},
+            {"attachment_id": attachment_id, "variant": variant, "storage_key": storage_key},
         )
 
     async def get_artifacts(self, attachment_id: str) -> list[ArtifactRow]:

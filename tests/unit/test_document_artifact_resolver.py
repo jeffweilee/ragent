@@ -34,9 +34,9 @@ def _attachment_row(
     )
 
 
-def _artifact_row(attachment_id: str, ast_type: str, storage_key: str) -> ArtifactRow:
+def _artifact_row(attachment_id: str, variant: str, storage_key: str) -> ArtifactRow:
     return ArtifactRow(
-        attachment_id=attachment_id, ast_type=ast_type, storage_key=storage_key, created_at=_NOW
+        attachment_id=attachment_id, variant=variant, storage_key=storage_key, created_at=_NOW
     )
 
 

@@ -10,7 +10,6 @@ import structlog
 
 from ragent.errors.codes import TaskErrorCode
 from ragent.schemas.attachments import AttachmentMime
-from ragent.utility.datetime import to_iso, utcnow
 
 if TYPE_CHECKING:
     from ragent.bootstrap.dispatcher import TaskiqDispatcher
@@ -151,25 +150,14 @@ class ChatAttachmentService:
             simplified_ast_str = self._ast_to_markdown(simplified_docs)
 
             stage = "encrypt_ast"
-            created_at = to_iso(utcnow())
             ast_variants = {
-                "complete": self._ast_cipher.encrypt_ast(
-                    complete_ast_str,
-                    attachment_id=attachment_id,
-                    ast_type="complete",
-                    created_at=created_at,
-                ),
-                "simplified": self._ast_cipher.encrypt_ast(
-                    simplified_ast_str,
-                    attachment_id=attachment_id,
-                    ast_type="simplified",
-                    created_at=created_at,
-                ),
+                "complete": self._ast_cipher.encrypt_ast(complete_ast_str),
+                "simplified": self._ast_cipher.encrypt_ast(simplified_ast_str),
             }
 
             stage = "store_artifacts"
-            for ast_type, encrypted in ast_variants.items():
-                key = f"attachments/{thread_id}/{attachment_id}/ast-{ast_type}"
+            for variant, encrypted in ast_variants.items():
+                key = f"attachments/{thread_id}/{attachment_id}/ast-{variant}"
                 self._doc_store.put(
                     object_key=key,
                     data=json.dumps(encrypted).encode("utf-8"),
@@ -177,11 +165,11 @@ class ChatAttachmentService:
                 )
 
             stage = "repo_add_artifact"
-            for ast_type in ast_variants:
-                key = f"attachments/{thread_id}/{attachment_id}/ast-{ast_type}"
+            for variant in ast_variants:
+                key = f"attachments/{thread_id}/{attachment_id}/ast-{variant}"
                 await self._repo.add_artifact(
                     attachment_id=attachment_id,
-                    ast_type=ast_type,
+                    variant=variant,
                     storage_key=key,
                 )
 

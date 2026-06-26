@@ -74,8 +74,10 @@ class DocumentArtifactResolver:
             artifacts = await self._repo.get_artifacts(att_id)
             if artifacts:
                 # Prefer simplified, fallback to complete
-                artifact_by_type = {a.ast_type: a for a in artifacts}
-                selected = artifact_by_type.get("simplified") or artifact_by_type.get("complete")
+                artifact_by_variant = {a.variant: a for a in artifacts}
+                selected = artifact_by_variant.get("simplified") or artifact_by_variant.get(
+                    "complete"
+                )
 
                 if selected:
                     try:
