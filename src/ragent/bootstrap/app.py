@@ -30,6 +30,7 @@ from ragent.middleware.logging import SCOPE_USER_ID_KEY, RequestLoggingMiddlewar
 from ragent.routers.admin_embedding import create_router as create_admin_embedding_router
 from ragent.routers.admin_ingest import create_router as create_upload_ingest_router
 from ragent.routers.admin_ops import create_admin_ops_router
+from ragent.routers.attachments import create_attachments_router
 from ragent.routers.chat import create_chat_router
 from ragent.routers.chatagent import create_chatagent_router
 from ragent.routers.chatagent_v2 import create_chatagent_v2_router
@@ -476,6 +477,14 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
                 timeout=_float_env("CHATAGENT_TIMEOUT_SECONDS", 30.0),
                 chat_stream_store=container.chat_stream_store,
                 stream_idle_timeout=_float_env("CHATAGENT_STREAM_IDLE_TIMEOUT_SECONDS", 30.0),
+                document_artifact_resolver=container.document_artifact_resolver,
+            )
+        )
+    if container.chat_attachment_service is not None:
+        app.include_router(
+            create_attachments_router(
+                service=container.chat_attachment_service,
+                repository=container.attachment_repository,
             )
         )
     if container.feedback_hmac_secret is not None:

@@ -41,7 +41,7 @@ def _request(
     )
 
 
-def _make_caller(http_mock, *, user_id="alice", user_token="tok-1"):
+def _make_caller(http_mock, *, user_id="alice", user_token="tok-1", attachments=None):
     return ADKCaller(
         http_client=http_mock,
         api_url="http://upstream",
@@ -49,6 +49,7 @@ def _make_caller(http_mock, *, user_id="alice", user_token="tok-1"):
         auth="Bearer up",
         user_id=user_id,
         user_token=user_token,
+        attachments=attachments,
     )
 
 
@@ -185,6 +186,33 @@ def test_stream_deltas_neutralizes_closing_tags_in_payload() -> None:
     assert "&lt;/hidden &gt;" in message
     assert "&lt;/state&gt;" in message
     assert "&lt;hidden x=1&gt;" in message
+
+
+def test_stream_deltas_prepends_attachments_block() -> None:
+    """T-CAT.W1 — a resolved <attachments> JSON block is folded into <hidden>."""
+    http_mock = MagicMock(spec=httpx.Client)
+    http_mock.send.return_value = _resp_mock([_done_line()])
+    caller = _make_caller(http_mock, attachments='[{"attachmentId": "att-1"}]')
+
+    list(caller.stream_deltas(_request(), "m"))
+
+    message = http_mock.build_request.call_args.kwargs["json"]["inputData"]["message"]
+    assert '<attachments>[{"attachmentId": "att-1"}]</attachments>' in message
+    assert message.startswith("<hidden>\n<attachments>")
+    assert message.endswith("What are the features?")
+
+
+def test_stream_deltas_resume_turn_does_not_fold_attachments() -> None:
+    """A resume turn has no new question — attachments are not relevant to it."""
+    http_mock = MagicMock(spec=httpx.Client)
+    http_mock.send.return_value = _resp_mock([_done_line()])
+    caller = _make_caller(http_mock, attachments='[{"attachmentId": "att-1"}]')
+    request = _request(resume=[{"interruptId": "hitl-1", "status": "resolved"}])
+
+    list(caller.stream_deltas(request, "m"))
+
+    payload = http_mock.build_request.call_args.kwargs["json"]
+    assert payload["inputData"] == {"lastMessageId": "hitl-1", "message": ""}
 
 
 def test_stream_deltas_omits_preamble_when_no_context() -> None:

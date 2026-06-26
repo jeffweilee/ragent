@@ -798,7 +798,7 @@ Cutover hard gates: `state_is_candidate`, `field_dim_matches`, `candidate_covera
 
 ## Attachments (`/chatagent/v3/attachments`)
 
-In-conversation file attachments for chat sessions. Users can attach files to a thread and reference their content in chat turns. Attachments are stored encrypted at rest and accessible across live chat, session history, and stream reconnect.
+In-conversation file attachments for chat sessions. Users can attach files to a thread and reference their content in chat turns. Attachments are stored encrypted at rest and accessible across live chat, session history, and stream reconnect. Registered only when both `RAGENT_KEK_BASE64` and `RAGENT_ENCRYPTED_DEK_BASE64` are set.
 
 **MIME types supported:** `text/plain`, `text/markdown`, `text/html`, `application/vnd.openxmlformats-officedocument.wordprocessingml.document` (DOCX), `application/vnd.openxmlformats-officedocument.presentationml.presentation` (PPTX), `application/pdf`.
 

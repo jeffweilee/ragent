@@ -63,6 +63,7 @@ class ADKCaller:
         user_token: str,
         auth: str | None = None,
         timeout: float = 30.0,
+        attachments: str | None = None,
     ) -> None:
         self._http = http_client
         self._api_url = api_url
@@ -71,11 +72,15 @@ class ADKCaller:
         self._user_token = user_token
         self._headers = {"Authorization": auth} if auth else {}
         self._timeout = timeout
+        # T-CAT.W1 — resolved <attachments> block (JSON string), already
+        # decrypted/fetched by DocumentArtifactResolver before this caller is
+        # constructed (resolution is async; this class is not).
+        self._attachments = attachments
 
     def stream_deltas(
         self, request: RunAgentInput, model: str
     ) -> Generator[UpstreamMessage, None, None]:
-        input_data = _resume_input_data(request)
+        input_data = _resume_input_data(request, self._attachments)
         if input_data is None:
             # All interrupts were cancelled — no upstream call; the run finishes
             # successfully with an empty body.
@@ -194,7 +199,7 @@ def _parse_message(raw: dict) -> UpstreamMessage:
     )
 
 
-def _resume_input_data(request: RunAgentInput) -> dict | None:
+def _resume_input_data(request: RunAgentInput, attachments: str | None = None) -> dict | None:
     """Build the upstream `inputData` for a turn.
 
     A normal turn sends `{message}`. A resume turn answers a prior interrupt:
@@ -202,11 +207,13 @@ def _resume_input_data(request: RunAgentInput) -> dict | None:
     (the upstream only supports go / no-go, so `payload` is dropped); a turn
     whose interrupts are all `cancelled` returns ``None`` so no upstream call is
     made. More than one `resolved` interrupt is rejected — the upstream takes a
-    single `lastMessageId`.
+    single `lastMessageId`. Attachments are only folded into a normal turn's
+    preamble — a resume turn carries no new question, so there is nothing to
+    attach context to.
     """
     resume = request.resume
     if not resume:
-        return {"message": _compose_message(request)}
+        return {"message": _compose_message(request, attachments)}
     resolved = [item for item in resume if item.status == "resolved"]
     if len(resolved) > 1:
         raise ResumeValidationError("resume accepts at most one resolved interrupt per turn")

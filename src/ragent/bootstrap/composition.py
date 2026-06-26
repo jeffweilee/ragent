@@ -9,7 +9,10 @@ from typing import TYPE_CHECKING, Any
 from ragent.bootstrap.auth_mode import AuthMode, parse_auth_mode
 
 if TYPE_CHECKING:
+    from ragent.repositories.attachment_repository import AttachmentRepository
     from ragent.routers.chatagent_v3 import AgentFactory
+    from ragent.services.chat_attachment_service import ChatAttachmentService
+    from ragent.services.document_artifact_resolver import DocumentArtifactResolver
 from ragent.utility.env import bool_env as _bool_env
 from ragent.utility.env import float_env as _float_env
 from ragent.utility.env import int_env as _int_env
@@ -71,6 +74,13 @@ class Container:
     # T-CAv3.DIP — (user_id, user_token) -> twp_ai.agent.Agent. None when v3 is
     # disabled (chatagent_api_url unset); set whenever v3 is enabled.
     chatagent_agent_factory: AgentFactory | None = None
+    # T-CAT.W1 — in-conversation file attachments. All three are None unless
+    # RAGENT_KEK_BASE64 is set (optional feature, like unprotect_client); the
+    # attachments router only registers and /chatagent/v3 only resolves
+    # attachment_ids when chat_attachment_service is not None.
+    attachment_repository: AttachmentRepository | None = None
+    chat_attachment_service: ChatAttachmentService | None = None
+    document_artifact_resolver: DocumentArtifactResolver | None = None
 
 
 def _build_chatagent_agent_factory(
@@ -93,7 +103,7 @@ def _build_chatagent_agent_factory(
 
     from ragent.clients.adk_caller import ADKCaller
 
-    def factory(user_id: str, user_token: str) -> Agent:
+    def factory(user_id: str, user_token: str, attachments: str | None = None) -> Agent:
         caller = ADKCaller(
             http_client=http_client,
             api_url=api_url,
@@ -102,6 +112,7 @@ def _build_chatagent_agent_factory(
             user_token=user_token,
             auth=auth,
             timeout=timeout,
+            attachments=attachments,
         )
         return ADKAgent(caller)
 
@@ -366,6 +377,38 @@ def build_container() -> Container:
             timeout=_float_env("UNPROTECT_TIMEOUT_SECONDS", 30.0),
         )
 
+    # T-CAT.W1 — in-conversation file attachments. Gated on RAGENT_KEK_BASE64:
+    # KeyManager.from_env() raises KeyManagerError on an empty/missing KEK, so
+    # constructing it unconditionally would break every existing deployment
+    # that hasn't provisioned the attachment subsystem's keys yet.
+    attachment_repository: AttachmentRepository | None = None
+    chat_attachment_service: ChatAttachmentService | None = None
+    document_artifact_resolver: DocumentArtifactResolver | None = None
+    if os.environ.get("RAGENT_KEK_BASE64"):
+        from ragent.pipelines.chat_attachment.pipeline import ChatAttachmentPipeline
+        from ragent.repositories.attachment_repository import AttachmentRepository
+        from ragent.security.ast_cipher import ASTCipher
+        from ragent.security.key_manager import KeyManager
+        from ragent.services.chat_attachment_service import ChatAttachmentService
+        from ragent.services.document_artifact_resolver import DocumentArtifactResolver
+        from ragent.storage.minio_document_store import MinIODocumentStore
+
+        key_manager = KeyManager.from_env()
+        ast_cipher = ASTCipher(key_manager)
+        attachment_document_store = MinIODocumentStore(registry=minio_registry)
+        attachment_repository = AttachmentRepository(engine=engine)
+        document_artifact_resolver = DocumentArtifactResolver(
+            document_store=attachment_document_store,
+            ast_cipher=ast_cipher,
+            attachment_repository=attachment_repository,
+        )
+        chat_attachment_service = ChatAttachmentService(
+            document_store=attachment_document_store,
+            ast_cipher=ast_cipher,
+            attachment_repository=attachment_repository,
+            pipeline=ChatAttachmentPipeline(unprotect_client=unprotect_client),
+        )
+
     # T8.5a / T-AM.2 — Build the joserfc-based JWKS verifier iff inbound JWT
     # auth is on. OIDC discovery + JWKS are fetched HERE (boot-time) so a
     # misconfigured OIDC_DOMAIN aborts startup rather than 500-ing the first
@@ -441,6 +484,9 @@ def build_container() -> Container:
         chatagent_auth=chatagent_auth,
         chat_stream_store=chat_stream_store,
         chatagent_agent_factory=chatagent_agent_factory,
+        attachment_repository=attachment_repository,
+        chat_attachment_service=chat_attachment_service,
+        document_artifact_resolver=document_artifact_resolver,
     )
 
 

@@ -69,7 +69,9 @@ class ChatAttachmentService:
             content_type=mime_type.value,
         )
 
-        result = await self._pipeline.run(file_bytes=file_bytes, mime_type=mime_type)
+        result = await self._pipeline.run(
+            file_bytes=file_bytes, mime_type=mime_type, user_id=create_user, filename=filename
+        )
         complete_docs = result["complete"]
         simplified_docs = result["simplified"]
 
@@ -107,7 +109,6 @@ class ChatAttachmentService:
             filename=filename,
             mime_type=mime_type.value,
             size_bytes=len(file_bytes),
-            status="READY",
         )
 
         for ast_type in ast_variants:
@@ -117,6 +118,10 @@ class ChatAttachmentService:
                 ast_type=ast_type,
                 storage_key=key,
             )
+
+        # create() always inserts UPLOADED (AttachmentRepository has no status
+        # param); promote to READY only after artifacts are durably persisted.
+        await self._repo.update_status(attachment_id, "READY")
 
         return attachment_id
 

@@ -143,7 +143,11 @@ class TestChatAttachmentService:
 
     @pytest.mark.asyncio
     async def test_upload_sets_correct_initial_status(self, service_dependencies):
-        """Upload sets attachment status to READY after successful processing."""
+        """Upload promotes attachment status to READY after successful processing.
+
+        AttachmentRepository.create() has no status param (always inserts
+        UPLOADED); the service must promote via update_status() instead.
+        """
         service_dependencies["pipeline"].run.return_value = {
             "complete": [Document(content="ast")],
             "simplified": [Document(content="ast")],
@@ -151,7 +155,7 @@ class TestChatAttachmentService:
 
         service = ChatAttachmentService(**service_dependencies)
 
-        await service.upload(
+        attachment_id = await service.upload(
             file_bytes=b"test",
             filename="test.txt",
             thread_id="thread-1",
@@ -160,4 +164,7 @@ class TestChatAttachmentService:
         )
 
         create_call = service_dependencies["attachment_repository"].create.call_args
-        assert create_call.kwargs.get("status") == "READY"
+        assert "status" not in create_call.kwargs
+        service_dependencies["attachment_repository"].update_status.assert_called_once_with(
+            attachment_id, "READY"
+        )

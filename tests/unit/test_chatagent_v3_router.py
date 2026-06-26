@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import inspect
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import fakeredis
 import httpx
@@ -20,6 +20,7 @@ from ragent.clients.chat_stream_store import ChatStreamStore
 from ragent.clients.rate_limiter import RateLimiter, RateLimitResult
 from ragent.errors.codes import HttpErrorCode
 from ragent.routers.chatagent_v3 import create_chatagent_v3_router
+from ragent.services.document_artifact_resolver import DocumentArtifactResolver
 from tests.helpers import done_line as _done_line
 from tests.helpers import msg_line as _msg_line
 from tests.helpers import parse_sse_events as _events
@@ -33,6 +34,7 @@ def _make_app(
     rate_limiter: RateLimiter | None = None,
     chat_stream_store: ChatStreamStore | None = None,
     stream_idle_timeout: float = 3.0,
+    document_artifact_resolver=None,
 ):
     http_mock = MagicMock(spec=httpx.Client)
     app = FastAPI()
@@ -47,6 +49,7 @@ def _make_app(
         rate_limiter=rate_limiter,
         chat_stream_store=chat_stream_store,
         stream_idle_timeout=stream_idle_timeout,
+        document_artifact_resolver=document_artifact_resolver,
     )
     app.include_router(router)
     return app, http_mock
@@ -213,6 +216,50 @@ def test_v3_injects_server_metadata() -> None:
     assert payload["metadata"]["session"] == "thread_1"
     assert payload["inputData"]["message"] == "What are the features?"
     assert payload["stream"] is True
+
+
+def test_v3_resolves_attachment_ids_into_hidden_block() -> None:
+    """T-CAT.W1 — attachment_ids are resolved (async) before the agent runs."""
+    resolver = AsyncMock(spec=DocumentArtifactResolver)
+    resolver.resolve.return_value = '[{"attachmentId": "att-1"}]'
+    app, http_mock = _make_app(document_artifact_resolver=resolver)
+    http_mock.send.return_value = _resp_mock([_done_line()])
+    body = _run_input()
+    body["attachmentIds"] = ["att-1"]
+
+    with TestClient(app) as client:
+        client.post("/chatagent/v3", json=body, headers={"X-User-Id": "alice"})
+
+    resolver.resolve.assert_called_once_with(["att-1"])
+    message = http_mock.build_request.call_args.kwargs["json"]["inputData"]["message"]
+    assert '<attachments>[{"attachmentId": "att-1"}]</attachments>' in message
+
+
+def test_v3_skips_attachment_resolution_when_resolver_unwired() -> None:
+    """No DocumentArtifactResolver wired (attachment subsystem disabled) — no crash."""
+    app, http_mock = _make_app(document_artifact_resolver=None)
+    http_mock.send.return_value = _resp_mock([_done_line()])
+    body = _run_input()
+    body["attachmentIds"] = ["att-1"]
+
+    with TestClient(app) as client:
+        r = client.post("/chatagent/v3", json=body, headers={"X-User-Id": "alice"})
+
+    assert r.status_code == 200
+    message = http_mock.build_request.call_args.kwargs["json"]["inputData"]["message"]
+    assert "<attachments>" not in message
+
+
+def test_v3_skips_attachment_resolution_when_no_ids_present() -> None:
+    """attachment_ids omitted — resolver must not be called even if wired."""
+    resolver = AsyncMock(spec=DocumentArtifactResolver)
+    app, http_mock = _make_app(document_artifact_resolver=resolver)
+    http_mock.send.return_value = _resp_mock([_done_line()])
+
+    with TestClient(app) as client:
+        client.post("/chatagent/v3", json=_run_input(), headers={"X-User-Id": "alice"})
+
+    resolver.resolve.assert_not_called()
 
 
 def test_v3_rate_limited_emits_run_error_not_http_429() -> None:
@@ -528,7 +575,7 @@ def test_v3_post_uses_injected_agent_factory_not_a_hardcoded_backend() -> None:
             calls.append((request.thread_id or "", model))
             yield _done_line()
 
-    def _factory(user_id: str, user_token: str):
+    def _factory(user_id: str, user_token: str, attachments: str | None = None):
         return _StubAgent()
 
     http_mock = MagicMock(spec=httpx.Client)

@@ -11,7 +11,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Generator
 from concurrent.futures import ThreadPoolExecutor
-from typing import Annotated
+from typing import TYPE_CHECKING, Annotated
 
 import httpx
 import structlog
@@ -30,13 +30,19 @@ from ragent.schemas.chatagent import SessionDeleteRequest, SessionRenameRequest
 from ragent.services.chatagent_session import map_session_list_payload, map_session_payload
 from ragent.utility.id_gen import new_id
 
+if TYPE_CHECKING:
+    from ragent.services.document_artifact_resolver import DocumentArtifactResolver
+
 logger = structlog.get_logger(__name__)
 
-# (user_id, user_token) -> Agent. Built once in the composition root (closing
-# over the upstream http_client/api_url/ap_name/auth/timeout) and called per
-# request, since the underlying caller carries per-request user/token state
-# and so cannot be injected as a singleton Agent instance.
-AgentFactory = Callable[[str, str], Agent]
+# (user_id, user_token, attachments) -> Agent. Built once in the composition
+# root (closing over the upstream http_client/api_url/ap_name/auth/timeout)
+# and called per request, since the underlying caller carries per-request
+# user/token state and so cannot be injected as a singleton Agent instance.
+# `attachments` is the already-resolved <attachments> JSON block (or None) —
+# resolution is async (DocumentArtifactResolver) and must happen before this
+# call, since the caller/agent chain below it is synchronous.
+AgentFactory = Callable[[str, str, str | None], Agent]
 
 
 def create_chatagent_v3_router(
@@ -57,6 +63,7 @@ def create_chatagent_v3_router(
     stream_idle_timeout: float = 30.0,
     stream_poll_interval: float = 0.05,
     stream_producer_workers: int = 64,
+    document_artifact_resolver: DocumentArtifactResolver | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/chatagent/v3")
 
@@ -116,7 +123,12 @@ def create_chatagent_v3_router(
 
             raw_token = request.headers.get(jwt_header.lower()) or ""
             assert agent_factory is not None  # this route only registers when it is
-            agent = agent_factory(user_id, raw_token)
+            attachments_block = None
+            if body.attachment_ids and document_artifact_resolver is not None:
+                attachments_block = await document_artifact_resolver.resolve(
+                    body.attachment_ids
+                )
+            agent = agent_factory(user_id, raw_token, attachments_block)
             logger.info("chatagent_v3.request", user_id=user_id)
 
             # No store wired (e.g. Redis down at boot): fall back to the legacy
