@@ -73,6 +73,7 @@ class IngestMime(StrEnum):
     TEXT_PLAIN = "text/plain"
     TEXT_MARKDOWN = "text/markdown"
     TEXT_HTML = "text/html"
+    CSV = "text/csv"
     DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     PPTX = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
     PDF = "application/pdf"
@@ -101,6 +102,7 @@ MIME_EXTENSIONS: dict[IngestMime, str] = {
     IngestMime.TEXT_PLAIN: "txt",
     IngestMime.TEXT_MARKDOWN: "md",
     IngestMime.TEXT_HTML: "html",
+    IngestMime.CSV: "csv",
     IngestMime.DOCX: "docx",
     IngestMime.PPTX: "pptx",
     IngestMime.PDF: "pdf",

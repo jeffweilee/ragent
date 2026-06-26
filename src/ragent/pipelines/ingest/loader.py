@@ -13,6 +13,7 @@ ALLOWED_MIMES = (
     "text/plain",
     "text/markdown",
     "text/html",
+    "text/csv",
     "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     IngestMime.PDF,

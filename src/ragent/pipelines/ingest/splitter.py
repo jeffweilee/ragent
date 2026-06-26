@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import csv
 import io
 import re
 from typing import Any
@@ -364,6 +365,39 @@ class _PdfASTSplitter:
 
 
 # ---------------------------------------------------------------------------
+# _CsvASTSplitter (T-CAT.9)
+# ---------------------------------------------------------------------------
+
+
+@component
+class _CsvASTSplitter:
+    """CSV rows → one atom per data row. Header row names become field labels.
+    Each atom's content is a `: `-delimited line (e.g., "name: alice, age: 30").
+    """
+
+    @component.output_types(documents=list[Document])
+    def run(self, documents: list[Document]) -> dict:
+        atoms: list[Document] = []
+        for doc in documents:
+            content = doc.content or ""
+            reader = csv.DictReader(io.StringIO(content))
+            if reader.fieldnames is None:
+                continue
+            for row in reader:
+                parts = [f"{k}: {v}" for k, v in row.items() if v]
+                if not parts:
+                    continue
+                row_str = ", ".join(parts)
+                atoms.append(
+                    Document(
+                        content=row_str,
+                        meta={**doc.meta},
+                    )
+                )
+        return {"documents": atoms}
+
+
+# ---------------------------------------------------------------------------
 # _MimeAwareSplitter (T2v.38/39 — replaces FileTypeRouter+joiner+3-splitters)
 # ---------------------------------------------------------------------------
 
@@ -371,6 +405,7 @@ _SPLITTER_LABEL: dict[str, str] = {
     "text/plain": "plain",
     "text/markdown": "markdown",
     "text/html": "html",
+    "text/csv": "csv",
     IngestMime.DOCX: "docx",
     IngestMime.PPTX: "pptx",
     IngestMime.PDF: "pdf",
@@ -394,6 +429,7 @@ class _MimeAwareSplitter:
         self._plain.warm_up()
         self._md = _MarkdownASTSplitter()
         self._html = _HtmlASTSplitter()
+        self._csv = _CsvASTSplitter()
         self._docx = _DocxASTSplitter()
         self._pptx = _PptxASTSplitter()
         self._pdf = _PdfASTSplitter()
@@ -418,6 +454,8 @@ class _MimeAwareSplitter:
                 out = self._md.run([doc])["documents"]
             elif mime == "text/html":
                 out = self._html.run([doc])["documents"]
+            elif mime == "text/csv":
+                out = self._csv.run([doc])["documents"]
             elif mime == IngestMime.DOCX:
                 out = self._docx.run([doc])["documents"]
             elif mime == IngestMime.PPTX:

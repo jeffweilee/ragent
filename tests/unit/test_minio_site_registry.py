@@ -139,7 +139,9 @@ def test_put_object_routes_through_named_site_with_caller_supplied_key():
     payload = io.BytesIO(b"x")
     reg.put_object("tenant-eu-1", "custom-key", payload, 1, "text/plain")
 
-    stub.put_object.assert_called_once_with("eu", "custom-key", payload, 1, content_type="text/plain")
+    stub.put_object.assert_called_once_with(
+        "eu", "custom-key", payload, 1, content_type="text/plain"
+    )
 
 
 def test_delete_object_skips_read_only_site():

@@ -58,10 +58,12 @@ def test_unknown_mime_rejected():
         _adapter().validate_python(bad)
 
 
-def test_csv_mime_rejected_in_v2():
-    bad = {**_INLINE_BASE, "mime_type": "text/csv"}
-    with pytest.raises(ValidationError):
-        _adapter().validate_python(bad)
+def test_csv_mime_accepted_for_inline():
+    req = _adapter().validate_python(
+        {**_INLINE_BASE, "mime_type": "text/csv", "content": "a,b\n1,2"}
+    )
+    assert isinstance(req, InlineIngestRequest)
+    assert req.mime_type == IngestMime.CSV
 
 
 def test_inline_missing_content_rejected():
@@ -126,9 +128,8 @@ def test_ingest_mime_enum_values():
     assert IngestMime.TEXT_PLAIN.value == "text/plain"
     assert IngestMime.TEXT_MARKDOWN.value == "text/markdown"
     assert IngestMime.TEXT_HTML.value == "text/html"
+    assert IngestMime.CSV.value == "text/csv"
     assert IngestMime.PDF.value == "application/pdf"
-    # CSV is intentionally NOT in v2 enum
-    assert "text/csv" not in {m.value for m in IngestMime}
 
 
 # ---------------------------------------------------------------------------
