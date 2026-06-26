@@ -68,12 +68,14 @@ def test_post_ingest_unknown_mime_returns_415():
     assert resp.json()["error_code"] == "INGEST_MIME_UNSUPPORTED"
 
 
-def test_post_ingest_csv_mime_returns_415_in_v2():
-    bad = {**_INLINE, "mime_type": "text/csv"}
-    client, _ = _make_client()
-    resp = client.post("/ingest/v1", json=bad, headers={"X-User-Id": "alice"})
-    assert resp.status_code == 415
-    assert resp.json()["error_code"] == "INGEST_MIME_UNSUPPORTED"
+def test_post_ingest_csv_mime_accepted():
+    svc = AsyncMock()
+    svc.create.return_value = "CCCCCCCCCCCCCCCCCCCCCCCCCC"
+    req = {**_INLINE, "mime_type": "text/csv", "content": "a,b\n1,2"}
+    client, _ = _make_client(svc)
+    resp = client.post("/ingest/v1", json=req, headers={"X-User-Id": "alice"})
+    assert resp.status_code == 202
+    assert resp.json()["document_id"] == "CCCCCCCCCCCCCCCCCCCCCCCCCC"
 
 
 def test_post_ingest_missing_required_field_returns_422():
