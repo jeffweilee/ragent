@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock, patch
 
 import pytest
+import structlog
 from haystack.dataclasses import Document
 
 from ragent.clients.unprotect import UnprotectClient
@@ -172,3 +173,45 @@ class TestChatAttachmentPipeline:
                 assert "simplified" in result
                 assert isinstance(result["complete"], list)
                 assert isinstance(result["simplified"], list)
+
+    @pytest.mark.asyncio
+    async def test_pipeline_logs_completed(self):
+        """Pipeline emits chat_attachment.pipeline_completed with atom count."""
+        unprotect_client = MagicMock(spec=UnprotectClient)
+        pipeline = ChatAttachmentPipeline(unprotect_client=unprotect_client)
+
+        with structlog.testing.capture_logs() as logs:
+            result = await pipeline.run(
+                file_bytes=b"line 1\nline 2", mime_type=AttachmentMime.TEXT_PLAIN
+            )
+
+        completed = next(e for e in logs if e["event"] == "chat_attachment.pipeline_completed")
+        assert completed["mime_type"] == AttachmentMime.TEXT_PLAIN.value
+        assert completed["atom_count"] == len(result["complete"])
+
+    @pytest.mark.asyncio
+    async def test_pipeline_logs_unprotect_failure_structured(self):
+        """unprotect failure logs structured error_type/error fields, not just exc_info."""
+        unprotect_client = MagicMock(spec=UnprotectClient)
+        unprotect_client.unprotect.side_effect = RuntimeError("upstream down")
+
+        with patch(
+            "ragent.pipelines.chat_attachment.pipeline._MimeAwareSplitter"
+        ) as mock_splitter_class:
+            mock_splitter = MagicMock()
+            mock_splitter_class.return_value = mock_splitter
+            mock_splitter.run.return_value = {"documents": [Document(content="test")]}
+
+            pipeline = ChatAttachmentPipeline(unprotect_client=unprotect_client)
+
+            with structlog.testing.capture_logs() as logs:
+                await pipeline.run(
+                    file_bytes=b"plain text",
+                    mime_type=AttachmentMime.DOCX,
+                    filename="report.docx",
+                )
+
+        failed = next(e for e in logs if e["event"] == "chat_attachment.unprotect_failed_fallback")
+        assert failed["filename"] == "report.docx"
+        assert failed["error_type"] == "RuntimeError"
+        assert failed["log_level"] == "warning"

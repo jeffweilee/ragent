@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Annotated
 
+import structlog
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
@@ -13,6 +14,8 @@ from ragent.schemas.attachments import AttachmentMime
 if TYPE_CHECKING:
     from ragent.repositories.attachment_repository import AttachmentRepository
     from ragent.services.chat_attachment_service import ChatAttachmentService
+
+logger = structlog.get_logger(__name__)
 
 
 class UploadAttachmentResponse(BaseModel):
@@ -67,7 +70,21 @@ def create_attachments_router(
         try:
             mime_type = AttachmentMime(mime_str)
         except ValueError as e:
+            logger.warning(
+                "attachments.upload_rejected_mime",
+                thread_id=threadId,
+                mime_type=mime_str,
+                user_id=user_id,
+            )
             raise HTTPException(status_code=415, detail=f"Unsupported MIME type: {mime_str}") from e
+
+        logger.info(
+            "attachments.upload_request",
+            thread_id=threadId,
+            filename=file.filename or "unknown",
+            user_id=user_id,
+            size_bytes=len(file_bytes),
+        )
 
         attachment_id = await service.upload(
             file_bytes=file_bytes,
@@ -85,6 +102,7 @@ def create_attachments_router(
         user_id: Annotated[str | None, Depends(get_user_id)] = None,
     ) -> ListAttachmentsResponse:
         """List attachments for a conversation thread."""
+        logger.info("attachments.list_request", thread_id=threadId, user_id=user_id)
         attachments = await repository.list_by_thread(threadId)
 
         return ListAttachmentsResponse(

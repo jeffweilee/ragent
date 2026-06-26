@@ -832,6 +832,8 @@ curl -X POST "http://localhost:8000/chatagent/v3/attachments/upload" \
 - `413 ATTACHMENT_TOO_LARGE` — file size exceeds cap.
 - `422 ATTACHMENT_PARSE_FAILED` — AST building failed during processing.
 
+**Business-step logs:** `attachments.upload_request` / `attachments.upload_rejected_mime` (router); `chat_attachment.upload_started` / `chat_attachment.upload_completed` / `chat_attachment.upload_failed` (service, carries a `stage` field identifying which phase of the upload pipeline failed).
+
 ### `GET /chatagent/v3/attachments` — List thread attachments
 
 Lists all attachments for a conversation thread.

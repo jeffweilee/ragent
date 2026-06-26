@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
 
 import anyio
+import structlog
 from haystack.dataclasses import Document
 
 from ragent.pipelines.ingest.splitter import _MimeAwareSplitter
@@ -14,7 +14,7 @@ from ragent.schemas.attachments import UNPROTECT_MIMES, AttachmentMime
 if TYPE_CHECKING:
     from ragent.clients.unprotect import UnprotectClient
 
-logger = logging.getLogger(__name__)
+logger = structlog.get_logger(__name__)
 
 
 class ChatAttachmentPipeline:
@@ -58,13 +58,26 @@ class ChatAttachmentPipeline:
                 content_bytes = await anyio.to_thread.run_sync(
                     self._unprotect_client.unprotect, file_bytes, user_id, filename
                 )
-            except Exception:
-                logger.warning("chat_attachment.unprotect_failed_fallback", exc_info=True)
+            except Exception as exc:
+                logger.warning(
+                    "chat_attachment.unprotect_failed_fallback",
+                    filename=filename,
+                    mime_type=mime_type.value,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
 
         content_str = content_bytes.decode("utf-8")
         doc = Document(content=content_str, meta={"mime_type": mime_type.value})
 
         atoms = self._splitter.run([doc])["documents"]
+
+        logger.info(
+            "chat_attachment.pipeline_completed",
+            filename=filename,
+            mime_type=mime_type.value,
+            atom_count=len(atoms),
+        )
 
         return {
             "complete": atoms,

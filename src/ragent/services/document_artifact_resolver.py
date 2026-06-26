@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-import logging
 from typing import TYPE_CHECKING, Any
 
-logger = logging.getLogger(__name__)
+import structlog
+
+logger = structlog.get_logger(__name__)
 
 if TYPE_CHECKING:
     from ragent.repositories.attachment_repository import AttachmentRepository
@@ -44,12 +45,21 @@ class DocumentArtifactResolver:
         if not attachment_ids:
             return None
 
+        logger.info(
+            "document_artifact_resolver.resolve_started",
+            attachment_count=len(attachment_ids),
+        )
+
         attachments: list[dict[str, Any]] = []
 
         for att_id in attachment_ids:
             # Fetch attachment metadata
             att_meta = await self._repo.get(att_id)
             if not att_meta:
+                logger.warning(
+                    "document_artifact_resolver.attachment_not_found",
+                    attachment_id=att_id,
+                )
                 continue
 
             # Format attachment info for context
@@ -75,11 +85,20 @@ class DocumentArtifactResolver:
                         if decrypted and "content" in decrypted:
                             att_info["ast"] = decrypted["content"]
                     except (ValueError, KeyError, json.JSONDecodeError) as e:
-                        logger.warning(f"Failed to decrypt AST for {att_id}: {e}")
+                        logger.warning(
+                            "document_artifact_resolver.decrypt_failed",
+                            attachment_id=att_id,
+                            error_type=type(e).__name__,
+                            error=str(e),
+                        )
 
             attachments.append(att_info)
 
         if not attachments:
             return None
 
+        logger.info(
+            "document_artifact_resolver.resolve_completed",
+            resolved_count=len(attachments),
+        )
         return json.dumps(attachments)

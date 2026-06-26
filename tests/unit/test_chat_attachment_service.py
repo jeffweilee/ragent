@@ -3,6 +3,7 @@
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import structlog
 from haystack.dataclasses import Document
 
 from ragent.pipelines.chat_attachment.pipeline import ChatAttachmentPipeline
@@ -168,3 +169,51 @@ class TestChatAttachmentService:
         service_dependencies["attachment_repository"].update_status.assert_called_once_with(
             attachment_id, "READY"
         )
+
+    @pytest.mark.asyncio
+    async def test_upload_logs_started_and_completed(self, service_dependencies):
+        """Upload emits chat_attachment.upload_started then upload_completed."""
+        service = ChatAttachmentService(**service_dependencies)
+
+        with structlog.testing.capture_logs() as logs:
+            attachment_id = await service.upload(
+                file_bytes=b"test",
+                filename="test.txt",
+                thread_id="thread-1",
+                create_user="alice",
+                mime_type=AttachmentMime.TEXT_PLAIN,
+            )
+
+        events = [e["event"] for e in logs]
+        assert "chat_attachment.upload_started" in events
+        assert "chat_attachment.upload_completed" in events
+
+        started = next(e for e in logs if e["event"] == "chat_attachment.upload_started")
+        assert started["thread_id"] == "thread-1"
+        assert started["filename"] == "test.txt"
+        assert started["size_bytes"] == 4
+
+        completed = next(e for e in logs if e["event"] == "chat_attachment.upload_completed")
+        assert completed["attachment_id"] == attachment_id
+        assert completed["thread_id"] == "thread-1"
+
+    @pytest.mark.asyncio
+    async def test_upload_logs_failure_and_reraises(self, service_dependencies):
+        """Upload logs chat_attachment.upload_failed and re-raises on pipeline error."""
+        service_dependencies["pipeline"].run.side_effect = RuntimeError("pipeline boom")
+        service = ChatAttachmentService(**service_dependencies)
+
+        with structlog.testing.capture_logs() as logs, pytest.raises(RuntimeError):
+            await service.upload(
+                file_bytes=b"test",
+                filename="test.txt",
+                thread_id="thread-1",
+                create_user="alice",
+                mime_type=AttachmentMime.TEXT_PLAIN,
+            )
+
+        failed = next(e for e in logs if e["event"] == "chat_attachment.upload_failed")
+        assert failed["thread_id"] == "thread-1"
+        assert failed["stage"] == "pipeline_run"
+        assert failed["error_type"] == "RuntimeError"
+        assert failed["log_level"] == "error"

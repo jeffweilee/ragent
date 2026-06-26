@@ -4,6 +4,7 @@ import datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import structlog
 
 from ragent.repositories.attachment_repository import (
     ArtifactRow,
@@ -146,3 +147,67 @@ class TestDocumentArtifactResolver:
         parsed = json.loads(result)
         assert isinstance(parsed, list)
         assert len(parsed) > 0
+
+    @pytest.mark.asyncio
+    async def test_resolve_logs_started_and_completed(self, resolver_dependencies):
+        """Resolve emits resolve_started and resolve_completed business-step logs."""
+        resolver_dependencies["attachment_repository"].get.return_value = _attachment_row(
+            "att_1", "test.pdf", "application/pdf", 1024
+        )
+        resolver_dependencies["attachment_repository"].get_artifacts.return_value = [
+            _artifact_row("att_1", "complete", "key")
+        ]
+        resolver_dependencies["document_store"].get.return_value = b'{"ciphertext":"data"}'
+
+        resolver = DocumentArtifactResolver(**resolver_dependencies)
+
+        with structlog.testing.capture_logs() as logs:
+            await resolver.resolve(["att_1"])
+
+        started = next(
+            e for e in logs if e["event"] == "document_artifact_resolver.resolve_started"
+        )
+        assert started["attachment_count"] == 1
+        completed = next(
+            e for e in logs if e["event"] == "document_artifact_resolver.resolve_completed"
+        )
+        assert completed["resolved_count"] == 1
+
+    @pytest.mark.asyncio
+    async def test_resolve_logs_attachment_not_found(self, resolver_dependencies):
+        """Resolve logs a warning and skips when the attachment row is missing."""
+        resolver_dependencies["attachment_repository"].get.return_value = None
+
+        resolver = DocumentArtifactResolver(**resolver_dependencies)
+
+        with structlog.testing.capture_logs() as logs:
+            result = await resolver.resolve(["att_missing"])
+
+        assert result is None
+        missing = next(
+            e for e in logs if e["event"] == "document_artifact_resolver.attachment_not_found"
+        )
+        assert missing["attachment_id"] == "att_missing"
+        assert missing["log_level"] == "warning"
+
+    @pytest.mark.asyncio
+    async def test_resolve_logs_decrypt_failure(self, resolver_dependencies):
+        """Resolve logs a structured warning when AST decryption fails."""
+        resolver_dependencies["attachment_repository"].get.return_value = _attachment_row(
+            "att_1", "test.pdf", "application/pdf", 1024
+        )
+        resolver_dependencies["attachment_repository"].get_artifacts.return_value = [
+            _artifact_row("att_1", "complete", "key")
+        ]
+        resolver_dependencies["document_store"].get.return_value = b"not-json"
+
+        resolver = DocumentArtifactResolver(**resolver_dependencies)
+
+        with structlog.testing.capture_logs() as logs:
+            result = await resolver.resolve(["att_1"])
+
+        assert result is not None
+        failed = next(e for e in logs if e["event"] == "document_artifact_resolver.decrypt_failed")
+        assert failed["attachment_id"] == "att_1"
+        assert failed["log_level"] == "warning"
+        assert "error_type" in failed
