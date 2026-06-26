@@ -23,6 +23,7 @@ from twp_ai.schemas import RunAgentInput
 
 from ragent.auth.deps import get_user_id
 from ragent.clients.chat_stream_store import ChatStreamStore
+from ragent.clients.nats_publisher import NatsSessionPublisher
 from ragent.clients.rate_limiter import RateLimiter
 from ragent.errors.codes import HttpErrorCode
 from ragent.routers._chatagent_proxy import proxy_get, proxy_write
@@ -54,10 +55,10 @@ def create_chatagent_v3_router(
     jwt_header: str = "X-Auth-Token",
     timeout: float = 30.0,
     chat_stream_store: ChatStreamStore | None = None,
+    nats_publisher: NatsSessionPublisher | None = None,
     stream_idle_timeout: float = 30.0,
     stream_poll_interval: float = 0.05,
     stream_producer_workers: int = 64,
-    session_events_idle_timeout: float = 25.0,
 ) -> APIRouter:
     router = APIRouter(prefix="/chatagent/v3")
 
@@ -162,6 +163,7 @@ def create_chatagent_v3_router(
             _spawn_producer(
                 producer_pool,
                 chat_stream_store,
+                nats_publisher,
                 key,
                 agent,
                 body,
@@ -171,7 +173,14 @@ def create_chatagent_v3_router(
             )
             return StreamingResponse(
                 _consume_stream(
-                    chat_stream_store, key, "0", stream_idle_timeout, stream_poll_interval
+                    chat_stream_store,
+                    key,
+                    "0",
+                    stream_idle_timeout,
+                    stream_poll_interval,
+                    user_id=user_id,
+                    thread_id=body.thread_id or "",
+                    nats_publisher=nats_publisher,
                 ),
                 media_type="text/event-stream",
             )
@@ -239,29 +248,9 @@ def create_chatagent_v3_router(
                     last_event_id or "0",
                     stream_idle_timeout,
                     stream_poll_interval,
-                ),
-                media_type="text/event-stream",
-            )
-
-    if chat_stream_store is not None:
-
-        @router.get("/sessionEvents")
-        async def chatagent_v3_session_events(
-            x_user_id: Annotated[str | None, Depends(get_user_id)] = None,
-        ) -> StreamingResponse:
-            # Live session-list status (running spinner / new-reply dot) for sessions
-            # the client is NOT actively streaming. The client merges these onto its
-            # sessionList snapshot; its own active run already updates from that
-            # session's chat stream, so this only carries the cross-tab / background
-            # transitions a snapshot would otherwise miss until the next fetch.
-            user_id = x_user_id or "anonymous"
-            logger.info("chatagent_v3.session_events", user_id=user_id)
-            return StreamingResponse(
-                _session_events_stream(
-                    chat_stream_store,
-                    user_id,
-                    session_events_idle_timeout,
-                    stream_poll_interval,
+                    user_id=user_id,
+                    thread_id=thread_id,
+                    nats_publisher=nats_publisher,
                 ),
                 media_type="text/event-stream",
             )
@@ -281,9 +270,8 @@ def create_chatagent_v3_router(
             if endTime:
                 params["endTime"] = endTime
             # Strip the machine-context wrapper from each session title and enrich
-            # each entry with its live {running, hasNewReply} status (None status fn
-            # when no store is wired → list degrades to title-only).
-            status_of = _session_status_fn(chat_stream_store, user_id)
+            # each entry with its live {running, hasNewReply} status, batched in one
+            # status_many call (no store → list degrades to title-only).
             return await proxy_get(
                 http_client=http_client,
                 url=chatagent_sessionlist_api_url,
@@ -291,7 +279,9 @@ def create_chatagent_v3_router(
                 headers=_headers,
                 timeout=timeout,
                 log_prefix="v3.sessionlist",
-                transform=lambda payload: map_session_list_payload(payload, status_of),
+                transform=lambda payload: map_session_list_payload(
+                    payload, _session_status_fn(chat_stream_store, user_id, payload)
+                ),
             )
 
     if chatagent_session_api_url is not None:
@@ -314,13 +304,12 @@ def create_chatagent_v3_router(
                 transform=map_session_payload,
             )
             # Mark read only after a successful fetch — a 502/504 upstream failure must
-            # not clear the dot for a session the user never actually saw. Broadcast the
-            # cleared dot so the user's other tabs update without a refetch.
+            # not clear the dot for a session the user never actually saw. Publish the
+            # cleared dot over NATS so the user's other tabs update without a refetch.
             if chat_stream_store is not None and response.status_code < 400:
                 chat_stream_store.clear_unread(user_id, session)
-                chat_stream_store.publish_session_event(
-                    user_id, {"session": session, "hasNewReply": False}
-                )
+                if nats_publisher is not None:
+                    nats_publisher.publish(user_id, {"session": session, "hasNewReply": False})
             return response
 
         @router.put("/session")
@@ -377,56 +366,29 @@ def _last_user_text(body: RunAgentInput) -> str:
 
 
 def _session_status_fn(
-    store: ChatStreamStore | None, user_id: str
+    store: ChatStreamStore | None, user_id: str, payload: object
 ) -> Callable[[str], dict[str, bool]] | None:
-    """Per-session ``{running, hasNewReply}`` resolver for the session list.
+    """Build a per-session ``{running, hasNewReply}`` resolver for one list payload.
 
-    Returns ``None`` when no store is wired, so the list degrades to title-only
-    (the pre-live-status shape) rather than fabricating a status.
+    Returns ``None`` when no store is wired (list degrades to title-only). Otherwise
+    it collects every session id from the payload and resolves all statuses in a
+    single batched ``status_many`` (2 Redis round-trips), then hands back a dict
+    lookup so the mapper merges without per-entry Redis calls.
     """
     if store is None:
         return None
-
-    def status_of(session_id: str) -> dict[str, bool]:
-        return {
-            "running": store.is_running(user_id, session_id),
-            "hasNewReply": store.has_unread(user_id, session_id),
-        }
-
-    return status_of
-
-
-def _session_events_stream(
-    store: ChatStreamStore,
-    user_id: str,
-    idle_timeout: float,
-    poll_interval: float,
-) -> Generator[str, None, None]:
-    """Relay live session-list status changes as SSE ``data:`` frames.
-
-    Subscribes to the user's Redis pub/sub channel; each published transition is one
-    frame. Closes after ``idle_timeout`` of silence so a long-lived connection does
-    not pin a worker thread indefinitely — the browser's ``EventSource`` reconnects,
-    which also re-establishes a dropped subscription. Fail-soft: a Redis outage
-    (no pubsub) ends the stream cleanly so the client falls back to its sessionList
-    snapshot instead of seeing a 500.
-    """
-    pubsub = store.subscribe_session_events(user_id)
-    if pubsub is None:
-        return
-    try:
-        deadline = time.monotonic() + idle_timeout
-        while time.monotonic() < deadline:
-            message = pubsub.get_message(timeout=poll_interval, ignore_subscribe_messages=True)
-            if message is None:
-                continue
-            data = message.get("data")
-            if data is None:
-                continue
-            yield f"data: {data}\n\n"
-            deadline = time.monotonic() + idle_timeout
-    finally:
-        pubsub.close()
+    sessions = payload.get("sessions") if isinstance(payload, dict) else None
+    ids = (
+        [
+            s["session"]
+            for s in sessions
+            if isinstance(s, dict) and isinstance(s.get("session"), str)
+        ]
+        if isinstance(sessions, list)
+        else []
+    )
+    statuses = store.status_many(user_id, ids)
+    return lambda session_id: statuses.get(session_id, {})
 
 
 def _reconnect_stream(
@@ -437,16 +399,30 @@ def _reconnect_stream(
     last_id: str,
     idle_timeout: float,
     poll_interval: float,
+    *,
+    user_id: str,
+    thread_id: str,
+    nats_publisher: NatsSessionPublisher | None,
 ) -> Generator[str, None, None]:
     """Replay a run for reconnect: the stashed user turn first, then the buffer."""
     if user_text:
         yield to_sse(UserMessageEvent(message_id=f"{run_id}-user", content=user_text))
-    yield from _consume_stream(store, key, last_id, idle_timeout, poll_interval)
+    yield from _consume_stream(
+        store,
+        key,
+        last_id,
+        idle_timeout,
+        poll_interval,
+        user_id=user_id,
+        thread_id=thread_id,
+        nats_publisher=nats_publisher,
+    )
 
 
 def _spawn_producer(
     pool: ThreadPoolExecutor,
     store: ChatStreamStore,
+    nats_publisher: NatsSessionPublisher | None,
     key: str,
     agent: Agent,
     body: RunAgentInput,
@@ -463,17 +439,27 @@ def _spawn_producer(
     mark_done always runs to close it.
 
     The run's start/finish also publish live session-list status (spinner on, then
-    off + new-reply dot). ``mark_done`` is the LAST step so a consumer can only
-    observe the closing ``eos`` after the unread flag is already set — the list is
-    never momentarily "finished but not yet unread".
+    off + new-reply dot) over NATS. ``mark_done`` is the LAST step so a consumer can
+    only observe the closing ``eos`` after the unread flag is already set — the list
+    is never momentarily "finished but not yet unread".
     """
     pool.submit(
-        _run_producer, store, key, agent, body, model, user_id, body.thread_id or "", reply_expected
+        _run_producer,
+        store,
+        nats_publisher,
+        key,
+        agent,
+        body,
+        model,
+        user_id,
+        body.thread_id or "",
+        reply_expected,
     )
 
 
 def _run_producer(
     store: ChatStreamStore,
+    nats_publisher: NatsSessionPublisher | None,
     key: str,
     agent: Agent,
     body: RunAgentInput,
@@ -488,7 +474,8 @@ def _run_producer(
     is never awaited, so an escaping error (e.g. ``mark_done``'s pipeline on a Redis
     drop) would otherwise vanish with no log.
     """
-    store.publish_session_event(user_id, {"session": thread_id, "running": True})
+    if nats_publisher is not None:
+        nats_publisher.publish(user_id, {"session": thread_id, "running": True})
     try:
         try:
             for frame in agent.run(body, model):
@@ -499,10 +486,11 @@ def _run_producer(
             # spinner. mark_unread is gated on an actual reply; mark_done still closes.
             if reply_expected:
                 store.mark_unread(user_id, thread_id)
-            store.publish_session_event(
-                user_id,
-                {"session": thread_id, "running": False, "hasNewReply": reply_expected},
-            )
+            if nats_publisher is not None:
+                nats_publisher.publish(
+                    user_id,
+                    {"session": thread_id, "running": False, "hasNewReply": reply_expected},
+                )
             store.mark_done(key)
     except Exception as exc:
         logger.error(
@@ -519,6 +507,10 @@ def _consume_stream(
     last_id: str,
     idle_timeout: float,
     poll_interval: float,
+    *,
+    user_id: str,
+    thread_id: str,
+    nats_publisher: NatsSessionPublisher | None,
 ) -> Generator[str, None, None]:
     """Replay buffered frames after ``last_id``, attaching each entry id as the SSE ``id:``.
 
@@ -527,6 +519,11 @@ def _consume_stream(
     sentinel; otherwise stop after ``idle_timeout`` of no progress (a producer
     that died without closing). The deadline resets on every batch, so a slow but
     live producer streams to completion.
+
+    Draining to the ``eos`` sentinel means THIS viewer watched the reply to the end,
+    so the thread is marked read (clear the dot + publish the cleared state). A client
+    that disconnects mid-stream never reaches here, so a backgrounded run that finishes
+    unwatched keeps its dot — exactly the active-vs-background distinction we want.
     """
     cursor = last_id
     deadline = time.monotonic() + idle_timeout
@@ -538,6 +535,9 @@ def _consume_stream(
         for entry_id, frame in entries:
             cursor = entry_id
             if frame is None:
+                store.clear_unread(user_id, thread_id)
+                if nats_publisher is not None:
+                    nats_publisher.publish(user_id, {"session": thread_id, "hasNewReply": False})
                 return
             yield f"id: {entry_id}\n{frame}"
         deadline = time.monotonic() + idle_timeout

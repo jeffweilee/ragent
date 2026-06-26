@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 from unittest.mock import MagicMock
 
 import fakeredis
@@ -222,34 +221,46 @@ def test_has_unread_fail_soft_on_redis_error() -> None:
     assert store.has_unread("a", "t") is False
 
 
-def test_publish_session_event_reaches_a_subscriber() -> None:
+def test_status_many_batches_running_and_unread() -> None:
+    # t1 in-flight (spinner), t2 unread completed (dot), t3 idle/clean.
     store = _store()
-    pubsub = store.subscribe_session_events("alice")
-    pubsub.get_message(timeout=0.1)  # drain the subscribe confirmation
-    store.publish_session_event("alice", {"session": "t", "running": True})
-    msg = pubsub.get_message(timeout=0.5, ignore_subscribe_messages=True)
-    assert msg is not None
-    assert json.loads(msg["data"]) == {"session": "t", "running": True}
+    store.set_current("alice", "t1", "r1")
+    store.append(ChatStreamStore.key("alice", "t1", "r1"), "data: a\n\n")
+    store.mark_unread("alice", "t2")
+
+    out = store.status_many("alice", ["t1", "t2", "t3"])
+
+    assert out["t1"] == {"running": True, "hasNewReply": False}
+    assert out["t2"] == {"running": False, "hasNewReply": True}
+    assert out["t3"] == {"running": False, "hasNewReply": False}
 
 
-def test_publish_session_event_is_owner_scoped() -> None:
-    # bob's publish must not reach alice's channel — the dot/spinner is per-user.
+def test_status_many_finished_run_is_not_running() -> None:
     store = _store()
-    pubsub = store.subscribe_session_events("alice")
-    pubsub.get_message(timeout=0.1)
-    store.publish_session_event("bob", {"session": "t", "running": True})
-    assert pubsub.get_message(timeout=0.2, ignore_subscribe_messages=True) is None
+    key = ChatStreamStore.key("alice", "t1", "r1")
+    store.set_current("alice", "t1", "r1")
+    store.append(key, "data: a\n\n")
+    store.mark_done(key)  # eos written
+
+    assert store.status_many("alice", ["t1"])["t1"]["running"] is False
 
 
-def test_publish_session_event_fail_soft_on_redis_error() -> None:
+def test_status_many_dead_pointer_is_not_running() -> None:
+    # Pointer outlives its buffer+lock (ghost-spinner case) → not running.
+    store = _store()
+    store.set_current("alice", "t1", "r1")  # pointer only, no frames/lock
+    assert store.status_many("alice", ["t1"])["t1"]["running"] is False
+
+
+def test_status_many_empty_list_returns_empty() -> None:
+    assert _store().status_many("alice", []) == {}
+
+
+def test_status_many_fail_soft_returns_all_false() -> None:
     redis = MagicMock()
-    redis.publish.side_effect = redis_lib.ConnectionError("down")
+    redis.pipeline.side_effect = redis_lib.ConnectionError("down")
     store = ChatStreamStore(redis)
-    store.publish_session_event("a", {"x": 1})  # does not raise
-
-
-def test_subscribe_session_events_returns_none_when_redis_unavailable() -> None:
-    redis = MagicMock()
-    redis.pubsub.side_effect = redis_lib.ConnectionError("down")
-    store = ChatStreamStore(redis)
-    assert store.subscribe_session_events("a") is None
+    assert store.status_many("a", ["t1", "t2"]) == {
+        "t1": {"running": False, "hasNewReply": False},
+        "t2": {"running": False, "hasNewReply": False},
+    }

@@ -68,6 +68,9 @@ class Container:
     # T-CAv3R — resumable v3 stream buffer (Redis Stream). None disables
     # resumability (the v3 POST falls back to a connection-bound stream).
     chat_stream_store: Any = None
+    # T-CAv3N — NATS publisher for live session-list status. Connected in the
+    # lifespan; a no-op when NATS_SERVERS is unset (list degrades to snapshot-only).
+    nats_publisher: Any = None
     # T-CAv3.DIP — (user_id, user_token) -> twp_ai.agent.Agent. None when v3 is
     # disabled (chatagent_api_url unset); set whenever v3 is enabled.
     chatagent_agent_factory: AgentFactory | None = None
@@ -388,13 +391,23 @@ def build_container() -> Container:
     chatagent_session_api_url = os.environ.get("CHATAGENT_SESSION_API_URL") or None
     chatagent_ap_name = os.environ.get("CHATAGENT_AP_NAME", "ragent")
     chatagent_auth = os.environ.get("CHATAGENT_AUTH") or None
-    # Only stand up the resumable-stream buffer when v3 is configured.
+    # Only stand up the resumable-stream buffer + NATS status publisher when v3 is
+    # configured. The publisher reads its config here (env seam) but connects later
+    # in the lifespan (async); NATS_SERVERS unset → publish is a no-op (snapshot only).
     chat_stream_store = None
+    nats_publisher = None
     chatagent_agent_factory = None
     if chatagent_api_url is not None:
         from ragent.clients.chat_stream_store import ChatStreamStore
+        from ragent.clients.nats_publisher import NatsSessionPublisher
 
         chat_stream_store = ChatStreamStore.from_env()
+        nats_publisher = NatsSessionPublisher(
+            servers=os.environ.get("NATS_SERVERS") or None,
+            subject_prefix=os.environ.get("NATS_SESSION_SUBJECT_PREFIX", "session"),
+            token=os.environ.get("NATS_TOKEN") or None,
+            creds=os.environ.get("NATS_CREDS") or None,
+        )
         chatagent_agent_factory = _build_chatagent_agent_factory(
             http,
             api_url=chatagent_api_url,
@@ -440,6 +453,7 @@ def build_container() -> Container:
         chatagent_ap_name=chatagent_ap_name,
         chatagent_auth=chatagent_auth,
         chat_stream_store=chat_stream_store,
+        nats_publisher=nats_publisher,
         chatagent_agent_factory=chatagent_agent_factory,
     )
 

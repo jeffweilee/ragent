@@ -17,7 +17,6 @@ semantics that the in-memory test double does not honour.
 
 from __future__ import annotations
 
-import json
 import os
 import re
 from typing import Any
@@ -30,7 +29,6 @@ logger = structlog.get_logger(__name__)
 _KEY_PREFIX = "chatstream:"
 _CURRENT_PREFIX = "chatcurrent:"  # per-thread pointer → the latest run_id
 _UNREAD_PREFIX = "chatunread:"  # per-thread flag → a completed run the user hasn't opened
-_EVENTS_PREFIX = "sessionevents:"  # per-user pub/sub channel for live session-list status
 _FROM_START = ("0", "-", "", None)
 _FIELD_FRAME = "frame"  # XADD field holding one SSE frame string
 _FIELD_EOS = "eos"  # XADD field marking the terminal sentinel (no frame)
@@ -76,12 +74,6 @@ class ChatStreamStore:
     @staticmethod
     def _unread_key(user_id: str, thread_id: str) -> str:
         return f"{_UNREAD_PREFIX}{user_id}:{thread_id}"
-
-    @staticmethod
-    def events_channel(user_id: str) -> str:
-        # Per-user channel: session-list status is private, so a user only ever
-        # subscribes to (and receives) their own runs' transitions.
-        return f"{_EVENTS_PREFIX}{user_id}"
 
     @staticmethod
     def is_from_start(last_id: str | None) -> bool:
@@ -219,36 +211,50 @@ class ChatStreamStore:
             logger.warning("chat_stream_store.unavailable", op="has_unread", error=str(exc))
             return False
 
-    def publish_session_event(self, user_id: str, event: dict[str, Any]) -> None:
-        """Fan one live status change out to the user's open ``sessionEvents`` streams.
+    def status_many(self, user_id: str, thread_ids: list[str]) -> dict[str, dict[str, bool]]:
+        """Batch ``{running, hasNewReply}`` for a session list in 2 Redis round-trips.
 
-        Best-effort: a Redis blip only costs this one live nudge — the durable truth
-        is the run pointer + unread flag, which the client re-reads from
-        ``sessionList`` on its next fetch.
+        Replaces N×(``is_running`` + ``has_unread``) — i.e. up to 3N round-trips — with
+        two pipelines: round 1 reads every thread's run pointer; round 2 pipelines the
+        per-thread unread ``EXISTS`` plus, for threads that have a pointer, the buffer
+        liveness (``EXISTS`` for is_resumable + ``XREVRANGE`` tail for is_done). The
+        running rule mirrors :meth:`is_running` (pointer + resumable + not eos). Fail-soft:
+        a Redis blip yields all-False so the list still renders (title-only).
         """
+        result = {t: {"running": False, "hasNewReply": False} for t in thread_ids}
+        if not thread_ids:
+            return result
         try:
-            self._redis.publish(self.events_channel(user_id), json.dumps(event))
-        except redis_lib.RedisError as exc:
-            logger.warning(
-                "chat_stream_store.unavailable", op="publish_session_event", error=str(exc)
-            )
+            ptr = self._redis.pipeline()
+            for t in thread_ids:
+                ptr.get(self._current_key(user_id, t))
+            run_ids = ptr.execute()
 
-    def subscribe_session_events(self, user_id: str) -> Any:
-        """A pubsub subscribed to the user's channel; the SSE generator drives it.
-
-        Returns ``None`` when the stream Redis is unreachable so the route degrades to
-        "no live channel" (client falls back to its ``sessionList`` snapshot) instead
-        of 500-ing.
-        """
-        try:
-            pubsub = self._redis.pubsub()
-            pubsub.subscribe(self.events_channel(user_id))
-            return pubsub
+            live: list[str] = []
+            batch = self._redis.pipeline()
+            for t in thread_ids:
+                batch.exists(self._unread_key(user_id, t))
+            for t, run_id in zip(thread_ids, run_ids, strict=True):
+                if run_id is not None:
+                    key = self.key(user_id, t, run_id)
+                    batch.exists(key, self._lock_key(key))  # is_resumable
+                    batch.xrevrange(key, max="+", min="-", count=1)  # is_done tail
+                    live.append(t)
+            res = batch.execute()
         except redis_lib.RedisError as exc:
-            logger.warning(
-                "chat_stream_store.unavailable", op="subscribe_session_events", error=str(exc)
-            )
-            return None
+            logger.warning("chat_stream_store.unavailable", op="status_many", error=str(exc))
+            return result
+
+        for t, unread in zip(thread_ids, res[: len(thread_ids)], strict=True):
+            result[t]["hasNewReply"] = bool(unread)
+        idx = len(thread_ids)
+        for t in live:
+            resumable = bool(res[idx])
+            tail = res[idx + 1]
+            idx += 2
+            is_done = bool(tail) and _FIELD_EOS in tail[0][1]
+            result[t]["running"] = resumable and not is_done
+        return result
 
     def append(self, key: str, frame: str) -> str:
         """Buffer one SSE frame; returns the entry id used as the SSE ``id:``."""

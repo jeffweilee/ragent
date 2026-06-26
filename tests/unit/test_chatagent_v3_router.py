@@ -17,6 +17,7 @@ from twp_ai.events import (
 )
 
 from ragent.clients.chat_stream_store import ChatStreamStore
+from ragent.clients.nats_publisher import NatsSessionPublisher
 from ragent.clients.rate_limiter import RateLimiter, RateLimitResult
 from ragent.errors.codes import HttpErrorCode
 from ragent.routers.chatagent_v3 import create_chatagent_v3_router
@@ -32,10 +33,10 @@ def _make_app(
     *,
     rate_limiter: RateLimiter | None = None,
     chat_stream_store: ChatStreamStore | None = None,
+    nats_publisher: NatsSessionPublisher | None = None,
     stream_idle_timeout: float = 3.0,
     sessionlist_url: str | None = None,
     session_url: str | None = None,
-    session_events_idle_timeout: float = 3.0,
 ):
     http_mock = MagicMock(spec=httpx.Client)
     app = FastAPI()
@@ -51,8 +52,8 @@ def _make_app(
         ),
         rate_limiter=rate_limiter,
         chat_stream_store=chat_stream_store,
+        nats_publisher=nats_publisher,
         stream_idle_timeout=stream_idle_timeout,
-        session_events_idle_timeout=session_events_idle_timeout,
     )
     app.include_router(router)
     return app, http_mock
@@ -583,51 +584,6 @@ def test_v3_get_session_clears_the_unread_flag() -> None:
     assert store.has_unread("alice", "thread_1") is False
 
 
-def test_v3_post_run_completion_marks_thread_unread() -> None:
-    # A finished run flags the thread unread so the list dots it (the user may have
-    # navigated away mid-run). mark_done is the LAST bookkeeping step, so by the time
-    # the consumer drains the eos the unread flag is already set.
-    store = _store()
-    app, http_mock = _make_app(chat_stream_store=store)
-    http_mock.send.return_value = _resp_mock([_msg_line("hi", message_id="m1"), _done_line()])
-
-    with TestClient(app) as client:
-        client.post("/chatagent/v3", json=_run_input(), headers={"X-User-Id": "alice"})
-
-    assert store.has_unread("alice", "thread_1") is True
-
-
-def test_v3_session_events_streams_published_status() -> None:
-    # The SSE channel relays live status transitions published to the user's channel.
-    import threading
-    import time
-
-    store = _store()
-    app, _ = _make_app(chat_stream_store=store, session_events_idle_timeout=0.6)
-
-    def publish_burst() -> None:
-        # Publish repeatedly so the event lands once the generator has subscribed
-        # (pub/sub has no backlog); the idle deadline resets on each delivery.
-        for _ in range(5):
-            time.sleep(0.1)
-            store.publish_session_event("alice", {"session": "thread_9", "running": True})
-
-    threading.Thread(target=publish_burst, daemon=True).start()
-    with TestClient(app) as client:
-        r = client.get("/chatagent/v3/sessionEvents", headers={"X-User-Id": "alice"})
-
-    assert r.status_code == 200
-    assert "text/event-stream" in r.headers["content-type"]
-    assert "thread_9" in r.text
-
-
-def test_v3_session_events_not_registered_without_store() -> None:
-    app, _ = _make_app()  # no store
-    with TestClient(app) as client:
-        r = client.get("/chatagent/v3/sessionEvents", headers={"X-User-Id": "alice"})
-    assert r.status_code == 404
-
-
 def test_v3_get_session_keeps_unread_when_upstream_fails() -> None:
     # Clear-after-success: a 502/504 upstream failure must NOT clear the dot for a
     # session the user never actually saw.
@@ -647,17 +603,34 @@ def test_v3_get_session_keeps_unread_when_upstream_fails() -> None:
     assert store.has_unread("alice", "thread_1") is True  # not cleared on failure
 
 
+def test_v3_active_viewer_clears_unread_on_completion() -> None:
+    # Fix #1: the POST consumer drains to eos (the user watched the reply live), so
+    # the thread ends READ — the producer's mark_unread is cleared by the consumer.
+    store = _store()
+    app, http_mock = _make_app(chat_stream_store=store)
+    http_mock.send.return_value = _resp_mock([_msg_line("hi", message_id="m1"), _done_line()])
+
+    with TestClient(app) as client:
+        client.post("/chatagent/v3", json=_run_input(), headers={"X-User-Id": "alice"})
+
+    assert store.has_unread("alice", "thread_1") is False  # watched live → read
+
+
 class _OneFrameAgent:
     def run(self, request, model):  # noqa: ARG002 — stub matches the Agent protocol
         yield to_sse(RunStartedEvent(run_id="r", thread_id="t"))
 
 
 def test_run_producer_marks_unread_when_a_reply_is_expected() -> None:
+    # The producer marks the thread unread (the background/no-viewer case — a watching
+    # consumer would later clear it on eos drain).
     from ragent.routers.chatagent_v3 import _run_producer
 
     store = _store()
     key = ChatStreamStore.key("alice", "t", "r")
-    _run_producer(store, key, _OneFrameAgent(), object(), "", "alice", "t", reply_expected=True)
+    _run_producer(
+        store, None, key, _OneFrameAgent(), object(), "", "alice", "t", reply_expected=True
+    )
     assert store.has_unread("alice", "t") is True
 
 
@@ -667,8 +640,25 @@ def test_run_producer_skips_unread_for_control_only_resume() -> None:
 
     store = _store()
     key = ChatStreamStore.key("alice", "t", "r")
-    _run_producer(store, key, _OneFrameAgent(), object(), "", "alice", "t", reply_expected=False)
+    _run_producer(
+        store, None, key, _OneFrameAgent(), object(), "", "alice", "t", reply_expected=False
+    )
     assert store.has_unread("alice", "t") is False
+
+
+def test_run_producer_publishes_running_transitions_over_nats() -> None:
+    from ragent.routers.chatagent_v3 import _run_producer
+
+    pub = MagicMock(spec=NatsSessionPublisher)
+    store = _store()
+    key = ChatStreamStore.key("alice", "t", "r")
+    _run_producer(
+        store, pub, key, _OneFrameAgent(), object(), "", "alice", "t", reply_expected=True
+    )
+
+    events = [call.args[1] for call in pub.publish.call_args_list]
+    assert {"session": "t", "running": True} in events
+    assert {"session": "t", "running": False, "hasNewReply": True} in events
 
 
 def test_run_producer_logs_instead_of_swallowing_a_background_error() -> None:
@@ -682,24 +672,35 @@ def test_run_producer_logs_instead_of_swallowing_a_background_error() -> None:
     store.mark_done.side_effect = RuntimeError("redis dropped")
 
     with capture_logs() as logs:
-        _run_producer(store, "k", _OneFrameAgent(), object(), "", "alice", "t", reply_expected=True)
+        _run_producer(
+            store, None, "k", _OneFrameAgent(), object(), "", "alice", "t", reply_expected=True
+        )
 
     assert any(e["event"] == "chatagent_v3.producer_failed" for e in logs)
 
 
-def test_v3_session_events_ends_cleanly_when_redis_unavailable() -> None:
-    # subscribe returning None (stream Redis down) ends the stream immediately
-    # rather than 500 — the client falls back to its sessionList snapshot.
-    store = MagicMock(spec=ChatStreamStore)
-    store.subscribe_session_events.return_value = None
-    store.try_start.return_value = None  # keep the POST path off the buffered branch
-    app, _ = _make_app(chat_stream_store=store, session_events_idle_timeout=0.3)
+def test_consume_stream_clears_unread_and_publishes_on_eos() -> None:
+    # Draining to eos = this viewer watched the reply → mark read + publish cleared dot.
+    from ragent.routers.chatagent_v3 import _consume_stream
 
-    with TestClient(app) as client:
-        r = client.get("/chatagent/v3/sessionEvents", headers={"X-User-Id": "alice"})
+    store = _store()
+    pub = MagicMock(spec=NatsSessionPublisher)
+    key = ChatStreamStore.key("alice", "t", "r")
+    store.mark_unread("alice", "t")
+    store.append(key, "data: a\n\n")
+    store.mark_done(key)  # eos present
 
-    assert r.status_code == 200
-    assert r.text == ""  # no frames emitted; the generator returned at once
+    list(
+        _consume_stream(
+            store, key, "0", 1.0, 0.01, user_id="alice", thread_id="t", nats_publisher=pub
+        )
+    )
+
+    assert store.has_unread("alice", "t") is False
+    assert any(
+        call.args[1] == {"session": "t", "hasNewReply": False}
+        for call in pub.publish.call_args_list
+    )
 
 
 def test_v3_router_does_not_import_concrete_agent_or_caller_classes() -> None:
