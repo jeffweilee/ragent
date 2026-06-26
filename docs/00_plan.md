@@ -122,3 +122,52 @@
 | T-CAv3S.HITL2 | Red+Green | • **Achieve:** Resume a paused run — `RunAgentInput.resume` (`[{interruptId, status, payload?}]`). `resolved` → upstream `inputData={lastMessageId, message:""}` (payload accepted but not forwarded — upstream is go/no-go only); `cancelled` → no upstream call, `success` outcome; >1 `resolved` → `RUN_ERROR` (`CHATAGENT_INVALID_RESUME`).<br>• **Deliver:** `packages/twp-ai/src/twp_ai/schemas.py` (`ResumeItem` + `RunAgentInput.resume`); `clients/adk_caller.py` (`_resume_input_data`, `ResumeValidationError`); `errors/codes.py` (`CHATAGENT_INVALID_RESUME`); `tests/unit/test_adk_caller.py` + `tests/integration/test_chatagent_v3_endpoint.py`; `docs/spec/chatagent_v3.md`, `docs/00_rule_third_party_api.md` (`lastMessageId` pin), `docs/API.md`. | [x] | Dev |
 | T-CAv3S.HITL3 | Red+Green | • **Achieve:** Drop human-in-the-loop interrupt turns from the `GET /chatagent/v3/session` history — a persisted `humanInTheLoopMeta.isInterrupt=true` turn was mapped (via the `node_to_role`/`"assistant"` default) into a stray assistant message; it is a transient approval prompt (surfaced live via `RUN_FINISHED.outcome`, HITL1), not a conversation message, so it must not render in history. Keeps the read consistent with the stream.<br>• **Deliver:** `services/chatagent_session.py` (`_is_interrupt`, filter in `map_session_payload`); `tests/unit/test_chatagent_session_mapper.py` + `tests/integration/test_chatagent_v3_endpoint.py`; `docs/spec/chatagent_v3.md` §3.4.8. | [x] | Dev |
 
+---
+
+## Track T-PROJ — Projects (grouping over upstream-owned sessions)
+
+> Source: 2026-06-25 design session. Goal: a **project** groups several sessions
+> under one name. ChatAgent sessions are owned entirely by the external upstream
+> (keyed by `user`/`apName`/`session`), which has **no project concept**, so ragent
+> owns the project entity + the project↔session membership in MariaDB and overlays
+> it on the upstream session content (the upstream stays the source of truth for
+> title/history/time; ragent contributes only the grouping).
+> Full spec: [`docs/spec/projects.md`](spec/projects.md) (§3.10).
+>
+> **Locked decisions:**
+> - A session belongs to **at most one** project (`project_sessions.session_id` is
+>   a `UNIQUE KEY`; the PK is a surrogate `id BIGINT` per `00_rule.md`). A project
+>   is **optional** — a session with no row is *ungrouped*.
+> - **Association** is "create if absent" via two paths: chat-time
+>   (`POST /chatagent/v3` `forwardedProps.projectId`, **best-effort, never blocks
+>   chat**, never moves an existing membership) and explicit
+>   (`POST /project/v1/{id}/sessions`; same-project re-add idempotent, other-project
+>   → `409 PROJECT_SESSION_CONFLICT`). `projectId` rides `forwardedProps` — the
+>   twp-ai schema stays neutral (project is a ragent concept).
+> - **Removing a session from a project deletes the session upstream** (not just
+>   the link). Single-session remove is atomic-ish (upstream delete → then unlink;
+>   on upstream failure leave the link, surface 502/504). Project delete cascades
+>   the upstream delete best-effort (collect failures → `sessionsFailed`), then
+>   drops membership + project. No "unlink-without-delete" / "move" in this cycle.
+> - **`GET /chatagent/v3/sessionList` excludes grouped sessions** so the flat
+>   left-list shows only ungrouped ones; project sessions render under the project.
+> - The v3 router reaches the project domain only through **injected callables**
+>   (`record_session_project`, `grouped_session_ids`) built in the composition root
+>   — no direct repo/service import (T-CAv3.DIP pattern). No new env vars; cascade
+>   reuses `CHATAGENT_SESSION_API_URL` + `CHATAGENT_AP_NAME`.
+
+**Counter: 完成 0 / 未完成 9 / descope 0**
+
+| # | Category | Task | Status | Owner |
+|---|---|---|:---:|---|
+| T-PROJ.1 | Red+Green | • **Achieve:** `projects` + `project_sessions` tables (each: surrogate `id BIGINT UNSIGNED AUTO_INCREMENT` PK + Crockford-Base32 business `UNIQUE KEY` per `00_rule.md §Database Practices`; `project_sessions.session_id UNIQUE` = one-project-per-session; no physical FK) + `ProjectRepository` CRUD — `create_project` / `list_projects` (with `sessionCount`) / `get_project` / `rename_project` / `delete_project`; `add_session` (session_id-UNIQUE collision → conflict signal) / `remove_session` / `session_ids_for_project` / `grouped_session_ids(user)` / `prune_session(session)`. All user-scoped; fresh connection per call.<br>• **Deliver:** `migrations/013_projects.sql` + append to `migrations/schema.sql` + alembic revision; `src/ragent/repositories/project_repository.py`; `tests/integration/test_project_repository.py` (`@pytest.mark.docker`). | [ ] | Dev |
+| T-PROJ.2 | Red+Green | • **Achieve:** Project I/O DTOs — `ProjectCreateRequest` / `ProjectRenameRequest` (`extra="forbid"`, name bounds), `ProjectSessionAddRequest`, response models (`ProjectCreated`, `ProjectListItem`, `ProjectDetail`, `ProjectDeleteResult`).<br>• **Deliver:** `src/ragent/schemas/project.py`; `tests/unit/test_project_schema.py`. | [ ] | Dev |
+| T-PROJ.3 | Red+Green | • **Achieve:** New error codes `PROJECT_NOT_FOUND` (404), `PROJECT_SESSION_CONFLICT` (409).<br>• **Deliver:** `src/ragent/errors/codes.py` (`HttpErrorCode`); `docs/spec/error_codes.md` (same commit per `00_rule.md`). | [ ] | Dev |
+| T-PROJ.4 | Red+Green | • **Achieve:** `ProjectService` — CRUD orchestration; `list_project_sessions` = membership ∩ upstream sessionList (drop + lazy-prune dangling) reshaped as `SessionEntry`; `add_session` (own-project guard → 404/409); `remove_session` (upstream delete → then unlink; **upstream 404 = success**; real 5xx/timeout → 502/504, link kept); `delete_project` (cascade upstream delete, 404=success; unlink **only the deleted** sessions, **keep failed ones in the project**, delete `projects` row **iff all succeeded** else retain → `{sessionsDeleted, sessionsFailed, retained}` summary). Upstream session-list fetch + session-delete injected as callables; no DB TX across the upstream call.<br>• **Deliver:** `src/ragent/services/project_service.py`; `tests/unit/test_project_service.py` (autospec'd callables; conflict / dangling-prune / upstream-404-as-success / cascade-partial-failure-retain paths). | [ ] | Dev |
+| T-PROJ.5 | Red+Green | • **Achieve:** `/project/v1` router — 7 routes (`POST` / `GET` list / `GET` detail / `PUT` / `DELETE` / `POST sessions` / `DELETE sessions/{session}`); `Depends(get_user_id)`; delegates to `ProjectService`; error mapping.<br>• **Deliver:** `src/ragent/routers/project.py`; `tests/unit/test_project_router.py`. | [ ] | Dev |
+| T-PROJ.6 | Red+Green | • **Achieve:** v3 chat-time association — `POST /chatagent/v3` reads `forwardedProps.projectId` and calls the injected `record_session_project(user, thread_id, projectId)` after the session id is resolved, before streaming. Best-effort: missing/invalid/unowned/failed → warn (`chatagent_v3.project_associate_failed`) + proceed ungrouped; existing membership left unchanged.<br>• **Deliver:** `routers/chatagent_v3.py` (injected `record_session_project`); `tests/unit/test_chatagent_v3_router.py` (associate / no-projectId / failure-does-not-block). | [ ] | Dev |
+| T-PROJ.7 | Red+Green | • **Achieve:** v3 sessionList exclusion — `GET /chatagent/v3/sessionList` subtracts `grouped_session_ids(user)` (injected) from the upstream list before the name-strip transform; so the flat list shows only ungrouped sessions.<br>• **Deliver:** `routers/chatagent_v3.py` (injected `grouped_session_ids` composed into the sessionList transform); `tests/unit/test_chatagent_v3_router.py` + `tests/integration/test_chatagent_v3_endpoint.py` (grouped excluded, ungrouped retained, store-down → no exclusion / fail-soft). | [ ] | Dev |
+| T-PROJ.W1 | Behavioral | • **Achieve:** Wire it — build `ProjectRepository`/`ProjectService` in the composition root, construct the upstream session-list/delete callables (reusing `CHATAGENT_SESSIONLIST_API_URL` + `CHATAGENT_SESSION_API_URL` + `CHATAGENT_AP_NAME`), inject `record_session_project` / `grouped_session_ids` into the v3 router, mount `/project/v1` **only when BOTH `CHATAGENT_SESSIONLIST_API_URL` and `CHATAGENT_SESSION_API_URL` are set** (read path needs sessionList, delete path needs session).<br>• **Deliver:** `bootstrap/composition.py`; `bootstrap/app.py` (`create_project_router` include + v3 callable args); `tests/integration/test_project_endpoint.py`. | [ ] | Dev |
+| T-PROJ.D1 | Structural | • **Achieve:** Document the project surface end-to-end.<br>• **Deliver:** `docs/spec/projects.md` (this file); `docs/00_spec.md` §3.10 pointer + §4.1 routes + §5 tables; `docs/API.md` curl examples. | [ ] | Dev |
+| T-PROJ.FE1 | Red+Green | • **Achieve:** Frontend — project sidebar (create / rename / delete project, list project sessions, add/remove session, chat-into-project via `forwardedProps.projectId`); the flat session list now shows only ungrouped sessions. **(frontend — out of this backend cycle)** | [ ] | Dev |
+
