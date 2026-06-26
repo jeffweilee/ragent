@@ -839,6 +839,8 @@ Lists all attachments for a conversation thread.
 **Query params:**
 - `threadId` — thread ID (required)
 
+`status` is one of `UPLOADED` (raw bytes stored, pipeline pending), `READY` (artifacts persisted, resolvable in chat), `FAILED`.
+
 **Response (200 OK):**
 ```json
 {

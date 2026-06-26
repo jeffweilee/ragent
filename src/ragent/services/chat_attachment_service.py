@@ -119,8 +119,7 @@ class ChatAttachmentService:
                 storage_key=key,
             )
 
-        # create() always inserts UPLOADED (AttachmentRepository has no status
-        # param); promote to READY only after artifacts are durably persisted.
+        # Promote to READY only after artifacts are durably persisted.
         await self._repo.update_status(attachment_id, "READY")
 
         return attachment_id

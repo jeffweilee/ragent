@@ -54,22 +54,22 @@ class DocumentArtifactResolver:
 
             # Format attachment info for context
             att_info = {
-                "attachmentId": att_meta["attachmentId"],
-                "filename": att_meta["filename"],
-                "mimeType": att_meta["mimeType"],
-                "sizeBytes": att_meta["sizeBytes"],
+                "attachmentId": att_meta.attachment_id,
+                "filename": att_meta.filename,
+                "mimeType": att_meta.mime_type,
+                "sizeBytes": att_meta.size_bytes,
             }
 
             # Optionally include decrypted AST (simplified variant for context)
             artifacts = await self._repo.get_artifacts(att_id)
             if artifacts:
                 # Prefer simplified, fallback to complete
-                artifact_by_type = {a["ast_type"]: a for a in artifacts}
+                artifact_by_type = {a.ast_type: a for a in artifacts}
                 selected = artifact_by_type.get("simplified") or artifact_by_type.get("complete")
 
                 if selected:
                     try:
-                        encrypted_data = self._doc_store.get(selected["storage_key"])
+                        encrypted_data = self._doc_store.get(selected.storage_key)
                         encrypted_obj = json.loads(encrypted_data.decode("utf-8"))
                         decrypted = self._ast_cipher.decrypt_ast(encrypted_obj)
                         if decrypted and "content" in decrypted:

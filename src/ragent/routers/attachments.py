@@ -90,11 +90,11 @@ def create_attachments_router(
         return ListAttachmentsResponse(
             attachments=[
                 AttachmentInfo(
-                    attachmentId=att["attachmentId"],
-                    filename=att["filename"],
-                    mimeType=att["mimeType"],
-                    sizeBytes=att["sizeBytes"],
-                    status=att["status"],
+                    attachmentId=att.attachment_id,
+                    filename=att.filename,
+                    mimeType=att.mime_type,
+                    sizeBytes=att.size_bytes,
+                    status=att.status,
                 )
                 for att in attachments
             ]

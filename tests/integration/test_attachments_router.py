@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import datetime
 from unittest.mock import AsyncMock
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from ragent.repositories.attachment_repository import AttachmentRepository
+from ragent.repositories.attachment_repository import AttachmentRepository, AttachmentRow
 from ragent.routers.attachments import create_attachments_router
 from ragent.services.chat_attachment_service import ChatAttachmentService
+
+_NOW = datetime.datetime(2026, 1, 1)
 
 
 def _build_test_app_with_mocked_attachments() -> tuple[FastAPI, dict]:
@@ -76,13 +79,17 @@ def test_get_attachments_lists_by_thread() -> None:
     app, mocks = _build_test_app_with_mocked_attachments()
     mocks["repository"].list_by_thread = AsyncMock(
         return_value=[
-            {
-                "attachmentId": "att_1",
-                "filename": "test.txt",
-                "mimeType": "text/plain",
-                "sizeBytes": 100,
-                "status": "READY",
-            }
+            AttachmentRow(
+                attachment_id="att_1",
+                thread_id="thread-1",
+                create_user="alice",
+                filename="test.txt",
+                mime_type="text/plain",
+                size_bytes=100,
+                status="READY",
+                created_at=_NOW,
+                updated_at=_NOW,
+            )
         ]
     )
 

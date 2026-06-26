@@ -1,13 +1,42 @@
 """T-CAT.13 — document_artifact_resolver: decrypt ASTs for chat context."""
 
+import datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from ragent.repositories.attachment_repository import AttachmentRepository
+from ragent.repositories.attachment_repository import (
+    ArtifactRow,
+    AttachmentRepository,
+    AttachmentRow,
+)
 from ragent.security.ast_cipher import ASTCipher
 from ragent.services.document_artifact_resolver import DocumentArtifactResolver
 from ragent.storage.document_store import DocumentStore
+
+_NOW = datetime.datetime(2026, 1, 1)
+
+
+def _attachment_row(
+    attachment_id: str, filename: str, mime_type: str, size_bytes: int
+) -> AttachmentRow:
+    return AttachmentRow(
+        attachment_id=attachment_id,
+        thread_id="thread-1",
+        create_user="alice",
+        filename=filename,
+        mime_type=mime_type,
+        size_bytes=size_bytes,
+        status="READY",
+        created_at=_NOW,
+        updated_at=_NOW,
+    )
+
+
+def _artifact_row(attachment_id: str, ast_type: str, storage_key: str) -> ArtifactRow:
+    return ArtifactRow(
+        attachment_id=attachment_id, ast_type=ast_type, storage_key=storage_key, created_at=_NOW
+    )
 
 
 class TestDocumentArtifactResolver:
@@ -51,19 +80,12 @@ class TestDocumentArtifactResolver:
     @pytest.mark.asyncio
     async def test_resolve_single_attachment_retrieves_and_decrypts(self, resolver_dependencies):
         """Resolve retrieves attachment metadata and decrypts AST."""
-        resolver_dependencies["attachment_repository"].get.return_value = {
-            "attachmentId": "att_1",
-            "filename": "test.pdf",
-            "mimeType": "application/pdf",
-            "sizeBytes": 1024,
-            "status": "READY",
-        }
+        resolver_dependencies["attachment_repository"].get.return_value = _attachment_row(
+            "att_1", "test.pdf", "application/pdf", 1024
+        )
 
         resolver_dependencies["attachment_repository"].get_artifacts.return_value = [
-            {
-                "ast_type": "complete",
-                "storage_key": "attachments/t1/att_1/ast-complete",
-            }
+            _artifact_row("att_1", "complete", "attachments/t1/att_1/ast-complete")
         ]
 
         resolver_dependencies[
@@ -82,25 +104,13 @@ class TestDocumentArtifactResolver:
     async def test_resolve_multiple_attachments(self, resolver_dependencies):
         """Resolve handles multiple attachment IDs."""
         resolver_dependencies["attachment_repository"].get.side_effect = [
-            {
-                "attachmentId": "att_1",
-                "filename": "doc1.txt",
-                "mimeType": "text/plain",
-                "sizeBytes": 100,
-                "status": "READY",
-            },
-            {
-                "attachmentId": "att_2",
-                "filename": "doc2.txt",
-                "mimeType": "text/plain",
-                "sizeBytes": 200,
-                "status": "READY",
-            },
+            _attachment_row("att_1", "doc1.txt", "text/plain", 100),
+            _attachment_row("att_2", "doc2.txt", "text/plain", 200),
         ]
 
         resolver_dependencies["attachment_repository"].get_artifacts.side_effect = [
-            [{"ast_type": "complete", "storage_key": "key1"}],
-            [{"ast_type": "complete", "storage_key": "key2"}],
+            [_artifact_row("att_1", "complete", "key1")],
+            [_artifact_row("att_2", "complete", "key2")],
         ]
 
         resolver_dependencies["document_store"].get.return_value = b'{"ciphertext":"data"}'
@@ -116,16 +126,12 @@ class TestDocumentArtifactResolver:
     @pytest.mark.asyncio
     async def test_resolve_formats_as_json_array(self, resolver_dependencies):
         """Resolve returns a JSON array of attachment info."""
-        resolver_dependencies["attachment_repository"].get.return_value = {
-            "attachmentId": "att_123",
-            "filename": "report.pdf",
-            "mimeType": "application/pdf",
-            "sizeBytes": 5000,
-            "status": "READY",
-        }
+        resolver_dependencies["attachment_repository"].get.return_value = _attachment_row(
+            "att_123", "report.pdf", "application/pdf", 5000
+        )
 
         resolver_dependencies["attachment_repository"].get_artifacts.return_value = [
-            {"ast_type": "complete", "storage_key": "key"}
+            _artifact_row("att_123", "complete", "key")
         ]
 
         resolver_dependencies["document_store"].get.return_value = b'{"ciphertext":"data"}'
