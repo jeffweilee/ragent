@@ -14,6 +14,7 @@ import os
 from cryptography.hazmat.primitives.keywrap import (
     InvalidUnwrap,
     aes_key_unwrap,
+    aes_key_wrap,
 )
 
 
@@ -42,3 +43,13 @@ class KeyManager:
             kek_b64=os.environ.get("RAGENT_KEK_BASE64", ""),
             encrypted_dek_b64=os.environ.get("RAGENT_ENCRYPTED_DEK_BASE64", ""),
         )
+
+    @staticmethod
+    def wrap(kek_b64: str, dek: bytes) -> str:
+        """Wrap a DEK under a KEK. Returns the base64-encoded wrapped DEK.
+
+        Used by `scripts/gen_attachment_keys.py` (generate/rotate) so the
+        `aes_key_wrap` mechanics stay confined to this module.
+        """
+        kek = base64.b64decode(kek_b64, validate=True)
+        return base64.b64encode(aes_key_wrap(kek, dek)).decode()

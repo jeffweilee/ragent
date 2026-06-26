@@ -80,9 +80,23 @@ Both AST variants are encrypted before being written to storage.
   (`security/key_manager.py`); the DEK lives in memory for the process
   lifetime. No per-artifact key generation, no `encrypted_dek` field stored
   alongside each artifact.
-- **KEK rotation**: re-wrap the *same* DEK under the new KEK offline, update
-  both env vars, restart. The DEK itself never changes, so no re-encryption
-  of existing artifacts is needed.
+- **Generation/rotation** — `scripts/gen_attachment_keys.py` (offline CLI,
+  never an HTTP endpoint — secret material must never enter a request/response
+  body or be observable to a proxy/log/APM):
+  ```bash
+  # first-time bootstrap — mints a brand-new KEK + DEK pair
+  uv run python scripts/gen_attachment_keys.py generate
+
+  # KEK rotation — re-wraps the SAME DEK under a freshly generated KEK;
+  # the DEK itself never changes, so existing artifacts need no re-encryption
+  uv run python scripts/gen_attachment_keys.py rotate \
+    --old-kek "$RAGENT_KEK_BASE64" \
+    --old-encrypted-dek "$RAGENT_ENCRYPTED_DEK_BASE64"
+  ```
+  Both subcommands print `RAGENT_KEK_BASE64=...` / `RAGENT_ENCRYPTED_DEK_BASE64=...`
+  lines to stdout only. Paste them into `.env` or a secret manager directly;
+  update both env vars together and restart — partial rotation (only one var
+  updated) breaks `KeyManager.from_env()` on next boot.
 
 **Cipher** — AES-256-GCM, one random 12-byte nonce per artifact
 (`security/ast_cipher.py`). Storage envelope:

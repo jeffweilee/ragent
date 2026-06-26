@@ -76,3 +76,26 @@ def test_key_manager_dek_immutable_across_calls():
     manager = KeyManager(kek_b64=kek_b64, encrypted_dek_b64=wrapped_dek_b64)
 
     assert manager.dek == manager.dek == dek
+
+
+def test_key_manager_wrap_round_trips_with_unwrap():
+    """KeyManager.wrap() output must unwrap back to the original DEK via KeyManager()."""
+    kek = os.urandom(32)
+    dek = os.urandom(32)
+    kek_b64 = base64.b64encode(kek).decode()
+
+    wrapped_dek_b64 = KeyManager.wrap(kek_b64, dek)
+
+    manager = KeyManager(kek_b64=kek_b64, encrypted_dek_b64=wrapped_dek_b64)
+    assert manager.dek == dek
+
+
+def test_key_manager_wrap_matches_aes_key_wrap():
+    """KeyManager.wrap() must produce the same bytes as the raw primitive."""
+    kek = os.urandom(32)
+    dek = os.urandom(32)
+    kek_b64 = base64.b64encode(kek).decode()
+
+    wrapped_dek_b64 = KeyManager.wrap(kek_b64, dek)
+
+    assert base64.b64decode(wrapped_dek_b64) == aes_key_wrap(kek, dek)
