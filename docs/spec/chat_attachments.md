@@ -272,7 +272,7 @@ authorization check.
 | `ATTACHMENT_PARSE_FAILED` | 422 | `chat_attachment` pipeline raised during AST build |
 | `ATTACHMENT_NOT_FOUND` | 404 | `GET /chatagent/v3/attachments/{id}` on unknown id (T-CAT.W2) |
 
-## 10. DB schema (`015_chat_artifact_ast_type_to_variant.sql`, folds `013_chat_attachments.sql` + `014_chat_attachments_async.sql`)
+## 10. DB schema (`013_chat_attachments.sql`)
 
 `chat_attachments` (id, thread_id, create_user, filename, mime_type,
 size_bytes, `status ENUM('UPLOADED','PROCESSING','READY','FAILED')`,

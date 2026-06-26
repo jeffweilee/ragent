@@ -1,5 +1,5 @@
 -- schema.sql — consolidated snapshot reflecting alembic head (spec B3).
--- Latest migration folded in: 015_chat_artifact_ast_type_to_variant.sql
+-- Latest migration folded in: 013_chat_attachments.sql
 -- Updated in lockstep with every NNN_*.sql migration file.
 -- Apply directly: mysql -u user -p ragent < schema.sql
 -- Or via Alembic:  alembic upgrade head  (produces identical schema)
@@ -85,10 +85,10 @@ CREATE TABLE IF NOT EXISTS feedback (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- 013_chat_attachments.sql: chat-attachment metadata + per-AST-variant
--- storage pointers (T-CAT.7). No `introduced_run_id` — the
--- `<hidden><attachments>` block already binds the attachment to its turn.
--- 014_chat_attachments_async.sql: added PROCESSING (async worker hand-off)
--- + error_code/error_reason failure diagnostics (T-CAT.W2).
+-- storage pointers, including PROCESSING (async worker hand-off) and
+-- error_code/error_reason failure diagnostics (T-CAT.7/T-CAT.W2). No
+-- `introduced_run_id` — the `<hidden><attachments>` block already binds
+-- the attachment to its turn.
 CREATE TABLE IF NOT EXISTS chat_attachments (
   id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   attachment_id CHAR(26)     NOT NULL,

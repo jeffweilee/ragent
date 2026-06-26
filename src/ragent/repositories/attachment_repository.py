@@ -26,7 +26,7 @@ class AttachmentRow:
     status: str
     created_at: datetime.datetime
     updated_at: datetime.datetime
-    # 014_chat_attachments_async.sql: persisted failure diagnostics.
+    # 013_chat_attachments.sql: persisted failure diagnostics.
     error_code: str | None = None
     error_reason: str | None = None
 
