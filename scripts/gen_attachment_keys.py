@@ -1,5 +1,5 @@
 """gen_attachment_keys — generate/rotate the KEK/DEK pair for chat-attachment
-AST encryption (T-CAT.5, docs/spec/chat_attachments.md §5).
+AST encryption (T-CAT.W3, docs/spec/chat_attachments.md §5).
 
 Usage:
     uv run python scripts/gen_attachment_keys.py generate

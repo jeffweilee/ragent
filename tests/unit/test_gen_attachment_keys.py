@@ -19,7 +19,7 @@ def _load_script() -> types.ModuleType:
     return module
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def script() -> types.ModuleType:
     return _load_script()
 
