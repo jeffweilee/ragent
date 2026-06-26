@@ -233,7 +233,7 @@
 - `embedding.py`（PromoteRequest / CutoverRequest）
 - `chat.py`（ChatRequest / ChatResponse / Source / StreamDelta/Done/Error）
 - `chatagent.py`(SessionRenameRequest / SessionDeleteRequest)
-- `attachments.py`(`AttachmentMime` enum、`UNPROTECT_MIMES` frozenset、AttachmentUploadResponse / AttachmentListResponse)
+- `attachments.py`(`AttachmentMime` enum、`UNPROTECT_MIMES` frozenset、`ARTIFACT_CONTENT_TYPE` dict（mime→artifact content_type，§2.1）、AttachmentUploadResponse / AttachmentListResponse)
 - `feedback.py`（FeedbackRequest / vote / reason enum）
 - `_common.py`(source_app / source_meta 共用 filter 欄位驗證)
 

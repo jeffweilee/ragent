@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 import structlog
 
 from ragent.errors.codes import TaskErrorCode
-from ragent.schemas.attachments import AttachmentMime
+from ragent.schemas.attachments import ARTIFACT_CONTENT_TYPE, AttachmentMime
 from ragent.utility.datetime import to_iso, utcnow
 
 if TYPE_CHECKING:
@@ -152,18 +152,21 @@ class ChatAttachmentService:
 
             stage = "encrypt_ast"
             created_at = to_iso(utcnow())
+            content_type = ARTIFACT_CONTENT_TYPE[AttachmentMime(claimed.mime_type)]
             ast_variants = {
                 "complete": self._ast_cipher.encrypt_ast(
                     complete_ast_str,
                     attachment_id=attachment_id,
                     ast_type="complete",
                     created_at=created_at,
+                    content_type=content_type,
                 ),
                 "simplified": self._ast_cipher.encrypt_ast(
                     simplified_ast_str,
                     attachment_id=attachment_id,
                     ast_type="simplified",
                     created_at=created_at,
+                    content_type=content_type,
                 ),
             }
 

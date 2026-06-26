@@ -54,3 +54,16 @@ UNPROTECT_MIMES: frozenset[AttachmentMime] = frozenset(
         AttachmentMime.PPTX,
     }
 )
+
+# Pins the relationship between an uploaded attachment's MIME and the
+# content_type its pipeline's AST artifact is rendered as (docs/spec/
+# chat_attachments.md §2.1). A dict, not branching in the service — adding a
+# format only adds an entry here (OCP); nothing downstream needs to change.
+ARTIFACT_CONTENT_TYPE: dict[AttachmentMime, str] = {
+    AttachmentMime.TEXT_PLAIN: "text/markdown",
+    AttachmentMime.TEXT_MARKDOWN: "text/markdown",
+    AttachmentMime.TEXT_HTML: "text/markdown",
+    AttachmentMime.DOCX: "text/markdown",
+    AttachmentMime.PPTX: "text/markdown",
+    AttachmentMime.PDF: "text/markdown",
+}
