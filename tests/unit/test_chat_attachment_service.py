@@ -203,19 +203,6 @@ class TestChatAttachmentService:
         )
 
     @pytest.mark.asyncio
-    async def test_process_passes_artifact_content_type_to_cipher(self, service_dependencies):
-        """Process resolves content_type from ARTIFACT_CONTENT_TYPE and passes it to both
-        encrypt_ast() calls (§2.1 — pins the mime->content_type relationship at encrypt time)."""
-        service = ChatAttachmentService(**service_dependencies)
-
-        await service.process("ATT001")
-
-        calls = service_dependencies["ast_cipher"].encrypt_ast.call_args_list
-        assert len(calls) == 2
-        for call in calls:
-            assert call.kwargs["content_type"] == "text/markdown"
-
-    @pytest.mark.asyncio
     async def test_process_stores_artifacts_and_writes_repository(self, service_dependencies):
         """Process stores encrypted artifacts and writes to attachment_repository."""
         service = ChatAttachmentService(**service_dependencies)

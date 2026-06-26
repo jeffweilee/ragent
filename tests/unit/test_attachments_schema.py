@@ -1,11 +1,6 @@
 """Tests for attachment schema (T-CAT.2, T-CAT.3)."""
 
-from ragent.schemas.attachments import (
-    ARTIFACT_CONTENT_TYPE,
-    MIME_EXTENSIONS,
-    UNPROTECT_MIMES,
-    AttachmentMime,
-)
+from ragent.schemas.attachments import MIME_EXTENSIONS, UNPROTECT_MIMES, AttachmentMime
 
 
 def test_attachment_mime_enum_has_six_values():
@@ -92,16 +87,3 @@ def test_unprotect_mimes_text_formats_excluded():
 def test_unprotect_mimes_is_frozenset():
     """UNPROTECT_MIMES must be a frozenset (immutable)."""
     assert isinstance(UNPROTECT_MIMES, frozenset)
-
-
-def test_artifact_content_type_mapping_complete():
-    """Every AttachmentMime must map to an artifact content_type (pins the relationship)."""
-    assert len(ARTIFACT_CONTENT_TYPE) == 6
-    for mime in AttachmentMime:
-        assert mime in ARTIFACT_CONTENT_TYPE
-
-
-def test_artifact_content_type_is_markdown_for_all_document_mimes():
-    """All six formats funnel through the AST→markdown pipeline today (§4)."""
-    for mime in AttachmentMime:
-        assert ARTIFACT_CONTENT_TYPE[mime] == "text/markdown"

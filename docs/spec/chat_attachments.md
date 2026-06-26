@@ -28,39 +28,6 @@ Extension fallback applies when the browser-supplied `Content-Type` is
 generic/incorrect (`MIME_EXTENSIONS` mapping, shared util). Rejection →
 `ATTACHMENT_MIME_UNSUPPORTED` (415) / `ATTACHMENT_TOO_LARGE` (413).
 
-## 2.1 MIME → artifact content_type mapping
-
-Two independent axes describe an artifact:
-
-- **`variant`** (`complete` | `simplified`) — a retrieval-time *intent* filter,
-  universal across every MIME type: how much detail the consumer wants. This
-  is the only axis the resolver/agent ever filters on.
-- **`content_type`** — a storage-time hint set by the *uploaded* MIME's
-  pipeline, describing how the artifact's plaintext is shaped. It is never a
-  retrieval filter, only a render hint for whoever decodes the artifact.
-
-`ARTIFACT_CONTENT_TYPE` (`schemas/attachments.py`) is the single place this
-relationship is pinned — a dict, not branching logic scattered across the
-service (Open/Closed: a new attachment MIME only adds one entry, no existing
-code path changes):
-
-| Attachment MIME | Pipeline path | `content_type` (both variants) |
-|---|---|---|
-| `text/plain` | `_MimeAwareSplitter` → paragraph atoms | `text/markdown` |
-| `text/markdown` | `_MimeAwareSplitter` → mistletoe block atoms | `text/markdown` |
-| `text/html` | `_MimeAwareSplitter` → tag-stripped block atoms | `text/markdown` |
-| `docx` | unprotect → `_MimeAwareSplitter` → paragraph/heading atoms | `text/markdown` |
-| `pptx` | unprotect → `_MimeAwareSplitter` → one atom per slide | `text/markdown` |
-| `pdf` | unprotect → `_MimeAwareSplitter` → one atom per page | `text/markdown` |
-
-All six formats funnel through the same AST→markdown shape today
-(`ChatAttachmentService._ast_to_markdown`), so `content_type` is uniformly
-`text/markdown` for now. It only diverges once a non-document MIME is added —
-e.g. `text/csv` (ingest-only, §2) would produce `application/json`
-(row objects), since a markdown rendering of a table loses headers/alignment.
-`ARTIFACT_CONTENT_TYPE` exists precisely so that divergence is a one-line
-addition, not a new conditional.
-
 ## 3. Unprotect whitelist
 
 Not every MIME needs the external unprotect round-trip. Only binary formats
@@ -129,15 +96,10 @@ Both AST variants are encrypted before being written to storage.
   "metadata": {
     "attachment_id": "att_xxx",
     "ast_type": "complete" | "simplified",
-    "created_at": "2026-06-25T10:30:00Z",
-    "content_type": "text/markdown"
+    "created_at": "2026-06-25T10:30:00Z"
   }
 }
 ```
-
-`content_type` is sourced from `ARTIFACT_CONTENT_TYPE[mime]` (§2.1) at encrypt
-time — it travels with the artifact for whoever decrypts it, independent of
-the `chat_attachment_artifacts` row, which still only stores `ast_type`.
 
 `ASTCipher` only depends on `KeyManager.dek` (Interface Segregation — it never
 sees the KEK or the wrap/unwrap mechanics). `DocumentArtifactResolver`
@@ -303,46 +265,11 @@ authorization check.
 
 ## 10. DB schema (`014_chat_attachments_async.sql`, folds `013_chat_attachments.sql`)
 
-No `introduced_run_id` column — the `<hidden>` block already binds the
-attachment to its turn. `error_code`/`error_reason` mirror
-`documents.error_code`/`error_reason` (`006_documents_error_code.sql`) —
-populated only when `process()` terminalizes to `FAILED` (§7). `ast_type`
-(not `content_type` — see §2.1) is the only variant axis stored in the row;
-`content_type` lives in the encrypted artifact's envelope metadata (§5), not
-here, since it never needs to be queried.
-
-Current DDL (`migrations/schema.sql`, kept in lockstep with every
-`NNN_*.sql` migration — apply directly or via `alembic upgrade head`):
-
-```sql
-CREATE TABLE IF NOT EXISTS chat_attachments (
-  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  attachment_id CHAR(26)     NOT NULL,
-  thread_id     VARCHAR(64)  NOT NULL,
-  create_user   VARCHAR(64)  NOT NULL,
-  filename      VARCHAR(256) NOT NULL,
-  mime_type     VARCHAR(128) NOT NULL,
-  size_bytes    BIGINT UNSIGNED NOT NULL,
-  status        ENUM('UPLOADED','PROCESSING','READY','FAILED') NOT NULL DEFAULT 'UPLOADED',
-  created_at    DATETIME(6)  NOT NULL,
-  updated_at    DATETIME(6)  NOT NULL,
-  error_code    VARCHAR(64)  NULL,
-  error_reason  VARCHAR(255) NULL,
-  PRIMARY KEY (id),
-  UNIQUE KEY uq_attachment_id (attachment_id),
-  INDEX idx_thread_created (thread_id, created_at),
-  INDEX idx_create_user_attachment (create_user, attachment_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-
-CREATE TABLE IF NOT EXISTS chat_attachment_artifacts (
-  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  attachment_id CHAR(26)     NOT NULL,
-  ast_type      ENUM('complete','simplified') NOT NULL,
-  storage_key   VARCHAR(256) NOT NULL,
-  created_at    DATETIME(6)  NOT NULL,
-  PRIMARY KEY (id),
-  UNIQUE KEY uq_attachment_ast_type (attachment_id, ast_type),
-  CONSTRAINT fk_artifact_attachment FOREIGN KEY (attachment_id)
-    REFERENCES chat_attachments (attachment_id) ON DELETE CASCADE
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
-```
+`chat_attachments` (id, thread_id, create_user, filename, mime_type,
+size_bytes, `status ENUM('UPLOADED','PROCESSING','READY','FAILED')`,
+`error_code VARCHAR(64) NULL`, `error_reason VARCHAR(255) NULL`,
+created_at) + `chat_attachment_artifacts` (attachment_id FK, ast_type,
+storage_key, created_at). No `introduced_run_id` column — the `<hidden>`
+block already binds the attachment to its turn. `error_code`/`error_reason`
+mirror `documents.error_code`/`error_reason` (`006_documents_error_code.sql`)
+— populated only when `process()` terminalizes to `FAILED` (§7).
