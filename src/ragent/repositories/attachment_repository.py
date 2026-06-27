@@ -123,23 +123,35 @@ class AttachmentRepository:
         )
         return attachment_id
 
-    async def get(self, attachment_id: str) -> AttachmentRow | None:
+    async def get(self, attachment_id: str, create_user: str | None = None) -> AttachmentRow | None:
+        user_clause = " AND create_user = :create_user" if create_user else ""
+        params: dict = {"id": attachment_id}
+        if create_user:
+            params["create_user"] = create_user
         row = await self._fetch_first(
-            text("SELECT * FROM chat_attachments WHERE attachment_id = :id"),
-            {"id": attachment_id},
+            text(f"SELECT * FROM chat_attachments WHERE attachment_id = :id{user_clause}"),
+            params,
         )
         return AttachmentRow.from_mapping(row) if row else None
 
     async def list_by_thread(
-        self, thread_id: str, after: str | None = None, limit: int = 50
+        self,
+        thread_id: str,
+        create_user: str | None = None,
+        after: str | None = None,
+        limit: int = 50,
     ) -> list[AttachmentRow]:
+        user_clause = " AND create_user = :create_user" if create_user else ""
         cursor_clause = " AND attachment_id < :after" if after else ""
         params: dict = {"thread_id": thread_id, "limit": limit}
+        if create_user:
+            params["create_user"] = create_user
         if after:
             params["after"] = after
         rows = await self._fetch_all(
             text(
-                f"SELECT * FROM chat_attachments WHERE thread_id = :thread_id{cursor_clause}"
+                f"SELECT * FROM chat_attachments WHERE thread_id = :thread_id"
+                f"{user_clause}{cursor_clause}"
                 " ORDER BY created_at DESC, attachment_id DESC LIMIT :limit"
             ),
             params,

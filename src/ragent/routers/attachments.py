@@ -118,8 +118,9 @@ def create_attachments_router(
         user_id: Annotated[str | None, Depends(get_user_id)] = None,
     ) -> ListAttachmentsResponse:
         """List attachments for a conversation thread."""
+        user_id = user_id or "anonymous"
         logger.info("attachments.list_request", thread_id=threadId, user_id=user_id)
-        attachments = await repository.list_by_thread(threadId)
+        attachments = await repository.list_by_thread(threadId, create_user=user_id)
 
         return ListAttachmentsResponse(
             attachments=[_to_attachment_info(att) for att in attachments]
@@ -131,7 +132,8 @@ def create_attachments_router(
         user_id: Annotated[str | None, Depends(get_user_id)] = None,
     ):
         """Poll a single attachment's processing status."""
-        att = await repository.get(attachmentId)
+        user_id = user_id or "anonymous"
+        att = await repository.get(attachmentId, create_user=user_id)
         if att is None:
             logger.info("attachments.not_found", attachment_id=attachmentId, user_id=user_id)
             return problem(404, HttpErrorCode.ATTACHMENT_NOT_FOUND, "Attachment not found")

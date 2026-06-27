@@ -860,12 +860,14 @@ curl "http://localhost:8000/chatagent/v3/attachments/att_01J9ABCDEFGHJKMNPQRSTVW
 
 `errorCode`/`errorReason` are set when `status="FAILED"` (e.g. `PIPELINE_UNEXPECTED_ERROR`).
 
+Reads are scoped to the requesting user (`X-User-Id`, defaulting to `anonymous`): an attachment owned by a different user is indistinguishable from a missing one.
+
 **Errors:**
-- `404 ATTACHMENT_NOT_FOUND` — unknown `attachmentId`.
+- `404 ATTACHMENT_NOT_FOUND` — unknown `attachmentId`, or owned by a different user.
 
 ### `GET /chatagent/v3/attachments` — List thread attachments
 
-Lists all attachments for a conversation thread.
+Lists all attachments for a conversation thread, scoped to the requesting user (`X-User-Id`, defaulting to `anonymous`) — another user's attachments on the same thread are not returned.
 
 **Query params:**
 - `threadId` — thread ID (required)

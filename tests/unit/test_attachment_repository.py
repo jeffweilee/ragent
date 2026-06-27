@@ -156,6 +156,24 @@ async def test_get_returns_none_for_missing():
     assert await repo.get("MISSING") is None
 
 
+async def test_get_filters_by_create_user_when_provided():
+    engine, conn = _mock_engine(rows=[])
+    repo = AttachmentRepository(engine)
+    await repo.get("ATT001", create_user="alice")
+    sql_text = str(conn.execute.call_args[0][0])
+    params = conn.execute.call_args[0][1]
+    assert "create_user" in sql_text
+    assert params["create_user"] == "alice"
+
+
+async def test_get_omits_create_user_filter_when_not_provided():
+    engine, conn = _mock_engine(rows=[])
+    repo = AttachmentRepository(engine)
+    await repo.get("ATT001")
+    sql_text = str(conn.execute.call_args[0][0])
+    assert "create_user" not in sql_text
+
+
 # ---------------------------------------------------------------------------
 # list_by_thread
 # ---------------------------------------------------------------------------
@@ -186,6 +204,24 @@ async def test_list_by_thread_after_cursor_filters():
     assert results[0].attachment_id == "ATT5"
     sql_text = str(conn.execute.call_args[0][0])
     assert "< :after" in sql_text
+
+
+async def test_list_by_thread_filters_by_create_user_when_provided():
+    engine, conn = _mock_engine(rows=[])
+    repo = AttachmentRepository(engine)
+    await repo.list_by_thread("thread-1", create_user="alice")
+    sql_text = str(conn.execute.call_args[0][0])
+    params = conn.execute.call_args[0][1]
+    assert "create_user" in sql_text
+    assert params["create_user"] == "alice"
+
+
+async def test_list_by_thread_omits_create_user_filter_when_not_provided():
+    engine, conn = _mock_engine(rows=[])
+    repo = AttachmentRepository(engine)
+    await repo.list_by_thread("thread-1")
+    sql_text = str(conn.execute.call_args[0][0])
+    assert "create_user" not in sql_text
 
 
 # ---------------------------------------------------------------------------

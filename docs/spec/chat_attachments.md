@@ -265,10 +265,15 @@ Two paths need attachment-specific code; a third needs none:
    then deletes the whole wrapper from the rendered text exactly as it does
    today for `<context>`/`<state>`.
 
-No thread-ownership check is performed on attachment reads — identical to the
-existing chat-session trust model; isolation comes from the `create_user`
-column on `chat_attachments` plus the query predicate, not from an
-authorization check.
+`GET /chatagent/v3/attachments` and `GET /chatagent/v3/attachments/{attachmentId}`
+scope reads to the requesting user: `AttachmentRepository.get()` and
+`list_by_thread()` both take an optional `create_user` filter that the router
+passes through as `AND create_user = :create_user` in the SQL `WHERE` clause
+(defaulting to `"anonymous"`, matching the upload endpoint's existing
+unauthenticated-caller convention). A row owned by a different user is
+indistinguishable from a missing row — both yield `None`/empty and the
+existing 404/empty-list response — so no separate authorization branch is
+needed in the router.
 
 ## 9. Error codes
 

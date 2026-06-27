@@ -186,6 +186,49 @@ def test_get_attachment_by_id_returns_404_when_not_found() -> None:
         assert body["error_code"] == "ATTACHMENT_NOT_FOUND"
 
 
+def test_get_attachment_by_id_scopes_lookup_to_requesting_user() -> None:
+    """GET /chatagent/v3/attachments/{id} passes the caller's user id to the repository."""
+    app, mocks = _build_test_app_with_mocked_attachments()
+    mocks["repository"].get = AsyncMock(return_value=None)
+
+    with TestClient(app) as client:
+        client.get(
+            "/chatagent/v3/attachments/att_other_user",
+            headers={"X-User-Id": "bob"},
+        )
+
+        mocks["repository"].get.assert_awaited_once_with("att_other_user", create_user="bob")
+
+
+def test_get_attachment_by_id_returns_404_when_owned_by_another_user() -> None:
+    """A row that exists but belongs to a different user surfaces as not-found, not leaked."""
+    app, mocks = _build_test_app_with_mocked_attachments()
+    # The repository itself filters by create_user, so a mismatched owner yields None.
+    mocks["repository"].get = AsyncMock(return_value=None)
+
+    with TestClient(app) as client:
+        resp = client.get(
+            "/chatagent/v3/attachments/att_1",
+            headers={"X-User-Id": "mallory"},
+        )
+
+        assert resp.status_code == 404
+
+
+def test_get_attachments_scopes_list_to_requesting_user() -> None:
+    """GET /chatagent/v3/attachments passes the caller's user id to the repository."""
+    app, mocks = _build_test_app_with_mocked_attachments()
+    mocks["repository"].list_by_thread = AsyncMock(return_value=[])
+
+    with TestClient(app) as client:
+        client.get(
+            "/chatagent/v3/attachments?threadId=thread-1",
+            headers={"X-User-Id": "bob"},
+        )
+
+        mocks["repository"].list_by_thread.assert_awaited_once_with("thread-1", create_user="bob")
+
+
 def test_post_attachments_upload_logs_request() -> None:
     """POST upload logs attachments.upload_request with thread/filename context."""
     app, mocks = _build_test_app_with_mocked_attachments()
