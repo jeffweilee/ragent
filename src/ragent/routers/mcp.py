@@ -278,6 +278,15 @@ def create_mcp_router(
             raise _McpToolError(
                 _INVALID_PARAMS, HttpErrorCode.SKILL_NAME_CONFLICT.value, str(exc)
             ) from exc
+        except Exception as exc:
+            # Mirror _run_retrieve: an unexpected failure (DB down, write error)
+            # surfaces as a JSON-RPC error envelope, not an HTTP 500.
+            logger.exception("mcp.tool.error", tool="create_skill", error_type=type(exc).__name__)
+            raise _McpToolError(
+                _TOOL_EXECUTION_FAILED,
+                HttpErrorCode.MCP_TOOL_EXECUTION_FAILED.value,
+                str(exc) or "tool execution failed",
+            ) from exc
         skill = {
             "skill_id": resp.skill_id,
             "name": resp.name,
@@ -323,8 +332,13 @@ def create_mcp_router(
                 HttpErrorCode.MCP_TOOL_NOT_FOUND.value,
                 f"unknown tool: {params.get('name')!r}",
             )
-        arguments = params.get("arguments") or {}
-        if not isinstance(arguments, dict):
+        # Distinguish "omitted/null" (→ {}) from a falsy non-object like [] / "" /
+        # False: `or {}` would silently coerce the latter to {} and bypass the
+        # type check, accepting an invalid arguments shape.
+        arguments = params.get("arguments")
+        if arguments is None:
+            arguments = {}
+        elif not isinstance(arguments, dict):
             raise _McpToolError(
                 _INVALID_PARAMS,
                 HttpErrorCode.MCP_TOOL_INPUT_INVALID.value,

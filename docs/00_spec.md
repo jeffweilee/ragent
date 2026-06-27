@@ -325,6 +325,11 @@ advertised in `tools/list` only when `skill_service` is wired. `annotations.read
 Whether an agent actually calls it depends on the upstream ChatAgent's MCP client
 config (or a frontend tool runtime) — that wiring is outside ragent.
 
+**`create_skill` error handling:** non-object `arguments` (e.g. `[]`/`""`/`false`)
+→ `MCP_TOOL_INPUT_INVALID` (not silently coerced to `{}`); any unexpected backend
+failure (DB outage, write error) is wrapped as a JSON-RPC `MCP_TOOL_EXECUTION_FAILED`
+envelope — never an HTTP 500 — matching the `retrieve` tool.
+
 **Interface notes (2026-05-27):**
 - `tools/list` response includes `annotations: {readOnlyHint: true}` on the `retrieve` tool — signals to MCP hosts (protocol 2025-03-26+) that the tool is read-only. Clients on earlier pinned version (`"2024-11-05"`) silently ignore the field.
 - `excerpt_max_chars` is threaded into the MCP handler at router-creation time (same `EXCERPT_MAX_CHARS` env var used by `POST /retrieve/v1`). Previously the MCP surface always used the hardcoded 512-char default regardless of operator config.
@@ -355,9 +360,12 @@ skills). The first preset is **`skill-creator`** (`skill_id="skill-creator"`),
 whose instructions guide the agent to design a skill and call the `create_skill`
 MCP tool to save it. Adding more presets later = one entry in the registry (no
 migration, no per-user seeding). Constraints: a user skill may not take a
-preset's `name` (→ `409 SKILL_NAME_CONFLICT`); `PUT`/`DELETE` on a preset
-`skill_id` → `409 SKILL_READONLY`; `resolve` of a preset returns its
-instructions (so `forwardedProps.skillId="skill-creator"` works in `/chatagent/v3`).
+preset's `name` (case-insensitive, matching the DB's utf8mb4 collation → `409
+SKILL_NAME_CONFLICT`) — on `PUT` this is reported only **after** the target row
+is confirmed owned, so a foreign/missing id stays `404` (foreign and missing are
+indistinguishable); `PUT`/`DELETE` on a preset `skill_id` → `409 SKILL_READONLY`;
+`resolve` of a preset returns its instructions (so
+`forwardedProps.skillId="skill-creator"` works in `/chatagent/v3`).
 
 **CRUD — `/skills/v1`** (always registered; no env gate):
 

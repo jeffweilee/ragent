@@ -119,3 +119,31 @@ def test_create_skill_missing_required_field_is_invalid():
     body = _call(client, {"description": "no name or instructions"}, headers=ALICE)
     assert body["error"]["data"]["error_code"] == "MCP_TOOL_INPUT_INVALID"
     svc.create.assert_not_called()
+
+
+def test_non_dict_arguments_rejected():
+    # A falsy non-object ([]) must be rejected, not silently coerced to {}.
+    svc = AsyncMock()
+    svc.create = AsyncMock()
+    client = _client(skill_service=svc)
+    resp = client.post(
+        "/mcp/v1",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "create_skill", "arguments": []},
+        },
+        headers=ALICE,
+    )
+    assert resp.json()["error"]["data"]["error_code"] == "MCP_TOOL_INPUT_INVALID"
+    svc.create.assert_not_called()
+
+
+def test_create_skill_unexpected_error_wrapped_as_execution_failed():
+    # A non-conflict backend failure surfaces as a JSON-RPC envelope, not a 500.
+    svc = AsyncMock()
+    svc.create = AsyncMock(side_effect=RuntimeError("db down"))
+    client = _client(skill_service=svc)
+    body = _call(client, {"name": "X", "instructions": "y"}, headers=ALICE)
+    assert body["error"]["data"]["error_code"] == "MCP_TOOL_EXECUTION_FAILED"

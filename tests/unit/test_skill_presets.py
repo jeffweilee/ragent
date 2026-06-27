@@ -83,6 +83,36 @@ async def test_create_with_preset_name_conflicts():
         )
 
 
+async def test_create_with_preset_name_conflicts_case_insensitive():
+    # "Skill-Creator" must not shadow the built-in "skill-creator".
+    svc = SkillService(_repo(create=AsyncMock()))
+    with pytest.raises(SkillNameConflictError):
+        await svc.create(
+            user_id="alice",
+            name="Skill-Creator",
+            description="",
+            instructions="x",
+            enabled=True,
+        )
+
+
+async def test_update_foreign_or_missing_id_with_reserved_name_is_404_not_409():
+    # PUT to a non-preset id the caller doesn't own + a reserved name must return
+    # 404 (ownership checked first), not a 409 leaking the reserved-name verdict.
+    repo = _repo(get=AsyncMock(return_value=None), update=AsyncMock(return_value=0))
+    svc = SkillService(repo)
+    with pytest.raises(SkillNotFoundError):
+        await svc.update(
+            user_id="alice",
+            skill_id="SKILL000000000000000000000",
+            name="skill-creator",
+            description="",
+            instructions="x",
+            enabled=True,
+        )
+    repo.update.assert_not_called()  # never written with the reserved name
+
+
 async def test_update_preset_is_read_only():
     svc = SkillService(_repo(update=AsyncMock()))
     with pytest.raises(SkillReadOnlyError):

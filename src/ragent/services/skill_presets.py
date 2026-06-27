@@ -12,8 +12,8 @@ Design notes:
 - Presets are NOT stored per user, so updating a preset's instructions here
   changes it for everyone at once (the point of a built-in).
 - ``name`` collisions are forbidden for user skills (``SkillService.create`` /
-  ``update`` reject any name in ``PRESET_NAMES``) so the merged list is
-  unambiguous.
+  ``update`` reject any name matching a preset, case-insensitively via
+  ``PRESET_NAMES_CASEFOLD``) so the merged list is unambiguous.
 """
 
 from __future__ import annotations
@@ -76,4 +76,7 @@ PRESETS: tuple[PresetSkill, ...] = (
 )
 
 PRESET_BY_ID: dict[str, PresetSkill] = {p.skill_id: p for p in PRESETS}
-PRESET_NAMES: frozenset[str] = frozenset(p.name for p in PRESETS)
+# Case-folded for the reserved-name check: the DB's utf8mb4 collation makes user
+# skill names case-insensitive, so the preset reservation matches that — a user
+# can't create "Skill-Creator" to shadow the built-in "skill-creator".
+PRESET_NAMES_CASEFOLD: frozenset[str] = frozenset(p.name.casefold() for p in PRESETS)

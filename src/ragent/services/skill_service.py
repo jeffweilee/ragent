@@ -9,7 +9,7 @@ identity fields only (``user_id`` / ``skill_id``), never the instruction text.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NoReturn
 
 import structlog
 from sqlalchemy.engine import RowMapping
@@ -17,7 +17,7 @@ from sqlalchemy.exc import IntegrityError
 
 from ragent.errors.codes import HttpErrorCode
 from ragent.schemas.skill import SkillResponse
-from ragent.services.skill_presets import PRESET_BY_ID, PRESET_NAMES, PRESETS
+from ragent.services.skill_presets import PRESET_BY_ID, PRESET_NAMES_CASEFOLD, PRESETS
 from ragent.utility.datetime import from_db, to_iso
 
 logger = structlog.get_logger(__name__)
@@ -84,10 +84,21 @@ class SkillService:
         return await self.get(user_id=user_id, skill_id=skill_id)
 
     @staticmethod
+    def _not_found(user_id: str, skill_id: str) -> NoReturn:
+        logger.info(
+            "skill.not_found",
+            user_id=user_id,
+            skill_id=skill_id,
+            error_code=HttpErrorCode.SKILL_NOT_FOUND,
+        )
+        raise SkillNotFoundError(f"skill not found: {skill_id}")
+
+    @staticmethod
     def _reject_preset_name(name: str, user_id: str) -> None:
         """A user skill may not take a built-in preset's name (keeps the merged
-        list unambiguous)."""
-        if name in PRESET_NAMES:
+        list unambiguous). Case-insensitive to match the DB's utf8mb4 collation —
+        ``Skill-Creator`` cannot shadow the built-in ``skill-creator``."""
+        if name.casefold() in PRESET_NAMES_CASEFOLD:
             logger.warning(
                 "skill.create.conflict",
                 user_id=user_id,
@@ -115,13 +126,7 @@ class SkillService:
             return preset.to_response()
         row = await self._repo.get(user_id=user_id, skill_id=skill_id)
         if row is None:
-            logger.info(
-                "skill.not_found",
-                user_id=user_id,
-                skill_id=skill_id,
-                error_code=HttpErrorCode.SKILL_NOT_FOUND,
-            )
-            raise SkillNotFoundError(f"skill not found: {skill_id}")
+            self._not_found(user_id, skill_id)
         return _to_response(row)
 
     async def list_for_user(self, *, user_id: str) -> list[SkillResponse]:
@@ -143,6 +148,11 @@ class SkillService:
     ) -> SkillResponse:
         logger.info("skill.update", user_id=user_id, skill_id=skill_id)
         self._reject_preset_mutation(skill_id, user_id)
+        # Confirm ownership BEFORE the reserved-name verdict: a foreign/missing id
+        # must return 404 (foreign and missing are indistinguishable per contract),
+        # not a 409 that leaks "this name is reserved".
+        if await self._repo.get(user_id=user_id, skill_id=skill_id) is None:
+            self._not_found(user_id, skill_id)
         self._reject_preset_name(name, user_id)
         try:
             rowcount = await self._repo.update(
@@ -161,14 +171,8 @@ class SkillService:
                 error_code=HttpErrorCode.SKILL_NAME_CONFLICT,
             )
             raise SkillNameConflictError(f"skill name already exists: {name!r}") from None
-        if rowcount == 0:
-            logger.info(
-                "skill.not_found",
-                user_id=user_id,
-                skill_id=skill_id,
-                error_code=HttpErrorCode.SKILL_NOT_FOUND,
-            )
-            raise SkillNotFoundError(f"skill not found: {skill_id}")
+        if rowcount == 0:  # deleted between the ownership check and the update (race)
+            self._not_found(user_id, skill_id)
         logger.info("skill.updated", user_id=user_id, skill_id=skill_id)
         return await self.get(user_id=user_id, skill_id=skill_id)
 
@@ -177,13 +181,7 @@ class SkillService:
         self._reject_preset_mutation(skill_id, user_id)
         rowcount = await self._repo.delete(user_id=user_id, skill_id=skill_id)
         if rowcount == 0:
-            logger.info(
-                "skill.not_found",
-                user_id=user_id,
-                skill_id=skill_id,
-                error_code=HttpErrorCode.SKILL_NOT_FOUND,
-            )
-            raise SkillNotFoundError(f"skill not found: {skill_id}")
+            self._not_found(user_id, skill_id)
         logger.info("skill.deleted", user_id=user_id, skill_id=skill_id)
 
     async def resolve_instructions(self, *, user_id: str, skill_id: str) -> str:
