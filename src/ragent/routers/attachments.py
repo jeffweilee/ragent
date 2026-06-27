@@ -12,7 +12,10 @@ from ragent.auth.deps import get_user_id
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
 from ragent.schemas.attachments import AttachmentMime
-from ragent.services.chat_attachment_service import ATTACHMENT_MAX_SIZE_BYTES_DEFAULT
+from ragent.services.chat_attachment_service import (
+    ATTACHMENT_MAX_SIZE_BYTES_DEFAULT,
+    FileTooLarge,
+)
 
 if TYPE_CHECKING:
     from ragent.repositories.attachment_repository import AttachmentRepository
@@ -83,9 +86,7 @@ def create_attachments_router(
         """Upload a file to a conversation thread."""
         user_id = user_id or "anonymous"
 
-        def reject_if_too_large(size_bytes: int):
-            if size_bytes <= max_size_bytes:
-                return None
+        def reject_too_large(size_bytes: int) -> UploadAttachmentResponse:
             logger.warning(
                 "attachments.upload_rejected_size",
                 thread_id=threadId,
@@ -97,17 +98,15 @@ def create_attachments_router(
             return problem(413, HttpErrorCode.ATTACHMENT_TOO_LARGE, "Attachment too large")
 
         # Early rejection when the client provides Content-Length for the part,
-        # avoiding a full read into memory before the post-read fallback below
+        # avoiding a full read into memory before the service-level check below
         # (which catches transfers, e.g. chunked, that omit Content-Length).
-        if file.size is not None and (rejected := reject_if_too_large(file.size)) is not None:
+        if file.size is not None and file.size > max_size_bytes:
+            response = reject_too_large(file.size)
             await file.close()
-            return rejected
+            return response
 
         file_bytes = await file.read()
         await file.close()
-
-        if (rejected := reject_if_too_large(len(file_bytes))) is not None:
-            return rejected
 
         mime_str = file.content_type or "text/plain"
         try:
@@ -129,13 +128,16 @@ def create_attachments_router(
             size_bytes=len(file_bytes),
         )
 
-        attachment_id = await service.upload(
-            file_bytes=file_bytes,
-            filename=file.filename or "unknown",
-            thread_id=threadId,
-            create_user=user_id,
-            mime_type=mime_type,
-        )
+        try:
+            attachment_id = await service.upload(
+                file_bytes=file_bytes,
+                filename=file.filename or "unknown",
+                thread_id=threadId,
+                create_user=user_id,
+                mime_type=mime_type,
+            )
+        except FileTooLarge:
+            return reject_too_large(len(file_bytes))
 
         return UploadAttachmentResponse(attachmentId=attachment_id)
 

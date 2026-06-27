@@ -21,8 +21,13 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 # Spec default; composition.py reads ATTACHMENT_MAX_SIZE_BYTES env and passes
-# the runtime value via create_attachments_router(max_size_bytes=...).
+# the runtime value to both the router (cheap early check) and this service
+# (authoritative post-read check) — mirrors ingest_service.py's split.
 ATTACHMENT_MAX_SIZE_BYTES_DEFAULT = 50 * 1024 * 1024
+
+
+class FileTooLarge(Exception):
+    pass
 
 
 class ChatAttachmentService:
@@ -48,12 +53,14 @@ class ChatAttachmentService:
         attachment_repository: AttachmentRepository,
         pipeline: ChatAttachmentPipeline,
         dispatcher: TaskiqDispatcher,
+        max_size_bytes: int = ATTACHMENT_MAX_SIZE_BYTES_DEFAULT,
     ):
         self._doc_store = document_store
         self._ast_cipher = ast_cipher
         self._repo = attachment_repository
         self._pipeline = pipeline
         self._dispatcher = dispatcher
+        self._max_size_bytes = max_size_bytes
 
     async def upload(
         self,
@@ -74,7 +81,13 @@ class ChatAttachmentService:
 
         Returns:
             attachment_id of the UPLOADED row (processing happens async)
+
+        Raises:
+            FileTooLarge: when len(file_bytes) exceeds the configured cap.
         """
+        if len(file_bytes) > self._max_size_bytes:
+            raise FileTooLarge(f"Attachment {len(file_bytes)}B exceeds limit {self._max_size_bytes}B")
+
         attachment_id = new_id()
         logger.info(
             "chat_attachment.upload_started",

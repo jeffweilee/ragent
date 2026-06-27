@@ -347,6 +347,11 @@ def build_container() -> Container:
     # Spec §4.6 ties the admin upload route's size ceiling to the same env knob
     # as inline ingest — share one read so the two Container fields cannot drift.
     inline_max_bytes = _int_env("INGEST_INLINE_MAX_BYTES", INLINE_MAX_BYTES_DEFAULT)
+    # Shared by both the attachments router's cheap early check and
+    # ChatAttachmentService's authoritative post-read check (mirrors above).
+    attachment_max_size_bytes = _int_env(
+        "ATTACHMENT_MAX_SIZE_BYTES", ATTACHMENT_MAX_SIZE_BYTES_DEFAULT
+    )
     retrieval_pipeline = build_retrieval_pipeline(
         document_store=document_store,
         doc_repo=doc_repo,
@@ -412,6 +417,7 @@ def build_container() -> Container:
             attachment_repository=attachment_repository,
             pipeline=ChatAttachmentPipeline(unprotect_client=unprotect_client),
             dispatcher=TaskiqDispatcher(taskiq_broker),
+            max_size_bytes=attachment_max_size_bytes,
         )
 
     # T8.5a / T-AM.2 — Build the joserfc-based JWKS verifier iff inbound JWT
@@ -492,9 +498,7 @@ def build_container() -> Container:
         attachment_repository=attachment_repository,
         chat_attachment_service=chat_attachment_service,
         document_artifact_resolver=document_artifact_resolver,
-        attachment_max_size_bytes=_int_env(
-            "ATTACHMENT_MAX_SIZE_BYTES", ATTACHMENT_MAX_SIZE_BYTES_DEFAULT
-        ),
+        attachment_max_size_bytes=attachment_max_size_bytes,
     )
 
 

@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 
 from ragent.repositories.attachment_repository import AttachmentRepository, AttachmentRow
 from ragent.routers.attachments import create_attachments_router
-from ragent.services.chat_attachment_service import ChatAttachmentService
+from ragent.services.chat_attachment_service import ChatAttachmentService, FileTooLarge
 
 _NOW = datetime.datetime(2026, 1, 1)
 
@@ -272,7 +272,9 @@ def test_post_attachments_upload_logs_rejected_mime() -> None:
 
 
 def test_post_attachments_upload_rejects_oversized_file() -> None:
-    """POST upload returns 413 ATTACHMENT_TOO_LARGE when the file exceeds max_size_bytes."""
+    """POST upload returns 413 ATTACHMENT_TOO_LARGE via the router's early
+    file.size check; service.upload is never reached (TestClient's multipart
+    parser always knows file.size by the time the handler runs)."""
     app, mocks = _build_test_app_with_mocked_attachments(max_size_bytes=10)
 
     with TestClient(app) as client:
@@ -287,6 +289,27 @@ def test_post_attachments_upload_rejects_oversized_file() -> None:
     body = resp.json()
     assert body["error_code"] == "ATTACHMENT_TOO_LARGE"
     mocks["service"].upload.assert_not_called()
+
+
+def test_post_attachments_upload_catches_service_raised_file_too_large() -> None:
+    """If ChatAttachmentService.upload() raises FileTooLarge (authoritative
+    post-read check, e.g. a chunked transfer the router's early check missed),
+    the router still returns 413 ATTACHMENT_TOO_LARGE."""
+    app, mocks = _build_test_app_with_mocked_attachments()
+    mocks["service"].upload = AsyncMock(side_effect=FileTooLarge("32B exceeds limit 10B"))
+
+    with TestClient(app) as client:
+        resp = client.post(
+            "/chatagent/v3/attachments/upload",
+            files={"file": ("test.txt", b"this file is way over ten bytes")},
+            data={"threadId": "thread-1"},
+            headers={"X-User-Id": "alice"},
+        )
+
+    assert resp.status_code == 413
+    body = resp.json()
+    assert body["error_code"] == "ATTACHMENT_TOO_LARGE"
+    mocks["service"].upload.assert_called_once()
 
 
 def test_post_attachments_upload_logs_rejected_size() -> None:

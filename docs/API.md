@@ -829,7 +829,7 @@ curl -X POST "http://localhost:8000/chatagent/v3/attachments/upload" \
 
 **Errors:**
 - `415 ATTACHMENT_MIME_UNSUPPORTED` — MIME type not in allow-list (after extension fallback).
-- `413 ATTACHMENT_TOO_LARGE` — file size exceeds cap.
+- `413 ATTACHMENT_TOO_LARGE` — file size exceeds cap. Checked twice: a cheap early `file.size` check in the router, then an authoritative post-read check in `ChatAttachmentService.upload()` (raises `FileTooLarge`) for transfers that omit a size hint.
 - `422 ATTACHMENT_PARSE_FAILED` — AST building failed during async processing (surfaced via `status=FAILED` on poll, not on the upload response).
 
 **Business-step logs:** `attachments.upload_request` / `attachments.upload_rejected_mime` (router); `chat_attachment.upload_started` / `chat_attachment.upload_completed` / `chat_attachment.upload_failed` (service, fast intake only); `chat_attachment.process_completed` / `chat_attachment.process_failed` (service, async worker — carries a `stage` field identifying which phase of processing failed).

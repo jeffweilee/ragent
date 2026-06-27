@@ -11,7 +11,7 @@ from ragent.pipelines.chat_attachment.pipeline import ChatAttachmentPipeline
 from ragent.repositories.attachment_repository import AttachmentRepository, AttachmentRow
 from ragent.schemas.attachments import AttachmentMime
 from ragent.security.ast_cipher import ASTCipher
-from ragent.services.chat_attachment_service import ChatAttachmentService
+from ragent.services.chat_attachment_service import ChatAttachmentService, FileTooLarge
 from ragent.storage.document_store import DocumentStore
 
 
@@ -181,6 +181,25 @@ class TestChatAttachmentService:
         assert failed["stage"] == "enqueue_process"
         assert failed["error_type"] == "RuntimeError"
         assert failed["log_level"] == "error"
+
+    @pytest.mark.asyncio
+    async def test_upload_raises_file_too_large_over_configured_cap(self, service_dependencies):
+        """Upload raises FileTooLarge when file_bytes exceeds max_size_bytes,
+        without writing to the document store or repository (mirrors
+        ingest_service.py's authoritative post-read size check)."""
+        service = ChatAttachmentService(**service_dependencies, max_size_bytes=10)
+
+        with pytest.raises(FileTooLarge):
+            await service.upload(
+                file_bytes=b"this file is way over ten bytes",
+                filename="test.txt",
+                thread_id="thread-1",
+                create_user="alice",
+                mime_type=AttachmentMime.TEXT_PLAIN,
+            )
+
+        service_dependencies["document_store"].put.assert_not_called()
+        service_dependencies["attachment_repository"].create.assert_not_called()
 
     # ------------------------------------------------------------------
     # process() — async worker processing
