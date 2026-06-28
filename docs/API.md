@@ -744,6 +744,58 @@ Dual-write: MariaDB `feedback` (truth) → ES `feedback_v1` (serving view). ES f
 
 ---
 
+## Skills
+
+Per-user reusable instruction presets (a persona / system instruction the user can attach to a `/chatagent/v3` turn). Every skill is **private to its owner**: the owner is the resolved `X-User-Id`, never a body field, and every query filters by it — a foreign `skill_id` is indistinguishable from a missing one (404). **Headers:** `X-User-Id` required.
+
+### `POST /skills/v1` — Create a skill
+
+```json
+{ "name": "Pirate", "description": "answer like a pirate", "instructions": "Always answer in pirate slang.", "enabled": true }
+```
+`description` defaults `""`; `enabled` defaults `true`. Field limits: `name` ≤ 128 chars, `description` ≤ 512, `instructions` ≤ 16,384 (stored as `MEDIUMTEXT`); over-limit input → `422 SKILL_VALIDATION`. **Response:** `201` with the full skill:
+```json
+{ "skill_id": "01J9...", "name": "Pirate", "description": "answer like a pirate",
+  "instructions": "Always answer in pirate slang.", "enabled": true,
+  "created_at": "2026-06-24T00:00:00+00:00", "updated_at": "2026-06-24T00:00:00+00:00" }
+```
+
+### `GET /skills/v1` — List the caller's skills
+
+**Response:** `{ "skills": [ … ] }` (newest first; empty array, never `null`).
+
+### `GET /skills/v1/{skill_id}` — Get one skill
+
+**Response:** the skill (`200`) or `404 SKILL_NOT_FOUND` (absent **or** owned by another user).
+
+### `PUT /skills/v1/{skill_id}` — Full replace
+
+Same body as POST. **Response:** the updated skill (`200`).
+
+### `DELETE /skills/v1/{skill_id}` — Delete
+
+**Response:** `204 No Content`.
+
+| Status | `error_code` | When |
+|---|---|---|
+| 404 | `SKILL_NOT_FOUND` | `skill_id` absent or owned by another user. |
+| 409 | `SKILL_NAME_CONFLICT` | A skill with this `name` already exists for the caller. |
+| 422 | `SKILL_VALIDATION` | Schema / field-bound violation. |
+| 422 | `MISSING_USER_ID` | No `X-User-Id` resolved. |
+
+### Referencing a skill in a chat — `/chatagent/v3`
+
+Send the chosen skill in `forwardedProps.skillId`; ragent resolves it owner-scoped and injects its instructions as machine-context for that turn:
+```bash
+curl -X POST http://localhost:8000/chatagent/v3 \
+  -H "X-User-Id: alice" -H "Content-Type: application/json" \
+  -d '{"runId":"r1","threadId":"t1","messages":[{"role":"user","content":"hi"}],
+       "tools":[],"state":null,"context":[],"forwardedProps":{"skillId":"01J9..."}}'
+```
+The instructions ride the existing `<hidden>` machine-context block (the upstream reads them; the v3 session-read strips them, so they never appear in rendered history). A missing / foreign / disabled `skillId` is returned as a `RUN_ERROR` event with `code = SKILL_NOT_FOUND` over the `200` stream (v3 never returns an HTTP 4xx), and the upstream is not called for that turn.
+
+---
+
 ## Observability
 
 | Endpoint | Description |

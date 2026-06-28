@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, Header, Request, Response
 from fastapi.responses import StreamingResponse
 from twp_ai.agent import Agent
 from twp_ai.events import RunErrorEvent, UserMessageEvent, to_sse
-from twp_ai.schemas import RunAgentInput
+from twp_ai.schemas import ContextItem, RunAgentInput
 
 from ragent.auth.deps import get_user_id
 from ragent.clients.chat_stream_store import ChatStreamStore
@@ -28,11 +28,19 @@ from ragent.errors.codes import HttpErrorCode
 from ragent.routers._chatagent_proxy import proxy_get, proxy_write
 from ragent.schemas.chatagent import SessionDeleteRequest, SessionRenameRequest
 from ragent.services.chatagent_session import map_session_list_payload, map_session_payload
+from ragent.services.skill_service import SkillNotFoundError, SkillService
 from ragent.utility.id_gen import new_id
 
 if TYPE_CHECKING:
     from ragent.services.chat_attachment_service import ChatAttachmentService
     from ragent.services.document_artifact_resolver import DocumentArtifactResolver
+
+# Description attached to the injected skill ContextItem so the upstream agent —
+# whose system prompt is told the <hidden> block carries machine-supplied
+# context — reads it as the operating instructions to apply for this turn.
+_SKILL_CONTEXT_DESCRIPTION = (
+    "User-selected skill: apply the following as your operating instructions for this turn."
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -55,6 +63,7 @@ def create_chatagent_v3_router(
     chatagent_session_api_url: str | None = None,
     *,
     agent_factory: AgentFactory | None = None,
+    skill_service: SkillService | None = None,
     rate_limiter: RateLimiter | None = None,
     rate_limit: int = 60,
     rate_limit_window: int = 60,
@@ -122,6 +131,35 @@ def create_chatagent_v3_router(
                     ),
                     media_type="text/event-stream",
                 )
+
+            # Resolve a user-selected skill (forwardedProps.skillId) and inject
+            # its instructions as machine-context. A missing/foreign/disabled
+            # skill is a hard error surfaced as RUN_ERROR over the 200 stream
+            # (v3 never returns an HTTP 4xx). The skill is owner-scoped in the
+            # service, so a client cannot reference another user's skill.
+            skill_id = _extract_skill_id(body.forwarded_props)
+            if skill_service is not None and skill_id:
+                try:
+                    instructions = await skill_service.resolve_instructions(
+                        user_id=user_id, skill_id=skill_id
+                    )
+                except SkillNotFoundError:
+                    logger.info(
+                        "chatagent_v3.skill_not_found",
+                        user_id=user_id,
+                        error_code=HttpErrorCode.SKILL_NOT_FOUND,
+                    )
+                    return StreamingResponse(
+                        _error_stream(
+                            "skill not found",
+                            HttpErrorCode.SKILL_NOT_FOUND,
+                            body.run_id,
+                            body.thread_id,
+                        ),
+                        media_type="text/event-stream",
+                    )
+                body = _inject_skill(body, instructions)
+                logger.info("chatagent_v3.skill_applied", user_id=user_id, skill_id=skill_id)
 
             raw_token = request.headers.get(jwt_header.lower()) or ""
             assert agent_factory is not None  # this route only registers when it is
@@ -343,6 +381,32 @@ def _error_stream(
     message: str, code: HttpErrorCode, run_id: str, thread_id: str | None
 ) -> Generator[str, None, None]:
     yield to_sse(RunErrorEvent(message=message, code=code, run_id=run_id, thread_id=thread_id))
+
+
+def _extract_skill_id(forwarded_props: object) -> str | None:
+    """Pull ``skillId`` (camelCase wire form) / ``skill_id`` from forwardedProps.
+
+    forwardedProps is the AG-UI extensibility channel (typed ``Any``); a client
+    selecting a skill sends ``forwardedProps: {"skillId": "<id>"}``. Anything
+    that is not a non-empty string is treated as "no skill selected".
+    """
+    if not isinstance(forwarded_props, dict):
+        return None
+    value = forwarded_props.get("skillId") or forwarded_props.get("skill_id")
+    return value if isinstance(value, str) and value else None
+
+
+def _inject_skill(body: RunAgentInput, instructions: str) -> RunAgentInput:
+    """Append the skill instructions as a ContextItem.
+
+    Reusing ``context`` (rather than a new field) means the existing caller path
+    wraps it into the ``<hidden><context>…</context></hidden>`` machine-context
+    block: the upstream agent reads it, it is persisted with the turn the same
+    way client context already is, and the v3 session-read strips the block so
+    it never leaks into the rendered history.
+    """
+    item = ContextItem(description=_SKILL_CONTEXT_DESCRIPTION, value=instructions)
+    return body.model_copy(update={"context": [*body.context, item]})
 
 
 def _last_user_text(body: RunAgentInput) -> str:

@@ -104,6 +104,11 @@ class HttpErrorCode(StrEnum):
     FEEDBACK_SOURCE_INVALID = "FEEDBACK_SOURCE_INVALID"  # 422 — source pair ∉ shown_sources
     FEEDBACK_VALIDATION = "FEEDBACK_VALIDATION"  # 422 — schema / reason enum / vote bounds
 
+    # Skills router (§3.9, T-SK). Owner-scoped reusable instruction presets.
+    SKILL_NOT_FOUND = "SKILL_NOT_FOUND"  # 404 — skill_id not owned by caller / absent
+    SKILL_NAME_CONFLICT = "SKILL_NAME_CONFLICT"  # 409 — (user_id, name) already exists
+    SKILL_VALIDATION = "SKILL_VALIDATION"  # 422 — schema / field-bound violation
+
     # MCP JSON-RPC 2.0 server (§3.8, B47). Surfaces as `data.error_code`
     # inside JSON-RPC error envelopes (NOT as problem+json), but lives in
     # this enum so the API-emitted code inventory remains single-source.

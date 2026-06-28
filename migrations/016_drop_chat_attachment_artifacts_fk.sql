@@ -1,5 +1,5 @@
--- 015_drop_chat_attachment_artifacts_fk.sql — drop the physical FOREIGN KEY
--- on chat_attachment_artifacts.attachment_id, added in 013_chat_attachments.sql
+-- 016_drop_chat_attachment_artifacts_fk.sql — drop the physical FOREIGN KEY
+-- on chat_attachment_artifacts.attachment_id, added in 014_chat_attachments.sql
 -- in violation of docs/00_rule.md's "No Physical Foreign Keys" rule (FK
 -- relationships belong only in application-level ORM models, never as a DB
 -- constraint — simplifies migrations and improves bulk write performance).

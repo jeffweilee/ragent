@@ -1,4 +1,4 @@
--- 014_chat_attachment_artifacts_content_type.sql — persist the AST artifact's
+-- 015_chat_attachment_artifacts_content_type.sql — persist the AST artifact's
 -- rendered content_type as a real, queryable DB column instead of inside the
 -- encrypted envelope (docs/spec/chat_attachments.md §10). `ASTCipher.decrypt_ast()`
 -- never reads envelope metadata back, so a previous attempt to store content_type

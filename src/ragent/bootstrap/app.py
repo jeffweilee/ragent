@@ -40,6 +40,7 @@ from ragent.routers.health import create_health_router
 from ragent.routers.ingest import create_router as create_ingest_router
 from ragent.routers.mcp import create_mcp_router
 from ragent.routers.retrieve import create_retrieve_router
+from ragent.routers.skill import create_skill_router
 from ragent.utility.env import float_env as _float_env
 from ragent.utility.env import list_env as _list_env
 from ragent.utility.env import str_env
@@ -471,6 +472,7 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
                 chatagent_sessionlist_api_url=container.chatagent_sessionlist_api_url,
                 chatagent_session_api_url=container.chatagent_session_api_url,
                 agent_factory=container.chatagent_agent_factory,
+                skill_service=container.skill_service,
                 rate_limiter=container.rate_limiter,
                 rate_limit=container.rate_limit,
                 rate_limit_window=container.rate_limit_window,
@@ -499,6 +501,7 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
                 hmac_secret=container.feedback_hmac_secret,
             )
         )
+    app.include_router(create_skill_router(skill_service=container.skill_service))
     app.include_router(
         create_mcp_router(
             retrieval_pipeline=container.retrieval_pipeline,

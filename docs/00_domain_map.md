@@ -93,6 +93,7 @@
 | `_chatagent_proxy.py` | —(共用 helper)| v1/v3 session 路由共用的 proxy_get / proxy_write 轉發與 timeout→504 / error→502 映射 |
 | `feedback.py` | `/feedback/v1` | 使用者回饋 HMAC token 驗證與雙寫 |
 | `mcp.py` | `/mcp/v1` | JSON-RPC 2.0 MCP Tool Server（P2.5）|
+| `skill.py` | `/skills/v1` | 使用者 skill preset CRUD（owner-scoped；T-SK）|
 | `mcp_tools/` | —(tool 描述子)| 每個 sub-module 定義一個 MCP tool 的 input model / inputSchema / Tool descriptor |
 | `admin_embedding.py` | `/embedding/v1` | embedding model 生命週期管理（B50；promote/cutover/rollback/commit/abort/state）|
 | `admin_ingest.py` | `/ingest/v1/upload` | multipart 上傳路由（direct route；no `APIRouter` prefix）|
@@ -118,6 +119,7 @@
 | 檔案 | 職責 |
 |---|---|
 | `ingest_service.py` | inline / file / upload ingest 流程協調；supersede 觸發；delete cascade 協調 |
+| `skill_service.py` | 使用者 skill preset 業務邏輯（owner-scoped CRUD + typed errors）；`resolve_instructions` 供 `/chatagent/v3` 注入（T-SK）|
 | `chatagent_session.py` | ChatAgent session payload 轉形:sessionName 的機器情境 wrapper strip、`node_to_role` 角色映射、v3 message reshape(`{id, role, content}`)|
 | `embedding/registry.py` | 活躍 embedding model config 快取（從 DB 讀取；`refresh()` 在 lifespan 呼叫）|
 | `embedding/lifecycle.py` | embedding model 狀態機：draft → staging → active → retired（B50）|
@@ -144,6 +146,7 @@
 | `feedback_repository.py` | `feedback` 表 — 投票記錄寫入 |
 | `system_settings_repository.py` | `system_settings` 表 — embedding model config 讀寫 |
 | `attachment_repository.py` | `chat_attachments` + `chat_attachment_artifacts` 表 — CRUD、依 `thread_id`/`create_user` 查詢；`claim_for_processing()` 原子 claim(UPLOADED→PROCESSING，鏡像 `DocumentRepository._atomic_claim`)；`update_status()` 可選寫入 `error_code`/`error_reason`(T-CAT.W2) |
+| `skill_repository.py` | `skills` 表 — owner-scoped CRUD（每條語句都以 `user_id` 過濾；T-SK）|
 
 ---
 ### 2.5 Pipelines（Haystack 管線）
@@ -235,6 +238,7 @@
 - `chatagent.py`(SessionRenameRequest / SessionDeleteRequest)
 - `attachments.py`(`AttachmentMime` enum、`UNPROTECT_MIMES` frozenset、AttachmentUploadResponse / AttachmentListResponse)
 - `feedback.py`（FeedbackRequest / vote / reason enum）
+- `skill.py`（SkillWriteRequest / SkillResponse / SkillListResponse；T-SK）
 - `_common.py`(source_app / source_meta 共用 filter 欄位驗證)
 
 ---

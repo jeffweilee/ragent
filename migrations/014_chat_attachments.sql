@@ -1,4 +1,4 @@
--- 013_chat_attachments.sql — chat-attachment metadata + per-AST-variant
+-- 014_chat_attachments.sql — chat-attachment metadata + per-AST-variant
 -- storage pointers (T-CAT.7/T-CAT.W2, docs/spec/chat_attachments.md §9).
 --
 -- No `introduced_run_id` column — the `<hidden><attachments>` block already

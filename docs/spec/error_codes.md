@@ -54,6 +54,9 @@
 | `MCP_TOOL_NOT_FOUND`                 | JSON-RPC `-32602` | `tools/call` with unknown `name` (S62) | Router P2.5 |
 | `MCP_TOOL_INPUT_INVALID`             | JSON-RPC `-32602` | `tools/call` arguments fail `inputSchema` validation (S63) | Router P2.5 |
 | `MCP_TOOL_EXECUTION_FAILED`          | JSON-RPC `-32001` | Underlying retrieval pipeline raises (S67) | Router P2.5 |
+| `SKILL_NOT_FOUND`                    | 404 (also `RUN_ERROR` code on `/chatagent/v3`) | `skill_id` absent, owned by another user, or (on resolve) disabled (T-SK) | Skills router / chatagent_v3 |
+| `SKILL_NAME_CONFLICT`                | 409             | Duplicate `(user_id, name)` on create/update (T-SK) | Skills router |
+| `SKILL_VALIDATION`                   | 422             | Skill request fails schema / field bounds (T-SK) | Skills router |
 | `ES_PLUGIN_MISSING`                  | 503 (`/readyz`) | ES cluster missing `analysis-icu` plugin (B26, T0.8g) | Bootstrap / readyz |
 | `ES_INDEX_MISSING`                   | 503 (`/readyz`) | A `resources/es/*.json` index is absent at boot | Bootstrap / readyz |
 | `SCHEMA_DRIFT`                       | 503 (`/readyz`) + log `event=schema.drift` | Live schema differs from `schema.sql` / `resources/es/` | Bootstrap |

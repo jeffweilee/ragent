@@ -52,6 +52,8 @@ class Container:
     # B54/B55 T-FB.8 — feedback retrieval signal (renumbered from B50/B51)
     feedback_repository: Any  # FeedbackRepository | None
     feedback_hmac_secret: str | None  # None when CHAT_FEEDBACK_ENABLED=false
+    # T-SK — user-owned skill presets (always wired; core CRUD, no env gate).
+    skill_service: Any  # SkillService
     # T-APL.5 — env-driven size limits routed through composition root
     ingest_inline_max_bytes: int
     ingest_file_max_bytes: int
@@ -143,6 +145,7 @@ def build_container() -> Container:
     from ragent.pipelines.ingest import DocumentEmbedder, build_ingest_pipeline
     from ragent.pipelines.retrieve import EXCERPT_MAX_CHARS_DEFAULT, build_retrieval_pipeline
     from ragent.repositories.document_repository import DocumentRepository
+    from ragent.repositories.skill_repository import SkillRepository
     from ragent.repositories.system_settings_repository import SystemSettingsRepository
     from ragent.services.embedding.lifecycle import EmbeddingLifecycleService
     from ragent.services.embedding.registry import ActiveModelRegistry
@@ -151,6 +154,7 @@ def build_container() -> Container:
         INLINE_MAX_BYTES_DEFAULT,
         LIST_MAX_LIMIT_DEFAULT,
     )
+    from ragent.services.skill_service import SkillService
     from ragent.storage.minio_registry import MinioSiteRegistry
 
     http = httpx.Client(timeout=60.0)
@@ -253,6 +257,12 @@ def build_container() -> Container:
     patch_aiomysql_ping(engine)
 
     doc_repo = DocumentRepository(engine=engine)
+
+    # T-SK — user-owned skill presets. Core CRUD over the same engine (table
+    # `skills` from migration 013); always wired (no env gate). The service is
+    # injected into both the /skills router and the /chatagent/v3 router (skill
+    # injection on a turn).
+    skill_service = SkillService(SkillRepository(engine=engine))
 
     rate_limiter = RateLimiter.from_env()
 
@@ -489,6 +499,7 @@ def build_container() -> Container:
         embed_fn=partial(_embed, query=False),
         feedback_repository=feedback_repository,
         feedback_hmac_secret=feedback_hmac_secret,
+        skill_service=skill_service,
         ingest_inline_max_bytes=inline_max_bytes,
         ingest_file_max_bytes=_int_env("INGEST_FILE_MAX_BYTES", FILE_MAX_BYTES_DEFAULT),
         ingest_list_max_limit=_int_env("INGEST_LIST_MAX_LIMIT", LIST_MAX_LIMIT_DEFAULT),

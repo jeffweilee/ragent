@@ -1,5 +1,5 @@
 -- schema.sql — consolidated snapshot reflecting alembic head (spec B3).
--- Latest migration folded in: 015_drop_chat_attachment_artifacts_fk.sql
+-- Latest migration folded in: 016_drop_chat_attachment_artifacts_fk.sql
 -- Updated in lockstep with every NNN_*.sql migration file.
 -- Apply directly: mysql -u user -p ragent < schema.sql
 -- Or via Alembic:  alembic upgrade head  (produces identical schema)
@@ -84,7 +84,7 @@ CREATE TABLE IF NOT EXISTS feedback (
   CONSTRAINT ck_vote_unit CHECK (vote IN (-1, 1))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- 013_chat_attachments.sql: chat-attachment metadata + per-AST-variant
+-- 014_chat_attachments.sql: chat-attachment metadata + per-AST-variant
 -- storage pointers, including PROCESSING (async worker hand-off) and
 -- error_code/error_reason failure diagnostics (T-CAT.7/T-CAT.W2). No
 -- `introduced_run_id` — the `<hidden><attachments>` block already binds
@@ -108,7 +108,7 @@ CREATE TABLE IF NOT EXISTS chat_attachments (
   INDEX idx_create_user_attachment (create_user, attachment_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- 015_drop_chat_attachment_artifacts_fk.sql: dropped the physical FK on
+-- 016_drop_chat_attachment_artifacts_fk.sql: dropped the physical FK on
 -- attachment_id (docs/00_rule.md "No Physical Foreign Keys" — relationships
 -- belong only in application-level ORM models). uq_attachment_variant's
 -- leftmost prefix already covers attachment_id lookups.
@@ -121,4 +121,27 @@ CREATE TABLE IF NOT EXISTS chat_attachment_artifacts (
   created_at    DATETIME(6)  NOT NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uq_attachment_variant (attachment_id, variant)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- 013_skills.sql: per-user reusable instruction/prompt presets ("skills").
+-- Every skill is private to its owner, every query filters by user_id.
+-- Surrogate id PK, skill_id is the CHAR(26) business key (UNIQUE).
+-- (user_id, name) UNIQUE so the DB refuses duplicate names per owner.
+-- instructions is MEDIUMTEXT (not TEXT): 16,384 chars * 4 bytes/utf8mb4 char
+-- = 65,536 B exceeds TEXT's 65,535 B limit. (user_id, created_at, id) backs the
+-- newest-first list without a filesort, point lookups use uq_skill_id.
+CREATE TABLE IF NOT EXISTS skills (
+  id           BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  skill_id     CHAR(26)      NOT NULL,
+  user_id      VARCHAR(64)   NOT NULL,
+  name         VARCHAR(128)  NOT NULL,
+  description  VARCHAR(512)  NOT NULL DEFAULT '',
+  instructions MEDIUMTEXT    NOT NULL,
+  enabled      BOOLEAN       NOT NULL DEFAULT TRUE,
+  created_at   DATETIME(6)   NOT NULL,
+  updated_at   DATETIME(6)   NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_skill_id (skill_id),
+  UNIQUE KEY uq_user_name (user_id, name),
+  KEY idx_user_created (user_id, created_at, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
