@@ -9,7 +9,7 @@ This skill accepts an optional `--mode fast|full` argument (default: `full`).
 | Mode | When to use | What runs |
 |------|-------------|-----------|
 | `--mode fast` | Pre-commit fast gate on low-risk or high-risk staged diffs | Focused single-pass check of the four compliance dimensions |
-| `--mode full` | Pre-push full gate on high-risk commits; default when no mode given | Full multi-step review with doc reads and fix loop |
+| `--mode full` | Pre-push full gate on high-risk commits; default when no mode given | Three parallel sub-agents (Plan & Spec · Domain Boundaries · Tests & Quality) |
 
 **Stamp used:** `review:fast` or `review:full` (see Stamp step).
 
@@ -35,18 +35,27 @@ RAGENT_SKILL_INVOCATION_TOKEN=1 bash .claude/hooks/stamp_pre_commit_approved.sh 
 
 ## full mode (default)
 
-> **MANDATORY — no exceptions:** ALWAYS perform ALL steps below even if the diff appears small, focused, or surgical. The phrase *"diff is small/focused/inline review sufficient"* is a process violation — see journal Process 2026-05-17 "Inline /simplify rationalization". The review process **is** the protection.
+> **MANDATORY — no exceptions:** ALWAYS launch all three sub-agents below even if the diff appears small, focused, or surgical. The phrase *"diff is small/focused/inline review sufficient"* is a process violation — see journal Process 2026-05-17 "Inline /simplify rationalization". The fan-out **is** the review; skipping it means skipping the review.
 
 1. Run `git diff --cached` (or `git diff origin/<branch>..HEAD` if triggered from the pre-push gate for a high-risk commit) to get the diff.
-2. Read the relevant sections of `docs/00_plan.md`, `docs/00_spec.md`, and `docs/00_domain_map.md` for the items being committed.
-3. Analyze the changes and provide a thorough review covering:
-   - **Plan compliance**: every objective in `docs/00_plan.md` for this cycle is fully implemented — no partial or skipped items.
-   - **Spec alignment**: behaviour matches `docs/00_spec.md` contracts (HTTP shapes, error codes, streaming framing, DB schema, etc.).
-   - **Domain boundaries**: no import crosses a forbidden boundary in `docs/00_domain_map.md §三`. Common violations to grep for: `pipelines/` importing `repositories/`; any router handler using `Header` with a user-id alias instead of `Depends(get_user_id)` — grep with `grep -rn 'Header.*alias.*[Xx]-[Uu]ser' src/ragent/routers/` (catches both quote styles and case variants); `os.environ` read outside `utility/env.py` or `bootstrap/composition.py`; `services/` importing `routers/`.
-   - **Test coverage**: every new behaviour path has a corresponding test; no dead or unreachable code.
-   - **Code quality**: no duplication, no hidden coupling, no premature abstraction, no commented-out code.
-4. If findings require fixes, make them and re-stage.
-5. Report LGTM or list findings.
+2. Use the Agent tool to launch all three agents below concurrently in a single message. Pass each agent the full diff plus the doc(s) named in its section — each agent reads only what its dimension needs, not all three docs.
+
+### Agent 1: Plan & Spec Compliance
+
+- Read the relevant sections of `docs/00_plan.md` for the items being committed. Verify every objective in `00_plan.md` for this cycle is fully implemented — no partial or skipped items.
+- Read the relevant sections of `docs/00_spec.md`. Verify behaviour matches its contracts (HTTP shapes, error codes, streaming framing, DB schema, etc.).
+
+### Agent 2: Domain Boundaries
+
+- Read `docs/00_domain_map.md §三`. Verify no import crosses a forbidden boundary. Common violations to grep for: `pipelines/` importing `repositories/`; any router handler using `Header` with a user-id alias instead of `Depends(get_user_id)` — grep with `grep -rn 'Header.*alias.*[Xx]-[Uu]ser' src/ragent/routers/` (catches both quote styles and case variants); `os.environ` read outside `utility/env.py` or `bootstrap/composition.py`; `services/` importing `routers/`.
+
+### Agent 3: Test Coverage & Code Quality
+
+- Verify every new behaviour path has a corresponding test; no dead or unreachable code.
+- Verify no duplication, no hidden coupling, no premature abstraction, no commented-out code.
+
+3. Wait for all three agents to complete. Aggregate their findings; if any require fixes, make them and re-stage.
+4. Report LGTM or list findings.
 
 Then stamp:
 

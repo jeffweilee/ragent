@@ -91,7 +91,7 @@ fi
 # .pending_full_review, require /simplify --mode full + /review --mode full
 # before push is allowed.
 #
-# Stamp freshness: 30 minutes AND the stamp must be newer than the pending
+# Stamp freshness: 60 minutes AND the stamp must be newer than the pending
 # marker itself — this prevents a full-review run that predates the high-risk
 # commit from satisfying the gate (fix for review finding P1: timing).
 #
@@ -108,7 +108,7 @@ _consume_on_success() {
     fi
 }
 if [[ -s "$PENDING" ]]; then
-    FULL_FRESHNESS=1800  # 30 minutes
+    FULL_FRESHNESS=3600  # 60 minutes (matches pre-commit gate's window — see 00_rule.md)
     FULL_NOW=$(date +%s)
     FULL_CUTOFF=$(( FULL_NOW - FULL_FRESHNESS ))
     # The stamp must also be newer than the pending marker (commit time)
@@ -146,7 +146,7 @@ PY
   Before pushing, run BOTH skills AFTER your last high-risk commit:
     /simplify --mode full
     /review --mode full
-  (stamps must be within 30 min and newer than the commit). Got simplify:full=${SIM_FULL} review:full=${REV_FULL}."
+  (stamps must be within 60 min and newer than the commit). Got simplify:full=${SIM_FULL} review:full=${REV_FULL}."
     fi
     # Mark for consumption — actual rm happens in the EXIT trap after all
     # remaining pre-push checks (markdown/tests) also pass.
