@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Annotated
 
 import structlog
-from fastapi import APIRouter, Depends, File, Form, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Response, UploadFile
 from pydantic import BaseModel
 
 from ragent.auth.deps import get_user_id
@@ -58,6 +58,10 @@ def _to_attachment_info(att) -> AttachmentInfo:
         errorCode=att.error_code,
         errorReason=att.error_reason,
     )
+
+
+def _to_list_response(attachments) -> ListAttachmentsResponse:
+    return ListAttachmentsResponse(attachments=[_to_attachment_info(att) for att in attachments])
 
 
 def create_attachments_router(
@@ -160,10 +164,17 @@ def create_attachments_router(
         user_id = user_id or "anonymous"
         logger.info("attachments.list_request", thread_id=threadId, user_id=user_id)
         attachments = await repository.list_by_thread(threadId, create_user=user_id)
+        return _to_list_response(attachments)
 
-        return ListAttachmentsResponse(
-            attachments=[_to_attachment_info(att) for att in attachments]
-        )
+    @router.get("/mine", response_model=ListAttachmentsResponse, status_code=200)
+    async def list_my_attachments(
+        user_id: Annotated[str | None, Depends(get_user_id)] = None,
+    ) -> ListAttachmentsResponse:
+        """List every attachment uploaded by the requesting user, across threads."""
+        user_id = user_id or "anonymous"
+        logger.info("attachments.list_mine_request", user_id=user_id)
+        attachments = await repository.list_by_user(user_id)
+        return _to_list_response(attachments)
 
     @router.get("/{attachmentId}", response_model=AttachmentInfo, status_code=200)
     async def get_attachment(
@@ -178,5 +189,21 @@ def create_attachments_router(
             return problem(404, HttpErrorCode.ATTACHMENT_NOT_FOUND, "Attachment not found")
 
         return _to_attachment_info(att)
+
+    @router.delete("/{attachmentId}", status_code=204)
+    async def delete_attachment(
+        attachmentId: str,
+        user_id: Annotated[str | None, Depends(get_user_id)] = None,
+    ):
+        """Delete an attachment and its artifacts (storage + DB rows)."""
+        user_id = user_id or "anonymous"
+        deleted = await service.delete(attachmentId, create_user=user_id)
+        if not deleted:
+            logger.info(
+                "attachments.delete_not_found", attachment_id=attachmentId, user_id=user_id
+            )
+            return problem(404, HttpErrorCode.ATTACHMENT_NOT_FOUND, "Attachment not found")
+
+        return Response(status_code=204)
 
     return router

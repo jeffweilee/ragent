@@ -367,6 +367,83 @@ def test_post_attachments_upload_logs_rejected_size() -> None:
     assert rejected["log_level"] == "warning"
 
 
+def test_delete_attachment_returns_204_on_success() -> None:
+    """DELETE /chatagent/v3/attachments/{id} returns 204 when the service deletes."""
+    app, mocks = _build_test_app_with_mocked_attachments()
+    mocks["service"].delete = AsyncMock(return_value=True)
+
+    with TestClient(app) as client:
+        resp = client.delete(
+            "/chatagent/v3/attachments/att_1",
+            headers={"X-User-Id": "alice"},
+        )
+
+        assert resp.status_code == 204
+        mocks["service"].delete.assert_awaited_once_with("att_1", create_user="alice")
+
+
+def test_delete_attachment_returns_404_when_missing_or_not_owned() -> None:
+    """DELETE returns 404 problem-details when service.delete() returns False."""
+    app, mocks = _build_test_app_with_mocked_attachments()
+    mocks["service"].delete = AsyncMock(return_value=False)
+
+    with TestClient(app) as client:
+        resp = client.delete(
+            "/chatagent/v3/attachments/att_missing",
+            headers={"X-User-Id": "alice"},
+        )
+
+        assert resp.status_code == 404
+        assert resp.json()["error_code"] == "ATTACHMENT_NOT_FOUND"
+
+
+def test_get_attachments_mine_lists_by_user() -> None:
+    """GET /chatagent/v3/attachments/mine lists every attachment for the caller."""
+    app, mocks = _build_test_app_with_mocked_attachments()
+    mocks["repository"].list_by_user = AsyncMock(
+        return_value=[
+            AttachmentRow(
+                attachment_id="att_1",
+                thread_id="thread-1",
+                create_user="alice",
+                filename="test.txt",
+                mime_type="text/plain",
+                size_bytes=100,
+                status="READY",
+                created_at=_NOW,
+                updated_at=_NOW,
+            )
+        ]
+    )
+
+    with TestClient(app) as client:
+        resp = client.get(
+            "/chatagent/v3/attachments/mine",
+            headers={"X-User-Id": "alice"},
+        )
+
+        assert resp.status_code == 200
+        body = resp.json()
+        assert len(body["attachments"]) == 1
+        assert body["attachments"][0]["attachmentId"] == "att_1"
+        mocks["repository"].list_by_user.assert_awaited_once_with("alice")
+
+
+def test_get_attachments_mine_is_not_swallowed_by_attachment_id_route() -> None:
+    """'mine' must resolve to the dedicated route, not be parsed as an attachmentId."""
+    app, mocks = _build_test_app_with_mocked_attachments()
+    mocks["repository"].list_by_user = AsyncMock(return_value=[])
+
+    with TestClient(app) as client:
+        resp = client.get(
+            "/chatagent/v3/attachments/mine",
+            headers={"X-User-Id": "alice"},
+        )
+
+        assert resp.status_code == 200
+        mocks["repository"].get.assert_not_called()
+
+
 def test_get_attachments_logs_list_request() -> None:
     """GET attachments logs attachments.list_request with thread context."""
     app, mocks = _build_test_app_with_mocked_attachments()

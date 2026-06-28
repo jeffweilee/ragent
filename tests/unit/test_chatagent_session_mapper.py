@@ -36,6 +36,7 @@ def test_user_message_keeps_user_role_and_strips_hidden() -> None:
             "content": "What is X?",
             "createTime": None,
             "updateTime": None,
+            "attachments": None,
         }
     ]
 
@@ -61,6 +62,7 @@ def test_legacy_bare_context_block_is_stripped() -> None:
             "content": "What is X?",
             "createTime": None,
             "updateTime": None,
+            "attachments": None,
         }
     ]
 
@@ -261,3 +263,78 @@ def test_message_without_timestamps_yields_null_fields() -> None:
 
     assert out["messages"][0]["createTime"] is None
     assert out["messages"][0]["updateTime"] is None
+
+
+def test_message_with_attachments_block_surfaces_attachments_field() -> None:
+    # docs/spec/chat_attachments.md §8: session-history reads must parse
+    # <attachments> from the hidden preamble before it is stripped, so the
+    # client can render which attachment(s) a historical turn carried.
+    payload = _session(
+        [
+            {
+                "messageId": "m1",
+                "role": "user",
+                "content": (
+                    '<hidden>\n<attachments>[{"attachmentId":"att_1",'
+                    '"filename":"report.pdf","mimeType":"application/pdf",'
+                    '"sizeBytes":1024}]</attachments>\n<context>[]</context>\n</hidden>'
+                    "\n\nSummarize this"
+                ),
+            }
+        ]
+    )
+
+    out = map_session_payload(payload)
+
+    assert out["messages"][0]["content"] == "Summarize this"
+    assert out["messages"][0]["attachments"] == [
+        {
+            "attachmentId": "att_1",
+            "filename": "report.pdf",
+            "mimeType": "application/pdf",
+            "sizeBytes": 1024,
+        }
+    ]
+
+
+def test_message_without_attachments_block_yields_null_attachments_field() -> None:
+    payload = _session(
+        [
+            {
+                "messageId": "m1",
+                "role": "user",
+                "content": "<hidden>\n<context>[]</context>\n</hidden>\n\nWhat is X?",
+            }
+        ]
+    )
+
+    out = map_session_payload(payload)
+
+    assert out["messages"][0]["attachments"] is None
+
+
+def test_double_encoded_message_with_attachments_is_unwrapped_then_extracted() -> None:
+    # Same double-encoding artifact as content/sessionName (module docstring):
+    # the <attachments> tag must still be found after the JSON-string layer
+    # is decoded, not only after strip_machine_context runs.
+    real = (
+        '<hidden>\n<attachments>[{"attachmentId":"att_1","filename":"a.txt",'
+        '"mimeType":"text/plain","sizeBytes":4}]</attachments>\n<context>[]</context>'
+        "\n</hidden>\n\nWhat is X?"
+    )
+    payload = _session([{"messageId": "m1", "role": "user", "content": json.dumps(real)}])
+
+    out = map_session_payload(payload)
+
+    assert out["messages"][0]["content"] == "What is X?"
+    assert out["messages"][0]["attachments"][0]["attachmentId"] == "att_1"
+
+
+def test_non_string_content_yields_null_attachments_field() -> None:
+    # Mirrors the existing non-str content passthrough (content stays as-is);
+    # attachments extraction must not raise on a non-str content value.
+    payload = _session([{"messageId": "m1", "role": "user", "content": {"weird": "shape"}}])
+
+    out = map_session_payload(payload)
+
+    assert out["messages"][0]["attachments"] is None

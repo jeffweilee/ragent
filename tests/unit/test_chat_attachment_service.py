@@ -346,3 +346,107 @@ class TestChatAttachmentService:
 
         events = [e["event"] for e in logs]
         assert "chat_attachment.process_completed" in events
+
+    # ------------------------------------------------------------------
+    # delete() — single attachment + its artifacts
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_delete_removes_storage_objects_and_db_row(self, service_dependencies):
+        """Delete fetches the row+artifacts, deletes every storage key, then repo.delete."""
+        from ragent.repositories.attachment_repository import ArtifactRow
+
+        service_dependencies["attachment_repository"].get.return_value = _claimed_row()
+        service_dependencies["attachment_repository"].get_artifacts.return_value = [
+            ArtifactRow(
+                attachment_id="ATT001",
+                variant="complete",
+                storage_key="attachments/thread-1/ATT001/ast-complete",
+                content_type="text/markdown",
+                created_at=None,
+            ),
+            ArtifactRow(
+                attachment_id="ATT001",
+                variant="simplified",
+                storage_key="attachments/thread-1/ATT001/ast-simplified",
+                content_type="text/markdown",
+                created_at=None,
+            ),
+        ]
+        service = ChatAttachmentService(**service_dependencies)
+
+        result = await service.delete("ATT001", create_user="alice")
+
+        assert result is True
+        deleted_keys = {
+            call.args[0] for call in service_dependencies["document_store"].delete.call_args_list
+        }
+        assert deleted_keys == {
+            "attachments/thread-1/ATT001/raw",
+            "attachments/thread-1/ATT001/ast-complete",
+            "attachments/thread-1/ATT001/ast-simplified",
+        }
+        service_dependencies["attachment_repository"].delete.assert_called_once_with("ATT001")
+
+    @pytest.mark.asyncio
+    async def test_delete_returns_false_when_row_missing_or_not_owned(self, service_dependencies):
+        """Delete returns False (no exception) when repo.get yields None — missing or IDOR."""
+        service_dependencies["attachment_repository"].get.return_value = None
+        service = ChatAttachmentService(**service_dependencies)
+
+        result = await service.delete("ATT001", create_user="alice")
+
+        assert result is False
+        service_dependencies["attachment_repository"].delete.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_is_fail_soft_on_storage_delete_error(self, service_dependencies):
+        """A stale/missing S3 object must not block the DB row from being removed."""
+        service_dependencies["attachment_repository"].get.return_value = _claimed_row()
+        service_dependencies["attachment_repository"].get_artifacts.return_value = []
+        service_dependencies["document_store"].delete.side_effect = RuntimeError("not found")
+        service = ChatAttachmentService(**service_dependencies)
+
+        result = await service.delete("ATT001")
+
+        assert result is True
+        service_dependencies["attachment_repository"].delete.assert_called_once_with("ATT001")
+
+    # ------------------------------------------------------------------
+    # delete_by_thread() — cascade delete on session delete
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_delete_by_thread_deletes_every_attachment_in_thread(
+        self, service_dependencies
+    ):
+        """delete_by_thread lists (no create_user filter) then deletes each row
+        without re-fetching it via repo.get (avoids an N+1 SELECT per row)."""
+        rows = [_claimed_row(attachment_id="ATT001"), _claimed_row(attachment_id="ATT002")]
+        service_dependencies["attachment_repository"].list_by_thread.return_value = rows
+        service_dependencies["attachment_repository"].get_artifacts.return_value = []
+        service = ChatAttachmentService(**service_dependencies)
+
+        await service.delete_by_thread("thread-1")
+
+        service_dependencies["attachment_repository"].list_by_thread.assert_called_once_with(
+            "thread-1", limit=1000
+        )
+        assert service_dependencies["attachment_repository"].delete.call_count == 2
+        service_dependencies["attachment_repository"].get.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_by_thread_is_fail_soft_per_attachment(self, service_dependencies):
+        """One attachment's delete failing must not block deleting the rest."""
+        rows = [_claimed_row(attachment_id="ATT001"), _claimed_row(attachment_id="ATT002")]
+        service_dependencies["attachment_repository"].list_by_thread.return_value = rows
+        service_dependencies["attachment_repository"].get_artifacts.side_effect = RuntimeError(
+            "db down"
+        )
+        service = ChatAttachmentService(**service_dependencies)
+
+        with structlog.testing.capture_logs() as logs:
+            await service.delete_by_thread("thread-1")
+
+        events = [e["event"] for e in logs]
+        assert events.count("chat_attachment.delete_by_thread_failed") == 2

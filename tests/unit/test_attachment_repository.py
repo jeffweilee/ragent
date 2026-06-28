@@ -225,6 +225,58 @@ async def test_list_by_thread_omits_create_user_filter_when_not_provided():
 
 
 # ---------------------------------------------------------------------------
+# list_by_user
+# ---------------------------------------------------------------------------
+
+
+async def test_list_by_user_returns_rows():
+    rows = [_row(attachment_id=f"ATT{i}", create_user="alice") for i in range(3)]
+    engine, _ = _mock_engine(rows=rows)
+    repo = AttachmentRepository(engine)
+    results = await repo.list_by_user("alice")
+    assert len(results) == 3
+    assert all(isinstance(r, AttachmentRow) for r in results)
+
+
+async def test_list_by_user_filters_by_create_user():
+    engine, conn = _mock_engine(rows=[])
+    repo = AttachmentRepository(engine)
+    await repo.list_by_user("alice")
+    sql_text = str(conn.execute.call_args[0][0])
+    params = conn.execute.call_args[0][1]
+    assert "create_user" in sql_text
+    assert params["create_user"] == "alice"
+
+
+async def test_list_by_user_after_cursor_filters():
+    row = _row(attachment_id="ATT5", create_user="alice")
+    engine, conn = _mock_engine(rows=[row])
+    repo = AttachmentRepository(engine)
+    results = await repo.list_by_user("alice", after="ATT9", limit=5)
+    assert results[0].attachment_id == "ATT5"
+    sql_text = str(conn.execute.call_args[0][0])
+    assert "< :after" in sql_text
+
+
+# ---------------------------------------------------------------------------
+# delete
+# ---------------------------------------------------------------------------
+
+
+async def test_delete_executes_artifact_and_attachment_deletes():
+    engine, conn = _mock_engine()
+    repo = AttachmentRepository(engine)
+    await repo.delete("ATT001")
+    assert conn.execute.call_count == 2
+    first_sql = str(conn.execute.call_args_list[0][0][0])
+    second_sql = str(conn.execute.call_args_list[1][0][0])
+    assert "chat_attachment_artifacts" in first_sql
+    assert "chat_attachments" in second_sql and "chat_attachment_artifacts" not in second_sql
+    assert conn.execute.call_args_list[0][0][1] == {"id": "ATT001"}
+    assert conn.execute.call_args_list[1][0][1] == {"id": "ATT001"}
+
+
+# ---------------------------------------------------------------------------
 # update_status
 # ---------------------------------------------------------------------------
 

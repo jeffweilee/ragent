@@ -125,14 +125,19 @@ def _map_message(raw: dict[str, Any]) -> dict[str, Any]:
     meta = raw.get("messageMeta")
     langgraph_node = meta.get("langgraph_node") if isinstance(meta, dict) else None
     content = raw.get("content")
+    # Unwrap once and reuse for both attachment extraction and the content
+    # strip below — extraction must run on the un-stripped block (it reads
+    # the <attachments> tag strip_machine_context removes).
+    unwrapped = _unwrap_json_string(content) if isinstance(content, str) else None
     # `or "assistant"`: a present-but-null `role` must fall back too, not just a
     # missing key — keeps a non-empty string for node_to_role.
     return {
         "id": raw.get("messageId") or "",
         "role": node_to_role(raw.get("role") or "assistant", langgraph_node),
-        "content": _clean_text(content) if isinstance(content, str) else content,
+        "content": strip_machine_context(unwrapped) if unwrapped is not None else content,
         # Pass the upstream persistence timestamps through so the client can
         # render per-message create/update times (null when upstream omits them).
         "createTime": raw.get("createTime"),
         "updateTime": raw.get("updateTime"),
+        "attachments": _extract_attachments_from_hidden(unwrapped) if unwrapped is not None else None,
     }

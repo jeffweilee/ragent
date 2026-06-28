@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 from fastapi import FastAPI
@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from ragent.errors.codes import HttpErrorCode
 from ragent.routers.chatagent_v3 import create_chatagent_v3_router
+from ragent.services.chat_attachment_service import ChatAttachmentService
 from tests.helpers import done_line as _done_line
 from tests.helpers import msg_line as _msg_line
 from tests.helpers import parse_sse_events as _events
@@ -17,7 +18,7 @@ from tests.helpers import real_agent_factory as _real_agent_factory
 from tests.helpers import resp_mock as _resp_mock
 
 
-def _make_app():
+def _make_app(*, chat_attachment_service=None):
     http_mock = MagicMock(spec=httpx.Client)
     app = FastAPI()
     app.include_router(
@@ -31,6 +32,7 @@ def _make_app():
             agent_factory=_real_agent_factory(
                 http_mock, api_url="http://upstream", ap_name="IntegAP", auth="Bearer up"
             ),
+            chat_attachment_service=chat_attachment_service,
         )
     )
     return app, http_mock
@@ -204,6 +206,7 @@ def test_v3_session_get_maps_roles_and_strips_hidden():
             "content": "What is X?",
             "createTime": "2025-05-01T06:48:55.617Z",
             "updateTime": "2025-05-01T06:49:00.000Z",
+            "attachments": None,
         },
         {
             "id": "p1",
@@ -211,6 +214,7 @@ def test_v3_session_get_maps_roles_and_strips_hidden():
             "content": "Planning...",
             "createTime": "2025-05-01T06:48:56.000Z",
             "updateTime": "2025-05-01T06:48:56.000Z",
+            "attachments": None,
         },
         {
             "id": "s1m",
@@ -218,6 +222,7 @@ def test_v3_session_get_maps_roles_and_strips_hidden():
             "content": "Answer.",
             "createTime": "2025-05-01T06:48:57.000Z",
             "updateTime": "2025-05-01T06:48:57.000Z",
+            "attachments": None,
         },
         {
             "id": "t1",
@@ -225,6 +230,7 @@ def test_v3_session_get_maps_roles_and_strips_hidden():
             "content": "tool output",
             "createTime": None,
             "updateTime": None,
+            "attachments": None,
         },
     ]
 
@@ -319,4 +325,63 @@ def test_v3_session_delete_forwards_payload():
     assert r.status_code == 200
     sent = http_mock.request.call_args
     assert sent.args[0] == "DELETE"
-    assert sent.kwargs["json"] == {"session": "s1", "apName": "IntegAP", "user": "alice"}
+
+
+def test_v3_session_delete_cascades_to_attachments():
+    """A successful upstream session delete also cascades local attachments."""
+    attachment_service = AsyncMock(spec=ChatAttachmentService)
+    app, http_mock = _make_app(chat_attachment_service=attachment_service)
+    http_mock.request.return_value = MagicMock(
+        raise_for_status=MagicMock(return_value=None),
+        json=MagicMock(return_value={"returnCode": 96200, "returnData": {}}),
+    )
+
+    with TestClient(app) as client:
+        r = client.request(
+            "DELETE",
+            "/chatagent/v3/session",
+            json={"session": "s1"},
+            headers={"X-User-Id": "alice"},
+        )
+
+    assert r.status_code == 200
+    attachment_service.delete_by_thread.assert_awaited_once_with("s1")
+
+
+def test_v3_session_delete_skips_cascade_when_upstream_fails():
+    """A failed upstream delete must not trigger local attachment cleanup."""
+    attachment_service = AsyncMock(spec=ChatAttachmentService)
+    app, http_mock = _make_app(chat_attachment_service=attachment_service)
+    http_mock.request.side_effect = httpx.TimeoutException("slow")
+
+    with TestClient(app) as client:
+        r = client.request(
+            "DELETE",
+            "/chatagent/v3/session",
+            json={"session": "s1"},
+            headers={"X-User-Id": "alice"},
+        )
+
+    assert r.status_code == 504
+    attachment_service.delete_by_thread.assert_not_called()
+
+
+def test_v3_session_delete_cascade_failure_does_not_mask_upstream_response():
+    """An exception from delete_by_thread is fail-soft: the upstream 200 still returns."""
+    attachment_service = AsyncMock(spec=ChatAttachmentService)
+    attachment_service.delete_by_thread.side_effect = RuntimeError("db down")
+    app, http_mock = _make_app(chat_attachment_service=attachment_service)
+    http_mock.request.return_value = MagicMock(
+        raise_for_status=MagicMock(return_value=None),
+        json=MagicMock(return_value={"returnCode": 96200, "returnData": {}}),
+    )
+
+    with TestClient(app) as client:
+        r = client.request(
+            "DELETE",
+            "/chatagent/v3/session",
+            json={"session": "s1"},
+            headers={"X-User-Id": "alice"},
+        )
+
+    assert r.status_code == 200

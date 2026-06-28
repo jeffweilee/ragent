@@ -31,6 +31,7 @@ from ragent.services.chatagent_session import map_session_list_payload, map_sess
 from ragent.utility.id_gen import new_id
 
 if TYPE_CHECKING:
+    from ragent.services.chat_attachment_service import ChatAttachmentService
     from ragent.services.document_artifact_resolver import DocumentArtifactResolver
 
 logger = structlog.get_logger(__name__)
@@ -64,6 +65,7 @@ def create_chatagent_v3_router(
     stream_poll_interval: float = 0.05,
     stream_producer_workers: int = 64,
     document_artifact_resolver: DocumentArtifactResolver | None = None,
+    chat_attachment_service: ChatAttachmentService | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/chatagent/v3")
 
@@ -310,7 +312,7 @@ def create_chatagent_v3_router(
             x_user_id: Annotated[str | None, Depends(get_user_id)] = None,
         ) -> Response:
             user_id = x_user_id or "anonymous"
-            return await proxy_write(
+            response = await proxy_write(
                 http_client=http_client,
                 method="DELETE",
                 url=chatagent_session_api_url,
@@ -319,6 +321,20 @@ def create_chatagent_v3_router(
                 timeout=timeout,
                 log_prefix="v3.session.delete",
             )
+            # Cascade the local attachment rows/artifacts once the upstream
+            # session is confirmed gone. Fail-soft and logged only — a cleanup
+            # error here must never mask the (already-sent) upstream result.
+            if chat_attachment_service is not None and response.status_code < 400:
+                try:
+                    await chat_attachment_service.delete_by_thread(body.session)
+                except Exception as exc:
+                    logger.error(
+                        "chatagent_v3.session_delete_attachment_cleanup_failed",
+                        thread_id=body.session,
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+            return response
 
     return router
 

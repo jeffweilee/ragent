@@ -141,22 +141,12 @@ class AttachmentRepository:
         after: str | None = None,
         limit: int = 50,
     ) -> list[AttachmentRow]:
-        user_clause = " AND create_user = :create_user" if create_user else ""
-        cursor_clause = " AND attachment_id < :after" if after else ""
-        params: dict = {"thread_id": thread_id, "limit": limit}
+        where_sql = "thread_id = :thread_id"
+        params: dict = {"thread_id": thread_id}
         if create_user:
+            where_sql += " AND create_user = :create_user"
             params["create_user"] = create_user
-        if after:
-            params["after"] = after
-        rows = await self._fetch_all(
-            text(
-                f"SELECT * FROM chat_attachments WHERE thread_id = :thread_id"
-                f"{user_clause}{cursor_clause}"
-                " ORDER BY created_at DESC, attachment_id DESC LIMIT :limit"
-            ),
-            params,
-        )
-        return [AttachmentRow.from_mapping(r) for r in rows]
+        return await self._list_attachments(where_sql, params, after, limit)
 
     async def update_status(
         self,
@@ -178,6 +168,44 @@ class AttachmentRepository:
                 "error_reason": error_reason[:255] if error_reason else None,
             },
         )
+
+    async def list_by_user(
+        self,
+        create_user: str,
+        after: str | None = None,
+        limit: int = 50,
+    ) -> list[AttachmentRow]:
+        return await self._list_attachments(
+            "create_user = :create_user", {"create_user": create_user}, after, limit
+        )
+
+    async def _list_attachments(
+        self, where_sql: str, params: dict, after: str | None, limit: int
+    ) -> list[AttachmentRow]:
+        cursor_clause = " AND attachment_id < :after" if after else ""
+        params = {**params, "limit": limit}
+        if after:
+            params["after"] = after
+        rows = await self._fetch_all(
+            text(
+                f"SELECT * FROM chat_attachments WHERE {where_sql}{cursor_clause}"
+                " ORDER BY created_at DESC, attachment_id DESC LIMIT :limit"
+            ),
+            params,
+        )
+        return [AttachmentRow.from_mapping(r) for r in rows]
+
+    async def delete(self, attachment_id: str) -> None:
+        """Delete an attachment row and its artifacts (no physical FK, §00_rule.md)."""
+        async with self._engine.begin() as conn:
+            await conn.execute(
+                text("DELETE FROM chat_attachment_artifacts WHERE attachment_id = :id"),
+                {"id": attachment_id},
+            )
+            await conn.execute(
+                text("DELETE FROM chat_attachments WHERE attachment_id = :id"),
+                {"id": attachment_id},
+            )
 
     async def claim_for_processing(self, attachment_id: str) -> AttachmentRow | None:
         """Pre-state SELECT + atomic conditional UPDATE, UPLOADED→PROCESSING.

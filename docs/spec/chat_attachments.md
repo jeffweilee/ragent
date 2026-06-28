@@ -271,13 +271,15 @@ Two paths need attachment-specific code; a third needs none:
    response frames via `XRANGE` — carries attachments correctly with zero
    attachment-aware code; the existing resumable-stream mechanism is
    already content-agnostic.
-3. **Session history** — `services/chatagent_session.py` gains
-   `_extract_attachments_from_hidden()`, which **must run before**
+3. **Session history** — `services/chatagent_session.py::_map_message()` calls
+   `_extract_attachments_from_hidden()` **before**
    `utility/hidden.py::strip_machine_context()` — that helper removes the
    entire `<hidden>…</hidden>` block (it doesn't single out `<attachments>`),
    so the extraction step has to read the block first; `strip_machine_context`
    then deletes the whole wrapper from the rendered text exactly as it does
-   today for `<context>`/`<state>`.
+   today for `<context>`/`<state>`. `_map_message()` decodes the `<hidden>`
+   block once and reuses it for both steps, so `GET /chatagent/v3/session`
+   responses carry each user turn's `attachments` array (T-CAT.W11).
 
 `GET /chatagent/v3/attachments` and `GET /chatagent/v3/attachments/{attachmentId}`
 scope reads to the requesting user: `AttachmentRepository.get()` and
@@ -289,6 +291,37 @@ indistinguishable from a missing row — both yield `None`/empty and the
 existing 404/empty-list response — so no separate authorization branch is
 needed in the router.
 
+### 8.1 Deletion & cross-thread listing (T-CAT.W11)
+
+- **`DELETE /chatagent/v3/attachments/{attachmentId}`** — `ChatAttachmentService.delete()`
+  first calls `AttachmentRepository.get(attachment_id, create_user=user_id)`;
+  a missing or foreign-owned row returns `404 ATTACHMENT_NOT_FOUND` (same
+  ownership-via-`create_user` scoping as the GET endpoints — a foreign-owned
+  row is indistinguishable from a missing one). On a match, every artifact's
+  `storage_key` is deleted from MinIO **fail-soft per key** (a storage error
+  is logged and does not block the DB delete), then
+  `AttachmentRepository.delete()` removes both `chat_attachment_artifacts`
+  rows and the `chat_attachments` row in one transaction (two `DELETE`
+  statements — no physical FK, per `docs/00_rule.md`). Success returns `204`
+  with no body.
+- **`GET /chatagent/v3/attachments/mine`** — `AttachmentRepository.list_by_user()`
+  lists every attachment the requesting user has uploaded, across all
+  threads (unlike `GET /chatagent/v3/attachments`, which is thread-scoped).
+  Registered before `GET /chatagent/v3/attachments/{attachmentId}` in the
+  router so the literal `mine` path segment isn't swallowed by the
+  path-param route.
+- **Session-delete cascade** — `DELETE /chatagent/v3/session` (the existing
+  upstream session-delete proxy) now also calls
+  `ChatAttachmentService.delete_by_thread(session)` once the upstream delete
+  succeeds (`response.status_code < 400`). `delete_by_thread()` lists every
+  attachment for the thread (single page, `limit=1000` — no cursor
+  pagination, no precedent elsewhere for paginated cascade deletes) and
+  deletes each one the same fail-soft way as the single-attachment path,
+  with no `create_user` filter (the whole session is going away). A failed
+  upstream delete skips the cascade entirely; a cascade failure (storage or
+  DB) is caught, logged, and never masks the already-built upstream
+  response — the proxy's status code is what the caller sees either way.
+
 ## 9. Error codes
 
 | Code | HTTP | Trigger |
@@ -296,7 +329,7 @@ needed in the router.
 | `ATTACHMENT_MIME_UNSUPPORTED` | 415 | MIME not in `AttachmentMime` allow-list (after extension fallback) |
 | `ATTACHMENT_TOO_LARGE` | 413 | size exceeds cap |
 | `ATTACHMENT_PARSE_FAILED` | 422 | `chat_attachment` pipeline raised during AST build |
-| `ATTACHMENT_NOT_FOUND` | 404 | `GET /chatagent/v3/attachments/{id}` on unknown id (T-CAT.W2) |
+| `ATTACHMENT_NOT_FOUND` | 404 | `GET`/`DELETE /chatagent/v3/attachments/{id}` on unknown or foreign-owned id (T-CAT.W2, T-CAT.W11) |
 | `ATTACHMENT_FEATURE_DISABLED` | n/a — `TaskErrorCode`, persisted to `chat_attachments.error_code` | worker picked up `attachment.process` on a process with `RAGENT_KEK_BASE64` unset (§7) |
 
 ## 10. DB schema (`015_drop_chat_attachment_artifacts_fk.sql`)

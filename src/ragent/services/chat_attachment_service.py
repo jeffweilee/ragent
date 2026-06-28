@@ -16,7 +16,7 @@ from ragent.utility.id_gen import new_id
 if TYPE_CHECKING:
     from ragent.bootstrap.dispatcher import TaskiqDispatcher
     from ragent.pipelines.chat_attachment.pipeline import ChatAttachmentPipeline
-    from ragent.repositories.attachment_repository import AttachmentRepository
+    from ragent.repositories.attachment_repository import AttachmentRepository, AttachmentRow
     from ragent.security.ast_cipher import ASTCipher
     from ragent.storage.document_store import DocumentStore
 
@@ -30,6 +30,10 @@ ATTACHMENT_MAX_SIZE_BYTES_DEFAULT = 50 * 1024 * 1024
 
 class FileTooLarge(Exception):
     pass
+
+
+def _raw_storage_key(thread_id: str, attachment_id: str) -> str:
+    return f"attachments/{thread_id}/{attachment_id}/raw"
 
 
 class ChatAttachmentService:
@@ -107,7 +111,7 @@ class ChatAttachmentService:
             await anyio.to_thread.run_sync(
                 partial(
                     self._doc_store.put,
-                    object_key=f"attachments/{thread_id}/{attachment_id}/raw",
+                    object_key=_raw_storage_key(thread_id, attachment_id),
                     data=file_bytes,
                     content_type=mime_type.value,
                 )
@@ -159,7 +163,7 @@ class ChatAttachmentService:
         stage = "fetch_raw"
         try:
             file_bytes = await anyio.to_thread.run_sync(
-                self._doc_store.get, f"attachments/{thread_id}/{attachment_id}/raw"
+                self._doc_store.get, _raw_storage_key(thread_id, attachment_id)
             )
 
             mime = AttachmentMime(claimed.mime_type)
@@ -229,6 +233,65 @@ class ChatAttachmentService:
             "chat_attachment.process_completed",
             attachment_id=attachment_id,
             thread_id=thread_id,
+        )
+
+    async def delete(self, attachment_id: str, create_user: str | None = None) -> bool:
+        """Delete an attachment's storage objects and DB rows.
+
+        Returns False when the row is missing or not owned by create_user
+        (caller maps that to 404) — never raises for a missing/foreign row.
+        """
+        row = await self._repo.get(attachment_id, create_user=create_user)
+        if row is None:
+            return False
+
+        await self._delete_row(row)
+        return True
+
+    async def delete_by_thread(self, thread_id: str) -> None:
+        """Cascade-delete every attachment in a thread (e.g. on session delete).
+
+        No create_user filter — the whole session is going away regardless
+        of who uploaded what. Fail-soft per attachment: one bad row must not
+        block cleanup of the rest.
+        """
+        attachments = await self._repo.list_by_thread(thread_id, limit=1000)
+        for row in attachments:
+            try:
+                await self._delete_row(row)
+            except Exception as exc:
+                logger.error(
+                    "chat_attachment.delete_by_thread_failed",
+                    attachment_id=row.attachment_id,
+                    thread_id=thread_id,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+
+    async def _delete_row(self, row: AttachmentRow) -> None:
+        """Delete one already-fetched row's storage objects + DB rows.
+
+        Storage-delete failures are logged and skipped (fail-soft): a stale
+        S3 object must not block the row from being removed.
+        """
+        artifacts = await self._repo.get_artifacts(row.attachment_id)
+        storage_keys = [_raw_storage_key(row.thread_id, row.attachment_id)]
+        storage_keys.extend(artifact.storage_key for artifact in artifacts)
+        for key in storage_keys:
+            try:
+                await anyio.to_thread.run_sync(self._doc_store.delete, key)
+            except Exception as exc:
+                logger.warning(
+                    "chat_attachment.delete_storage_failed",
+                    attachment_id=row.attachment_id,
+                    storage_key=key,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+
+        await self._repo.delete(row.attachment_id)
+        logger.info(
+            "chat_attachment.deleted", attachment_id=row.attachment_id, thread_id=row.thread_id
         )
 
     @staticmethod

@@ -895,6 +895,35 @@ curl "http://localhost:8000/chatagent/v3/attachments?threadId=thread_1" \
   -H "X-User-Id: alice"
 ```
 
+### `GET /chatagent/v3/attachments/mine` — List every attachment for the caller
+
+Lists every attachment the requesting user has uploaded, across all threads (unlike `GET /chatagent/v3/attachments`, which is scoped to a single thread). Registered before `GET /chatagent/v3/attachments/{attachmentId}` so the literal `mine` path segment resolves to this route rather than being parsed as an `attachmentId`.
+
+**Response (200 OK):** same shape as `GET /chatagent/v3/attachments` above.
+
+**Example:**
+```bash
+curl "http://localhost:8000/chatagent/v3/attachments/mine" \
+  -H "X-User-Id: alice"
+```
+
+### `DELETE /chatagent/v3/attachments/{attachmentId}` — Delete an attachment
+
+Deletes an attachment's storage objects (raw file + both AST artifacts) and DB rows. Scoped to the requesting user (`X-User-Id`, defaulting to `anonymous`) — a missing or foreign-owned `attachmentId` returns the same `404` as the GET endpoints. Storage-delete failures are fail-soft per object (logged, not blocking) so a stale S3 object can never prevent the DB row from being removed.
+
+**Response:** `204 No Content` on success.
+
+**Errors:**
+- `404 ATTACHMENT_NOT_FOUND` — unknown `attachmentId`, or owned by a different user.
+
+**Example:**
+```bash
+curl -X DELETE "http://localhost:8000/chatagent/v3/attachments/01J9ABCDEFGHJKMNPQRSTVWXYZ" \
+  -H "X-User-Id: alice"
+```
+
+**Note:** `DELETE /chatagent/v3/session` (existing session-delete proxy) also cascades this same deletion to every attachment in the session, once the upstream session delete succeeds — no separate call is needed when deleting a whole session.
+
 ---
 
 ## Operational Endpoints (`/ops/v1`)
