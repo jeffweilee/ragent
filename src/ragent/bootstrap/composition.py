@@ -401,7 +401,7 @@ def build_container() -> Container:
     # needs `engine` (always present, MARIADB_DSN is a hard _require()), so it
     # is built unconditionally — the worker uses it to mark a row FAILED even
     # when the rest of the feature is disabled (no RAGENT_KEK_BASE64). The
-    # crypto/service stack below stays gated: KeyManager.from_env() raises
+    # crypto/service stack below stays gated: constructing KeyManager raises
     # KeyManagerError on an empty/missing KEK, so constructing it
     # unconditionally would break every existing deployment that hasn't
     # provisioned the attachment subsystem's keys yet.
@@ -410,7 +410,8 @@ def build_container() -> Container:
     attachment_repository = AttachmentRepository(engine=engine)
     chat_attachment_service: ChatAttachmentService | None = None
     document_artifact_resolver: DocumentArtifactResolver | None = None
-    if os.environ.get("RAGENT_KEK_BASE64"):
+    kek_b64 = os.environ.get("RAGENT_KEK_BASE64")
+    if kek_b64:
         from ragent.bootstrap.broker import broker as taskiq_broker
         from ragent.bootstrap.dispatcher import TaskiqDispatcher
         from ragent.pipelines.chat_attachment.pipeline import ChatAttachmentPipeline
@@ -420,7 +421,10 @@ def build_container() -> Container:
         from ragent.services.document_artifact_resolver import DocumentArtifactResolver
         from ragent.storage.minio_document_store import MinIODocumentStore
 
-        key_manager = KeyManager.from_env()
+        key_manager = KeyManager(
+            kek_b64=kek_b64,
+            encrypted_dek_b64=os.environ.get("RAGENT_ENCRYPTED_DEK_BASE64", ""),
+        )
         ast_cipher = ASTCipher(key_manager)
         attachment_document_store = MinIODocumentStore(registry=minio_registry)
         document_artifact_resolver = DocumentArtifactResolver(

@@ -89,10 +89,10 @@ Both AST variants are encrypted before being written to storage.
 - `RAGENT_KEK_BASE64` — base64 KEK (32 bytes), injected at process start.
 - `RAGENT_ENCRYPTED_DEK_BASE64` — the DEK, AES-Key-Wrapped under the KEK,
   generated offline, injected at process start.
-- `KeyManager.from_env()` unwraps the DEK exactly once at startup
-  (`security/key_manager.py`); the DEK lives in memory for the process
-  lifetime. No per-artifact key generation, no `encrypted_dek` field stored
-  alongside each artifact.
+- The composition root reads both env vars and constructs `KeyManager`,
+  which unwraps the DEK exactly once at startup (`security/key_manager.py`);
+  the DEK lives in memory for the process lifetime. No per-artifact key
+  generation, no `encrypted_dek` field stored alongside each artifact.
 - **Generation/rotation** — `scripts/gen_attachment_keys.py` (offline CLI,
   never an HTTP endpoint — secret material must never enter a request/response
   body or be observable to a proxy/log/APM):
@@ -109,7 +109,7 @@ Both AST variants are encrypted before being written to storage.
   Both subcommands print `RAGENT_KEK_BASE64=...` / `RAGENT_ENCRYPTED_DEK_BASE64=...`
   lines to stdout only. Paste them into `.env` or a secret manager directly;
   update both env vars together and restart — partial rotation (only one var
-  updated) breaks `KeyManager.from_env()` on next boot.
+  updated) breaks `KeyManager` construction on next boot.
 
 **Cipher** — AES-256-GCM, one random 12-byte nonce per artifact
 (`security/ast_cipher.py`). Storage envelope:

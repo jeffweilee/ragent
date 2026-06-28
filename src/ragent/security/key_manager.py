@@ -9,7 +9,6 @@ never leak past this module.
 from __future__ import annotations
 
 import base64
-import os
 
 from cryptography.hazmat.primitives.keywrap import (
     InvalidUnwrap,
@@ -36,13 +35,6 @@ class KeyManager:
     @property
     def dek(self) -> bytes:
         return self._dek
-
-    @classmethod
-    def from_env(cls) -> KeyManager:
-        return cls(
-            kek_b64=os.environ.get("RAGENT_KEK_BASE64", ""),
-            encrypted_dek_b64=os.environ.get("RAGENT_ENCRYPTED_DEK_BASE64", ""),
-        )
 
     @staticmethod
     def wrap(kek_b64: str, dek: bytes) -> str:

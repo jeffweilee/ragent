@@ -56,17 +56,6 @@ def test_key_manager_malformed_base64_raises():
         KeyManager(kek_b64="not-valid-base64!!!", encrypted_dek_b64="also-not-valid!!!")
 
 
-def test_key_manager_from_env(monkeypatch):
-    """from_env() reads RAGENT_KEK_BASE64 + RAGENT_ENCRYPTED_DEK_BASE64."""
-    kek, dek, wrapped_dek = _make_kek_and_wrapped_dek()
-    monkeypatch.setenv("RAGENT_KEK_BASE64", base64.b64encode(kek).decode())
-    monkeypatch.setenv("RAGENT_ENCRYPTED_DEK_BASE64", base64.b64encode(wrapped_dek).decode())
-
-    manager = KeyManager.from_env()
-
-    assert manager.dek == dek
-
-
 def test_key_manager_dek_immutable_across_calls():
     """The same KeyManager instance must return the same dek bytes (process-wide)."""
     kek, dek, wrapped_dek = _make_kek_and_wrapped_dek()
