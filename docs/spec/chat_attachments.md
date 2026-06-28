@@ -11,6 +11,88 @@ reference its content on the current turn and on every later turn, across all
 three message-reconstruction paths (live POST, Redis reconnect, session
 history).
 
+### 1.1 Use Cases
+
+**UC1 — Upload & background processing.**
+As a user in a chat session, I want to attach large files (PDF, DOCX, PPTX)
+without blocking the UI, so I can keep chatting while processing happens in
+the background. Full user story, state machine, and sequence diagram: §7.
+
+**UC2 — Reference an attachment across turns.**
+As a user, once an attachment is `READY` I want the agent to see its content
+on the current turn and on every later turn — including after a stream
+reconnect or when reviewing session history — without re-uploading. The
+`<attachments>` block is folded into every outbound live-POST request; a
+dropped SSE connection resumes via Redis replay with zero attachment-aware
+code; `GET /chatagent/v3/session` reconstructs the same `attachments` array
+per turn from the stored `<hidden>` block (§8).
+
+**UC3 — Browse & poll attachments.**
+As a user, I want to see what I've attached to a thread, or across all my
+threads, and check whether processing finished.
+`GET /chatagent/v3/attachments?threadId=...` lists one thread's attachments;
+`GET /chatagent/v3/attachments/mine` lists everything the caller has ever
+uploaded, across threads (§11).
+
+**UC4 — Delete an attachment, or a whole session.**
+As a user, I want to remove an attachment I no longer need, or have all of a
+session's attachments cleaned up automatically when I delete the session.
+`DELETE /chatagent/v3/attachments/{id}` removes the raw file + both AST
+artifacts + DB rows; `DELETE /chatagent/v3/session` cascades the same cleanup
+to every attachment on that session once the upstream delete succeeds — no
+separate call needed (§8.1).
+
+### 1.2 Architecture
+
+Component view — request-time vs. worker-time responsibilities:
+
+```mermaid
+flowchart TD
+    Browser["Browser / Client"]
+    Router["Router<br/>routers/attachments.py"]
+    Service["ChatAttachmentService"]
+    Repo["AttachmentRepository"]
+    Store[("DocumentStore Protocol<br/>→ MinIO")]
+    DB[("MariaDB<br/>chat_attachments /<br/>chat_attachment_artifacts")]
+    Dispatcher["TaskiqDispatcher"]
+    Worker["attachment.process<br/>ragent.worker"]
+    Unprotect["UnprotectClient<br/>optional, fail-soft"]
+    Pipeline["chat_attachment pipeline<br/>AST split: complete + simplified"]
+    Cipher["ASTCipher<br/>AES-256-GCM"]
+    KeyMgr["KeyManager<br/>unwraps DEK once at boot"]
+    Resolver["DocumentArtifactResolver"]
+    Agent["chat turn<br/>routers/chatagent_v3.py"]
+
+    Browser -->|"POST /upload"| Router
+    Router -->|"PUT raw bytes"| Store
+    Router -->|"INSERT UPLOADED"| Repo
+    Repo --> DB
+    Router -->|"enqueue"| Dispatcher
+    Dispatcher --> Worker
+    Worker -->|"claim PROCESSING"| Repo
+    Worker -->|"GET raw bytes"| Store
+    Worker -.->|"binary MIMEs only"| Unprotect
+    Worker --> Pipeline
+    Pipeline --> Cipher
+    KeyMgr -.->|".dek only (ISP)"| Cipher
+    Cipher -->|"PUT encrypted artifacts x2"| Store
+    Worker -->|"add_artifact x2, status=READY"| Repo
+    Agent -->|"resolve attachment_ids"| Resolver
+    Resolver -->|"GET encrypted artifact"| Store
+    Resolver -->|"decrypt"| Cipher
+```
+
+Design principles already enforced by this layout:
+
+- **DIP** — `ChatAttachmentService`/`DocumentArtifactResolver` depend on the
+  `DocumentStore` Protocol, never on MinIO directly (§6).
+- **SRP** — the pipeline (§4) only builds plaintext AST; encryption (§5) and
+  persistence are the service's job.
+- **OCP** — `ARTIFACT_CONTENT_TYPE` (§2) is a lookup table; a new format adds
+  an entry, never a branch.
+- **ISP** — `ASTCipher` depends only on `KeyManager.dek` (§5), never the KEK
+  or the wrap/unwrap mechanics.
+
 ## 2. MIME allow-list
 
 Six formats are supported for chat attachments (`AttachmentMime` enum):
@@ -256,6 +338,19 @@ the same way `<hidden>` already is):
 {user message}
 ```
 
+### Reconstruction Flow Diagram
+
+```mermaid
+flowchart LR
+    A["attachment_ids<br/>on a turn"] --> B{"Which path?"}
+    B -->|"1. Live POST"| C["chatagent_v3 resolves ids,<br/>builds &lt;attachments&gt; block,<br/>folds into outbound message"]
+    B -->|"2. Redis reconnect"| D["XRANGE replays buffered<br/>response frames only —<br/>zero attachment-aware code"]
+    B -->|"3. Session history"| E["_map_message extracts<br/>attachments BEFORE<br/>strip_machine_context runs"]
+    C --> F["Agent sees metadata in<br/>&lt;hidden&gt;&lt;attachments&gt;"]
+    D --> G["Response stream never<br/>echoes &lt;hidden&gt; back anyway"]
+    E --> H["GET /session response<br/>carries attachments[] per turn"]
+```
+
 Two paths need attachment-specific code; a third needs none:
 
 1. **Live POST** — `/chatagent/v3` resolves `attachment_ids` → builds the
@@ -292,6 +387,23 @@ existing 404/empty-list response — so no separate authorization branch is
 needed in the router.
 
 ### 8.1 Deletion & cross-thread listing (T-CAT.W11)
+
+### Deletion Flow Diagram
+
+```mermaid
+flowchart TD
+    A["DELETE /attachments/{id}"] --> B["get(id, create_user)"]
+    B -->|"miss or foreign-owned"| C["404 ATTACHMENT_NOT_FOUND"]
+    B -->|"hit"| D["delete each artifact's<br/>storage_key from MinIO<br/>(fail-soft per key)"]
+    D --> E["DELETE artifacts + attachment row<br/>— single transaction, no FK"]
+    E --> F["204 No Content"]
+
+    G["DELETE /session<br/>(upstream proxy)"] --> H{"upstream delete<br/>succeeded?"}
+    H -->|"no"| I["cascade skipped"]
+    H -->|"yes"| J["delete_by_thread(threadId)<br/>list_by_thread limit=1000"]
+    J --> K["delete each attachment<br/>fail-soft, no create_user filter"]
+    K --> L["upstream response returned<br/>regardless of cascade outcome"]
+```
 
 - **`DELETE /chatagent/v3/attachments/{attachmentId}`** — `ChatAttachmentService.delete()`
   first calls `AttachmentRepository.get(attachment_id, create_user=user_id)`;
@@ -334,19 +446,99 @@ needed in the router.
 
 ## 10. DB schema (`014_chat_attachments.sql`)
 
-`chat_attachments` (id, thread_id, create_user, filename, mime_type,
-size_bytes, `status ENUM('UPLOADED','PROCESSING','READY','FAILED')`,
-`error_code VARCHAR(64) NULL`, `error_reason VARCHAR(255) NULL`,
-created_at) + `chat_attachment_artifacts` (attachment_id — application-level
-relationship only, no physical FK per `docs/00_rule.md`, variant,
-storage_key, `content_type VARCHAR(64)`, created_at). No `introduced_run_id`
-column — the `<hidden>` block already binds the attachment to its turn.
-`error_code`/`error_reason` mirror `documents.error_code`/`error_reason`
-(`006_documents_error_code.sql`) — populated only when `process()`
-terminalizes to `FAILED` (§7).
+No `introduced_run_id` column — the `<hidden>` block already binds the
+attachment to its turn. `error_code`/`error_reason` mirror
+`documents.error_code`/`error_reason` (`006_documents_error_code.sql`) —
+populated only when `process()` terminalizes to `FAILED` (§7).
+`chat_attachment_artifacts.attachment_id` is an application-level
+relationship only — no physical FK, per `docs/00_rule.md` "No Physical
+Foreign Keys"; `uq_attachment_variant`'s leftmost prefix already covers
+attachment_id lookups. `content_type` records the rendered MIME of an
+artifact's plaintext content (currently always `text/markdown` — see
+`ARTIFACT_CONTENT_TYPE` in §2) as a real, queryable DB column, set once at
+artifact-creation time. It is **not** duplicated inside the encrypted
+envelope (§5) — `ASTCipher.decrypt_ast()` never reads envelope metadata
+back, so storing it there would be write-only.
 
-`content_type` records the rendered MIME of an artifact's plaintext content
-(currently always `text/markdown` — see `ARTIFACT_CONTENT_TYPE` in §2) as a
-real, queryable DB column, set once at artifact-creation time. It is **not**
-duplicated inside the encrypted envelope (§5) — `ASTCipher.decrypt_ast()`
-never reads envelope metadata back, so storing it there would be write-only.
+Authoritative DDL (`migrations/014_chat_attachments.sql`, folded into
+`migrations/schema.sql`):
+
+```sql
+CREATE TABLE IF NOT EXISTS chat_attachments (
+  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  attachment_id CHAR(26)     NOT NULL,
+  thread_id     VARCHAR(64)  NOT NULL,
+  create_user   VARCHAR(64)  NOT NULL,
+  filename      VARCHAR(256) NOT NULL,
+  mime_type     VARCHAR(128) NOT NULL,
+  size_bytes    BIGINT UNSIGNED NOT NULL,
+  status        ENUM('UPLOADED','PROCESSING','READY','FAILED') NOT NULL DEFAULT 'UPLOADED',
+  created_at    DATETIME(6)  NOT NULL,
+  updated_at    DATETIME(6)  NOT NULL,
+  error_code    VARCHAR(64)  NULL,
+  error_reason  VARCHAR(255) NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_attachment_id (attachment_id),
+  INDEX idx_thread_created (thread_id, created_at),
+  INDEX idx_create_user_attachment (create_user, attachment_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+CREATE TABLE IF NOT EXISTS chat_attachment_artifacts (
+  id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  attachment_id CHAR(26)     NOT NULL,
+  variant       ENUM('complete','simplified') NOT NULL,
+  storage_key   VARCHAR(256) NOT NULL,
+  content_type  VARCHAR(64)  NOT NULL DEFAULT 'text/markdown',
+  created_at    DATETIME(6)  NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_attachment_variant (attachment_id, variant)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+```
+
+## 11. API Reference
+
+All endpoints below are nested under `/chatagent/v3/attachments` and are
+registered **only** when both `RAGENT_KEK_BASE64` and
+`RAGENT_ENCRYPTED_DEK_BASE64` are set (§5, §12). Full curl examples live in
+[`docs/API.md`](../API.md#attachments-chatagentv3attachments); this table is
+the authoritative shape reference.
+
+| Method & path | Purpose | Success | Key errors |
+|---|---|---|---|
+| `POST /upload` | Fast intake: store raw bytes, `INSERT ... UPLOADED`, enqueue `attachment.process` (§7) | `202 {attachmentId}` | `415 ATTACHMENT_MIME_UNSUPPORTED`, `413 ATTACHMENT_TOO_LARGE` |
+| `GET /{attachmentId}` | Poll processing status | `200` `AttachmentInfo` | `404 ATTACHMENT_NOT_FOUND` |
+| `GET ?threadId=...` | List one thread's attachments, caller-scoped | `200 {attachments: AttachmentInfo[]}` | — |
+| `GET /mine` | List every attachment the caller has uploaded, across threads | `200 {attachments: AttachmentInfo[]}` | — |
+| `DELETE /{attachmentId}` | Delete raw file + both artifacts + DB rows (§8.1) | `204 No Content` | `404 ATTACHMENT_NOT_FOUND` |
+
+`AttachmentInfo` shape (shared by the poll endpoint and both list endpoints):
+
+```json
+{
+  "attachmentId": "01J9ABCDEFGHJKMNPQRSTVWXYZ",
+  "filename": "Q3_OKRs.pdf",
+  "mimeType": "application/pdf",
+  "sizeBytes": 125432,
+  "status": "READY",
+  "errorCode": null,
+  "errorReason": null
+}
+```
+
+`status` is one of `UPLOADED` / `PROCESSING` / `READY` / `FAILED`;
+`errorCode`/`errorReason` are populated only when `status="FAILED"`. Every
+read/write is scoped by `create_user` (resolved from `X-User-Id`, default
+`"anonymous"`) — a foreign-owned or unknown `attachmentId` is
+indistinguishable: both yield `404 ATTACHMENT_NOT_FOUND` (or an empty list)
+(§8).
+
+## 12. Environment Variables
+
+| Variable | Default | Notes |
+|---|---|---|
+| `RAGENT_KEK_BASE64` | *(unset → feature disabled)* | Base64 KEK (32 bytes). Set together with the var below to register the attachment routes and construct `KeyManager`/`ASTCipher` (§5). Documented in `docs/spec/env_vars.md` §4.6.4. |
+| `RAGENT_ENCRYPTED_DEK_BASE64` | *(required when `RAGENT_KEK_BASE64` set)* | Base64 DEK, AES-Key-Wrapped under the KEK; unwrapped once at boot (§5). Documented in `docs/spec/env_vars.md` §4.6.4. |
+| `ATTACHMENT_MAX_SIZE_BYTES` | `52428800` (50 MB) | Upload size cap — `ChatAttachmentService.upload()` raises `FileTooLarge` over this, surfaced as `413 ATTACHMENT_TOO_LARGE`. Read via `_int_env()` in `composition.py` (DIP — no other module reads this var). **Not yet listed in `docs/spec/env_vars.md` or `.env.example`** — known documentation gap, tracked separately from this revision. |
+
+Full inventory of every other timeout/threshold the process reads:
+[`docs/spec/env_vars.md`](env_vars.md).
