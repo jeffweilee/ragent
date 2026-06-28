@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
+import anyio
 import structlog
 
 from ragent.security.ast_cipher import ASTDecryptionError
@@ -83,7 +84,9 @@ class DocumentArtifactResolver:
 
                 if selected:
                     try:
-                        encrypted_data = self._doc_store.get(selected.storage_key)
+                        encrypted_data = await anyio.to_thread.run_sync(
+                            self._doc_store.get, selected.storage_key
+                        )
                         encrypted_obj = json.loads(encrypted_data.decode("utf-8"))
                         att_info["ast"] = self._ast_cipher.decrypt_ast(encrypted_obj)
                     except (ValueError, KeyError, json.JSONDecodeError, ASTDecryptionError) as e:

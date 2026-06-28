@@ -2,6 +2,11 @@
 
 Dependency Inversion: `chat_attachment_service` depends on this Protocol, not
 directly on MinIO. `MinIODocumentStore` is the only implementation today.
+
+All four methods are synchronous, blocking I/O (the MinIO SDK has no async
+client). Callers invoking them from an `async def` MUST wrap each call in
+`anyio.to_thread.run_sync()` — the Protocol cannot enforce this at the type
+level, so every async call site is responsible for not blocking the event loop.
 """
 
 from __future__ import annotations

@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 import structlog
 
+import ragent.services.document_artifact_resolver as resolver_module
 from ragent.repositories.attachment_repository import (
     ArtifactRow,
     AttachmentRepository,
@@ -215,6 +216,35 @@ class TestDocumentArtifactResolver:
         assert failed["attachment_id"] == "att_1"
         assert failed["log_level"] == "warning"
         assert "error_type" in failed
+
+    @pytest.mark.asyncio
+    async def test_resolve_dispatches_doc_store_get_via_run_sync(
+        self, resolver_dependencies, monkeypatch
+    ):
+        """resolve() must never call the blocking DocumentStore.get() directly on the
+        event loop — it must go through anyio.to_thread.run_sync(), matching the
+        convention established for every other DocumentStore call site (T-CAT.W10)."""
+        resolver_dependencies["attachment_repository"].get.return_value = _attachment_row(
+            "att_1", "test.pdf", "application/pdf", 1024
+        )
+        resolver_dependencies["attachment_repository"].get_artifacts.return_value = [
+            _artifact_row("att_1", "complete", "key")
+        ]
+        resolver_dependencies["document_store"].get.return_value = b'{"ciphertext":"data"}'
+
+        run_sync_calls = []
+
+        async def fake_run_sync(fn, *args, **kwargs):
+            run_sync_calls.append(fn)
+            return fn(*args, **kwargs)
+
+        monkeypatch.setattr(resolver_module.anyio.to_thread, "run_sync", fake_run_sync)
+
+        resolver = DocumentArtifactResolver(**resolver_dependencies)
+
+        await resolver.resolve(["att_1"])
+
+        assert run_sync_calls == [resolver_dependencies["document_store"].get]
 
     @pytest.mark.asyncio
     async def test_resolve_handles_ast_decryption_error(self, resolver_dependencies):
