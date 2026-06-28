@@ -332,7 +332,7 @@ needed in the router.
 | `ATTACHMENT_NOT_FOUND` | 404 | `GET`/`DELETE /chatagent/v3/attachments/{id}` on unknown or foreign-owned id (T-CAT.W2, T-CAT.W11) |
 | `ATTACHMENT_FEATURE_DISABLED` | n/a — `TaskErrorCode`, persisted to `chat_attachments.error_code` | worker picked up `attachment.process` on a process with `RAGENT_KEK_BASE64` unset (§7) |
 
-## 10. DB schema (`016_drop_chat_attachment_artifacts_fk.sql`)
+## 10. DB schema (`014_chat_attachments.sql`)
 
 `chat_attachments` (id, thread_id, create_user, filename, mime_type,
 size_bytes, `status ENUM('UPLOADED','PROCESSING','READY','FAILED')`,

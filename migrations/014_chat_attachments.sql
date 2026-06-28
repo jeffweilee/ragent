@@ -1,6 +1,13 @@
 -- 014_chat_attachments.sql — chat-attachment metadata + per-AST-variant
 -- storage pointers (T-CAT.7/T-CAT.W2, docs/spec/chat_attachments.md §9).
 --
+-- Squashes 015_chat_attachment_artifacts_content_type.sql (content_type
+-- column) and 016_drop_chat_attachment_artifacts_fk.sql (FK removal) into
+-- this revision — same rationale as T-CAT.W5's earlier squash: neither
+-- init_schema.py nor alembic/versions/000_squash.py ever replays numbered
+-- migration files (both read migrations/schema.sql directly), so the
+-- 0XX_*.sql files are documentation-only and safe to consolidate.
+--
 -- No `introduced_run_id` column — the `<hidden><attachments>` block already
 -- binds an attachment to the turn it was attached on; no DB-side binding
 -- is needed (per spec §7).
@@ -38,15 +45,21 @@ CREATE TABLE IF NOT EXISTS chat_attachments (
 
 -- One artifact row per AST variant ('complete'/'simplified', spec §4) per
 -- attachment. `storage_key` is the DocumentStore object key the encrypted
--- envelope was written under (T-CAT.6).
+-- envelope was written under (T-CAT.6). `content_type` records the
+-- rendered MIME of the artifact's plaintext (`ARTIFACT_CONTENT_TYPE`,
+-- currently always 'text/markdown') as a queryable column — never inside
+-- the encrypted envelope, since `ASTCipher.decrypt_ast()` never reads
+-- envelope metadata back. No physical FOREIGN KEY on attachment_id
+-- (docs/00_rule.md "No Physical Foreign Keys" — relationships belong only
+-- in application-level ORM models); `uq_attachment_variant`'s leftmost
+-- prefix already covers attachment_id lookups.
 CREATE TABLE IF NOT EXISTS chat_attachment_artifacts (
   id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   attachment_id CHAR(26)     NOT NULL,
   variant       ENUM('complete','simplified') NOT NULL,
   storage_key   VARCHAR(256) NOT NULL,
+  content_type  VARCHAR(64)  NOT NULL DEFAULT 'text/markdown',
   created_at    DATETIME(6)  NOT NULL,
   PRIMARY KEY (id),
-  UNIQUE KEY uq_attachment_variant (attachment_id, variant),
-  CONSTRAINT fk_artifact_attachment FOREIGN KEY (attachment_id)
-    REFERENCES chat_attachments (attachment_id) ON DELETE CASCADE
+  UNIQUE KEY uq_attachment_variant (attachment_id, variant)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

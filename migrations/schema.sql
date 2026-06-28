@@ -1,5 +1,5 @@
 -- schema.sql — consolidated snapshot reflecting alembic head (spec B3).
--- Latest migration folded in: 016_drop_chat_attachment_artifacts_fk.sql
+-- Latest migration folded in: 014_chat_attachments.sql
 -- Updated in lockstep with every NNN_*.sql migration file.
 -- Apply directly: mysql -u user -p ragent < schema.sql
 -- Or via Alembic:  alembic upgrade head  (produces identical schema)
@@ -88,7 +88,8 @@ CREATE TABLE IF NOT EXISTS feedback (
 -- storage pointers, including PROCESSING (async worker hand-off) and
 -- error_code/error_reason failure diagnostics (T-CAT.7/T-CAT.W2). No
 -- `introduced_run_id` — the `<hidden><attachments>` block already binds
--- the attachment to its turn.
+-- the attachment to its turn. Squashes the former 015 (content_type
+-- column) and 016 (FK removal) revisions into this one file.
 CREATE TABLE IF NOT EXISTS chat_attachments (
   id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   attachment_id CHAR(26)     NOT NULL,
@@ -108,10 +109,10 @@ CREATE TABLE IF NOT EXISTS chat_attachments (
   INDEX idx_create_user_attachment (create_user, attachment_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
--- 016_drop_chat_attachment_artifacts_fk.sql: dropped the physical FK on
--- attachment_id (docs/00_rule.md "No Physical Foreign Keys" — relationships
--- belong only in application-level ORM models). uq_attachment_variant's
--- leftmost prefix already covers attachment_id lookups.
+-- No physical FK on attachment_id (docs/00_rule.md "No Physical Foreign
+-- Keys" — relationships belong only in application-level ORM models).
+-- uq_attachment_variant's leftmost prefix already covers attachment_id
+-- lookups. content_type folded in from the former 015 revision.
 CREATE TABLE IF NOT EXISTS chat_attachment_artifacts (
   id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   attachment_id CHAR(26)     NOT NULL,
