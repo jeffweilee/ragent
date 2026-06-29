@@ -298,10 +298,9 @@ class _PptxASTSplitter:
     heading atom — ``content`` is the title text, ``meta["raw_content"]``
     is the markdown ``# <title>`` form. The remaining (non-title,
     non-skipped) text frames on the slide are joined with newlines into a
-    second, body atom, mirroring the prior single-atom-per-slide shape for
-    everything but the title. ``meta["slide_number"]`` carries the 1-based
-    slide index on both atoms. A slide with neither a title nor any other
-    text produces no atom.
+    second, body atom. ``meta["slide_number"]`` carries the 1-based slide
+    index on both atoms. A slide with neither a title nor any other text
+    produces no atom.
     """
 
     @component.output_types(documents=list[Document])

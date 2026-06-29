@@ -61,8 +61,18 @@ def _build_simplified(atoms: list[Document]) -> list[Document]:
         else:
             title, body = "", section
 
-        body_text = "\n".join(atom.content or "" for atom in body).strip()
-        snippet = body_text[:_SIMPLIFIED_BODY_CHARS]
+        # Cap each atom's contribution before concatenating so a single huge
+        # atom (e.g. one unsplit paragraph near the attachment size limit)
+        # can't force an unbounded join — the loop stops once enough
+        # non-leading-whitespace text has accumulated (lstrip, not strip,
+        # so a leading blank atom doesn't short-circuit the count early).
+        joined = ""
+        for atom in body:
+            piece = (atom.content or "")[:_SIMPLIFIED_BODY_CHARS]
+            joined = f"{joined}\n{piece}" if joined else piece
+            if len(joined.lstrip()) >= _SIMPLIFIED_BODY_CHARS:
+                break
+        snippet = joined.strip()[:_SIMPLIFIED_BODY_CHARS]
 
         text = "\n".join(filter(None, [title, snippet]))
         simplified.append(Document(content=text, meta={"mime_type": head.meta.get("mime_type")}))

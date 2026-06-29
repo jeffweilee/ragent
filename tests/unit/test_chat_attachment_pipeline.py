@@ -167,6 +167,34 @@ class TestChatAttachmentPipeline:
         assert simplified[1].content == "Heading Two\n" + "B" * 50
 
     @pytest.mark.asyncio
+    async def test_pipeline_simplified_accumulates_across_short_paragraphs(self):
+        """A section with several short paragraphs accumulates body text
+        across atoms (not just the first) until 50 characters are reached."""
+        unprotect_client = MagicMock(spec=UnprotectClient)
+        pipeline = ChatAttachmentPipeline(unprotect_client=unprotect_client)
+
+        file_bytes = b"# Heading\n" + b"\n\n".join([b"A" * 20] * 5)
+        result = await pipeline.run(file_bytes=file_bytes, mime_type=AttachmentMime.TEXT_MARKDOWN)
+
+        simplified = result["simplified"]
+        assert len(simplified) == 1
+        assert simplified[0].content == "Heading\n" + "A" * 20 + "\n" + "A" * 20 + "\n" + "A" * 8
+
+    @pytest.mark.asyncio
+    async def test_pipeline_simplified_caps_single_oversized_atom(self):
+        """A single atom far larger than the snippet cap is truncated to 50
+        characters without the pipeline ever joining/copying its full text."""
+        unprotect_client = MagicMock(spec=UnprotectClient)
+        pipeline = ChatAttachmentPipeline(unprotect_client=unprotect_client)
+
+        file_bytes = b"# Heading\n" + b"A" * 200_000
+        result = await pipeline.run(file_bytes=file_bytes, mime_type=AttachmentMime.TEXT_MARKDOWN)
+
+        simplified = result["simplified"]
+        assert len(simplified) == 1
+        assert simplified[0].content == "Heading\n" + "A" * 50
+
+    @pytest.mark.asyncio
     async def test_pipeline_simplified_truncates_to_50_chars_with_no_headings(self):
         """No heading atoms (plain text): simplified collapses to a single
         section with only the first 50 characters of body text, not the full
