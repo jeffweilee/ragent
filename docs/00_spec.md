@@ -360,10 +360,7 @@ skills). The first preset is **`skill-creator`** (`skill_id="skill-creator"`),
 whose instructions guide the agent to **draft** a complete skill (name /
 description / instructions) from the user's intent — proposing a first version
 rather than interrogating field by field — and, on confirmation, call the
-`create_skill` MCP tool to save it. The prompt keeps the drafted `instructions`
-focused (well under the 16384-char bound) and calls `create_skill` with only the
-tool's schema fields, so the tool-call args stay small and valid (the upstream
-agent rejects oversized or extra-field tool calls). Adding more presets later =
+`create_skill` MCP tool to save it. Adding more presets later =
 one entry in the registry (no migration, no per-user seeding). Constraints: a user skill may not take a
 preset's `name` (case-insensitive, matching the DB's utf8mb4 collation → `409
 SKILL_NAME_CONFLICT`) — on `PUT` this is reported only **after** the target row
