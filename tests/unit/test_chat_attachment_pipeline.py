@@ -157,13 +157,7 @@ class TestChatAttachmentPipeline:
         unprotect_client = MagicMock(spec=UnprotectClient)
         pipeline = ChatAttachmentPipeline(unprotect_client=unprotect_client)
 
-        file_bytes = (
-            b"# Heading One\n"
-            + b"A" * 60
-            + b"\n\n# Heading Two\n"
-            + b"B" * 60
-            + b"\n"
-        )
+        file_bytes = b"# Heading One\n" + b"A" * 60 + b"\n\n# Heading Two\n" + b"B" * 60 + b"\n"
         result = await pipeline.run(file_bytes=file_bytes, mime_type=AttachmentMime.TEXT_MARKDOWN)
 
         complete, simplified = result["complete"], result["simplified"]

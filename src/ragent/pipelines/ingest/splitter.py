@@ -284,7 +284,8 @@ class _DocxASTSplitter:
 
 def _pptx_atom(content: str, raw_content: str, base_meta: dict, slide_number: int) -> Document:
     return Document(
-        content=content, meta={**base_meta, "raw_content": raw_content, "slide_number": slide_number}
+        content=content,
+        meta={**base_meta, "raw_content": raw_content, "slide_number": slide_number},
     )
 
 
