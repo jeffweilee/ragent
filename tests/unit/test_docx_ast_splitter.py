@@ -80,6 +80,35 @@ def test_docx_heading_content_strips_markup():
     assert atoms[0].content == "My Title"
 
 
+def test_docx_heading_raw_content_gets_markdown_marker():
+    """raw_content must carry a markdown '#'-prefix per heading level so
+    downstream heading detection (chat-attachment AST simplification)
+    recognizes DOCX headings the same way it recognizes markdown/HTML ones."""
+    data = _make_docx_bytes(
+        [("Heading 1", "H1 text"), ("Heading 2", "H2 text"), ("Normal", "Body text")]
+    )
+    atoms = _run_splitter(data)
+    assert len(atoms) == 3
+    assert atoms[0].meta["raw_content"] == "# H1 text"
+    assert atoms[1].meta["raw_content"] == "## H2 text"
+    assert atoms[2].meta["raw_content"] == "Body text"
+
+
+def test_docx_title_style_becomes_level_one_heading():
+    from docx import Document
+
+    doc = Document()
+    for para in list(doc.paragraphs):
+        p = para._element
+        p.getparent().remove(p)
+    doc.add_heading("My Document", level=0)  # python-docx "Title" style
+    buf = io.BytesIO()
+    doc.save(buf)
+    atoms = _run_splitter(buf.getvalue())
+    assert len(atoms) == 1
+    assert atoms[0].meta["raw_content"] == "# My Document"
+
+
 def test_docx_raw_content_set_on_atom():
     data = _make_docx_bytes([("Normal", "Hello world")])
     atoms = _run_splitter(data)

@@ -18,8 +18,14 @@ if TYPE_CHECKING:
 logger = structlog.get_logger(__name__)
 
 # HTML heading atoms carry their tag in meta["raw_content"] (e.g. "<h1>...").
-# Markdown/PDF heading atoms are detected via the splitter's own _MD_HEADING_RE.
+# Markdown/PDF/DOCX/PPTX heading atoms are detected via the splitter's own
+# _MD_HEADING_RE — DOCX ("Heading N"/"Title" style) and PPTX (slide title
+# placeholder) atoms carry a "#"-prefixed raw_content for this reason.
 _HTML_HEADING_RE = re.compile(r"^<h[1-6][\s>]", re.IGNORECASE)
+
+# Per docs/spec/chat_attachments.md §4: simplified sections keep the full
+# heading title plus this many characters of body text.
+_SIMPLIFIED_BODY_CHARS = 50
 
 
 def _is_heading_atom(atom: Document) -> bool:
@@ -28,11 +34,12 @@ def _is_heading_atom(atom: Document) -> bool:
 
 
 def _build_simplified(atoms: list[Document]) -> list[Document]:
-    """Per docs/spec/chat_attachments.md §4: title + first two lines per
-    section, derived from `atoms` (the complete AST) by a single tree-walk —
-    no new per-format parsing. Sections are delimited by heading atoms;
-    formats with no heading atoms (docx/pptx/csv/plain text) collapse to one
-    section over the whole list.
+    """Per docs/spec/chat_attachments.md §4: every section's heading title in
+    full, plus the first `_SIMPLIFIED_BODY_CHARS` characters of its body text,
+    derived from `atoms` (the complete AST) by a single tree-walk — no new
+    per-format parsing. Sections are delimited by heading atoms; formats with
+    no heading atoms (csv/plain text) collapse to one section over the whole
+    list.
     """
     if not atoms:
         return []
@@ -54,17 +61,10 @@ def _build_simplified(atoms: list[Document]) -> list[Document]:
         else:
             title, body = "", section
 
-        first_two_lines: list[str] = []
-        for atom in body:
-            for line in (atom.content or "").splitlines():
-                if line.strip():
-                    first_two_lines.append(line)
-                    if len(first_two_lines) == 2:
-                        break
-            if len(first_two_lines) == 2:
-                break
+        body_text = "\n".join(atom.content or "" for atom in body).strip()
+        snippet = body_text[:_SIMPLIFIED_BODY_CHARS]
 
-        text = "\n".join([title, *first_two_lines]) if title else "\n".join(first_two_lines)
+        text = "\n".join(filter(None, [title, snippet]))
         simplified.append(Document(content=text, meta={"mime_type": head.meta.get("mime_type")}))
     return simplified
 
@@ -72,8 +72,9 @@ def _build_simplified(atoms: list[Document]) -> list[Document]:
 class ChatAttachmentPipeline:
     """Load attachment file → optional unprotect → build AST.
 
-    Returns "complete" (full AST) and "simplified" (title + first two lines
-    per section, derived in memory — see `_build_simplified`).
+    Returns "complete" (full AST) and "simplified" (every section's heading
+    title in full + first `_SIMPLIFIED_BODY_CHARS` characters of body text,
+    derived in memory — see `_build_simplified`).
     """
 
     def __init__(self, unprotect_client: UnprotectClient | None):

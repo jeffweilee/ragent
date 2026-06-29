@@ -151,36 +151,41 @@ class TestChatAttachmentPipeline:
         assert len(simplified) <= len(complete), "simplified is subset/derivative of complete"
 
     @pytest.mark.asyncio
-    async def test_pipeline_simplified_collapses_markdown_sections_to_title_and_two_lines(self):
-        """simplified groups markdown atoms by heading, keeping only the
-        heading title + first two non-blank body lines per section."""
+    async def test_pipeline_simplified_collapses_markdown_sections_to_title_and_50_chars(self):
+        """simplified groups markdown atoms by heading, keeping the full
+        heading title + first 50 characters of body text per section."""
         unprotect_client = MagicMock(spec=UnprotectClient)
         pipeline = ChatAttachmentPipeline(unprotect_client=unprotect_client)
 
         file_bytes = (
-            b"# Heading One\nLine A1\nLine A2\nLine A3\n\n# Heading Two\nLine B1\nLine B2\n"
+            b"# Heading One\n"
+            + b"A" * 60
+            + b"\n\n# Heading Two\n"
+            + b"B" * 60
+            + b"\n"
         )
         result = await pipeline.run(file_bytes=file_bytes, mime_type=AttachmentMime.TEXT_MARKDOWN)
 
         complete, simplified = result["complete"], result["simplified"]
         assert len(complete) == 4
         assert len(simplified) == 2
-        assert simplified[0].content == "Heading One\nLine A1\nLine A2"
-        assert simplified[1].content == "Heading Two\nLine B1\nLine B2"
+        assert simplified[0].content == "Heading One\n" + "A" * 50
+        assert simplified[1].content == "Heading Two\n" + "B" * 50
 
     @pytest.mark.asyncio
-    async def test_pipeline_simplified_truncates_to_two_lines_with_no_headings(self):
+    async def test_pipeline_simplified_truncates_to_50_chars_with_no_headings(self):
         """No heading atoms (plain text): simplified collapses to a single
-        section with only the first two non-blank lines, not the full text."""
+        section with only the first 50 characters of body text, not the full
+        text."""
         unprotect_client = MagicMock(spec=UnprotectClient)
         pipeline = ChatAttachmentPipeline(unprotect_client=unprotect_client)
 
-        file_bytes = b"line 1\nline 2\nline 3\nline 4"
+        file_bytes = b"x" * 80
         result = await pipeline.run(file_bytes=file_bytes, mime_type=AttachmentMime.TEXT_PLAIN)
 
         simplified = result["simplified"]
         assert len(simplified) == 1
-        assert simplified[0].content == "line 1\nline 2"
+        assert simplified[0].content == "x" * 50
         assert simplified[0].content != result["complete"][0].content
 
     @pytest.mark.asyncio

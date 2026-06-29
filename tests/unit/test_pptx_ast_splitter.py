@@ -186,6 +186,53 @@ def test_pptx_slide_with_only_footer_skipped():
     assert atoms == []
 
 
+# ---------------------------------------------------------------------------
+# Slide title → markdown heading atom
+# ---------------------------------------------------------------------------
+
+
+def _make_pptx_with_title(title: str, body: str | None = None) -> bytes:
+    """PPTX with one slide built from a layout that has a real title
+    placeholder (unlike `_make_pptx_bytes`'s plain textboxes)."""
+    from pptx import Presentation
+
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[1])  # "Title and Content"
+    slide.shapes.title.text_frame.text = title
+    if body is not None:
+        slide.placeholders[1].text_frame.text = body
+    buf = io.BytesIO()
+    prs.save(buf)
+    return buf.getvalue()
+
+
+def test_pptx_title_placeholder_becomes_heading_atom():
+    data = _make_pptx_with_title("Slide Title", "Body text")
+    atoms = _run_splitter(data)
+    assert len(atoms) == 2
+    assert atoms[0].content == "Slide Title"
+    assert atoms[0].meta["raw_content"] == "# Slide Title"
+    assert atoms[0].meta["slide_number"] == 1
+    assert atoms[1].content == "Body text"
+    assert "Slide Title" not in atoms[1].content
+
+
+def test_pptx_title_only_slide_yields_single_heading_atom():
+    data = _make_pptx_with_title("Only A Title")
+    atoms = _run_splitter(data)
+    assert len(atoms) == 1
+    assert atoms[0].meta["raw_content"] == "# Only A Title"
+
+
+def test_pptx_plain_textbox_is_not_mistaken_for_title():
+    """Slides built with generic textboxes (no real title placeholder) keep
+    the prior single-atom-per-slide shape — no heading marker is invented."""
+    data = _make_pptx_bytes([["Slide 1 title", "Slide 1 body"]])
+    atoms = _run_splitter(data)
+    assert len(atoms) == 1
+    assert "#" not in atoms[0].meta["raw_content"]
+
+
 def test_pptx_header_placeholder_excluded():
     """Header placeholder text (type='hdr') must not appear in atom content."""
     from pptx import Presentation

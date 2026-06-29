@@ -194,6 +194,21 @@ class _HtmlASTSplitter:
 # ---------------------------------------------------------------------------
 
 
+_DOCX_HEADING_RE = re.compile(r"^Heading\s*(\d+)$", re.IGNORECASE)
+
+
+def _docx_heading_level(style_name: str) -> int | None:
+    """Map a python-docx paragraph style name to a markdown heading level
+    (1-6), or None if the style is not a heading. "Title" is treated as
+    level 1; "Heading N" is clamped to 6 (markdown's maximum)."""
+    name = style_name.strip()
+    if name.lower() == "title":
+        return 1
+    if m := _DOCX_HEADING_RE.match(name):
+        return min(int(m.group(1)), 6)
+    return None
+
+
 def _table_to_markdown(table: Any) -> tuple[str, str]:
     """Render a python-docx Table as (plain_text, markdown_pipe_table).
 
@@ -219,10 +234,12 @@ class _DocxASTSplitter:
     """DOCX binary → one atom per paragraph / table.
 
     Reads bytes from ``meta["raw_bytes"]``.  Each heading atom's
-    ``content`` is the heading text (no ``#`` markers); each paragraph
-    atom's ``content`` is the paragraph text; each table atom's ``content``
-    is all cell text joined by spaces and ``meta["raw_content"]`` is the
-    Markdown pipe-table representation.
+    ``content`` is the heading text (no ``#`` markers) while
+    ``meta["raw_content"]`` carries the markdown ``#``-prefixed form (level
+    derived from the paragraph's "Heading N"/"Title" style); each plain
+    paragraph atom's ``content``/``raw_content`` is just the paragraph text;
+    each table atom's ``content`` is all cell text joined by spaces and
+    ``meta["raw_content"]`` is the Markdown pipe-table representation.
     """
 
     @component.output_types(documents=list[Document])
@@ -246,7 +263,11 @@ class _DocxASTSplitter:
                     text = para.text.strip()
                     if not text:
                         continue
-                    atoms.append(Document(content=text, meta={**base_meta, "raw_content": text}))
+                    level = _docx_heading_level(para.style.name if para.style else "")
+                    raw_content = f"{'#' * level} {text}" if level else text
+                    atoms.append(
+                        Document(content=text, meta={**base_meta, "raw_content": raw_content})
+                    )
                 elif tag == "tbl":
                     table = Table(block, docx)
                     plain, raw_md = _table_to_markdown(table)
@@ -261,15 +282,25 @@ class _DocxASTSplitter:
 # ---------------------------------------------------------------------------
 
 
+def _pptx_atom(content: str, raw_content: str, base_meta: dict, slide_number: int) -> Document:
+    return Document(
+        content=content, meta={**base_meta, "raw_content": raw_content, "slide_number": slide_number}
+    )
+
+
 @component
 class _PptxASTSplitter:
-    """PPTX binary → one atom per slide.
+    """PPTX binary → one heading atom + one body atom per slide.
 
-    Reads bytes from ``meta["raw_bytes"]``.  Each slide that contains at
-    least one non-empty text shape produces one atom.  All text frames on
-    the slide are joined with newlines for ``content`` and
-    ``meta["raw_content"]``.  ``meta["slide_number"]`` carries the
-    1-based slide index.
+    Reads bytes from ``meta["raw_bytes"]``.  A slide's title placeholder
+    (``slide.shapes.title``), if present and non-empty, becomes its own
+    heading atom — ``content`` is the title text, ``meta["raw_content"]``
+    is the markdown ``# <title>`` form. The remaining (non-title,
+    non-skipped) text frames on the slide are joined with newlines into a
+    second, body atom, mirroring the prior single-atom-per-slide shape for
+    everything but the title. ``meta["slide_number"]`` carries the 1-based
+    slide index on both atoms. A slide with neither a title nor any other
+    text produces no atom.
     """
 
     @component.output_types(documents=list[Document])
@@ -285,8 +316,15 @@ class _PptxASTSplitter:
             assert_safe_zip(raw_bytes)
             prs = Presentation(io.BytesIO(raw_bytes))
             for idx, slide in enumerate(prs.slides, start=1):
+                title_shape = slide.shapes.title
+                title_text = ""
+                if title_shape is not None and title_shape.has_text_frame:
+                    title_text = title_shape.text_frame.text.strip()
+
                 texts = []
                 for shape in slide.shapes:
+                    if title_shape is not None and shape.shape_id == title_shape.shape_id:
+                        continue
                     if shape.is_placeholder and shape.placeholder_format.type in _PPTX_SKIP_PH:
                         continue
                     if shape.has_text_frame:
@@ -300,15 +338,12 @@ class _PptxASTSplitter:
                                 cell_text = cell.text_frame.text.strip()
                                 if cell_text:
                                     texts.append(cell_text)
-                if not texts:
-                    continue
-                combined = "\n".join(texts)
-                atoms.append(
-                    Document(
-                        content=combined,
-                        meta={**base_meta, "raw_content": combined, "slide_number": idx},
-                    )
-                )
+
+                if title_text:
+                    atoms.append(_pptx_atom(title_text, f"# {title_text}", base_meta, idx))
+                if texts:
+                    combined = "\n".join(texts)
+                    atoms.append(_pptx_atom(combined, combined, base_meta, idx))
         return {"documents": atoms}
 
 

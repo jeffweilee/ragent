@@ -147,9 +147,15 @@ attachment:
 
 - **complete** — full structural AST (same shape the ingest splitter already
   produces for the format).
-- **simplified** — title + first two lines per section; **derived from the
-  complete AST in memory** (a tree walk, not a second parse) — the document
-  is parsed exactly once per attachment.
+- **simplified** — every section's heading title in full, plus the first 50
+  characters of its body text; **derived from the complete AST in memory**
+  (a tree walk, not a second parse) — the document is parsed exactly once
+  per attachment. This applies uniformly across PDF, DOCX, PPTX, and
+  Markdown (and, as a consequence of the single generic algorithm, HTML and
+  plain text too — the latter two simply have no heading atoms, so they
+  collapse to one section). Sections are delimited by heading atoms, so
+  every heading in the document gets its own simplified section — none are
+  dropped.
 
 The pipeline's only responsibility is producing plaintext AST JSON. It does
 **not** encrypt and does **not** persist — those are the caller's (service
@@ -161,6 +167,16 @@ raw bytes (`meta["raw_bytes"]`), never decoded as UTF-8 text — those formats
 are binary containers, and decoding them as text would raise before the
 splitter ever runs. Text formats (`text/plain`, `text/markdown`, `text/html`)
 are decoded to `str` as before.
+
+Heading detection is format-agnostic: every splitter that produces a heading
+atom marks it by prefixing `meta["raw_content"]` with markdown `#`s (1-6 of
+them). Markdown/PDF atoms get this naturally from the rendered markdown;
+HTML atoms carry their own `<h1>`-`<h6>` tag instead (detected separately).
+DOCX paragraphs styled "Heading N" (or "Title", treated as level 1) and a
+PPTX slide's title placeholder are mapped to the same `#`-prefixed
+`raw_content` convention, so `_build_simplified`'s single tree-walk treats
+them identically to a markdown heading — no per-format simplification logic
+is needed.
 
 ## 5. AST encryption (KEK/DEK)
 
