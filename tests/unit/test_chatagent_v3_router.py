@@ -35,6 +35,7 @@ def _make_app(
     chat_stream_store: ChatStreamStore | None = None,
     stream_idle_timeout: float = 3.0,
     document_artifact_resolver=None,
+    attachment_max_files: int | None = None,
 ):
     http_mock = MagicMock(spec=httpx.Client)
     app = FastAPI()
@@ -50,6 +51,7 @@ def _make_app(
         chat_stream_store=chat_stream_store,
         stream_idle_timeout=stream_idle_timeout,
         document_artifact_resolver=document_artifact_resolver,
+        attachment_max_files=attachment_max_files,
     )
     app.include_router(router)
     return app, http_mock
@@ -260,6 +262,41 @@ def test_v3_skips_attachment_resolution_when_no_ids_present() -> None:
         client.post("/chatagent/v3", json=_run_input(), headers={"X-User-Id": "alice"})
 
     resolver.resolve.assert_not_called()
+
+
+def test_v3_too_many_attachments_emits_run_error_not_http_413() -> None:
+    """T-CAT.W16 — attachment_ids over ATTACHMENT_MAX_FILES is a RUN_ERROR, not HTTP 413."""
+    resolver = AsyncMock(spec=DocumentArtifactResolver)
+    app, http_mock = _make_app(document_artifact_resolver=resolver, attachment_max_files=2)
+    body = _run_input()
+    body["attachmentIds"] = ["att-1", "att-2", "att-3"]
+
+    with TestClient(app) as client:
+        r = client.post("/chatagent/v3", json=body, headers={"X-User-Id": "alice"})
+
+    assert r.status_code == 200
+    events = _events(r.text)
+    assert events[-1]["type"] == "RUN_ERROR"
+    assert events[-1]["code"] == HttpErrorCode.ATTACHMENT_TOO_MANY_FILES
+    assert events[-1]["runId"] == "run_1"
+    resolver.resolve.assert_not_called()
+    http_mock.send.assert_not_called()
+
+
+def test_v3_attachment_count_at_limit_is_allowed() -> None:
+    """Exactly ATTACHMENT_MAX_FILES ids is allowed (boundary, not over)."""
+    resolver = AsyncMock(spec=DocumentArtifactResolver)
+    resolver.resolve.return_value = None
+    app, http_mock = _make_app(document_artifact_resolver=resolver, attachment_max_files=2)
+    http_mock.send.return_value = _resp_mock([_done_line()])
+    body = _run_input()
+    body["attachmentIds"] = ["att-1", "att-2"]
+
+    with TestClient(app) as client:
+        r = client.post("/chatagent/v3", json=body, headers={"X-User-Id": "alice"})
+
+    assert r.status_code == 200
+    resolver.resolve.assert_called_once_with(["att-1", "att-2"])
 
 
 def test_v3_rate_limited_emits_run_error_not_http_429() -> None:

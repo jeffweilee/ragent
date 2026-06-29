@@ -35,12 +35,15 @@ def _attachment_row(
     )
 
 
-def _artifact_row(attachment_id: str, variant: str, storage_key: str) -> ArtifactRow:
+def _artifact_row(
+    attachment_id: str, variant: str, storage_key: str, char_count: int = 100
+) -> ArtifactRow:
     return ArtifactRow(
         attachment_id=attachment_id,
         variant=variant,
         storage_key=storage_key,
         content_type="text/markdown",
+        char_count=char_count,
         created_at=_NOW,
     )
 
@@ -105,6 +108,48 @@ class TestDocumentArtifactResolver:
         assert result is not None
         assert isinstance(result, str)
         assert "att_1" in result or "test.pdf" in result
+
+    @pytest.mark.asyncio
+    async def test_resolve_prefers_complete_when_under_char_limit(self, resolver_dependencies):
+        """complete is selected (fetched from storage) when its char_count fits the budget."""
+        resolver_dependencies["attachment_repository"].get.return_value = _attachment_row(
+            "att_1", "test.pdf", "application/pdf", 1024
+        )
+        resolver_dependencies["attachment_repository"].get_artifacts.return_value = [
+            _artifact_row("att_1", "complete", "key-complete", char_count=500),
+            _artifact_row("att_1", "simplified", "key-simplified", char_count=50),
+        ]
+        resolver_dependencies["document_store"].get.return_value = b'{"ciphertext":"data"}'
+
+        resolver = DocumentArtifactResolver(
+            **resolver_dependencies, artifact_max_chars=1_000
+        )
+
+        await resolver.resolve(["att_1"])
+
+        resolver_dependencies["document_store"].get.assert_called_once_with("key-complete")
+
+    @pytest.mark.asyncio
+    async def test_resolve_falls_back_to_simplified_when_complete_exceeds_char_limit(
+        self, resolver_dependencies
+    ):
+        """complete is skipped in favour of simplified when char_count exceeds the budget."""
+        resolver_dependencies["attachment_repository"].get.return_value = _attachment_row(
+            "att_1", "test.pdf", "application/pdf", 1024
+        )
+        resolver_dependencies["attachment_repository"].get_artifacts.return_value = [
+            _artifact_row("att_1", "complete", "key-complete", char_count=5_000),
+            _artifact_row("att_1", "simplified", "key-simplified", char_count=50),
+        ]
+        resolver_dependencies["document_store"].get.return_value = b'{"ciphertext":"data"}'
+
+        resolver = DocumentArtifactResolver(
+            **resolver_dependencies, artifact_max_chars=1_000
+        )
+
+        await resolver.resolve(["att_1"])
+
+        resolver_dependencies["document_store"].get.assert_called_once_with("key-simplified")
 
     @pytest.mark.asyncio
     async def test_resolve_multiple_attachments(self, resolver_dependencies):

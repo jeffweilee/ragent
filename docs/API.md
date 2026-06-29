@@ -418,6 +418,7 @@ Same upstream as v2 (`CHATAGENT_API_URL`, `CHATAGENT_AUTH`, rate limit, `CHATAGE
 
 - `threadId` — session id, **server-owned** (Model B): omit it on a brand-new conversation and ragent mints one; the assigned id is echoed back in `RUN_STARTED.threadId` and the client reuses it on every later turn.
 - `messages[].id` — **currently not used by ragent**: the client's optimistic id. The proxy ignores it (only the last `role="user"` message text is forwarded); the upstream assigns the authoritative `messageId` returned in the stream / session history — never key on this value server-side. Rationale: `docs/00_spec.md §3.4.7` (Session id ownership).
+- `attachmentIds` — optional list of previously-uploaded attachment ids (see [Attachments](#attachments-chatagentv3attachments)) to resolve into an `<attachments>` block inside the `<hidden>` preamble. Capped at `ATTACHMENT_MAX_FILES` (default 10, env-configurable) per turn; exceeding the cap is a `RUN_ERROR` (`code = ATTACHMENT_TOO_MANY_FILES`) raised before any resolver I/O, never an HTTP 413.
 
 ```json
 {

@@ -12,6 +12,11 @@ from ragent.security.ast_cipher import ASTDecryptionError
 
 logger = structlog.get_logger(__name__)
 
+# Spec default; composition.py reads ATTACHMENT_ARTIFACT_MAX_CHARS env and
+# passes the runtime value here — mirrors ATTACHMENT_MAX_SIZE_BYTES's split
+# in chat_attachment_service.py.
+ARTIFACT_MAX_CHARS_DEFAULT = 10_000
+
 if TYPE_CHECKING:
     from ragent.repositories.attachment_repository import AttachmentRepository
     from ragent.security.ast_cipher import ASTCipher
@@ -31,10 +36,12 @@ class DocumentArtifactResolver:
         document_store: DocumentStore,
         ast_cipher: ASTCipher,
         attachment_repository: AttachmentRepository,
+        artifact_max_chars: int = ARTIFACT_MAX_CHARS_DEFAULT,
     ):
         self._doc_store = document_store
         self._ast_cipher = ast_cipher
         self._repo = attachment_repository
+        self._artifact_max_chars = artifact_max_chars
 
     async def resolve(self, attachment_ids: list[str]) -> str | None:
         """Resolve attachment IDs to a formatted <attachments> block.
@@ -76,10 +83,17 @@ class DocumentArtifactResolver:
             # Optionally include decrypted AST (simplified variant for context)
             artifacts = await self._repo.get_artifacts(att_id)
             if artifacts:
-                # Prefer simplified, fallback to complete
+                # Prefer complete, but fall back to simplified when complete
+                # would blow the context-window budget (char_count is
+                # computed once at artifact-creation time — no decrypt
+                # needed to make this decision).
                 artifact_by_variant = {a.variant: a for a in artifacts}
-                selected = artifact_by_variant.get("simplified") or artifact_by_variant.get(
-                    "complete"
+                complete = artifact_by_variant.get("complete")
+                simplified = artifact_by_variant.get("simplified")
+                selected = (
+                    complete
+                    if complete and complete.char_count <= self._artifact_max_chars
+                    else simplified
                 )
 
                 if selected:

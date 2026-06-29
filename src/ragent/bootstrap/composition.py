@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from ragent.bootstrap.auth_mode import AuthMode, parse_auth_mode
 from ragent.services.chat_attachment_service import ATTACHMENT_MAX_SIZE_BYTES_DEFAULT
+from ragent.services.document_artifact_resolver import ARTIFACT_MAX_CHARS_DEFAULT
 
 if TYPE_CHECKING:
     from ragent.repositories.attachment_repository import AttachmentRepository
@@ -88,6 +89,10 @@ class Container:
     chat_attachment_service: ChatAttachmentService | None = None
     document_artifact_resolver: DocumentArtifactResolver | None = None
     attachment_max_size_bytes: int = ATTACHMENT_MAX_SIZE_BYTES_DEFAULT
+    # T-CAT.W16 — cap on how many attachment_ids a single /chatagent/v3 turn
+    # may resolve (DocumentArtifactResolver.resolve() does one DB + storage
+    # round-trip per id).
+    attachment_max_files: int = 10
 
 
 def _build_chatagent_agent_factory(
@@ -365,6 +370,14 @@ def build_container() -> Container:
     attachment_max_size_bytes = _int_env(
         "ATTACHMENT_MAX_SIZE_BYTES", ATTACHMENT_MAX_SIZE_BYTES_DEFAULT
     )
+    # T-CAT.W16 — context-window budget gate: DocumentArtifactResolver falls
+    # back to the simplified variant when complete's char_count exceeds this.
+    attachment_artifact_max_chars = _int_env(
+        "ATTACHMENT_ARTIFACT_MAX_CHARS", ARTIFACT_MAX_CHARS_DEFAULT
+    )
+    # T-CAT.W16 — cap on attachment_ids per /chatagent/v3 turn (each id costs
+    # one DB + storage round-trip in DocumentArtifactResolver.resolve()).
+    attachment_max_files = _int_env("ATTACHMENT_MAX_FILES", 10)
     retrieval_pipeline = build_retrieval_pipeline(
         document_store=document_store,
         doc_repo=doc_repo,
@@ -431,6 +444,7 @@ def build_container() -> Container:
             document_store=attachment_document_store,
             ast_cipher=ast_cipher,
             attachment_repository=attachment_repository,
+            artifact_max_chars=attachment_artifact_max_chars,
         )
         chat_attachment_service = ChatAttachmentService(
             document_store=attachment_document_store,
@@ -521,6 +535,7 @@ def build_container() -> Container:
         chat_attachment_service=chat_attachment_service,
         document_artifact_resolver=document_artifact_resolver,
         attachment_max_size_bytes=attachment_max_size_bytes,
+        attachment_max_files=attachment_max_files,
     )
 
 

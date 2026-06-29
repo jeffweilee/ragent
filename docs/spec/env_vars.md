@@ -111,6 +111,8 @@
 | `INGEST_FILE_MAX_BYTES`                | `52428800`      | v2: 50 MB cap on file-type ingest size (HEAD-probe at API time); 413 on overrun. |
 | `INGEST_LIST_MAX_LIMIT`               | `100`            | `GET /ingest/v1?limit=` upper bound (§4.1, B7). |
 | `ATTACHMENT_MAX_SIZE_BYTES`           | `52428800`       | 50 MB cap on chat-attachment upload bytes. `ChatAttachmentService.upload()` raises `FileTooLarge` over this; the router additionally rejects on `Content-Length` before reading the body. 413 `ATTACHMENT_TOO_LARGE` on overrun (T-CAT). |
+| `ATTACHMENT_ARTIFACT_MAX_CHARS`       | `10000`          | Context-window budget gate: `DocumentArtifactResolver` selects the `complete` artifact variant only when its (pre-computed) `char_count` is at or under this; otherwise falls back to `simplified`. No decrypt needed to make the decision (T-CAT.W16). |
+| `ATTACHMENT_MAX_FILES`                | `10`             | Max `attachment_ids` accepted per `/chatagent/v3` turn — each id costs one DB + storage round-trip in `DocumentArtifactResolver.resolve()`. RUN_ERROR `ATTACHMENT_TOO_MANY_FILES` over a 200 stream on overrun, never an HTTP 4xx (v3 contract) (T-CAT.W16). |
 | `INGEST_MAX_ARCHIVE_MEMBERS`          | `5000`           | DOCX/PPTX zip-archive preflight: max entries in `infolist()`; 413 `INGEST_ARCHIVE_UNSAFE` on overrun (T-SEC.3/.4). |
 | `INGEST_MAX_ARCHIVE_RATIO`            | `100`            | DOCX/PPTX zip-archive preflight: max `sum(file_size) / len(raw)` ratio; 413 `INGEST_ARCHIVE_UNSAFE` on overrun. |
 | `INGEST_MAX_ARCHIVE_EXPANDED_BYTES`   | `524288000`      | DOCX/PPTX zip-archive preflight: 500 MB cap on `sum(file_size)` and per-member `file_size`; 413 `INGEST_ARCHIVE_UNSAFE` on overrun. |

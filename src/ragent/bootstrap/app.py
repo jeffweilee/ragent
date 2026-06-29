@@ -482,6 +482,7 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
                 stream_idle_timeout=_float_env("CHATAGENT_STREAM_IDLE_TIMEOUT_SECONDS", 30.0),
                 document_artifact_resolver=container.document_artifact_resolver,
                 chat_attachment_service=container.chat_attachment_service,
+                attachment_max_files=container.attachment_max_files,
             )
         )
     if container.chat_attachment_service is not None:

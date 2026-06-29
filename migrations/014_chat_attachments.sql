@@ -53,12 +53,18 @@ CREATE TABLE IF NOT EXISTS chat_attachments (
 -- (docs/00_rule.md "No Physical Foreign Keys" — relationships belong only
 -- in application-level ORM models); `uq_attachment_variant`'s leftmost
 -- prefix already covers attachment_id lookups.
+-- `char_count` is the rendered markdown's character length, computed once at
+-- artifact-creation time (ChatAttachmentService.process(), free — the
+-- plaintext string is already in memory before encryption). DocumentArtifactResolver
+-- uses it to gate `complete` vs `simplified` selection against
+-- ATTACHMENT_ARTIFACT_MAX_CHARS without decrypting the artifact first.
 CREATE TABLE IF NOT EXISTS chat_attachment_artifacts (
   id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   attachment_id CHAR(26)     NOT NULL,
   variant       ENUM('complete','simplified') NOT NULL,
   storage_key   VARCHAR(256) NOT NULL,
   content_type  VARCHAR(64)  NOT NULL DEFAULT 'text/markdown',
+  char_count    INT UNSIGNED NOT NULL DEFAULT 0,
   created_at    DATETIME(6)  NOT NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uq_attachment_variant (attachment_id, variant)

@@ -295,6 +295,17 @@ class TestChatAttachmentService:
         assert all(call.kwargs["content_type"] == "text/markdown" for call in calls)
 
     @pytest.mark.asyncio
+    async def test_process_passes_artifact_char_count_to_repository(self, service_dependencies):
+        """char_count is len(rendered markdown) per variant, passed to add_artifact."""
+        service = ChatAttachmentService(**service_dependencies)
+
+        await service.process("ATT001")
+
+        calls = service_dependencies["attachment_repository"].add_artifact.call_args_list
+        char_counts_by_variant = {call.kwargs["variant"]: call.kwargs["char_count"] for call in calls}
+        assert char_counts_by_variant == {"complete": len("[1] ast"), "simplified": len("[1] ast")}
+
+    @pytest.mark.asyncio
     async def test_process_no_op_when_claim_returns_none(self, service_dependencies):
         """Process gracefully no-ops (no exception) when the row is already claimed/terminal."""
         service_dependencies["attachment_repository"].claim_for_processing.return_value = None
@@ -363,6 +374,7 @@ class TestChatAttachmentService:
                 variant="complete",
                 storage_key="attachments/thread-1/ATT001/ast-complete",
                 content_type="text/markdown",
+                char_count=7,
                 created_at=None,
             ),
             ArtifactRow(
@@ -370,6 +382,7 @@ class TestChatAttachmentService:
                 variant="simplified",
                 storage_key="attachments/thread-1/ATT001/ast-simplified",
                 content_type="text/markdown",
+                char_count=7,
                 created_at=None,
             ),
         ]

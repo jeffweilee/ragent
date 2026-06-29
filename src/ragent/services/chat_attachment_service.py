@@ -180,6 +180,10 @@ class ChatAttachmentService:
 
             complete_ast_str = self._ast_to_markdown(complete_docs)
             simplified_ast_str = self._ast_to_markdown(simplified_docs)
+            char_counts = {
+                "complete": len(complete_ast_str),
+                "simplified": len(simplified_ast_str),
+            }
 
             stage = "encrypt_ast"
             ast_variants = {
@@ -208,6 +212,7 @@ class ChatAttachmentService:
                     variant=variant,
                     storage_key=key,
                     content_type=content_type,
+                    char_count=char_counts[variant],
                 )
 
             # Promote to READY only after artifacts are durably persisted.

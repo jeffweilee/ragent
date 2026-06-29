@@ -112,13 +112,17 @@ CREATE TABLE IF NOT EXISTS chat_attachments (
 -- No physical FK on attachment_id (docs/00_rule.md "No Physical Foreign
 -- Keys" — relationships belong only in application-level ORM models).
 -- uq_attachment_variant's leftmost prefix already covers attachment_id
--- lookups. content_type folded in from the former 015 revision.
+-- lookups. content_type folded in from the former 015 revision. char_count
+-- (rendered markdown length, computed at creation time) gates
+-- complete-vs-simplified selection in DocumentArtifactResolver against
+-- ATTACHMENT_ARTIFACT_MAX_CHARS without decrypting the artifact first.
 CREATE TABLE IF NOT EXISTS chat_attachment_artifacts (
   id            BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
   attachment_id CHAR(26)     NOT NULL,
   variant       ENUM('complete','simplified') NOT NULL,
   storage_key   VARCHAR(256) NOT NULL,
   content_type  VARCHAR(64)  NOT NULL DEFAULT 'text/markdown',
+  char_count    INT UNSIGNED NOT NULL DEFAULT 0,
   created_at    DATETIME(6)  NOT NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uq_attachment_variant (attachment_id, variant)

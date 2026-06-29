@@ -75,6 +75,7 @@ def create_chatagent_v3_router(
     stream_producer_workers: int = 64,
     document_artifact_resolver: DocumentArtifactResolver | None = None,
     chat_attachment_service: ChatAttachmentService | None = None,
+    attachment_max_files: int | None = None,
 ) -> APIRouter:
     router = APIRouter(prefix="/chatagent/v3")
 
@@ -122,14 +123,11 @@ def create_chatagent_v3_router(
                     user_id=user_id,
                     error_code=HttpErrorCode.CHATAGENT_RATE_LIMITED,
                 )
-                return StreamingResponse(
-                    _error_stream(
-                        "Too Many Requests",
-                        HttpErrorCode.CHATAGENT_RATE_LIMITED,
-                        body.run_id,
-                        body.thread_id,
-                    ),
-                    media_type="text/event-stream",
+                return _run_error_response(
+                    "Too Many Requests",
+                    HttpErrorCode.CHATAGENT_RATE_LIMITED,
+                    body.run_id,
+                    body.thread_id,
                 )
 
             # Resolve a user-selected skill (forwardedProps.skillId) and inject
@@ -149,17 +147,32 @@ def create_chatagent_v3_router(
                         user_id=user_id,
                         error_code=HttpErrorCode.SKILL_NOT_FOUND,
                     )
-                    return StreamingResponse(
-                        _error_stream(
-                            "skill not found",
-                            HttpErrorCode.SKILL_NOT_FOUND,
-                            body.run_id,
-                            body.thread_id,
-                        ),
-                        media_type="text/event-stream",
+                    return _run_error_response(
+                        "skill not found",
+                        HttpErrorCode.SKILL_NOT_FOUND,
+                        body.run_id,
+                        body.thread_id,
                     )
                 body = _inject_skill(body, instructions)
                 logger.info("chatagent_v3.skill_applied", user_id=user_id, skill_id=skill_id)
+
+            if (
+                attachment_max_files is not None
+                and body.attachment_ids
+                and len(body.attachment_ids) > attachment_max_files
+            ):
+                logger.warning(
+                    "chatagent_v3.attachment_too_many_files",
+                    user_id=user_id,
+                    attachment_count=len(body.attachment_ids),
+                    error_code=HttpErrorCode.ATTACHMENT_TOO_MANY_FILES,
+                )
+                return _run_error_response(
+                    "too many attachments",
+                    HttpErrorCode.ATTACHMENT_TOO_MANY_FILES,
+                    body.run_id,
+                    body.thread_id,
+                )
 
             raw_token = request.headers.get(jwt_header.lower()) or ""
             assert agent_factory is not None  # this route only registers when it is
@@ -220,14 +233,11 @@ def create_chatagent_v3_router(
             user_id = x_user_id or "anonymous"
 
             def expired() -> StreamingResponse:
-                return StreamingResponse(
-                    _error_stream(
-                        "stream no longer resumable",
-                        HttpErrorCode.CHATAGENT_STREAM_EXPIRED,
-                        "",
-                        thread_id,
-                    ),
-                    media_type="text/event-stream",
+                return _run_error_response(
+                    "stream no longer resumable",
+                    HttpErrorCode.CHATAGENT_STREAM_EXPIRED,
+                    "",
+                    thread_id,
                 )
 
             # Reject a malformed Last-Event-ID up front: an arbitrary string would
@@ -381,6 +391,15 @@ def _error_stream(
     message: str, code: HttpErrorCode, run_id: str, thread_id: str | None
 ) -> Generator[str, None, None]:
     yield to_sse(RunErrorEvent(message=message, code=code, run_id=run_id, thread_id=thread_id))
+
+
+def _run_error_response(
+    message: str, code: HttpErrorCode, run_id: str, thread_id: str | None
+) -> StreamingResponse:
+    """RUN_ERROR over a 200 stream — the v3 contract for every failure mode."""
+    return StreamingResponse(
+        _error_stream(message, code, run_id, thread_id), media_type="text/event-stream"
+    )
 
 
 def _extract_skill_id(forwarded_props: object) -> str | None:

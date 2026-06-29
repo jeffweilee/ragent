@@ -442,6 +442,7 @@ flowchart TD
 | `ATTACHMENT_TOO_LARGE` | 413 | size exceeds cap |
 | `ATTACHMENT_PARSE_FAILED` | 422 | `chat_attachment` pipeline raised during AST build |
 | `ATTACHMENT_NOT_FOUND` | 404 | `GET`/`DELETE /chatagent/v3/attachments/{id}` on unknown or foreign-owned id (T-CAT.W2, T-CAT.W11) |
+| `ATTACHMENT_TOO_MANY_FILES` | 413 — surfaced as `RUN_ERROR` over a 200 SSE stream, never a literal HTTP 413 (v3 contract) | `POST /chatagent/v3` `body.attachmentIds` exceeds `ATTACHMENT_MAX_FILES` (T-CAT.W16) |
 | `ATTACHMENT_FEATURE_DISABLED` | n/a — `TaskErrorCode`, persisted to `chat_attachments.error_code` | worker picked up `attachment.process` on a process with `RAGENT_KEK_BASE64` unset (§7) |
 
 ## 10. DB schema (`014_chat_attachments.sql`)
@@ -458,7 +459,12 @@ artifact's plaintext content (currently always `text/markdown` — see
 `ARTIFACT_CONTENT_TYPE` in §2) as a real, queryable DB column, set once at
 artifact-creation time. It is **not** duplicated inside the encrypted
 envelope (§5) — `ASTCipher.decrypt_ast()` never reads envelope metadata
-back, so storing it there would be write-only.
+back, so storing it there would be write-only. `char_count` is
+`len()` of the rendered plaintext markdown for that variant, computed once
+at artifact-creation time before encryption (free — the string is already
+in memory) and used by `DocumentArtifactResolver` to gate `complete` vs
+`simplified` selection against `ATTACHMENT_ARTIFACT_MAX_CHARS` (T-CAT.W16)
+without decrypting first.
 
 Authoritative DDL (`migrations/014_chat_attachments.sql`, folded into
 `migrations/schema.sql`):
@@ -489,6 +495,7 @@ CREATE TABLE IF NOT EXISTS chat_attachment_artifacts (
   variant       ENUM('complete','simplified') NOT NULL,
   storage_key   VARCHAR(256) NOT NULL,
   content_type  VARCHAR(64)  NOT NULL DEFAULT 'text/markdown',
+  char_count    INT UNSIGNED NOT NULL DEFAULT 0,
   created_at    DATETIME(6)  NOT NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uq_attachment_variant (attachment_id, variant)
@@ -539,6 +546,8 @@ indistinguishable: both yield `404 ATTACHMENT_NOT_FOUND` (or an empty list)
 | `RAGENT_KEK_BASE64` | *(unset → feature disabled)* | Base64 KEK (32 bytes). Set together with the var below to register the attachment routes and construct `KeyManager`/`ASTCipher` (§5). Documented in `docs/spec/env_vars.md` §4.6.4. |
 | `RAGENT_ENCRYPTED_DEK_BASE64` | *(required when `RAGENT_KEK_BASE64` set)* | Base64 DEK, AES-Key-Wrapped under the KEK; unwrapped once at boot (§5). Documented in `docs/spec/env_vars.md` §4.6.4. |
 | `ATTACHMENT_MAX_SIZE_BYTES` | `52428800` (50 MB) | Upload size cap — `ChatAttachmentService.upload()` raises `FileTooLarge` over this, surfaced as `413 ATTACHMENT_TOO_LARGE`. Read via `_int_env()` in `composition.py` (DIP — no other module reads this var). Documented in `docs/spec/env_vars.md` §4.6.6. |
+| `ATTACHMENT_ARTIFACT_MAX_CHARS` | `10000` | Context-window budget — `DocumentArtifactResolver` selects the `complete` artifact only when its `char_count` is at or under this; otherwise falls back to `simplified` (§10, T-CAT.W16). Read via `_int_env()` in `composition.py`. Documented in `docs/spec/env_vars.md` §4.6.6. |
+| `ATTACHMENT_MAX_FILES` | `10` | Cap on `body.attachmentIds` length per `POST /chatagent/v3` turn — over this is a `RUN_ERROR ATTACHMENT_TOO_MANY_FILES` (§9, T-CAT.W16). Read via `_int_env()` in `composition.py`. Documented in `docs/spec/env_vars.md` §4.6.6. |
 
 Full inventory of every other timeout/threshold the process reads:
 [`docs/spec/env_vars.md`](env_vars.md).

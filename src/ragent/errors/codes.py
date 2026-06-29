@@ -87,6 +87,10 @@ class HttpErrorCode(StrEnum):
     ATTACHMENT_TOO_LARGE = "ATTACHMENT_TOO_LARGE"  # 413
     ATTACHMENT_PARSE_FAILED = "ATTACHMENT_PARSE_FAILED"  # 422
     ATTACHMENT_NOT_FOUND = "ATTACHMENT_NOT_FOUND"  # 404 — attachment_id not in DB
+    # 413 — /chatagent/v3 body.attachment_ids exceeds ATTACHMENT_MAX_FILES.
+    # Surfaces as a RUN_ERROR over a 200 stream, never a literal HTTP 413
+    # (v3 contract — see chatagent_v3.py module docstring).
+    ATTACHMENT_TOO_MANY_FILES = "ATTACHMENT_TOO_MANY_FILES"  # 413
 
     # Embedding-model lifecycle (B50, main). 409 on state-machine rejection;
     # 409 on cutover preflight failure; 422 on invalid promote payload;

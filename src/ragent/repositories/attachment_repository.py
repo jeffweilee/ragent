@@ -53,6 +53,7 @@ class ArtifactRow:
     variant: str
     storage_key: str
     content_type: str
+    char_count: int
     created_at: datetime.datetime
 
     @classmethod
@@ -62,6 +63,7 @@ class ArtifactRow:
             variant=m["variant"],
             storage_key=m["storage_key"],
             content_type=m["content_type"],
+            char_count=m["char_count"],
             created_at=m["created_at"],
         )
 
@@ -244,15 +246,20 @@ class AttachmentRepository:
     # ------------------------------------------------------------------
 
     async def add_artifact(
-        self, attachment_id: str, variant: str, storage_key: str, content_type: str
+        self,
+        attachment_id: str,
+        variant: str,
+        storage_key: str,
+        content_type: str,
+        char_count: int,
     ) -> None:
         await self._execute(
             text(
                 """
                 INSERT INTO chat_attachment_artifacts
-                    (attachment_id, variant, storage_key, content_type, created_at)
+                    (attachment_id, variant, storage_key, content_type, char_count, created_at)
                 VALUES
-                    (:attachment_id, :variant, :storage_key, :content_type, NOW(6))
+                    (:attachment_id, :variant, :storage_key, :content_type, :char_count, NOW(6))
                 """
             ),
             {
@@ -260,6 +267,7 @@ class AttachmentRepository:
                 "variant": variant,
                 "storage_key": storage_key,
                 "content_type": content_type,
+                "char_count": char_count,
             },
         )
 
