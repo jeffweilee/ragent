@@ -58,9 +58,9 @@ MIGRATION_CHAIN = [
     # {"version": 15, "upgrade": "015_add_index.sql", "downgrade": "015_drop_index.sql"},
 ]
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-UPGRADE_DIR = os.path.join(BASE_DIR, "sql", "upgrade")
-DOWNGRADE_DIR = os.path.join(BASE_DIR, "sql", "downgrade")
+BASE_DIR = Path(__file__).resolve().parent
+UPGRADE_DIR = BASE_DIR / "sql" / "upgrade"
+DOWNGRADE_DIR = BASE_DIR / "sql" / "downgrade"
 
 
 def _sync_dsn() -> str:
@@ -100,12 +100,12 @@ def verify_and_get_chain() -> list[dict]:
         if v != expected_version:
             raise ValueError(f"MIGRATION_CHAIN 版本號未連續！預期是 {expected_version} 但收到 {v}")
 
-        up_path = os.path.join(UPGRADE_DIR, item["upgrade"])
-        down_path = os.path.join(DOWNGRADE_DIR, item["downgrade"])
+        up_path = UPGRADE_DIR / item["upgrade"]
+        down_path = DOWNGRADE_DIR / item["downgrade"]
 
-        if not os.path.exists(up_path):
+        if not up_path.exists():
             raise FileNotFoundError(f"找不到升級 SQL: {up_path}")
-        if not os.path.exists(down_path):
+        if not down_path.exists():
             raise FileNotFoundError(f"找不到降級 SQL: {down_path}")
 
         verified_chain.append(
@@ -148,7 +148,7 @@ def _upgrade_target_version(target: str | None, current_v: int, max_v: int) -> i
 def _downgrade_target_version(target: str, current_v: int) -> int:
     if target == "base":
         return 0
-    steps = 1 if target == "-1" else int(target.replace("-", ""))
+    steps = int(target.replace("-", ""))
     return max(current_v - steps, 0)
 
 
