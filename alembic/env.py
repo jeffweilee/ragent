@@ -152,7 +152,11 @@ def run_migrations_offline() -> None:
 
 
 def _is_upgrade_target(target: str | None, current_v: int) -> bool:
-    if target is None or target in ("head", "up") or (isinstance(target, str) and target.startswith("+")):
+    if (
+        target is None
+        or target in ("head", "up")
+        or (isinstance(target, str) and target.startswith("+"))
+    ):
         return True
     if isinstance(target, str) and target.isdigit():
         # Bare version number (e.g. "alembic upgrade 012") — direction
