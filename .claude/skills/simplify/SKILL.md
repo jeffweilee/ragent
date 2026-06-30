@@ -62,6 +62,7 @@ Review the same changes for hacky patterns:
 7. **Unnecessary comments**: comments explaining WHAT the code does, narrating the change, or referencing the task/caller — delete; keep only non-obvious WHY (hidden constraints, subtle invariants, workarounds)
 8. **Bare `MagicMock()` on typed collaborators**: any `MagicMock()` (no `spec=`) used as a stand-in for a real service/client/broker class — should be `MagicMock(spec=RealClass)` or `create_autospec(RealClass)`. Bare mocks accept any attribute and hide `AttributeError` bugs that only surface at runtime. (`docs/00_rule.md` §Test Log Capture)
 9. **SQL `split(";")` without strip-then-split**: any code that loads `.sql` text and splits by `";"` without first stripping `--` comments line-by-line — use `iter_statements(sql)` from `ragent.bootstrap.init_schema`. (`docs/00_rule.md` §Database Practices)
+10. **Mock return-value type mismatch**: a `return_value`/`side_effect` for a typed method (dataclass, Pydantic model, ORM row) set to a `dict` or bare `MagicMock()` instead of a real instance — `spec=` only verifies the call surface, not the returned shape. (`docs/00_rule.md` §Test Log Capture)
 
 #### Agent 3: Efficiency Review
 

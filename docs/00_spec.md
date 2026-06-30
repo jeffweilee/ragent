@@ -85,7 +85,7 @@ stores such as ES chunks; they do not delete MinIO bytes.
 > → _BudgetChunker (1000 target / 1500 max / 100 overlap, mime-agnostic)
 > → DocumentEmbedder (bge-m3 batched; embeds + bulk-writes to ES via DuplicatePolicy.OVERWRITE)
 > ```
-> Each splitter sets `meta["raw_content"]` = exact byte slice (byte-stable, R4/S25). `_BudgetChunker` is the sole budget enforcer. `chunks_v1` stores both `content` (normalized, BM25-analyzed) and `raw_content` (`index: false`); LLM context and citations use `raw_content`. Retry idempotency: `DuplicatePolicy.OVERWRITE` on ES write replaces existing chunks by `chunk_id` — no `_IdempotencyClean` step exists in the Haystack graph.
+> Each splitter sets `meta["raw_content"]` = exact byte slice (byte-stable, R4/S25). `_BudgetChunker` is the sole budget enforcer. `chunks_v1`'s mapping declares `text` (normalized, BM25-analyzed, `icu_text`) and `raw_content` (`index: false`) as the two content fields; LLM context and citations use `raw_content`. **Known drift (issue #209):** `DocumentEmbedder._run_dual()` currently bulk-writes `body["content"] = doc.content` — an unmapped field — and never populates `meta["text"]`, so `chunks_v1.text` is not actually populated by the live writer; BM25 search against `text` is non-functional until the writer is fixed. Retry idempotency: `DuplicatePolicy.OVERWRITE` on ES write replaces existing chunks by `chunk_id` — no `_IdempotencyClean` step exists in the Haystack graph.
 
 **Performance & timeout discipline:**
 - Retry idempotency is handled entirely by `DuplicatePolicy.OVERWRITE` in `DocumentEmbedder` — the worker calls `container.ingest_pipeline.run()` directly with no pre-pipeline `fan_out_delete` step. `fan_out_delete` is used only on the delete/DELETING path (service layer + reconciler), not on the ingest-retry path.
@@ -351,61 +351,9 @@ Standalone FastMCP service that federates arbitrary third-party REST APIs as MCP
 
 ### 3.10 Skills — per-user reusable instruction presets (T-SK)
 
-A **skill** is a user-owned, reusable instruction preset (a persona / system
-instruction the user can attach to a `/chatagent/v3` turn). Skills are private:
-the owner is the resolved `user_id` (auth/middleware), never a body field, and
-**every** repository statement filters by `user_id`, so one user can never read
-or mutate another's skills (isolation enforced at the SQL layer + the DB
-`(user_id, name)` UNIQUE key, not by an application check alone).
+Per-user, owner-isolated CRUD over reusable instruction presets, injected into a `/chatagent/v3` turn via `forwardedProps.skillId` and stripped from served session history (same `<hidden>` mechanism as `context`/`state`). Includes a built-in read-only `skill-creator` preset.
 
-**Built-in preset skills (T-SK):** some skills are **built in** — every user has
-them from the start without creating them. Presets live in code
-(`services/skill_presets.py`), not the DB, are **read-only**, and are merged into
-the owner-scoped `list`/`get`/`resolve` paths (pinned ahead of the user's own
-skills). The first preset is **`skill-creator`** (`skill_id="skill-creator"`),
-whose instructions guide the agent to **draft** a complete skill (name /
-description / instructions) from the user's intent — proposing a first version
-rather than interrogating field by field — and, on confirmation, call the
-`create_skill` MCP tool to save it. Adding more presets later =
-one entry in the registry (no migration, no per-user seeding). Constraints: a user skill may not take a
-preset's `name` (case-insensitive, matching the DB's utf8mb4 collation → `409
-SKILL_NAME_CONFLICT`) — on `PUT` this is reported only **after** the target row
-is confirmed owned, so a foreign/missing id stays `404` (foreign and missing are
-indistinguishable); `PUT`/`DELETE` on a preset `skill_id` → `409 SKILL_READONLY`;
-`resolve` of a preset returns its instructions (so
-`forwardedProps.skillId="skill-creator"` works in `/chatagent/v3`).
-
-**CRUD — `/skills/v1`** (always registered; no env gate):
-
-- `POST /skills/v1` → `201` `{skill_id, name, description, instructions, enabled, readonly, created_at, updated_at}`.
-  Body `{name, description?, instructions, enabled?}` (`enabled` defaults `true`).
-  `readonly` is a server-derived response field (not a DB column): `true` for
-  built-in presets, `false` for the user's own skills — so the frontend can
-  flag built-ins without hard-coding preset ids.
-- `GET /skills/v1` → `{ "skills": [ … ] }` (owner's skills, newest first; empty array, never `null`).
-- `GET /skills/v1/{skill_id}` → the skill, or `404 SKILL_NOT_FOUND` when absent **or owned by another user** (a foreign skill is indistinguishable from a missing one — no existence oracle).
-- `PUT /skills/v1/{skill_id}` → full replace (same body as POST) → the updated skill.
-- `DELETE /skills/v1/{skill_id}` → `204`.
-- Errors: `404 SKILL_NOT_FOUND` · `409 SKILL_NAME_CONFLICT` (duplicate `(user_id, name)`) · `422 SKILL_VALIDATION` (schema/field bounds) · `422 MISSING_USER_ID` (no resolved identity).
-
-**Conversation flow — referencing a skill on a `/chatagent/v3` turn:**
-
-```
-client                         ragent /chatagent/v3                upstream ChatAgent
-  │  RunAgentInput +                  │                                   │
-  │  forwardedProps:{skillId}  ─────▶ │  resolve_instructions(user_id,    │
-  │                                   │     skillId)  ── owner-scoped ──▶ skills(DB)
-  │                                   │  append ContextItem(instructions) │
-  │                                   │     to RunAgentInput.context       │
-  │                                   │  ── existing caller wraps it in ──▶│ reads <hidden>
-  │  ◀── twp-ai SSE (RUN_*) ──────────│     <hidden><context>…</context>   │   context, runs
-```
-
-- The skill_id rides in `forwardedProps.skillId` (the AG-UI extensibility field) — no change to the twp-ai `RunAgentInput` contract.
-- The router resolves it **owner-scoped** and appends the instructions as a `ContextItem`, reusing the existing machine-context path: the upstream caller wraps `context` into the `<hidden><context>…</context></hidden>` block. This deliberately respects two existing invariants — (a) **upstream rule:** the upstream agent owns its own loop and reads the `<hidden>` block as machine-supplied context (we do not impose a structural persona), and (b) **memory storage:** the upstream persists every turn verbatim by `session=threadId`, and the v3 session-read (`strip_machine_context`) strips the `<hidden>` block, so the injected instructions never leak into the rendered/served history — identical treatment to client `context`/`state`. Instructions are re-sent each turn (keeping the persona active across a long conversation) but are stripped on read, so served memory stays clean.
-- A missing / foreign / **disabled** skill is a hard error surfaced as a `RUN_ERROR` event (`code=SKILL_NOT_FOUND`) over the `200` stream — v3 never returns an HTTP 4xx — and the upstream is never called for that turn.
-
-**Data structure** — table `skills` (migration `013_skills.sql`): surrogate `id BIGINT` PK; `skill_id CHAR(26)` UUIDv7→Crockford Base32 business key (UNIQUE); `user_id VARCHAR(64)`; `name VARCHAR(128)`; `description VARCHAR(512)`; `instructions MEDIUMTEXT` (not `TEXT` — the 16,384-char cap is 65,536 bytes under utf8mb4 worst case, one past `TEXT`'s 65,535-byte limit); `enabled BOOLEAN`; `created_at`/`updated_at DATETIME(6)`. `UNIQUE (user_id, name)`; index `(user_id, created_at, id)` backs the newest-first list without a filesort (point lookups use `uq_skill_id`). No physical FK (per §Database Practices).
+> Full contract: [`docs/spec/skills.md`](spec/skills.md) — CRUD endpoints, conversation flow, `skills` table schema.
 
 ---
 
@@ -413,53 +361,9 @@ client                         ragent /chatagent/v3                upstream Chat
 
 ### 4.1 Endpoints
 
-> **v2 OVERRIDE for `POST /ingest`** — JSON body only (no multipart).
-> ```jsonc
-> // ingest_type=inline
-> { "ingest_type":"inline", "mime_type":"text/markdown", "content":"# Title\n…",
->   "source_id":"DOC-1", "source_app":"confluence", "source_title":"Q3 OKR",
->   "source_meta":"eng",              // optional, free-format ≤ 1024
->   "source_url":"https://wiki/…" }   // optional, opaque ≤ 2048
-> // ingest_type=file
-> { "ingest_type":"file", "mime_type":"text/html",
->   "minio_site":"tenant-eu-1", "object_key":"reports/2025.html",
->   "source_id":"DOC-2", "source_app":"s3-importer", "source_title":"Annual Report",
->   "source_meta":"finance", "source_url":"https://…" }
-> ```
-> Validation order: discriminator-shape (422) → `mime_type ∈ {text/plain,text/markdown,text/html}` (415) → inline `len(content.encode("utf-8")) ≤ INGEST_INLINE_MAX_BYTES` / file HEAD-probe size ≤ `INGEST_FILE_MAX_BYTES` (413) → `minio_site` resolved against `MinioSiteRegistry` (422 `INGEST_MINIO_SITE_UNKNOWN`) → file HEAD-probe object exists (422 `INGEST_OBJECT_NOT_FOUND`). Worker-side guards run before splitter parse: DOCX/PPTX zip preflight (`INGEST_MAX_ARCHIVE_MEMBERS` / `_RATIO` / `_EXPANDED_BYTES`) → 413 `INGEST_ARCHIVE_UNSAFE` persisted as `documents.error_code` with terminal `FAILED`; PDF page-count cap (`INGEST_MAX_PDF_PAGES`) → 413 `INGEST_PDF_TOO_MANY_PAGES` likewise. Every guard rejection increments `ragent_ingest_rejected_total{reason}` (T-SEC.7).
+All business paths carry a `/v<N>` version segment (§API Endpoint Naming, `00_rule.md`). Covers ingest (incl. v2 JSON-only request override), ops, retrieve, chat, feedback, mcp, health/metrics probes, and the embedding-lifecycle admin routes.
 
-| Method | Path | P1 Auth | Request | Response |
-|---|---|---|---|---|
-| POST   | `/ingest/v1`               | `X-User-Id` | **JSON** (v2, see override above) | `202 { document_id }` |
-| GET    | `/ingest/v1/{id}`          | `X-User-Id` | — | `200 { status, attempt, updated_at }` |
-| GET    | `/ingest/v1?after=&limit=&source_id=&source_app=` | `X-User-Id` | — | `200 { items, next_cursor }` (limit ≤ 100; ordered `document_id DESC`; `source_id`/`source_app` are optional exact-match filters) |
-| DELETE | `/ingest/v1/{id}`          | `X-User-Id` | — | `204` idempotent |
-| POST   | `/ingest/v1/{id}/rerun`    | `X-User-Id` | — | `202 { document_id }` — manual re-dispatch of `ingest.pipeline` for non-READY/non-DELETING rows; `404 INGEST_NOT_FOUND` / `409 INGEST_NOT_RERUNNABLE` per S41. |
-| POST   | `/ingest/v1/upload`        | `X-User-Id` | `multipart/form-data` (server stages to `__default__` MinIO; identical downstream to inline) | `202 { document_id }` |
-| POST   | `/retrieve/v1`             | `X-User-Id` | §3.4.4 schema (`query` required; rest default) | `200 { chunks[] }` per §3.4.4 |
-| POST   | `/chat/v1`                 | `X-User-Id` | §3.4.1 schema (`messages` required; rest default) | `200 application/json` per §3.4.2 |
-| POST   | `/chat/v1/stream`          | `X-User-Id` | §3.4.1 schema | `text/event-stream` per §3.4.3 (`data: {type:delta\|done\|error}`) |
-| POST   | `/feedback/v1`             | `X-User-Id` | §3.4.5 schema | `204` on success; `401`/`410`/`422` `application/problem+json` per §3.4.5. |
-| POST   | `/mcp/v1`               | `<RAGENT_USER_ID_HEADER>` (P1) / `<RAGENT_JWT_HEADER>` (P2) | JSON-RPC 2.0 envelope per §3.8 | `200` with JSON-RPC response envelope; `204` for `notifications/*`. Auth failure (401) returns `application/problem+json` per §3.8.1 (transport-layer). |
-| GET    | `/livez`                | none        | — | `200 {"status":"ok"}` — process up; no dependency probes |
-| GET    | `/startupz`             | none        | — | `200 {"status":"ok"}` once all probes have been green at least once since boot; `503` until then. Latch: flips permanently to ready after first green `/readyz` sweep. |
-| GET    | `/readyz`               | none        | — | `200` if all dep probes pass; else `503 application/problem+json` listing failed deps. Probes: **MariaDB** (`SELECT 1`), **ES** (`GET /_cluster/health` + `analysis-icu` plugin loaded + every `resources/es/*.json` index exists; B26, I5), **Redis broker & rate-limiter** (`PING` against active topology per `REDIS_MODE`; B27), **MinIO** (`ListBuckets`). Each probe ≤ 2 s. |
-| GET    | `/metrics`              | none        | — | `200 text/plain; version=0.0.4` — Prometheus exposition (counters/histograms in §3.7) |
-
-Future-phase auth: JWT verify (auth) + `PermissionClient` post-retrieval gate (permission, OpenFGA-backed) — see §3.5. ES queries remain permission-blind in every phase.
-
-**Embedding lifecycle admin routes (B50)** — zero-downtime model swap; full detail in [`docs/API.md §Embedding Model Lifecycle`](API.md#embedding-model-lifecycle-admin):
-
-| Method | Path | Auth | Purpose |
-|---|---|---|---|
-| POST | `/embedding/v1/promote` | `X-User-Id` | Open migration; PUT ES mapping + enable dual-write → `200 {state:"CANDIDATE"}` |
-| POST | `/embedding/v1/cutover` | `X-User-Id` | Switch reads to candidate (subject to preflight) → `200 {state:"CUTOVER"}` |
-| POST | `/embedding/v1/rollback` | `X-User-Id` | Revert reads to stable → `200 {state:"CANDIDATE"}` |
-| POST | `/embedding/v1/commit` | `X-User-Id` | Promote candidate to stable; retire old field → `200 {state:"IDLE"}` |
-| POST | `/embedding/v1/abort` | `X-User-Id` | Drop candidate → `200 {state:"IDLE"}` |
-| POST | `/embedding/v1/backfill` | `X-User-Id` | Enqueue backfill task → `200 {state, queued}` |
-| GET  | `/embedding/v1/state` | `X-User-Id` | Registry snapshot → `200 {stable, candidate, read, retired}` |
-| GET  | `/embedding/v1/cutover/preflight` | `X-User-Id` | Run gates without action → `200 {pass, gates}` |
+> Full endpoint table + request/response shapes: [`docs/spec/endpoints.md`](spec/endpoints.md)
 
 ### 4.1.1 Error Response Schema (B5)
 
@@ -546,7 +450,7 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 
 > Full schemas: [`docs/spec/data_structures.md`](spec/data_structures.md)
 
-MariaDB tables: `documents`, `feedback`, `system_settings`. ES indexes: `chunks_v1` (content + embeddings), `feedback_v1`. ID format: UUIDv7 → 26-char Crockford Base32.
+MariaDB tables: `documents`, `feedback`, `system_settings`, `skills`, `chat_attachments`, `chat_attachment_artifacts`. ES indexes: `chunks_v1` (text + embeddings), `feedback_v1`. ID format: UUIDv7 → 26-char Crockford Base32.
 
 ---
 

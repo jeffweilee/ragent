@@ -47,12 +47,14 @@ RAGENT_SKILL_INVOCATION_TOKEN=1 bash .claude/hooks/stamp_pre_commit_approved.sh 
 
 ### Agent 2: Domain Boundaries
 
-- Read `docs/00_domain_map.md §三`. Verify no import crosses a forbidden boundary. Common violations to grep for: `pipelines/` importing `repositories/`; any router handler using `Header` with a user-id alias instead of `Depends(get_user_id)` — grep with `grep -rn 'Header.*alias.*[Xx]-[Uu]ser' src/ragent/routers/` (catches both quote styles and case variants); `os.environ` read outside `utility/env.py` or `bootstrap/composition.py`; `services/` importing `routers/`.
+- Read `docs/00_domain_map.md §三` (full table: `docs/spec/dependency_rules.md`). Verify no import crosses a forbidden boundary. Common violations to grep for: `pipelines/` importing `repositories/`; any router handler using `Header` with a user-id alias instead of `Depends(get_user_id)` — grep with `grep -rn 'Header.*alias.*[Xx]-[Uu]ser' src/ragent/routers/` (catches both quote styles and case variants); `os.environ` read outside `utility/env.py` or `bootstrap/composition.py`; `services/` importing `routers/`.
 
 ### Agent 3: Test Coverage & Code Quality
 
 - Verify every new behaviour path has a corresponding test; no dead or unreachable code.
 - Verify no duplication, no hidden coupling, no premature abstraction, no commented-out code.
+- Mock return values must be real instances of the mocked type, not a `dict` or bare `MagicMock()` (`00_rule.md` §Test Log Capture).
+- New `build_container()` constructor branches/kwargs must have a test calling them with the exact kwargs `composition.py` passes in production (`00_rule.md` §Composition Root: Production-Wiring Coverage).
 
 3. Wait for all three agents to complete. Aggregate their findings; if any require fixes, make them and re-stage.
 4. Report LGTM or list findings.

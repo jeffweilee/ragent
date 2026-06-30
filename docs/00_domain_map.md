@@ -62,11 +62,15 @@
 |---|---|
 | `composition.py` | `build_container()` — 唯一配置組裝點；構建所有 singleton |
 | `app.py` | `create_app()` — 掛載 routers、lifespan、middleware |
+| `auth_mode.py` | `RAGENT_AUTH_MODE` 解析的唯一來源 |
+| `guard.py` | 啟動護欄：驗證 `RAGENT_AUTH_MODE` 一致性與安全約束 |
 | `broker.py` | TaskIQ broker 工廠（standalone / sentinel）|
 | `dispatcher.py` | 同步封裝層，讓同步呼叫能 enqueue async task |
 | `init_schema.py` | DB + ES schema 初始化；`iter_statements` strip-then-split SQL parser |
 | `logging_config.py` | structlog 設定、privacy denylist processor |
+| `http_logging.py` | 上游 HTTP 失敗的診斷日誌 |
 | `metrics.py` | Prometheus counter/histogram 定義 |
+| `openapi.py` | 鏡射 auth middleware 設定的 Swagger 文件產生器 |
 | `telemetry.py` | OTEL TracerProvider setup/shutdown |
 
 ---
@@ -168,8 +172,7 @@
 | `ingest/splitter.py` | `_MimeAwareSplitter`、`_MarkdownASTSplitter`、`_HtmlASTSplitter`、`_DocxASTSplitter`、`_PptxASTSplitter`、`_PdfASTSplitter`、`_CsvASTSplitter`、`INGEST_PDF_MARGIN_PTS` |
 | `ingest/chunker.py` | `_BudgetChunker`、`_pack_atoms`、`validate_chunk_config`、`CHUNK_TARGET_CHARS`、`CHUNK_MAX_CHARS`、`CHUNK_OVERLAP_CHARS`、`CHUNK_MAX_PIECES_PER_ATOM` |
 | `ingest/embedder.py` | `_DocumentEmbedder` |
-| `chat_attachment/pipeline.py` | `ChatAttachmentPipeline` — load → optional unprotect(白名單見 §2.7) → AST build；**不**加密、**不**持久化（SRP：留給 service 層）|
-| `chat_attachment/ast_builder.py` | `CompleteAST`、`SimplifiedAST` — 複用 `ingest/splitter.py` 的 `_MimeAwareSplitter` 家族，不重寫格式解析 |
+| `chat_attachment/pipeline.py` | `ChatAttachmentPipeline`、`_build_simplified()` — load → optional unprotect(白名單見 §2.8) → AST build（複用 `ingest/splitter.py` 的 `_MimeAwareSplitter` 家族，不重寫格式解析）；**不**加密、**不**持久化（SRP：留給 service 層）|
 | `retrieve/__init__.py` | `build_retrieval_pipeline()`、`run_retrieval()` — 公用介面；re-exports 所有 sub-module 符號 |
 | `retrieve/_constants.py` | `DEFAULT_TOP_K`、`DEFAULT_MIN_SCORE`、`MAX_TOP_K`、`EXCERPT_MAX_CHARS_DEFAULT`、`_VALID_MODES` |
 | `retrieve/joiner.py` | `build_es_filters`、`dedupe_by_document`、`doc_to_source_entry` |
@@ -315,6 +318,11 @@
 | `compat.py` | Python 版本相容性 shim |
 | `embedding_lifecycle.py` | embedding model 生命週期工具函數（純計算）|
 | `feedback_token.py` | HMAC feedback token 生成與驗證 |
+| `hidden.py` | 從 session 歷史內容剝除 `<hidden>` machine-context 區塊 |
+| `id_gen.py` | UUIDv7 → 26 字元 Crockford Base32 ID 產生器 |
+| `migration_inventory.py` | `alembic/sql/<upgrade\|downgrade>` 編號檔案的共用查詢 |
+| `state_machine.py` | Document status 狀態機（spec S10）|
+| `wilson.py` | Wilson lower confidence bound（B50, T-FB.2）|
 
 ---
 ### 2.14 Security（安全工具）
@@ -375,40 +383,7 @@
 ---
 ## 三、依賴方向規則（AI 操作前必讀）
 
-```
-允許的依賴方向（→ 表示「可以 import」）：
-
-Routers     → Services, Schemas, Errors, auth/deps, clients/rate_limiter
-Services    → Repositories, Storage, Clients, Errors, Schemas, Utility
-Repositories→ Utility, Errors, Schemas
-Pipelines   → Clients, Utility, Errors, Schemas
-Extractors  → Repositories(注入), Clients(注入), Errors
-Clients     → Errors, Utility
-Storage     → Errors, Utility
-Auth        → Errors, Utility
-Middleware  → Errors, Utility
-Schemas     → (stdlib + Pydantic only)
-Errors      → (stdlib only)
-Utility     → (stdlib only)
-Security    → stdlib, cryptography（唯一允許的第三方依賴；其餘 domain 不得直接 import cryptography）
-Bootstrap   → 全部（唯一可以組裝所有層的地方）
-Workers     → Bootstrap(broker/metrics/Container), Pipelines, Repositories, Services, Schemas, Errors, Utility
-Reconciler  → Repositories, Bootstrap(Container), Errors, Utility
-MCP Hub     → Utility, Errors（完全獨立 subprocess）
-
-Routers → AgentFactory（`twp_ai.agent.Agent` Protocol 的型別別名，由 Bootstrap 注入的 callable）（✅，T-CAv3.DIP）
-Bootstrap → Agent/Caller 的具體類別（組裝 factory closure，如 `_build_chatagent_agent_factory()`）（✅，Composition Root 是唯一允許依賴具體實作的層）
-
-❌ 禁止反向依賴：
-  Repositories → Services（❌）
-  Pipelines    → Services 或 Repositories（❌）
-  Extractors   → Pipelines 或 Routers（❌）
-  Clients      → Repositories 或 Services（❌）
-  Schemas      → 任何 ragent 業務模組（❌）
-  Errors       → 任何 ragent 業務模組（❌）
-  Utility      → 任何 ragent 業務模組（❌）
-  Routers      → Agent/Caller 的具體類別（❌；曾是 `chatagent_v3.py` 的違規模式，已於 T-CAv3.DIP 重構移除）
-```
+核心規則：Routers→Services→Repositories/Storage/Clients；下層（Schemas/Errors/Utility）僅依賴 stdlib，不得反向依賴任何業務模組；Bootstrap 是唯一可組裝所有層、唯一可依賴具體 Agent/Caller 實作的地方。完整允許/禁止依賴方向表：[`docs/spec/dependency_rules.md`](spec/dependency_rules.md) §三。
 
 ---
 ## 四、AI 任務執行護欄（Harness Rules）
@@ -520,19 +495,5 @@ log.error("ingest.failed", document_id=doc_id, error_code="EMBEDDER_ERROR")
 ---
 ## 五、快速查詢索引
 
-> 新功能：查 `docs/00_spec.md` → `docs/00_plan.md` → 定位 Domain（§二）→ Red test → Green impl → `/simplify` + `/review` + commit。
-
-### 「我改動了 X，可能影響哪些 Domain？」
-
-| 改動 X | 可能影響的 Domain |
-|---|---|
-| `repositories/document_repository.py` | Services（ingest_service）、Extractors（VectorExtractor）、Reconciler |
-| `clients/embedding.py` | Pipelines（ingest）、Extractors（VectorExtractor）|
-| `bootstrap/composition.py` | 所有 Domain（DI 變更）|
-| `schemas/ingest.py` | Routers（ingest）、Services（ingest_service）|
-| `errors/codes.py` | 所有 Domain + `docs/00_spec.md §4.1.2` |
-| `pipelines/retrieve/__init__.py` | Routers（chat、retrieve）、integration tests |
-| `bootstrap/metrics.py` | 所有有 metric emit 的 Domain |
-| `security/key_manager.py` | Bootstrap（建構順序）、`security/ast_cipher.py`、`services/chat_attachment_service.py`、`services/document_artifact_resolver.py` |
-| `storage/document_store.py` | Bootstrap、`services/chat_attachment_service.py`、`services/document_artifact_resolver.py`（DIP：兩者只 import Protocol，不 import `minio_document_store.py`）|
+> 新功能：查 `docs/00_spec.md` → `docs/00_plan.md` → 定位 Domain（§二）→ Red test → Green impl → `/simplify` + `/review` + commit。「我改動了 X，可能影響哪些 Domain？」完整對照表：[`docs/spec/dependency_rules.md`](spec/dependency_rules.md) §五。
 

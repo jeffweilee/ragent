@@ -57,7 +57,7 @@ No physical FK. ORM-level cascade only.
 
 ### 5.2 Elasticsearch `chunks_v1`
 
-> **v2 OVERRIDE** — adds `raw_content` field (`type: text, index: false`, `_source`-only). `content` (existing `text` column, may also be exposed under that legacy name) holds the **normalized** view embedded by bge-m3 + BM25-analyzed; `raw_content` holds the **original byte slice** the splitter captured (markdown fences, HTML tags, etc.). Chat retrieval scores against `content`, but the LLM context and `sources[].excerpt` use `raw_content` (with `content` fallback for legacy chunks). `source_url` is added as a `keyword` field for citation rendering.
+> **v2 OVERRIDE** — adds `raw_content` field (`type: text, index: false`, `_source`-only). `text` is mapped to hold the **normalized**, BM25-analyzed (`icu_text`) view embedded by bge-m3; `raw_content` holds the **original byte slice** the splitter captured (markdown fences, HTML tags, etc.). Chat retrieval scores against `text`, but the LLM context and `sources[].excerpt` use `raw_content` (with `text` fallback for legacy chunks). `source_url` is added as a `keyword` field for citation rendering. **Known drift (issue #209):** the live `DocumentEmbedder._run_dual()` writer does not currently populate `text` — it writes an unmapped `content` field instead — so BM25 search against `text` is non-functional until the writer is fixed.
 
 > **Source of truth (B26):** `resources/es/chunks_v1.json` — settings + mappings, checked into git. Bootstrap (§6.1) reads this file and `PUT /chunks_v1` if the index does not exist. The block below is the canonical content; any drift between this spec snippet and the resource file is a CI failure (`tests/integration/test_es_resource_drift.py`).
 
