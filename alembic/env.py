@@ -151,13 +151,21 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
-def _is_upgrade_target(target: str | None) -> bool:
-    return target in ("head", "up", None) or (isinstance(target, str) and target.startswith("+"))
+def _is_upgrade_target(target: str | None, current_v: int) -> bool:
+    if target is None or target in ("head", "up") or (isinstance(target, str) and target.startswith("+")):
+        return True
+    if isinstance(target, str) and target.isdigit():
+        # Bare version number (e.g. "alembic upgrade 012") — direction
+        # depends on where the DB currently is, not on the string's shape.
+        return int(target) >= current_v
+    return False
 
 
 def _upgrade_target_version(target: str | None, current_v: int, max_v: int) -> int:
     if target is None or target == "head":
         return max_v
+    if isinstance(target, str) and target.isdigit():
+        return min(int(target), max_v)
     steps = int(target.replace("+", "")) if target.startswith("+") else max_v
     return min(current_v + steps, max_v)
 
@@ -165,6 +173,8 @@ def _upgrade_target_version(target: str | None, current_v: int, max_v: int) -> i
 def _downgrade_target_version(target: str, current_v: int) -> int:
     if target == "base":
         return 0
+    if target.isdigit():
+        return max(int(target), 0)
     steps = int(target.replace("-", ""))
     return max(current_v - steps, 0)
 
@@ -179,7 +189,7 @@ def _run_chain(connection, target: str | None) -> None:
     connection.commit()
 
     with connection.begin():
-        if _is_upgrade_target(target):
+        if _is_upgrade_target(target, current_v):
             target_v = _upgrade_target_version(target, current_v, max_available_v)
             if current_v >= target_v:
                 return

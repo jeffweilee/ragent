@@ -87,11 +87,21 @@ def test_verify_and_get_chain_raises_on_missing_file(env, monkeypatch):
 
 
 @pytest.mark.parametrize(
-    ("target", "expected"),
-    [(None, True), ("head", True), ("up", True), ("+2", True), ("-1", False), ("base", False)],
+    ("target", "current_v", "expected"),
+    [
+        (None, 3, True),
+        ("head", 3, True),
+        ("up", 3, True),
+        ("+2", 3, True),
+        ("-1", 3, False),
+        ("base", 3, False),
+        ("012", 3, True),
+        ("012", 14, False),
+        ("003", 3, True),
+    ],
 )
-def test_is_upgrade_target(env, target, expected):
-    assert env._is_upgrade_target(target) is expected
+def test_is_upgrade_target(env, target, current_v, expected):
+    assert env._is_upgrade_target(target, current_v) is expected
 
 
 @pytest.mark.parametrize(
@@ -101,6 +111,8 @@ def test_is_upgrade_target(env, target, expected):
         (None, 3, 14, 14),
         ("+2", 3, 14, 5),
         ("+99", 3, 14, 14),
+        ("012", 3, 14, 12),
+        ("099", 3, 14, 14),
     ],
 )
 def test_upgrade_target_version(env, target, current_v, max_v, expected):
@@ -114,6 +126,7 @@ def test_upgrade_target_version(env, target, current_v, max_v, expected):
         ("-1", 5, 4),
         ("-3", 5, 2),
         ("-99", 5, 0),
+        ("002", 5, 2),
     ],
 )
 def test_downgrade_target_version(env, target, current_v, expected):
