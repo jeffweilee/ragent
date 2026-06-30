@@ -15,7 +15,7 @@ Two artefacts, **both versioned in git**, both consulted at boot:
 | Artefact | Path | Purpose | Owner |
 |---|---|---|---|
 | **Consolidated snapshot** | `migrations/schema.sql` | Single-file DDL representing the current target schema. Updated **in lockstep with every incremental migration**. Used by fresh dev/CI/testcontainers bring-up (`mariadb < schema.sql` → instant ready). | Dev |
-| **Incremental migrations** | `migrations/NNN_<slug>.sql` (e.g. `001_initial.sql`, `002_add_workspace.sql`) | Forward-only ALTER scripts applied via Alembic (`alembic upgrade head`). Production / staging path. | Dev |
+| **Incremental migrations** | `alembic/sql/upgrade/NNN_<slug>.sql` + `alembic/sql/downgrade/NNN_<slug>.sql` (e.g. `001_initial.sql`, `002_ingest_v2.sql`) | Forward/reverse ALTER scripts replayed in order by a hand-rolled `MIGRATION_CHAIN` (`alembic/env.py`), guarded by `verify_and_get_chain()` (refuses to run on a numbering gap or missing file). `alembic upgrade head` / `downgrade base`/`-N`. Production / staging path **(B64, supersedes the `migrations/NNN_*.sql` location)**. | Dev |
 
 **Boot-time auto-init (idempotent):**
 - On startup, the bootstrap module runs `CREATE TABLE IF NOT EXISTS … / CREATE INDEX IF NOT EXISTS …` against MariaDB derived from `migrations/schema.sql`, and `PUT /<index>` for ES if the index does not exist — **using the JSON body in `resources/es/<index>.json`** (e.g. `resources/es/chunks_v1.json`, B26). Existing tables/indexes are left untouched.

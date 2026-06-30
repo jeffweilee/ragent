@@ -1,5 +1,6 @@
 """T0.8b — schema.sql and alembic upgrade head must produce identical schemas."""
 
+import os
 import re
 from pathlib import Path
 
@@ -50,9 +51,7 @@ def _apply_schema_sql(dsn: str) -> None:
             conn.execute(text(stmt))
 
 
-def _apply_alembic(dsn: str) -> None:
-    import os
-
+def _apply_alembic(dsn: str, target: str = "head") -> None:
     from alembic import command
     from alembic.config import Config
 
@@ -61,7 +60,10 @@ def _apply_alembic(dsn: str) -> None:
     old = os.environ.get("MARIADB_DSN")
     os.environ["MARIADB_DSN"] = dsn
     try:
-        command.upgrade(cfg, "head")
+        if target == "base":
+            command.downgrade(cfg, "base")
+        else:
+            command.upgrade(cfg, target)
     finally:
         if old is None:
             os.environ.pop("MARIADB_DSN", None)
@@ -102,3 +104,34 @@ def test_schema_sql_equals_alembic_head(schema_sql_dsn: str, alembic_dsn: str) -
         "schema.sql and alembic upgrade head produce different schemas — "
         "update them in lockstep (spec §6.1 invariant)."
     )
+
+
+def test_alembic_downgrade_base_drops_all_tables(mariadb_container) -> None:
+    """Full upgrade-head -> downgrade-base round trip — exercises every
+    downgrade SQL file in reverse, including the ALGORITHM=COPY fixes for
+    007/011 (MariaDB 10.6 rejects ALGORITHM=INSTANT for VARCHAR narrowing and
+    ENUM value removal)."""
+    import sqlalchemy
+    from testcontainers.mysql import MySqlContainer
+
+    with MySqlContainer(
+        image=tc_image("mariadb:10.6"), username="u", password="p", dbname="downgrade_db"
+    ) as c:
+        dsn = (
+            f"mysql+pymysql://u:p@{c.get_container_host_ip()}:"
+            f"{c.get_exposed_port(3306)}/downgrade_db?charset=utf8mb4"
+        )
+        _apply_alembic(dsn, "head")
+        _apply_alembic(dsn, "base")
+
+        engine = sqlalchemy.create_engine(dsn)
+        try:
+            with engine.connect() as conn:
+                tables = {
+                    row[0]
+                    for row in conn.execute(sqlalchemy.text("SHOW TABLES")).fetchall()
+                    if row[0] != "alembic_version"
+                }
+        finally:
+            engine.dispose()
+        assert tables == set()

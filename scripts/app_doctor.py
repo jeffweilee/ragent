@@ -22,7 +22,6 @@ import json
 import os
 import shutil
 import socket
-import subprocess
 import sys
 import time
 from collections.abc import Callable
@@ -272,7 +271,11 @@ def check_mariadb() -> None:
     _try("connect + SELECT 1", _connect)
 
     def _alembic() -> str:
+        from pathlib import Path
+
         from sqlalchemy import create_engine, text
+
+        from ragent.utility.migration_inventory import numbered_versions
 
         sync_dsn = dsn.replace("+aiomysql", "+pymysql")
         eng = create_engine(sync_dsn)
@@ -289,17 +292,15 @@ def check_mariadb() -> None:
             raise _Warn("alembic_version empty — run `alembic upgrade head`")
         current = rows[0][0]
 
-        # Compare against alembic head from filesystem.
-        out = subprocess.run(
-            ["uv", "run", "alembic", "heads"],
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
-        if out.returncode != 0:
-            raise _Warn(f"could not query alembic heads: {out.stderr.strip()}")
-        head = (out.stdout.split() or [""])[0]
-        if head and head != current:
+        # Compare against the highest numbered SQL file in alembic/sql/upgrade —
+        # there is no revision graph to query (`alembic heads`) since the chain
+        # is driven by MIGRATION_CHAIN in alembic/env.py, not Python revisions.
+        upgrade_dir = Path(__file__).resolve().parents[1] / "alembic" / "sql" / "upgrade"
+        numbers = numbered_versions(upgrade_dir)
+        if not numbers:
+            raise _Warn(f"no numbered SQL migrations found under {upgrade_dir}")
+        head = f"{max(numbers):03d}"
+        if head != current:
             raise _Warn(f"current={current} head={head} — run `alembic upgrade head`")
         return f"at head {current}"
 

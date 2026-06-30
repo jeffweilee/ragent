@@ -88,24 +88,35 @@ def init_mariadb(engine) -> None:
             conn.execute(text(stmt))
 
 
+def put_es_pipelines(es_url: str, resources_dir: Path | None = None) -> None:
+    """PUT every `<resources_dir>/pipelines/*.json` ingest pipeline (B59).
+
+    Pipelines MUST land before indexes: `chunks_v1.settings.index.
+    default_pipeline` references `chunks_default`, and ES rejects index
+    creation when its referenced pipeline doesn't exist. PUT is idempotent
+    on the ES side (overwrite-by-id), no HEAD guard needed.
+    """
+    resources_dir = resources_dir or Path(
+        os.environ.get("RAGENT_ES_RESOURCES_DIR") or _ES_RESOURCES
+    )
+    base = es_url.rstrip("/")
+    pipelines_dir = resources_dir / "pipelines"
+    if not pipelines_dir.is_dir():
+        return
+    for path in sorted(pipelines_dir.glob("*.json")):
+        pipeline_id = path.stem
+        body = json.loads(path.read_text(encoding="utf-8"))
+        _es_request(f"{base}/_ingest/pipeline/{pipeline_id}", method="PUT", body=body)
+        logger.info("es.pipeline_put", pipeline=pipeline_id)
+
+
 def init_es(es_url: str) -> None:
     # Test override: integration tests run against vanilla ES (no analysis-icu
     # plugin) and point this at tests/resources/es/ which omits the ICU analyzer
     # (B36).
     resources_dir = Path(os.environ.get("RAGENT_ES_RESOURCES_DIR") or _ES_RESOURCES)
     base = es_url.rstrip("/")
-
-    # B59 — pipelines MUST land before indexes. `chunks_v1.settings.index.
-    # default_pipeline` references `chunks_default`; ES rejects index creation
-    # when its referenced pipeline doesn't exist. Pipeline PUT is idempotent
-    # on the ES side (overwrite-by-id), no HEAD guard needed.
-    pipelines_dir = resources_dir / "pipelines"
-    if pipelines_dir.is_dir():
-        for path in sorted(pipelines_dir.glob("*.json")):
-            pipeline_id = path.stem
-            body = json.loads(path.read_text(encoding="utf-8"))
-            _es_request(f"{base}/_ingest/pipeline/{pipeline_id}", method="PUT", body=body)
-            logger.info("es.pipeline_put", pipeline=pipeline_id)
+    put_es_pipelines(es_url, resources_dir)
 
     # B60 / T-EI.6 — chunks index name is env-overridable (matches the App's
     # `Container.chunks_index_name` resolution, T-EI.1); other resources keep

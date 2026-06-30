@@ -135,7 +135,7 @@ Update this counter whenever an item status changes. The counts cover all items 
 
 - **Rule: SQL File Parsing — strip-then-split (`iter_statements`).**
   - Bare `sql.split(";")` breaks when a `--` comment contains `;` (e.g. `"-- rows are seeded; future settings …"`), producing an invalid SQL fragment that crashes `alembic upgrade`. Any helper that loads `.sql` text MUST call `ragent.bootstrap.init_schema.iter_statements(sql)` (strips `--` comments per-line first, then splits). This pattern recurred 4 times; never reintroduce `split(";")` without strip-then-split.
-  - **Audit**: `grep -rn "\.split(\";\")\" migrations/ alembic/versions/` on every PR that adds or modifies a migration helper. Both locations must be checked — `migrations/` holds raw SQL files, `alembic/versions/` holds Python wrappers that may load SQL inline.
+  - **Audit**: `grep -rn "\.split(\";\")\" migrations/ alembic/sql/ alembic/env.py` on every PR that adds or modifies a migration helper. All three locations must be checked — `migrations/` holds the `schema.sql` snapshot, `alembic/sql/` holds the raw upgrade/downgrade SQL files, `alembic/env.py` is the Python chain runner that loads them.
 
 ---
 

@@ -32,4 +32,4 @@ CREATE TABLE IF NOT EXISTS feedback (
   updated_at      DATETIME(6)  NOT NULL,
   UNIQUE KEY uq_user_req_app_src (user_id, request_id, source_app, source_id),
   CONSTRAINT ck_vote_unit CHECK (vote IN (-1, 1))
-);
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

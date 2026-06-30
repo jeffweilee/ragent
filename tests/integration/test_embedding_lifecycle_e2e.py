@@ -105,9 +105,16 @@ async def chunks_index(es_url):
     """
     from elasticsearch import AsyncElasticsearch
 
+    from ragent.bootstrap.init_schema import put_es_pipelines
+
     es = AsyncElasticsearch(hosts=[es_url])
     for idx in [_STABLE_INDEX, "chunks_v2"]:
         await es.indices.delete(index=idx, ignore_unavailable=True)
+
+    # promote() creates chunks_v2 from resources/es/chunks_v1.json, whose
+    # settings.index.default_pipeline references chunks_default (B59) — ES
+    # rejects index creation if that pipeline doesn't exist yet.
+    put_es_pipelines(es_url)
 
     await es.indices.create(index=_STABLE_INDEX, body=_stable_index_body())
     await es.indices.put_alias(index=_STABLE_INDEX, name=_ALIAS)

@@ -34,9 +34,12 @@ CREATE TABLE IF NOT EXISTS documents (
   PRIMARY KEY (id),
   UNIQUE KEY uq_document_id (document_id),
   INDEX idx_status_updated (status, updated_at),
-  INDEX idx_status_created (status, created_at),
   INDEX idx_source_app_id_status_created (source_app, source_id, status, created_at),
-  INDEX idx_create_user_document (create_user, document_id)
+  INDEX idx_create_user_document (create_user, document_id),
+  -- 012_documents_status_created_index.sql appends this via ALTER TABLE ADD
+  -- INDEX, so MariaDB places it last — keep this snapshot's column order
+  -- identical to alembic-head output (drift test does byte-for-byte diff).
+  INDEX idx_status_created (status, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
 
 -- v1 `chunks` table dropped in 003_drop_chunks.sql.
