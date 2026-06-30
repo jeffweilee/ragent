@@ -90,10 +90,10 @@ If the endpoint is infrastructure-style (health probe, internal ping), it goes i
 
 Before writing tests, update two documents:
 
-1. **`docs/00_spec.md`** — add a row to the endpoint table (§4.1) with
-   method, path, auth header, request schema ref, response schema ref, and
-   notes. Add a scenario (`S-XX`) if there is a behaviour contract worth
-   pinning (happy path, error codes, edge cases).
+1. **`docs/spec/endpoints.md`** (linked from `docs/00_spec.md` §4.1) — add a
+   row to the endpoint table with method, path, auth header, request schema
+   ref, response schema ref, and notes. Add a scenario (`S-XX`) if there is a
+   behaviour contract worth pinning (happy path, error codes, edge cases).
 
 2. **`docs/00_plan.md`** — append a new task row under the active track and update the track counter:
    ```
@@ -227,7 +227,7 @@ endpoints (any path under `/<resource>/v<N>`) must NOT be in this list.
 
 - [ ] Situation classified: new route on existing router / new resource / v2 bump
 - [ ] Path follows `/<resource>/v<N>[/<rest>]` naming convention; version in router prefix only
-- [ ] `docs/00_spec.md §4.1` endpoint table row + scenario(s) added
+- [ ] `docs/spec/endpoints.md` endpoint table row + scenario(s) added
 - [ ] `docs/00_plan.md` Red + Green task rows added
 - [ ] Failing test written first; confirmed to fail with 404 or assertion before any production code
 - [ ] `response_model=` annotation on every new route decorator
