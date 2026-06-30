@@ -50,3 +50,10 @@ Future-phase auth: JWT verify (auth) + `PermissionClient` post-retrieval gate (p
 | POST | `/embedding/v1/backfill` | `X-User-Id` | Enqueue backfill task → `200 {state, queued}` |
 | GET  | `/embedding/v1/state` | `X-User-Id` | Registry snapshot → `200 {stable, candidate, read, retired}` |
 | GET  | `/embedding/v1/cutover/preflight` | `X-User-Id` | Run gates without action → `200 {pass, gates}` |
+
+**Other domain endpoints** — defined in their own spec files, not repeated here:
+
+- Skills CRUD (`/skills/v1`): [`docs/spec/skills.md`](skills.md)
+- ChatAgent v1/v2/v3 (`/chatagent/v1`, `/v2`, `/v3`): [`docs/spec/chatagent_v3.md`](chatagent_v3.md)
+- Chat Attachments (`/chatagent/v3/attachments`): [`docs/spec/chat_attachments.md`](chat_attachments.md)
+- twp-ai Adapter (`/twp/v1/run`): [`docs/spec/twp_ai.md`](twp_ai.md)

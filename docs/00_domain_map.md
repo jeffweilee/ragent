@@ -172,7 +172,7 @@
 | `ingest/splitter.py` | `_MimeAwareSplitter`、`_MarkdownASTSplitter`、`_HtmlASTSplitter`、`_DocxASTSplitter`、`_PptxASTSplitter`、`_PdfASTSplitter`、`_CsvASTSplitter`、`INGEST_PDF_MARGIN_PTS` |
 | `ingest/chunker.py` | `_BudgetChunker`、`_pack_atoms`、`validate_chunk_config`、`CHUNK_TARGET_CHARS`、`CHUNK_MAX_CHARS`、`CHUNK_OVERLAP_CHARS`、`CHUNK_MAX_PIECES_PER_ATOM` |
 | `ingest/embedder.py` | `_DocumentEmbedder` |
-| `chat_attachment/pipeline.py` | `ChatAttachmentPipeline`、`_build_simplified()` — load → optional unprotect(白名單見 §2.7) → AST build（複用 `ingest/splitter.py` 的 `_MimeAwareSplitter` 家族，不重寫格式解析）；**不**加密、**不**持久化（SRP：留給 service 層）|
+| `chat_attachment/pipeline.py` | `ChatAttachmentPipeline`、`_build_simplified()` — load → optional unprotect(白名單見 §2.8) → AST build（複用 `ingest/splitter.py` 的 `_MimeAwareSplitter` 家族，不重寫格式解析）；**不**加密、**不**持久化（SRP：留給 service 層）|
 | `retrieve/__init__.py` | `build_retrieval_pipeline()`、`run_retrieval()` — 公用介面；re-exports 所有 sub-module 符號 |
 | `retrieve/_constants.py` | `DEFAULT_TOP_K`、`DEFAULT_MIN_SCORE`、`MAX_TOP_K`、`EXCERPT_MAX_CHARS_DEFAULT`、`_VALID_MODES` |
 | `retrieve/joiner.py` | `build_es_filters`、`dedupe_by_document`、`doc_to_source_entry` |

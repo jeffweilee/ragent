@@ -43,7 +43,7 @@ Bootstrap → Agent/Caller 的具體類別（組裝 factory closure，如 `_buil
 
 ## 五、快速查詢索引
 
-> 新功能：查 `docs/00_spec.md` → `docs/00_plan.md` → 定位 Domain（`00_domain_map.md` §二）→ Red test → Green impl → `/simplify` + `/review` + commit。
+> 新功能：查 `docs/00_spec.md` → `docs/00_plan.md` → 定位 Domain（[`docs/00_domain_map.md`](../00_domain_map.md) §二）→ Red test → Green impl → `/simplify` + `/review` + commit。
 
 ### 「我改動了 X，可能影響哪些 Domain？」
 
