@@ -57,16 +57,17 @@ class TestTruncate:
     def test_returns_none_when_budget_already_exhausted(self):
         assert resolver_module._truncate("hello", 0) is None
 
-    def test_returns_original_when_marker_would_not_shrink_output(self):
-        """When text is only slightly over max_chars (within marker length), slicing
-        and appending the marker yields output >= original length while still losing
-        the tail — strictly worse than returning the original untouched."""
+    def test_truncated_output_never_exceeds_max_chars(self):
+        """The marker is reserved inside max_chars, so output length is always
+        <= max_chars — never longer than the original it replaces (PR #208 Codex
+        review: the old slice-then-append approach could exceed the cap)."""
         marker_len = len(resolver_module._TRUNCATION_MARKER)
-        text = "x" * (50 + marker_len)  # exactly at the boundary
+        text = "x" * (50 + marker_len)  # just over the boundary
 
         result = resolver_module._truncate(text, 50)
 
-        assert result == text
+        assert result == "x" * (50 - marker_len) + resolver_module._TRUNCATION_MARKER
+        assert len(result) == 50
 
     def test_truncates_and_appends_marker_once_genuinely_over_budget(self):
         marker_len = len(resolver_module._TRUNCATION_MARKER)
@@ -74,7 +75,16 @@ class TestTruncate:
 
         result = resolver_module._truncate(text, 50)
 
-        assert result == "x" * 50 + resolver_module._TRUNCATION_MARKER
+        assert result == "x" * (50 - marker_len) + resolver_module._TRUNCATION_MARKER
+        assert len(result) == 50
+
+    def test_omits_marker_when_max_chars_too_small_to_fit_it(self):
+        marker_len = len(resolver_module._TRUNCATION_MARKER)
+        text = "x" * (marker_len + 10)
+
+        result = resolver_module._truncate(text, marker_len - 1)
+
+        assert result == "x" * (marker_len - 1)
 
 
 class TestDocumentArtifactResolver:
@@ -477,7 +487,7 @@ class TestDocumentArtifactResolver:
         import json
 
         parsed = json.loads(result)
-        assert len(parsed[0]["content"]) <= 100 + len(resolver_module._TRUNCATION_MARKER)
+        assert len(parsed[0]["content"]) == 100
         assert parsed[0]["content"].endswith(resolver_module._TRUNCATION_MARKER)
 
     @pytest.mark.asyncio
@@ -505,7 +515,9 @@ class TestDocumentArtifactResolver:
 
         parsed = json.loads(result)
         content = parsed[0]["content"]
-        assert content == "x" * 30 + resolver_module._TRUNCATION_MARKER
+        marker_len = len(resolver_module._TRUNCATION_MARKER)
+        assert content == "x" * (30 - marker_len) + resolver_module._TRUNCATION_MARKER
+        assert len(content) == 30
         assert content.count(resolver_module._TRUNCATION_MARKER.strip()) == 1
 
     @pytest.mark.asyncio
@@ -560,7 +572,8 @@ class TestDocumentArtifactResolver:
         import json
 
         parsed = json.loads(result)
-        assert parsed[0]["content"] == "z" * 30 + resolver_module._TRUNCATION_MARKER
+        marker_len = len(resolver_module._TRUNCATION_MARKER)
+        assert parsed[0]["content"] == "z" * (30 - marker_len) + resolver_module._TRUNCATION_MARKER
         assert parsed[0]["variant"] == "complete"
 
     @pytest.mark.asyncio
@@ -596,6 +609,34 @@ class TestDocumentArtifactResolver:
         assert parsed[1]["attachmentId"] == "att_2"
 
     @pytest.mark.asyncio
+    async def test_resolve_skips_fetch_and_decrypt_once_total_budget_exhausted(
+        self, resolver_dependencies
+    ):
+        """Once the aggregate budget is spent, later attachments must not pay for a
+        storage fetch + decrypt that will be discarded (PR #208 Codex review)."""
+        resolver_dependencies["attachment_repository"].get.side_effect = [
+            _attachment_row("att_1", "doc1.txt", "text/plain", 100),
+            _attachment_row("att_2", "doc2.txt", "text/plain", 200),
+        ]
+        resolver_dependencies["attachment_repository"].get_artifacts.side_effect = [
+            [_artifact_row("att_1", "complete", "key1", char_count=80)],
+            [_artifact_row("att_2", "complete", "key2", char_count=80)],
+        ]
+        resolver_dependencies["ast_cipher"].decrypt_ast.side_effect = (
+            lambda ciphertext_obj, **kwargs: "y" * 80
+        )
+        resolver_dependencies["document_store"].get.return_value = b'{"ciphertext":"data"}'
+
+        resolver = DocumentArtifactResolver(
+            **resolver_dependencies, artifact_max_chars=1_000, total_max_chars=80
+        )
+
+        await resolver.resolve(["att_1", "att_2"])
+
+        assert resolver_dependencies["document_store"].get.call_count == 1
+        assert resolver_dependencies["ast_cipher"].decrypt_ast.call_count == 1
+
+    @pytest.mark.asyncio
     async def test_resolve_logs_truncation_warning(self, resolver_dependencies):
         """A truncation (per-attachment or per-turn) emits attachment_content_truncated."""
         resolver_dependencies["attachment_repository"].get.return_value = _attachment_row(
@@ -621,7 +662,7 @@ class TestDocumentArtifactResolver:
         )
         assert truncated["attachment_id"] == "att_1"
         assert truncated["original_chars"] == 200
-        assert truncated["kept_chars"] == 100 + len(resolver_module._TRUNCATION_MARKER)
+        assert truncated["kept_chars"] == 100
         assert truncated["log_level"] == "warning"
 
     @pytest.mark.asyncio

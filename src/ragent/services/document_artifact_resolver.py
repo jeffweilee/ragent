@@ -28,15 +28,20 @@ _TRUNCATION_MARKER = "\n…[truncated]"
 
 
 def _truncate(text: str, max_chars: int) -> str | None:
-    """Cap `text` to `max_chars`, appending the truncation marker if cut.
+    """Cap `text` to `max_chars`, reserving room for the truncation marker.
 
-    Returns None when `max_chars <= 0` (budget already exhausted).
+    The marker counts against `max_chars` itself, so truncated output never
+    exceeds the configured cap (PR #208 Codex review). Returns None when
+    `max_chars <= 0` (budget already exhausted).
     """
     if max_chars <= 0:
         return None
-    if len(text) <= max_chars + len(_TRUNCATION_MARKER):
+    if len(text) <= max_chars:
         return text
-    return text[:max_chars] + _TRUNCATION_MARKER
+    marker_len = len(_TRUNCATION_MARKER)
+    if max_chars <= marker_len:
+        return text[:max_chars]
+    return text[: max_chars - marker_len] + _TRUNCATION_MARKER
 
 
 if TYPE_CHECKING:
@@ -124,45 +129,56 @@ class DocumentArtifactResolver:
 
                 if selected:
                     att_info["variant"] = selected.variant
-                    try:
-                        encrypted_data = await anyio.to_thread.run_sync(
-                            self._doc_store.get, selected.storage_key
-                        )
-                        encrypted_obj = json.loads(encrypted_data.decode("utf-8"))
-                        decrypted = self._ast_cipher.decrypt_ast(encrypted_obj)
-                        original_chars = len(decrypted)
-
-                        # Per-attachment hard cap (closes the gap where the
-                        # simplified fallback previously had no ceiling at all
-                        # — only complete's char_count was ever checked)
-                        # combined with the per-turn aggregate cap in one pass,
-                        # so a single truncation marker is ever appended.
-                        # Earlier-referenced attachments get budget priority
-                        # (simple order tie-break, not proportional allocation).
-                        effective_max_chars = min(
-                            self._artifact_max_chars, self._total_max_chars - chars_used
-                        )
-                        decrypted = _truncate(decrypted, effective_max_chars)
-
-                        kept_chars = len(decrypted) if decrypted is not None else 0
-                        if decrypted is not None:
-                            att_info["content"] = decrypted
-                            chars_used += kept_chars
-
-                        if kept_chars != original_chars:
-                            logger.warning(
-                                "document_artifact_resolver.attachment_content_truncated",
-                                attachment_id=att_id,
-                                original_chars=original_chars,
-                                kept_chars=kept_chars,
+                    # Per-attachment hard cap (closes the gap where the
+                    # simplified fallback previously had no ceiling at all —
+                    # only complete's char_count was ever checked) combined
+                    # with the per-turn aggregate cap in one pass, so a
+                    # single truncation marker is ever appended. Earlier-
+                    # referenced attachments get budget priority (simple
+                    # order tie-break, not proportional allocation).
+                    effective_max_chars = min(
+                        self._artifact_max_chars, self._total_max_chars - chars_used
+                    )
+                    # Skip the storage fetch + decrypt entirely once the
+                    # aggregate budget is already spent — avoids wasted
+                    # object-store I/O and AES/JSON decrypt work on
+                    # attachments that would emit zero content anyway
+                    # (PR #208 Codex review).
+                    if effective_max_chars > 0:
+                        try:
+                            encrypted_data = await anyio.to_thread.run_sync(
+                                self._doc_store.get, selected.storage_key
                             )
-                    except (ValueError, KeyError, json.JSONDecodeError, ASTDecryptionError) as e:
-                        logger.warning(
-                            "document_artifact_resolver.decrypt_failed",
-                            attachment_id=att_id,
-                            error_type=type(e).__name__,
-                            error=str(e),
-                        )
+                            encrypted_obj = json.loads(encrypted_data.decode("utf-8"))
+                            decrypted = self._ast_cipher.decrypt_ast(encrypted_obj)
+                            original_chars = len(decrypted)
+
+                            decrypted = _truncate(decrypted, effective_max_chars)
+
+                            kept_chars = len(decrypted) if decrypted is not None else 0
+                            if decrypted is not None:
+                                att_info["content"] = decrypted
+                                chars_used += kept_chars
+
+                            if kept_chars != original_chars:
+                                logger.warning(
+                                    "document_artifact_resolver.attachment_content_truncated",
+                                    attachment_id=att_id,
+                                    original_chars=original_chars,
+                                    kept_chars=kept_chars,
+                                )
+                        except (
+                            ValueError,
+                            KeyError,
+                            json.JSONDecodeError,
+                            ASTDecryptionError,
+                        ) as e:
+                            logger.warning(
+                                "document_artifact_resolver.decrypt_failed",
+                                attachment_id=att_id,
+                                error_type=type(e).__name__,
+                                error=str(e),
+                            )
 
             logger.info(
                 "document_artifact_resolver.attachment_referenced",
