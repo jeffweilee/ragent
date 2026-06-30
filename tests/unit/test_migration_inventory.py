@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from ragent.bootstrap.migration_inventory import numbered_versions
+from ragent.utility.migration_inventory import numbered_versions
 
 ROOT = Path(__file__).parents[2]
 UPGRADE_DIR = ROOT / "alembic" / "sql" / "upgrade"

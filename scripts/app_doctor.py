@@ -275,7 +275,7 @@ def check_mariadb() -> None:
 
         from sqlalchemy import create_engine, text
 
-        from ragent.bootstrap.migration_inventory import numbered_versions
+        from ragent.utility.migration_inventory import numbered_versions
 
         sync_dsn = dsn.replace("+aiomysql", "+pymysql")
         eng = create_engine(sync_dsn)
