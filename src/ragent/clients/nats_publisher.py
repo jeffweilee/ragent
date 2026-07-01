@@ -27,6 +27,7 @@ import asyncio
 import base64
 import json
 import os
+from concurrent.futures import Future
 from typing import Any
 
 import httpx
@@ -137,15 +138,25 @@ class NatsSessionPublisher:
 
         Schedules the async publish on the app loop and does NOT wait. Fail-soft: a
         serialization error, a closed loop, or a dropped connection only costs this
-        one live nudge — the client re-syncs from the sessionList snapshot.
+        one live nudge — the client re-syncs from the sessionList snapshot. A failure
+        inside the scheduled coroutine itself (e.g. the connection drops mid-send)
+        lands on the returned Future, not this method's own try/except, so it needs
+        its own done-callback to avoid vanishing with no log at all.
         """
         if self._nc is None or self._loop is None:
             return
         try:
             data = json.dumps(event).encode()
             subject = self.subject(user_id)
-            asyncio.run_coroutine_threadsafe(self._nc.publish(subject, data), self._loop)
+            future = asyncio.run_coroutine_threadsafe(self._nc.publish(subject, data), self._loop)
+            future.add_done_callback(self._log_publish_failure)
         except Exception as exc:  # noqa: BLE001 — best-effort live nudge
+            logger.warning("nats.session_publish_failed", error_type=type(exc).__name__)
+
+    @staticmethod
+    def _log_publish_failure(future: Future[None]) -> None:
+        exc = future.exception()
+        if exc is not None:
             logger.warning("nats.session_publish_failed", error_type=type(exc).__name__)
 
     async def close(self) -> None:

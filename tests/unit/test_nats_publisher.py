@@ -12,6 +12,9 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
+
+import structlog.testing
 
 from ragent.clients.nats_publisher import NatsSessionPublisher
 
@@ -84,6 +87,34 @@ def test_publish_fail_soft_on_broken_connection() -> None:
     pub._nc = object()  # noqa: SLF001 — no .publish → AttributeError inside publish()
     pub._loop = asyncio.new_event_loop()  # noqa: SLF001
     pub.publish("alice", {"x": 1})  # does not raise
+
+
+def test_publish_logs_when_the_scheduled_coroutine_raises() -> None:
+    # run_coroutine_threadsafe returns immediately; a failure inside the
+    # scheduled coroutine itself (e.g. a dropped NATS connection) lands on the
+    # Future, not the synchronous try/except around scheduling — would
+    # otherwise vanish with no log at all.
+    loop = asyncio.new_event_loop()
+    threading.Thread(target=loop.run_forever, daemon=True).start()
+
+    class _FailingNC:
+        async def publish(self, subject: str, data: bytes) -> None:
+            raise RuntimeError("connection dropped")
+
+    pub = _publisher()
+    pub._nc = _FailingNC()  # noqa: SLF001
+    pub._loop = loop  # noqa: SLF001
+
+    with structlog.testing.capture_logs() as logs:
+        pub.publish("alice", {"session": "t1", "running": True})
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline and not any(
+            e.get("event") == "nats.session_publish_failed" for e in logs
+        ):
+            time.sleep(0.01)
+
+    loop.call_soon_threadsafe(loop.stop)
+    assert any(e.get("event") == "nats.session_publish_failed" for e in logs)
 
 
 async def test_connect_is_noop_when_unconfigured() -> None:
