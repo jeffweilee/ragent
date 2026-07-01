@@ -124,11 +124,18 @@ class NatsSessionPublisher:
         if not self._enabled():
             return
         try:
+            # `_enabled()` only checks the raw string is truthy; a whitespace-only
+            # NATS_SERVERS parses to no URLs — guard here so a misconfig skips the
+            # wasted JWT POST below and never calls nats.connect([]).
+            servers = [s.strip() for s in self._servers.split(",") if s.strip()]  # type: ignore[union-attr]
+            if not servers:
+                logger.warning("nats.connect_failed", error_type="NoServersConfigured")
+                return
+
             import nats
 
             keypair = _new_user_keypair()
             jwt = await self._fetch_app_jwt(keypair.public_key.decode())
-            servers = [s.strip() for s in self._servers.split(",") if s.strip()]  # type: ignore[union-attr]
             self._nc = await asyncio.wait_for(
                 nats.connect(
                     servers,

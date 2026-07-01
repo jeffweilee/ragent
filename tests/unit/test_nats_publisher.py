@@ -205,6 +205,28 @@ async def test_connect_is_bounded_by_a_timeout_when_nats_hangs(monkeypatch) -> N
     pub.publish("alice", {"x": 1})  # still a no-op
 
 
+async def test_connect_skips_exchange_when_servers_is_whitespace_only(monkeypatch) -> None:
+    # `_enabled()` is True for any non-empty string, but "   " parses to no server
+    # URLs. Guard before the auth exchange so a whitespace-only misconfig fires
+    # neither a wasted JWT POST nor a pointless nats.connect([]).
+    async def _must_not_fetch(self, public_key):  # noqa: ANN001
+        raise AssertionError("auth exchange must be skipped when no servers parse")
+
+    async def _must_not_connect(servers, **opts):  # noqa: ANN001
+        raise AssertionError("nats.connect must not run with an empty server list")
+
+    monkeypatch.setattr(NatsSessionPublisher, "_fetch_app_jwt", _must_not_fetch)
+    monkeypatch.setattr("nats.connect", _must_not_connect)
+    pub = _publisher(servers="   ")
+
+    with structlog.testing.capture_logs() as logs:
+        await pub.connect(asyncio.get_running_loop())
+
+    assert pub._nc is None  # noqa: SLF001 — degraded to snapshot-only
+    assert any(log.get("error_type") == "NoServersConfigured" for log in logs)
+    pub.publish("alice", {"x": 1})  # no-op, no connection opened
+
+
 async def test_fetch_app_jwt_verify_certs_defaults_true_and_is_configurable(monkeypatch) -> None:
     # Default-secure, same convention as ES_VERIFY_CERTS/OIDC_VERIFY_SSL; operator
     # can opt out for a self-signed/internal auth-service CA or a broken chain.
