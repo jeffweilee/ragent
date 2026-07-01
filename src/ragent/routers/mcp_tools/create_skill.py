@@ -12,55 +12,20 @@ from typing import Any
 
 from mcp.types import Tool, ToolAnnotations
 
-from ragent.schemas.skill import DESCRIPTION_MAX, INSTRUCTIONS_MAX, NAME_MAX
+from ragent.routers.mcp_tools.skill_tools import SKILL_BRIEF_SCHEMA, SKILL_WRITE_PROPERTIES
 
 CREATE_SKILL_INPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "required": ["name", "instructions"],
-    "properties": {
-        "name": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": NAME_MAX,
-            "description": "Short, unique label for the skill.",
-        },
-        "description": {
-            "type": "string",
-            "maxLength": DESCRIPTION_MAX,
-            "description": "One-line summary of what the skill is for.",
-        },
-        "instructions": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": INSTRUCTIONS_MAX,
-            "description": "The persona / operating instructions the skill applies to a chat turn.",
-        },
-        "enabled": {
-            "type": "boolean",
-            "description": "Whether the skill is active (default true).",
-        },
-    },
+    "properties": SKILL_WRITE_PROPERTIES,
 }
 
 CREATE_SKILL_OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
     "required": ["skill"],
-    "properties": {
-        "skill": {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["skill_id", "name", "description", "enabled", "readonly"],
-            "properties": {
-                "skill_id": {"type": "string"},
-                "name": {"type": "string"},
-                "description": {"type": "string"},
-                "enabled": {"type": "boolean"},
-                "readonly": {"type": "boolean"},
-            },
-        },
-    },
+    "properties": {"skill": SKILL_BRIEF_SCHEMA},
 }
 
 CREATE_SKILL_TOOL = Tool(

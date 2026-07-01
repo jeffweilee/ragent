@@ -97,7 +97,7 @@ class SkillService:
     def _reject_preset_name(name: str, user_id: str) -> None:
         """A user skill may not take a built-in preset's name (keeps the merged
         list unambiguous). Case-insensitive to match the DB's utf8mb4 collation —
-        ``Skill-Creator`` cannot shadow the built-in ``skill-creator``."""
+        ``Skill-Manager`` cannot shadow the built-in ``skill-manager``."""
         if name.casefold() in PRESET_NAMES_CASEFOLD:
             logger.warning(
                 "skill.create.conflict",

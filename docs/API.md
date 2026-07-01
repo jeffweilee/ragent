@@ -748,7 +748,7 @@ Dual-write: MariaDB `feedback` (truth) → ES `feedback_v1` (serving view). ES f
 
 Per-user reusable instruction presets (a persona / system instruction the user can attach to a `/chatagent/v3` turn). Every skill is **private to its owner**: the owner is the resolved `X-User-Id`, never a body field, and every query filters by it — a foreign `skill_id` is indistinguishable from a missing one (404). **Headers:** `X-User-Id` required.
 
-**Built-in presets:** every user automatically has read-only built-in skills (currently `skill-creator`, `skill_id="skill-creator"`) without creating them — they appear in `GET /skills/v1` pinned ahead of your own skills, are usable via `forwardedProps.skillId`, and reject `PUT`/`DELETE` with `409 SKILL_READONLY`. A user skill may not reuse a preset's name (`409 SKILL_NAME_CONFLICT`). `skill-creator` guides the agent to create a new skill via the `create_skill` MCP tool (see [§MCP](#mcp-phase-2)).
+**Built-in presets:** every user automatically has read-only built-in skills (currently `skill-manager`, `skill_id="skill-manager"`) without creating them — they appear in `GET /skills/v1` pinned ahead of your own skills, are usable via `forwardedProps.skillId`, and reject `PUT`/`DELETE` with `409 SKILL_READONLY`. A user skill may not reuse a preset's name (`409 SKILL_NAME_CONFLICT`). `skill-manager` is a full skill-CRUD persona that manages the caller's skills via the `create_skill` / `list_skills` / `get_skill` / `update_skill` / `delete_skill` MCP tools (see [§MCP](#mcp-phase-2)).
 
 ### `POST /skills/v1` — Create a skill
 
@@ -813,19 +813,29 @@ The instructions ride the existing `<hidden>` machine-context block (the upstrea
 
 ## MCP (Phase 2)
 
-`POST /mcp/v1` — Model Context Protocol server (JSON-RPC 2.0, spec `2025-06-18`; `initialize` echoes a supported older revision — `2025-03-26` / `2024-11-05` — when the client requests one). Exposes the corpus as a `retrieve` tool, plus a `create_skill` write tool (T-SK) when skill support is wired. Full spec: [`docs/spec/mcp_server.md`](docs/spec/mcp_server.md).
+`POST /mcp/v1` — Model Context Protocol server (JSON-RPC 2.0, spec `2025-06-18`; `initialize` echoes a supported older revision — `2025-03-26` / `2024-11-05` — when the client requests one). Exposes the corpus as a `retrieve` tool, plus the skill-management tool family (`create_skill` / `list_skills` / `get_skill` / `update_skill` / `delete_skill`, T-SK) when skill support is wired. Full spec: [`docs/spec/mcp_server.md`](docs/spec/mcp_server.md).
 
 | Method | Purpose |
 |---|---|
 | `initialize` | Capability negotiation. |
 | `notifications/initialized` | Client signals init complete; server returns 204. |
-| `tools/list` | Returns `retrieve` (`readOnlyHint: true`) and, when wired, `create_skill` (`readOnlyHint: false`), each with `inputSchema`/`outputSchema`. |
-| `tools/call` | Invokes `retrieve` (see below) or `create_skill`. |
+| `tools/list` | Returns `retrieve` (`readOnlyHint: true`) and, when wired, the skill tools — `list_skills`/`get_skill` (`readOnlyHint: true`), `create_skill`/`update_skill`/`delete_skill` (`readOnlyHint: false`) — each with `inputSchema`/`outputSchema`. |
+| `tools/call` | Invokes `retrieve` (see below) or a skill tool. |
 | `ping` | Returns `{}`. |
 
 **`tools/call retrieve`** — result `structuredContent.sources` is the machine-readable source list (for the frontend's retrieved-sources panel); `content[0].text` is a `<context>`-wrapped markdown citation table + `### [N]` excerpt blocks for LLM grounding (no internal fields like `document_id`/`score`; cells injection-safe — CR/LF stripped, `\|` escaped; only http(s) `source_url` linkified with markdown-breaking chars percent-encoded; literal `<context>` tags in corpus text neutralised). Unknown args → `-32602 MCP_TOOL_INPUT_INVALID`.
 
-**`tools/call create_skill`** — `arguments: {name, description?, instructions, enabled?}` (`additionalProperties:false`). Creates a skill under the **authenticated caller** (`X-User-Id`/JWT resolved at the endpoint); `user_id` is **not** an argument and a stray one is rejected (`MCP_TOOL_INPUT_INVALID`). No identity → fails closed with `MISSING_USER_ID`. Name collision (incl. a built-in preset name, case-insensitive) → `SKILL_NAME_CONFLICT`. Non-object `arguments` → `MCP_TOOL_INPUT_INVALID`; an unexpected backend failure → `MCP_TOOL_EXECUTION_FAILED` (JSON-RPC envelope, never an HTTP 500). Result: `structuredContent.skill = {skill_id, name, description, enabled, readonly}`. Example:
+**`tools/call` skill tools** — all five operate on the **authenticated caller's** skills only (`X-User-Id`/JWT resolved at the endpoint); `user_id` is **not** an argument and a stray one is rejected (`MCP_TOOL_INPUT_INVALID`). No identity → fails closed with `MISSING_USER_ID`. Non-object `arguments` → `MCP_TOOL_INPUT_INVALID`; an unexpected backend failure → `MCP_TOOL_EXECUTION_FAILED` (JSON-RPC envelope, never an HTTP 500). Each `inputSchema` is `additionalProperties:false`.
+
+| Tool | Arguments | Result (`structuredContent`) | Notable errors |
+|---|---|---|---|
+| `create_skill` | `{name, description?, instructions, enabled?}` | `skill = {skill_id, name, description, enabled, readonly}` (brief) | name collision (incl. preset name, case-insensitive) → `SKILL_NAME_CONFLICT` |
+| `list_skills` | `{}` | `skills = [brief]` (presets pinned first; no instructions/timestamps) | — |
+| `get_skill` | `{skill_id}` | `skill = {…brief, instructions, created_at, updated_at}` (full) | foreign/missing id → `SKILL_NOT_FOUND` |
+| `update_skill` | `{skill_id, name, description, instructions, enabled}` (full replace — all write fields required) | full skill | preset id → `SKILL_READONLY`; collision → `SKILL_NAME_CONFLICT`; foreign/missing → `SKILL_NOT_FOUND` |
+| `delete_skill` | `{skill_id}` | `{skill_id, deleted: true}` | preset id → `SKILL_READONLY`; foreign/missing → `SKILL_NOT_FOUND` |
+
+Example:
 ```json
 {"jsonrpc":"2.0","id":1,"method":"tools/call",
  "params":{"name":"create_skill","arguments":{"name":"Pirate","instructions":"Answer in pirate slang."}}}

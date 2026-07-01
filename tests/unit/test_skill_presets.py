@@ -15,7 +15,7 @@ from ragent.services.skill_service import (
     SkillService,
 )
 
-PRESET_ID = "skill-creator"
+PRESET_ID = "skill-manager"
 
 
 def _row(**over):
@@ -40,12 +40,14 @@ def _repo(**methods):
     return repo
 
 
-def test_skill_creator_preset_is_registered():
+def test_skill_manager_preset_is_registered():
     assert PRESET_ID in PRESET_BY_ID
     p = PRESET_BY_ID[PRESET_ID]
-    assert p.name == "skill-creator"
+    assert p.name == "skill-manager"
     assert p.enabled is True
-    assert "create_skill" in p.instructions  # tells the agent to call the tool
+    # the persona lists the full CRUD tool family so the agent calls them
+    for tool in ("create_skill", "list_skills", "get_skill", "update_skill", "delete_skill"):
+        assert tool in p.instructions
 
 
 async def test_list_pins_presets_before_user_skills():
@@ -83,7 +85,7 @@ async def test_create_with_preset_name_conflicts():
     with pytest.raises(SkillNameConflictError):
         await svc.create(
             user_id="alice",
-            name="skill-creator",
+            name="skill-manager",
             description="",
             instructions="x",
             enabled=True,
@@ -91,12 +93,12 @@ async def test_create_with_preset_name_conflicts():
 
 
 async def test_create_with_preset_name_conflicts_case_insensitive():
-    # "Skill-Creator" must not shadow the built-in "skill-creator".
+    # "Skill-Manager" must not shadow the built-in "skill-manager".
     svc = SkillService(_repo(create=AsyncMock()))
     with pytest.raises(SkillNameConflictError):
         await svc.create(
             user_id="alice",
-            name="Skill-Creator",
+            name="Skill-Manager",
             description="",
             instructions="x",
             enabled=True,
@@ -112,7 +114,7 @@ async def test_update_foreign_or_missing_id_with_reserved_name_is_404_not_409():
         await svc.update(
             user_id="alice",
             skill_id="SKILL000000000000000000000",
-            name="skill-creator",
+            name="skill-manager",
             description="",
             instructions="x",
             enabled=True,

@@ -120,7 +120,7 @@
 |---|---|
 | `ingest_service.py` | inline / file / upload ingest 流程協調；supersede 觸發；delete cascade 協調 |
 | `skill_service.py` | 使用者 skill preset 業務邏輯（owner-scoped CRUD + typed errors）；merge 內建 preset；`resolve_instructions` 供 `/chatagent/v3` 注入（T-SK）|
-| `skill_presets.py` | 內建唯讀 preset skill registry（skill-creator;`PRESETS`/`PRESET_BY_ID`/`PRESET_NAMES_CASEFOLD`）（T-SK）|
+| `skill_presets.py` | 內建唯讀 preset skill registry（skill-manager;`PRESETS`/`PRESET_BY_ID`/`PRESET_NAMES_CASEFOLD`）（T-SK）|
 | `chatagent_session.py` | ChatAgent session payload 轉形:sessionName 的機器情境 wrapper strip、`node_to_role` 角色映射、v3 message reshape(`{id, role, content}`)|
 | `embedding/registry.py` | 活躍 embedding model config 快取（從 DB 讀取；`refresh()` 在 lifespan 呼叫）|
 | `embedding/lifecycle.py` | embedding model 狀態機：draft → staging → active → retired（B50）|

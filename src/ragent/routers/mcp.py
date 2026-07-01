@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, NoReturn
 
 import structlog
 from fastapi import APIRouter, Request
@@ -32,7 +32,17 @@ from ragent.pipelines.retrieve import (
 )
 from ragent.routers.mcp_tools.create_skill import CREATE_SKILL_TOOL
 from ragent.routers.mcp_tools.retrieve import RETRIEVE_TOOL
-from ragent.services.skill_service import SkillNameConflictError
+from ragent.routers.mcp_tools.skill_tools import (
+    DELETE_SKILL_TOOL,
+    GET_SKILL_TOOL,
+    LIST_SKILLS_TOOL,
+    UPDATE_SKILL_TOOL,
+)
+from ragent.services.skill_service import (
+    SkillNameConflictError,
+    SkillNotFoundError,
+    SkillReadOnlyError,
+)
 from ragent.utility.env import int_env
 
 logger = structlog.get_logger(__name__)
@@ -114,6 +124,69 @@ def _tools_payload(tools: list[Tool]) -> list[dict[str, Any]]:
 # validation can never drift apart.
 _RETRIEVE_INPUT_VALIDATOR = Draft7Validator(RETRIEVE_TOOL.inputSchema)
 _CREATE_SKILL_INPUT_VALIDATOR = Draft7Validator(CREATE_SKILL_TOOL.inputSchema)
+_LIST_SKILLS_INPUT_VALIDATOR = Draft7Validator(LIST_SKILLS_TOOL.inputSchema)
+_GET_SKILL_INPUT_VALIDATOR = Draft7Validator(GET_SKILL_TOOL.inputSchema)
+_UPDATE_SKILL_INPUT_VALIDATOR = Draft7Validator(UPDATE_SKILL_TOOL.inputSchema)
+_DELETE_SKILL_INPUT_VALIDATOR = Draft7Validator(DELETE_SKILL_TOOL.inputSchema)
+
+# SkillService domain errors → JSON-RPC error codes (all are caller errors).
+_SKILL_ERROR_CODES: dict[type[Exception], HttpErrorCode] = {
+    SkillNotFoundError: HttpErrorCode.SKILL_NOT_FOUND,
+    SkillNameConflictError: HttpErrorCode.SKILL_NAME_CONFLICT,
+    SkillReadOnlyError: HttpErrorCode.SKILL_READONLY,
+}
+
+
+def _require_mcp_user(user_id: str | None) -> None:
+    """Fail closed when no identity reached the MCP endpoint — a skill is never
+    created/read/mutated under an unknown or attacker-chosen owner."""
+    if not user_id:
+        raise _McpToolError(
+            _INVALID_PARAMS,
+            HttpErrorCode.MISSING_USER_ID.value,
+            "user identity required for skill tools",
+        )
+
+
+def _raise_skill_tool_error(tool: str, exc: Exception) -> NoReturn:
+    """Map a SkillService failure to a JSON-RPC error envelope.
+
+    Typed domain errors (not-found / conflict / read-only) are caller errors
+    (-32602); anything unexpected (DB outage, write error) is
+    MCP_TOOL_EXECUTION_FAILED (-32001) — never an HTTP 500. Mirrors the retrieve
+    tool's wrapping. A `_McpToolError` raised by input validation is re-raised
+    unchanged (defence in depth; validation runs before the wrapped call).
+    """
+    if isinstance(exc, _McpToolError):
+        raise exc
+    code = _SKILL_ERROR_CODES.get(type(exc))
+    if code is not None:
+        raise _McpToolError(_INVALID_PARAMS, code.value, str(exc)) from exc
+    logger.exception("mcp.tool.error", tool=tool, error_type=type(exc).__name__)
+    raise _McpToolError(
+        _TOOL_EXECUTION_FAILED,
+        HttpErrorCode.MCP_TOOL_EXECUTION_FAILED.value,
+        str(exc) or "tool execution failed",
+    ) from exc
+
+
+def _skill_brief(resp: Any) -> dict[str, Any]:
+    return {
+        "skill_id": resp.skill_id,
+        "name": resp.name,
+        "description": resp.description,
+        "enabled": resp.enabled,
+        "readonly": resp.readonly,
+    }
+
+
+def _skill_full(resp: Any) -> dict[str, Any]:
+    return {
+        **_skill_brief(resp),
+        "instructions": resp.instructions,
+        "created_at": resp.created_at,
+        "updated_at": resp.updated_at,
+    }
 
 
 def _validate_against(validator: Draft7Validator, args: Any) -> None:
@@ -255,16 +328,13 @@ def create_mcp_router(
             "isError": False,
         }
 
+    # Owner is the authenticated caller — NEVER a tool argument. Each skill
+    # handler fails closed on missing identity, validates against its schema
+    # (additionalProperties:false rejects a spoofed user_id), then maps
+    # SkillService errors onto JSON-RPC envelopes via _raise_skill_tool_error.
+
     async def _run_create_skill(arguments: dict[str, Any], user_id: str | None) -> dict[str, Any]:
-        # Owner is the authenticated caller — NEVER a tool argument. Fail closed
-        # when no identity reached the MCP endpoint so a skill can never be
-        # created under an unknown or attacker-chosen owner.
-        if not user_id:
-            raise _McpToolError(
-                _INVALID_PARAMS,
-                HttpErrorCode.MISSING_USER_ID.value,
-                "user identity required to create a skill",
-            )
+        _require_mcp_user(user_id)
         _validate_against(_CREATE_SKILL_INPUT_VALIDATOR, arguments)
         try:
             resp = await skill_service.create(
@@ -274,41 +344,104 @@ def create_mcp_router(
                 instructions=arguments["instructions"],
                 enabled=arguments.get("enabled", True),
             )
-        except SkillNameConflictError as exc:
-            raise _McpToolError(
-                _INVALID_PARAMS, HttpErrorCode.SKILL_NAME_CONFLICT.value, str(exc)
-            ) from exc
         except Exception as exc:
-            # Mirror _run_retrieve: an unexpected failure (DB down, write error)
-            # surfaces as a JSON-RPC error envelope, not an HTTP 500.
-            logger.exception("mcp.tool.error", tool="create_skill", error_type=type(exc).__name__)
-            raise _McpToolError(
-                _TOOL_EXECUTION_FAILED,
-                HttpErrorCode.MCP_TOOL_EXECUTION_FAILED.value,
-                str(exc) or "tool execution failed",
-            ) from exc
-        skill = {
-            "skill_id": resp.skill_id,
-            "name": resp.name,
-            "description": resp.description,
-            "enabled": resp.enabled,
-            "readonly": resp.readonly,
-        }
+            _raise_skill_tool_error("create_skill", exc)
         text = (
             f"Created skill '{resp.name}' (skill_id={resp.skill_id}). "
             "The user can select it for a future chat turn."
         )
         return {
             "content": [{"type": "text", "text": text}],
-            "structuredContent": {"skill": skill},
+            "structuredContent": {"skill": _skill_brief(resp)},
+            "isError": False,
+        }
+
+    async def _run_list_skills(arguments: dict[str, Any], user_id: str | None) -> dict[str, Any]:
+        _require_mcp_user(user_id)
+        _validate_against(_LIST_SKILLS_INPUT_VALIDATOR, arguments)
+        try:
+            resps = await skill_service.list_for_user(user_id=user_id)
+        except Exception as exc:
+            _raise_skill_tool_error("list_skills", exc)
+        briefs = [_skill_brief(r) for r in resps]
+        return {
+            "content": [{"type": "text", "text": f"{len(briefs)} skill(s)."}],
+            "structuredContent": {"skills": briefs},
+            "isError": False,
+        }
+
+    async def _run_get_skill(arguments: dict[str, Any], user_id: str | None) -> dict[str, Any]:
+        _require_mcp_user(user_id)
+        _validate_against(_GET_SKILL_INPUT_VALIDATOR, arguments)
+        try:
+            resp = await skill_service.get(user_id=user_id, skill_id=arguments["skill_id"])
+        except Exception as exc:
+            _raise_skill_tool_error("get_skill", exc)
+        return {
+            "content": [{"type": "text", "text": f"Skill '{resp.name}'."}],
+            "structuredContent": {"skill": _skill_full(resp)},
+            "isError": False,
+        }
+
+    async def _run_update_skill(arguments: dict[str, Any], user_id: str | None) -> dict[str, Any]:
+        _require_mcp_user(user_id)
+        _validate_against(_UPDATE_SKILL_INPUT_VALIDATOR, arguments)
+        try:
+            # A full replace: the schema requires every write field, so we read
+            # them directly — no `.get` default that could silently overwrite.
+            resp = await skill_service.update(
+                user_id=user_id,
+                skill_id=arguments["skill_id"],
+                name=arguments["name"],
+                description=arguments["description"],
+                instructions=arguments["instructions"],
+                enabled=arguments["enabled"],
+            )
+        except Exception as exc:
+            _raise_skill_tool_error("update_skill", exc)
+        return {
+            "content": [
+                {"type": "text", "text": f"Updated skill '{resp.name}' (skill_id={resp.skill_id})."}
+            ],
+            "structuredContent": {"skill": _skill_full(resp)},
+            "isError": False,
+        }
+
+    async def _run_delete_skill(arguments: dict[str, Any], user_id: str | None) -> dict[str, Any]:
+        _require_mcp_user(user_id)
+        _validate_against(_DELETE_SKILL_INPUT_VALIDATOR, arguments)
+        skill_id = arguments["skill_id"]
+        try:
+            await skill_service.delete(user_id=user_id, skill_id=skill_id)
+        except Exception as exc:
+            _raise_skill_tool_error("delete_skill", exc)
+        return {
+            "content": [{"type": "text", "text": f"Deleted skill {skill_id}."}],
+            "structuredContent": {"skill_id": skill_id, "deleted": True},
             "isError": False,
         }
 
     tools: list[Tool] = [RETRIEVE_TOOL]
     tool_handlers: dict[str, _ToolHandler] = {"retrieve": _run_retrieve}
     if skill_service is not None:
-        tools.append(CREATE_SKILL_TOOL)
-        tool_handlers["create_skill"] = _run_create_skill
+        tools.extend(
+            [
+                CREATE_SKILL_TOOL,
+                LIST_SKILLS_TOOL,
+                GET_SKILL_TOOL,
+                UPDATE_SKILL_TOOL,
+                DELETE_SKILL_TOOL,
+            ]
+        )
+        tool_handlers.update(
+            {
+                "create_skill": _run_create_skill,
+                "list_skills": _run_list_skills,
+                "get_skill": _run_get_skill,
+                "update_skill": _run_update_skill,
+                "delete_skill": _run_delete_skill,
+            }
+        )
     tools_list_payload = _tools_payload(tools)
 
     async def _handle_tools_list(_params: Any) -> dict[str, Any]:

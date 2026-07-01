@@ -314,27 +314,49 @@ The chaos suite asserts the resilience claims of §3.6 (reconciler recovery, ide
 ### 3.8 MCP Tool Server (P2.5)
 
 Exposes ragent tools over MCP (JSON-RPC 2.0): the read-only `retrieve` tool, plus
-the **write** `create_skill` tool (T-SK) when `skill_service` is wired (always, in
-production).
+the **skill-management** tool family (T-SK) — `create_skill`, `list_skills`,
+`get_skill`, `update_skill`, `delete_skill` — advertised when `skill_service` is
+wired (always, in production). Together they let the `skill-manager` preset drive
+a full CRUD conversation server-side.
 
 > Full spec: [docs/spec/mcp_server.md](spec/mcp_server.md) — protocol, methods, `retrieve` tool schema, error codes, BDD S58–S67.
 
-**`create_skill` (write tool, T-SK):** creates a skill under the **authenticated
-caller** — the owner is resolved via `get_user_id` inside the MCP endpoint and is
-**never** a tool argument (the inputSchema is `additionalProperties:false`, so a
-spoofed `user_id` is rejected as `MCP_TOOL_INPUT_INVALID`). With no resolved
-identity the call **fails closed** (`MISSING_USER_ID`) — a skill is never created
-under an unknown owner. Args mirror `SkillWriteRequest` (`{name, description?,
-instructions, enabled?}`); a name collision → `SKILL_NAME_CONFLICT`. Result:
-`structuredContent.skill = {skill_id, name, description, enabled, readonly}`. The tool is
-advertised in `tools/list` only when `skill_service` is wired. `annotations.readOnlyHint=false`.
-Whether an agent actually calls it depends on the upstream ChatAgent's MCP client
-config (or a frontend tool runtime) — that wiring is outside ragent.
+**Skill tools (T-SK) — owner-scoping (all five):** every skill tool operates on
+the **authenticated caller's** skills only — the owner is resolved via
+`get_user_id` inside the MCP endpoint and is **never** a tool argument (each
+inputSchema is `additionalProperties:false`, so a spoofed `user_id` is rejected as
+`MCP_TOOL_INPUT_INVALID`). With no resolved identity the call **fails closed**
+(`MISSING_USER_ID`). The tools are advertised in `tools/list` only when
+`skill_service` is wired. Whether an agent actually calls them depends on the
+upstream ChatAgent's MCP client config (or a frontend tool runtime) — that wiring
+is outside ragent.
 
-**`create_skill` error handling:** non-object `arguments` (e.g. `[]`/`""`/`false`)
-→ `MCP_TOOL_INPUT_INVALID` (not silently coerced to `{}`); any unexpected backend
-failure (DB outage, write error) is wrapped as a JSON-RPC `MCP_TOOL_EXECUTION_FAILED`
-envelope — never an HTTP 500 — matching the `retrieve` tool.
+- **`create_skill`** (write): args mirror `SkillWriteRequest` (`{name,
+  description?, instructions, enabled?}`); name collision → `SKILL_NAME_CONFLICT`.
+  Result `structuredContent.skill = {skill_id, name, description, enabled, readonly}`
+  (brief). `readOnlyHint=false`.
+- **`list_skills`** (read): no args; returns
+  `structuredContent.skills = [{skill_id, name, description, enabled, readonly}]`
+  (briefs — no instructions/timestamps), presets pinned first. `readOnlyHint=true`.
+- **`get_skill`** (read): `{skill_id}` → `structuredContent.skill` (full: brief +
+  `instructions, created_at, updated_at`); a foreign/missing id → `SKILL_NOT_FOUND`.
+  `readOnlyHint=true`.
+- **`update_skill`** (write): full replace `{skill_id, name, description,
+  instructions, enabled}` — **all** write fields required (a full replace, so an
+  omitted field is a schema error, not a partial edit; this prevents an agent
+  from silently blanking `description` or re-enabling a disabled skill) → full
+  skill; a preset id → `SKILL_READONLY`, a name collision → `SKILL_NAME_CONFLICT`,
+  a foreign/missing id → `SKILL_NOT_FOUND`. `readOnlyHint=false`.
+- **`delete_skill`** (write): `{skill_id}` → `structuredContent = {skill_id,
+  deleted:true}`; a preset id → `SKILL_READONLY`, a foreign/missing id →
+  `SKILL_NOT_FOUND`. `readOnlyHint=false`.
+
+**Skill-tool error handling:** non-object `arguments` (e.g. `[]`/`""`/`false`)
+→ `MCP_TOOL_INPUT_INVALID` (not silently coerced to `{}`); typed SkillService
+errors map to `SKILL_NOT_FOUND` / `SKILL_NAME_CONFLICT` / `SKILL_READONLY`; any
+unexpected backend failure (DB outage, write error) is wrapped as a JSON-RPC
+`MCP_TOOL_EXECUTION_FAILED` envelope — never an HTTP 500 — matching the `retrieve`
+tool.
 
 **Interface notes (2026-05-27):**
 - `tools/list` response includes `annotations: {readOnlyHint: true}` on the `retrieve` tool — signals to MCP hosts (protocol 2025-03-26+) that the tool is read-only. Clients on earlier pinned version (`"2024-11-05"`) silently ignore the field.
@@ -362,18 +384,21 @@ or mutate another's skills (isolation enforced at the SQL layer + the DB
 them from the start without creating them. Presets live in code
 (`services/skill_presets.py`), not the DB, are **read-only**, and are merged into
 the owner-scoped `list`/`get`/`resolve` paths (pinned ahead of the user's own
-skills). The first preset is **`skill-creator`** (`skill_id="skill-creator"`),
-whose instructions guide the agent to **draft** a complete skill (name /
-description / instructions) from the user's intent — proposing a first version
-rather than interrogating field by field — and, on confirmation, call the
-`create_skill` MCP tool to save it. Adding more presets later =
+skills). The first preset is **`skill-manager`** (`skill_id="skill-manager"`),
+a full skill-CRUD persona: its instructions guide the agent to **draft**
+complete skills (name / description / instructions) from the user's intent —
+proposing a first version rather than interrogating field by field — and to
+manage existing skills by calling the MCP tools `create_skill` / `list_skills` /
+`get_skill` / `update_skill` / `delete_skill` (resolving a `skill_id` via
+`list_skills` before any get/update/delete, confirming before overwrite/delete,
+and refusing to mutate read-only built-ins). Adding more presets later =
 one entry in the registry (no migration, no per-user seeding). Constraints: a user skill may not take a
 preset's `name` (case-insensitive, matching the DB's utf8mb4 collation → `409
 SKILL_NAME_CONFLICT`) — on `PUT` this is reported only **after** the target row
 is confirmed owned, so a foreign/missing id stays `404` (foreign and missing are
 indistinguishable); `PUT`/`DELETE` on a preset `skill_id` → `409 SKILL_READONLY`;
 `resolve` of a preset returns its instructions (so
-`forwardedProps.skillId="skill-creator"` works in `/chatagent/v3`).
+`forwardedProps.skillId="skill-manager"` works in `/chatagent/v3`).
 
 **CRUD — `/skills/v1`** (always registered; no env gate):
 

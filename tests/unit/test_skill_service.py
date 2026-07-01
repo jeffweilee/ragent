@@ -70,9 +70,9 @@ async def test_get_missing_raises_not_found():
 async def test_list_maps_rows():
     svc = SkillService(_repo(list=AsyncMock(return_value=[_row(), _row()])))
     out = await svc.list_for_user(user_id="alice")
-    # 1 built-in preset (skill-creator) is pinned ahead of the 2 user skills.
+    # 1 built-in preset (skill-manager) is pinned ahead of the 2 user skills.
     assert len(out) == 3
-    assert out[0].skill_id == "skill-creator"
+    assert out[0].skill_id == "skill-manager"
 
 
 async def test_update_rowcount_zero_raises_not_found():

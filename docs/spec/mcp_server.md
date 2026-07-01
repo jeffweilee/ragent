@@ -37,7 +37,12 @@ Any other method → JSON-RPC error `-32601 Method not found`.
 
 #### 3.8.3 The `retrieve` tool
 
-The sole tool advertised by `tools/list`. Mirrors §3.4.4 `POST /retrieve/v1` semantics:
+The read-only retrieval tool. When `skill_service` is wired (always, in
+production) `tools/list` also advertises the **skill-management** tool family
+(`create_skill`, `list_skills`, `get_skill`, `update_skill`, `delete_skill`,
+T-SK) — all owner-scoped to the authenticated caller; see `docs/00_spec.md §3.8`
+and `docs/API.md` for their per-tool schemas and error mapping. Mirrors §3.4.4
+`POST /retrieve/v1` semantics:
 
 ```json
 {
@@ -132,7 +137,7 @@ App-level errors (-32000..-32099) carry `data.error_code` matching the existing 
 #### 3.8.5 BDD
 
 - **S58 mcp initialize** — `initialize` with `protocolVersion:"2025-06-18"` → `result.{protocolVersion:"2025-06-18", capabilities:{tools:{}}, serverInfo:{name:"ragent",version:"<semver>"}}`. A supported older revision (`2025-03-26` / `2024-11-05`) is echoed back; an unsupported revision falls back to `2025-06-18`.
-- **S59 mcp tools/list** — `result.tools` has exactly one entry `name:"retrieve"` with `inputSchema` and `outputSchema` matching §3.8.3.
+- **S59 mcp tools/list** — `result.tools` includes `name:"retrieve"` with `inputSchema` and `outputSchema` matching §3.8.3; when `skill_service` is wired it also includes the five skill tools (`create_skill`/`list_skills`/`get_skill`/`update_skill`/`delete_skill`), and none of them when it is not.
 - **S60 mcp tools/call retrieve** — Given indexed corpus and `tools/call` with `{name:"retrieve", arguments:{query:"...",top_k:3}}`, When the server processes it, Then `result.structuredContent.sources` carries one full source entry per chunk (N ≤ 3) validating against `outputSchema`, `result.content[0].text` is the `<context>`-wrapped citation table + `### [N]` excerpt blocks with no natural-language wording and no internal fields, and `result.isError` is `false`. Empty results return `structuredContent: {sources: []}` with `<context>\n</context>`.
 - **S60a mcp tools/call retrieve unknown arg** — Given `tools/call` with `{name:"retrieve", arguments:{query:"q", unknown_field:"bad"}}`, Then `error.code` is `-32602` and `error.data.error_code` is `MCP_TOOL_INPUT_INVALID`.
 - **S61 mcp method not found** — Given `{method:"resources/list"}` (unimplemented), Then `error.code` is `-32601`.
