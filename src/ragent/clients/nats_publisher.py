@@ -70,6 +70,7 @@ class NatsSessionPublisher:
         namespace: str | None,
         subject_template: str = "session.{user}.status",
         verify_certs: bool = True,
+        connect_timeout_seconds: float = 10.0,
     ) -> None:
         self._servers = servers
         self._auth_url = auth_service_url.rstrip("/") if auth_service_url else None
@@ -77,6 +78,10 @@ class NatsSessionPublisher:
         self._namespace = namespace
         self._subject_template = subject_template
         self._verify_certs = verify_certs
+        # nats-py's connect() retries internally (default up to ~2 min) when
+        # unreachable; bound the initial attempt so a NATS outage can't stall
+        # FastAPI lifespan startup.
+        self._connect_timeout_seconds = connect_timeout_seconds
         self._nc: Any = None
         self._loop: asyncio.AbstractEventLoop | None = None
 
@@ -112,6 +117,9 @@ class NatsSessionPublisher:
 
         No-op when unconfigured. A failure is logged and swallowed — realtime status
         is best-effort and must not abort boot (the sessionList snapshot still works).
+        The connect itself is bounded by ``connect_timeout_seconds`` so an
+        unreachable broker can't stall this method (and the lifespan awaiting it)
+        far longer than a boot-time step should ever take.
         """
         if not self._enabled():
             return
@@ -121,11 +129,14 @@ class NatsSessionPublisher:
             keypair = _new_user_keypair()
             jwt = await self._fetch_app_jwt(keypair.public_key.decode())
             servers = [s.strip() for s in self._servers.split(",") if s.strip()]  # type: ignore[union-attr]
-            self._nc = await nats.connect(
-                servers,
-                name="ragent",
-                user_jwt_cb=lambda: jwt.encode(),
-                signature_cb=lambda nonce: base64.b64encode(keypair.sign(nonce.encode())),
+            self._nc = await asyncio.wait_for(
+                nats.connect(
+                    servers,
+                    name="ragent",
+                    user_jwt_cb=lambda: jwt.encode(),
+                    signature_cb=lambda nonce: base64.b64encode(keypair.sign(nonce.encode())),
+                ),
+                timeout=self._connect_timeout_seconds,
             )
             self._loop = loop
             logger.info("nats.connected")
@@ -155,6 +166,10 @@ class NatsSessionPublisher:
 
     @staticmethod
     def _log_publish_failure(future: Future[None]) -> None:
+        # A cancelled future (e.g. an outstanding task cancelled during event-loop
+        # shutdown) makes .exception() raise CancelledError rather than return it.
+        if future.cancelled():
+            return
         exc = future.exception()
         if exc is not None:
             logger.warning("nats.session_publish_failed", error_type=type(exc).__name__)

@@ -500,6 +500,7 @@ def build_container() -> Container:
                 "NATS_SESSION_SUBJECT_TEMPLATE", "session.{user}.status"
             ),
             verify_certs=_bool_env("NATS_AUTH_VERIFY_CERTS", True),
+            connect_timeout_seconds=_float_env("NATS_CONNECT_TIMEOUT_SECONDS", 10.0),
         )
         chatagent_agent_factory = _build_chatagent_agent_factory(
             http,

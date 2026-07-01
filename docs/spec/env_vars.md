@@ -67,6 +67,7 @@
 | `NATS_AUTH_NAMESPACE`                 | (unset)          | The app `namespace` sent in the app-flow exchange (identifies this backend to the auth service). |
 | `NATS_AUTH_VERIFY_CERTS`              | `true`           | Set `false` to skip TLS certificate verification on the `POST <NATS_AUTH_SERVICE_URL>/api/v1/auth` JWT exchange — dev/self-signed CA or a broken intermediate chain on the auth service only. Same default-secure convention as `ES_VERIFY_CERTS`/`OIDC_VERIFY_SSL`, parsed via `bool_env` (accepts `1`/`true`/`yes`/`on`). |
 | `NATS_SESSION_SUBJECT_TEMPLATE`       | `session.{user}.status` | Operator-configurable per-user status subject; `{user}` is replaced with the user id. |
+| `NATS_CONNECT_TIMEOUT_SECONDS`        | `10`             | Bounds the lifespan-startup `nats.connect()` call. nats-py retries internally (default up to ~60 attempts × 2s ≈ 2 min) when the broker is unreachable even on the *initial* connect; without this bound a NATS outage would stall FastAPI lifespan startup, not just degrade to snapshot-only. A timeout is caught by the same fail-soft `except` as any other connect failure. |
 
 #### 4.6.4 Third-party API endpoints & credentials
 

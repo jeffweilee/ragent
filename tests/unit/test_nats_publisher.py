@@ -13,6 +13,7 @@ import asyncio
 import json
 import threading
 import time
+from concurrent.futures import Future
 
 import structlog.testing
 
@@ -117,6 +118,21 @@ def test_publish_logs_when_the_scheduled_coroutine_raises() -> None:
     assert any(e.get("event") == "nats.session_publish_failed" for e in logs)
 
 
+def test_log_publish_failure_ignores_a_cancelled_future() -> None:
+    # An asyncio/uvicorn lifespan shutdown can cancel outstanding scheduled
+    # tasks; future.exception() raises CancelledError on a cancelled future,
+    # which the callback must swallow rather than let escape (an exception
+    # from a done-callback isn't fatal, but it's noisy — logged separately by
+    # the stdlib logging module instead of the clean structlog warning).
+    future: Future[None] = Future()
+    future.cancel()
+
+    with structlog.testing.capture_logs() as logs:
+        NatsSessionPublisher._log_publish_failure(future)  # noqa: SLF001
+
+    assert logs == []
+
+
 async def test_connect_is_noop_when_unconfigured() -> None:
     pub = NatsSessionPublisher(
         servers=None, auth_service_url=None, client_secret=None, namespace=None
@@ -164,6 +180,29 @@ async def test_connect_fail_soft_does_not_abort(monkeypatch) -> None:
 
     await pub.connect(asyncio.get_running_loop())  # swallowed
     pub.publish("alice", {"x": 1})  # degraded to no-op, no raise
+
+
+async def test_connect_is_bounded_by_a_timeout_when_nats_hangs(monkeypatch) -> None:
+    # nats-py's default connect() retries internally (up to ~2 minutes) when the
+    # broker is unreachable — left unbounded, this would block FastAPI lifespan
+    # startup for minutes, violating the "must not abort/delay boot" contract.
+    async def _hangs(servers, **opts):  # noqa: ANN001
+        await asyncio.Event().wait()  # never resolves — simulates an unreachable broker
+
+    async def _fake_fetch(self, public_key):  # noqa: ANN001
+        return "the.nats.jwt"
+
+    monkeypatch.setattr("nats.connect", _hangs)
+    monkeypatch.setattr(NatsSessionPublisher, "_fetch_app_jwt", _fake_fetch)
+    pub = _publisher(connect_timeout_seconds=0.05)
+
+    start = time.monotonic()
+    await asyncio.wait_for(pub.connect(asyncio.get_running_loop()), timeout=2.0)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 1.0  # bounded by connect_timeout_seconds, not nats-py's own retry loop
+    assert pub._nc is None  # noqa: SLF001 — degraded to snapshot-only
+    pub.publish("alice", {"x": 1})  # still a no-op
 
 
 async def test_fetch_app_jwt_verify_certs_defaults_true_and_is_configurable(monkeypatch) -> None:
