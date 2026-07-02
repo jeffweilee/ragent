@@ -27,7 +27,9 @@ def fake_container() -> SimpleNamespace:
             return None
 
     engine.connect = MagicMock(return_value=_Conn())
-    return SimpleNamespace(es_client=es_client, engine=engine, token_managers=())
+    return SimpleNamespace(
+        es_client=es_client, engine=engine, token_managers=(), nats_publisher=None
+    )
 
 
 @pytest.fixture
@@ -121,3 +123,27 @@ async def test_close_infra_continues_when_engine_dispose_raises(fake_container) 
     await _close_infra(fake_container)  # should not raise
 
     fake_container.es_client.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_close_infra_drains_nats_publisher_when_present(fake_container) -> None:
+    from ragent.bootstrap.app import _close_infra
+
+    fake_container.nats_publisher = MagicMock(close=AsyncMock())
+
+    await _close_infra(fake_container)
+
+    fake_container.nats_publisher.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_close_infra_continues_when_nats_close_raises(fake_container) -> None:
+    """A failing NATS close must not block ES/engine cleanup (never-raises contract)."""
+    from ragent.bootstrap.app import _close_infra
+
+    fake_container.nats_publisher = MagicMock(close=AsyncMock(side_effect=RuntimeError("nats")))
+
+    await _close_infra(fake_container)  # should not raise
+
+    fake_container.es_client.close.assert_called_once()
+    fake_container.engine.dispose.assert_awaited_once()

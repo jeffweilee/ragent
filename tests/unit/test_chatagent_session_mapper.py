@@ -227,6 +227,55 @@ def test_session_list_without_sessions_is_returned_unchanged() -> None:
     assert map_session_list_payload({"totalCount": 0}) == {"totalCount": 0}
 
 
+def test_session_list_merges_status_when_status_of_provided() -> None:
+    # T-CAv3L: each entry gains {running, hasNewReply} from the injected status fn,
+    # keyed by its session id, on top of the existing sessionName strip.
+    payload = {
+        "sessions": [
+            {"session": "t1", "sessionName": "A"},
+            {"session": "t2", "sessionName": "B"},
+        ]
+    }
+    status = {
+        "t1": {"running": True, "hasNewReply": False},
+        "t2": {"running": False, "hasNewReply": True},
+    }
+
+    out = map_session_list_payload(payload, status.__getitem__)
+
+    assert out["sessions"][0] == {
+        "session": "t1",
+        "sessionName": "A",
+        "running": True,
+        "hasNewReply": False,
+    }
+    assert out["sessions"][1] == {
+        "session": "t2",
+        "sessionName": "B",
+        "running": False,
+        "hasNewReply": True,
+    }
+
+
+def test_session_list_status_of_none_leaves_entries_unchanged() -> None:
+    # No store wired → status_of is None → the list degrades to title-only (the
+    # pre-T-CAv3L behaviour), never raising.
+    payload = {"sessions": [{"session": "t1", "sessionName": "A"}]}
+
+    out = map_session_list_payload(payload, None)
+
+    assert out["sessions"][0] == {"session": "t1", "sessionName": "A"}
+
+
+def test_session_list_entry_without_session_id_skips_status() -> None:
+    # A malformed entry with no usable session id must not crash status lookup.
+    payload = {"sessions": [{"sessionName": "no id"}]}
+
+    out = map_session_list_payload(payload, lambda _sid: {"running": True})
+
+    assert out["sessions"][0] == {"sessionName": "no id"}
+
+
 def test_explicit_null_role_falls_back_to_assistant() -> None:
     payload = _session([{"messageId": "m1", "role": None, "content": "x"}])
 

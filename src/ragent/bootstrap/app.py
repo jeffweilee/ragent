@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 from typing import Any
@@ -109,7 +110,12 @@ async def _check_infra_ready(probes: dict, broker: Any, container: Any) -> None:
 
 
 async def _close_infra(container: Any) -> None:
-    """Best-effort close of ES client and DB engine; never raises."""
+    """Best-effort close of ES client, DB engine, and NATS publisher; never raises."""
+    if container.nats_publisher is not None:
+        try:
+            await container.nats_publisher.close()
+        except Exception:  # noqa: BLE001 — shutdown path; log and continue
+            logger.warning("api.shutdown.nats_close_failed", exc_info=True)
     try:
         container.es_client.close()
     except Exception:  # noqa: BLE001 — shutdown path; log and continue
@@ -362,6 +368,10 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
         # Refresh failures degrade to stale-warning per the registry's
         # contract — they don't abort boot.
         await container.embedding_registry.refresh()
+        # T-CAv3N — open the NATS connection on the app loop so the producer thread
+        # can publish live session-list status. No-op when NATS is unconfigured.
+        if container.nats_publisher is not None:
+            await container.nats_publisher.connect(asyncio.get_running_loop())
         logger.info("api.startup.infra_ready", probes=list(probes.keys()), broker=True)
         try:
             yield
@@ -479,6 +489,7 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
                 jwt_header=str_env("RAGENT_JWT_HEADER", _DEFAULT_JWT_HEADER),
                 timeout=_float_env("CHATAGENT_TIMEOUT_SECONDS", 30.0),
                 chat_stream_store=container.chat_stream_store,
+                nats_publisher=container.nats_publisher,
                 stream_idle_timeout=_float_env("CHATAGENT_STREAM_IDLE_TIMEOUT_SECONDS", 30.0),
                 document_artifact_resolver=container.document_artifact_resolver,
                 chat_attachment_service=container.chat_attachment_service,

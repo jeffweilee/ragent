@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections.abc import Callable
 from typing import Any
 
 from twp_ai.roles import node_to_role
@@ -104,14 +105,31 @@ def _is_interrupt(raw: dict[str, Any]) -> bool:
     return isinstance(hitl, dict) and bool(hitl.get("isInterrupt"))
 
 
-def map_session_list_payload(payload: dict[str, Any]) -> dict[str, Any]:
+def map_session_list_payload(
+    payload: dict[str, Any],
+    status_of: Callable[[str], dict[str, Any]] | None = None,
+) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return payload
     sessions = payload.get("sessions")
     if not isinstance(sessions, list):
         return payload
-    stripped = [_strip_session_name(s) if isinstance(s, dict) else s for s in sessions]
-    return {**payload, "sessions": stripped}
+    mapped = [_map_session_entry(s, status_of) if isinstance(s, dict) else s for s in sessions]
+    return {**payload, "sessions": mapped}
+
+
+def _map_session_entry(
+    entry: dict[str, Any], status_of: Callable[[str], dict[str, Any]] | None
+) -> dict[str, Any]:
+    entry = _strip_session_name(entry)
+    if status_of is None:
+        return entry
+    session_id = entry.get("session")
+    if not isinstance(session_id, str):
+        return entry
+    # Live status (running spinner + new-reply dot) is merged onto the stripped
+    # entry; the status fn closes over the store + caller user_id in the router.
+    return {**entry, **status_of(session_id)}
 
 
 def _strip_session_name(entry: dict[str, Any]) -> dict[str, Any]:

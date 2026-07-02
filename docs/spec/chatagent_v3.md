@@ -191,7 +191,25 @@ message shape changes, while the upstream wire contract is untouched.
 
 - `GET /chatagent/v3/sessionList` — each entry's `sessionName` has the
   machine-context wrapper stripped (the upstream derives the title from the first
-  user turn, which carries the block); other metadata is passed through.
+  user turn, which carries the block); other metadata is passed through. When the
+  stream store is wired, each entry is also enriched with two live-status booleans
+  (the session id **is** the run `thread_id`):
+  - `running` — the thread's current run is still streaming (run pointer set, no
+    `eos`); drives the list spinner. Derived from the existing run pointer + buffer,
+    so no extra bookkeeping.
+  - `hasNewReply` — a run finished for this thread and the user has not read it
+    since; drives the new-reply dot. Backed by a per-`(user, thread)` Redis flag
+    (`chatunread:`) set when a run finishes **with a reply** (a successful `RUN_FINISHED`
+    terminal — a `RUN_ERROR` run or a control-only cancelled resume persisted no reply, so
+    it sets nothing) and dropped only when the client **explicitly marks it read** via
+    `POST /chatagent/v3/session/read` (see below). "Read" is a client-owned signal:
+    the backend does **not** infer it from `GET /session` (loading history is
+    decoupled from reading) nor from a stream draining to `eos` (that coupled the
+    dot to the SSE generator's lifecycle — whether a client streamed to the end,
+    disconnected mid-reply, or a short reply drained in one batch — which the client,
+    not the backend, actually knows). `REDIS_UNREAD_TTL_SECONDS` (default 30d).
+    It is a presence flag, not a timestamp — `hasNewReply` is a plain `EXISTS`.
+  - With no store wired the list degrades to title-only (the fields are omitted).
 - `GET /chatagent/v3/session?session=<id>` — the upstream session envelope
   (`session`, …) is preserved, `sessionName` is stripped (same reason as
   sessionList), **human-in-the-loop interrupt turns (`humanInTheLoopMeta.isInterrupt=true`)
@@ -215,7 +233,68 @@ message shape changes, while the upstream wire contract is untouched.
     §3.4.7, never carries the block).
 - `PUT` / `DELETE /chatagent/v3/session` — proxied unchanged (rename / delete; no
   message bodies).
+- `POST /chatagent/v3/session/read?session=<id>` — **explicit, client-owned
+  mark-read.** The frontend calls this when the user has actually seen the session's
+  latest reply. Clears the `chatunread:` flag **and** publishes `{session,
+  hasNewReply:false}` over NATS so the user's other tabs/devices drop the dot in
+  realtime. Returns `204` and is idempotent (marking an already-read session is a
+  no-op). This is the **only** path that marks a session read. Does not touch the
+  upstream session API — it only manipulates the Redis flag + the NATS delta. It is
+  registered with the **chat POST feature** (`CHATAGENT_API_URL`), *not* under the
+  session-history URL gate, because the unread stream store it operates on is built
+  only when `CHATAGENT_API_URL` is set (registration-gate == store-build-gate, per
+  `docs/00_journal.md` 2026-06-23); gating it on `CHATAGENT_SESSION_API_URL` would
+  leave dots unclearable in a chat-without-history deployment. A no-op `204` when the
+  store itself is down (Redis unreachable); absent in a pure session-only deployment
+  where the whole unread feature is off.
+**Realtime status over NATS (not an HTTP route).** Instead of an SSE endpoint, ragent
+publishes live status transitions to a per-user NATS subject derived from
+`NATS_SESSION_SUBJECT_TEMPLATE` (default `session.{user}.status`, `{user}` → the user id);
+the frontend subscribes over its **own already-open** NATS connection and merges the delta
+onto its `sessionList` snapshot. ragent connects to the **shared platform NATS** via the
+backend **app auth flow** (mints an ephemeral Ed25519 nkey, POSTs the auth service
+`<NATS_AUTH_SERVICE_URL>/api/v1/auth` with `{token_type:"app", token:<client_secret>,
+namespace:<namespace>, publicKey}` for a NATS user JWT, then signs the connect nonce with
+the seed — mirroring mco-clean's frontend `tsso` flow with the app payload). The platform's
+app JWTs are **short-lived (~1 minute)**, so a background task re-runs the exchange every
+`NATS_JWT_REFRESH_SECONDS` (default 30s, same keypair) and the connect callback always
+presents the latest token — nats-py re-invokes it on every (re)connect handshake, so a
+reconnect after token expiry self-heals. Reconnect attempts are unbounded
+(`max_reconnect_attempts=-1`): a backend pod must ride out NATS outages longer than
+nats-py's ~2-minute default give-up window. This keeps the
+delta off ragent's HTTP/threadpool path entirely and uses NATS's native cross-pod
+fan-out (any API replica's producer reaches every subscriber). Payloads mirror the
+list fields:
 
-These are JSON proxy routes (not the SSE stream), so timeout / upstream failures
-map to HTTP `504` / `502` as in v1 — the v3 `RUN_ERROR` framing applies only to
-`POST /chatagent/v3`.
+- `{session, running:true}` when a run starts,
+- `{session, running:false, hasNewReply:true}` when it finishes with a new reply,
+- `{session, running:false}` when it finishes **without** one (`RUN_ERROR` /
+  control-only cancelled resume) — `hasNewReply` is omitted because the run never
+  touched the unread flag; an absolute `false` would wipe an earlier still-unread
+  reply's dot from live subscribers,
+- `{session, hasNewReply:false}` when the client explicitly marks the session read
+  (`POST /session/read`) **and a flag was actually cleared** — a repeat mark-read of
+  an already-read session is a silent no-op (no event noise from per-view calls).
+
+Deltas are **partial**: an event only carries the fields that transition actually
+changed, and the client merges per-field over its snapshot state.
+
+Publishing is **best-effort / fire-and-forget** (`run_coroutine_threadsafe` from the
+producer thread); a publish failure costs only one live nudge. NATS is unconfigured
+(`NATS_SERVERS` / the `NATS_AUTH_*` vars unset) or the auth exchange / connect fails →
+no realtime push, list stays snapshot-only.
+
+- **Snapshot + delta (lossy):** NATS core pub/sub is at-most-once, so the delta is a
+  *hint*, never a reliable event log. The durable truth is the `sessionList` snapshot
+  (`running`/`hasNewReply` above). The client **must** take the `sessionList` snapshot
+  on mount and **re-fetch it to re-sync** on NATS (re)connect / error (and may poll it
+  periodically as a backstop). A run the client is itself streaming already updates from
+  that session's chat stream, so the channel mainly carries cross-tab / background
+  transitions a snapshot would otherwise miss. The dot is **never** cleared server-side
+  from a stream draining to `eos` — when the user has seen the reply, the client marks it
+  read via `POST /session/read` (which clears the flag and publishes the cleared dot to
+  the user's other tabs).
+
+`sessionList` / `session` (GET/PUT/DELETE) are JSON proxy routes; timeout / upstream
+failures map to HTTP `504` / `502` as in v1 — the v3 `RUN_ERROR` framing applies only to
+`POST /chatagent/v3`. The NATS publish never affects an HTTP response (fail-soft).

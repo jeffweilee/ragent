@@ -60,6 +60,15 @@
 | `REDIS_STREAM_TTL_SECONDS`            | `300`            | How long a finished v3 run stays resumable (Redis Stream TTL). |
 | `REDIS_STREAM_MAXLEN`                 | `10000`          | Approximate per-run frame cap (`XADD MAXLEN ~`) for the v3 stream buffer. |
 | `CHATAGENT_STREAM_IDLE_TIMEOUT_SECONDS` | `30`           | Consumer gives up if the v3 stream buffer sees no new frame for this long. |
+| `REDIS_UNREAD_TTL_SECONDS`            | `2592000`        | TTL (default 30d) of the per-session new-reply flag backing the sessionList dot; survives well past a run buffer so the dot persists until the user opens the session. |
+| `NATS_SERVERS`                        | (unset)          | Comma-separated NATS URLs (the shared platform NATS). When set together with the auth-service vars below, ragent publishes live session-list status (`running`/`hasNewReply`) to the per-user subject; unset → the list is snapshot-only (no realtime push). |
+| `NATS_AUTH_SERVICE_URL`               | (unset)          | Base URL of the NATS auth service. ragent mints an ephemeral Ed25519 nkey and POSTs `<url>/api/v1/auth` (app flow) to exchange it for a NATS user JWT before connecting. |
+| `NATS_AUTH_CLIENT_SECRET`             | (unset)          | The app's `client_secret`, sent as the auth-service `token` in the app-flow exchange. |
+| `NATS_AUTH_NAMESPACE`                 | (unset)          | The app `namespace` sent in the app-flow exchange (identifies this backend to the auth service). |
+| `NATS_AUTH_VERIFY_CERTS`              | `true`           | Set `false` to skip TLS certificate verification on the `POST <NATS_AUTH_SERVICE_URL>/api/v1/auth` JWT exchange — dev/self-signed CA or a broken intermediate chain on the auth service only. Same default-secure convention as `ES_VERIFY_CERTS`/`OIDC_VERIFY_SSL`, parsed via `bool_env` (accepts `1`/`true`/`yes`/`on`). |
+| `NATS_SESSION_SUBJECT_TEMPLATE`       | `session.{user}.status` | Operator-configurable per-user status subject; `{user}` is replaced with the user id. |
+| `NATS_CONNECT_TIMEOUT_SECONDS`        | `10`             | Bounds the lifespan-startup `nats.connect()` call. nats-py retries internally (default up to ~60 attempts × 2s ≈ 2 min) when the broker is unreachable even on the *initial* connect; without this bound a NATS outage would stall FastAPI lifespan startup, not just degrade to snapshot-only. A timeout is caught by the same fail-soft `except` as any other connect failure. |
+| `NATS_JWT_REFRESH_SECONDS`            | `30`             | Interval for the background re-run of the app-flow JWT exchange (same ephemeral keypair, new token). Platform app JWTs expire in ~1 minute and nats-py re-invokes `user_jwt_cb` on every (re)connect handshake, so keeping the stored JWT fresh makes reconnects after token expiry self-heal; without it any disconnect after the first minute would re-present the dead boot-time JWT forever. Must stay under the platform JWT TTL. |
 
 #### 4.6.4 Third-party API endpoints & credentials
 

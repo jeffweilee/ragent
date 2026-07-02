@@ -158,3 +158,125 @@ def test_current_and_stash_fail_soft_on_redis_error() -> None:
     store.stash_user_input(ChatStreamStore.key("a", "t", "r"), "x")  # does not raise
     assert store.get_current("a", "t") is None
     assert store.get_user_input(ChatStreamStore.key("a", "t", "r")) is None
+
+
+# --- T-CAv3L: session-list live status (running spinner + new-reply dot) -------
+
+
+def test_is_running_true_in_flight_false_after_done() -> None:
+    # The thread's CURRENT run is "running" until its eos sentinel is written.
+    store = _store()
+    key = ChatStreamStore.key("alice", "t", "r")
+    assert store.is_running("alice", "t") is False  # no current run yet
+    store.set_current("alice", "t", "r")
+    store.append(key, "data: a\n\n")
+    assert store.is_running("alice", "t") is True
+    store.mark_done(key)
+    assert store.is_running("alice", "t") is False  # eos written → finished
+
+
+def test_is_running_false_without_current_pointer() -> None:
+    store = _store()
+    assert store.is_running("alice", "t") is False
+
+
+def test_is_running_false_when_pointer_outlives_dead_buffer() -> None:
+    # Ghost-spinner guard: a pointer can outlive its run's buffer+lock (producer died
+    # before eos). Without the is_resumable gate, is_done would see an empty stream and
+    # read False → "running" forever until the pointer TTL. The gate returns False.
+    store = _store()
+    store.set_current("alice", "t", "r")  # pointer exists...
+    # ...but no try_start (no lock) and no append (no frames) → not resumable
+    assert store.is_running("alice", "t") is False
+
+
+def test_unread_flag_set_exists_then_cleared() -> None:
+    store = _store()
+    assert store.has_unread("alice", "t") is False
+    store.mark_unread("alice", "t")
+    assert store.has_unread("alice", "t") is True
+    store.clear_unread("alice", "t")
+    assert store.has_unread("alice", "t") is False
+
+
+def test_unread_is_owner_and_thread_scoped() -> None:
+    store = _store()
+    store.mark_unread("alice", "t1")
+    assert store.has_unread("alice", "t1") is True
+    assert store.has_unread("bob", "t1") is False  # another user never sees it
+    assert store.has_unread("alice", "t2") is False  # another thread is independent
+
+
+def test_mark_unread_sets_ttl() -> None:
+    # The flag must expire so abandoned unread state self-cleans (no key leak).
+    store = _store(unread_ttl_seconds=1000)
+    store.mark_unread("alice", "t")
+    assert store._redis.ttl(ChatStreamStore._unread_key("alice", "t")) > 0  # noqa: SLF001
+
+
+def test_has_unread_fail_soft_on_redis_error() -> None:
+    redis = MagicMock()
+    redis.exists.side_effect = redis_lib.ConnectionError("down")
+    store = ChatStreamStore(redis)
+    assert store.has_unread("a", "t") is False
+
+
+def test_clear_unread_reports_whether_a_flag_was_cleared() -> None:
+    # The DEL count is free change detection: callers broadcast the cleared-dot
+    # delta only when a flag actually existed, so repeat mark-reads stay silent.
+    store = _store()
+    store.mark_unread("alice", "t")
+    assert store.clear_unread("alice", "t") is True  # actually cleared
+    assert store.clear_unread("alice", "t") is False  # already clear → no-op
+
+
+def test_clear_unread_fail_soft_on_redis_error() -> None:
+    redis = MagicMock()
+    redis.delete.side_effect = redis_lib.ConnectionError("down")
+    store = ChatStreamStore(redis)
+    assert store.clear_unread("a", "t") is False  # safe default: no broadcast
+
+
+def test_status_many_batches_running_and_unread() -> None:
+    # t1 in-flight (spinner), t2 unread completed (dot), t3 idle/clean.
+    store = _store()
+    store.set_current("alice", "t1", "r1")
+    store.append(ChatStreamStore.key("alice", "t1", "r1"), "data: a\n\n")
+    store.mark_unread("alice", "t2")
+
+    out = store.status_many("alice", ["t1", "t2", "t3"])
+
+    assert out["t1"] == {"running": True, "hasNewReply": False}
+    assert out["t2"] == {"running": False, "hasNewReply": True}
+    assert out["t3"] == {"running": False, "hasNewReply": False}
+
+
+def test_status_many_finished_run_is_not_running() -> None:
+    store = _store()
+    key = ChatStreamStore.key("alice", "t1", "r1")
+    store.set_current("alice", "t1", "r1")
+    store.append(key, "data: a\n\n")
+    store.mark_done(key)  # eos written
+
+    assert store.status_many("alice", ["t1"])["t1"]["running"] is False
+
+
+def test_status_many_dead_pointer_is_not_running() -> None:
+    # Pointer outlives its buffer+lock (ghost-spinner case) → not running.
+    store = _store()
+    store.set_current("alice", "t1", "r1")  # pointer only, no frames/lock
+    assert store.status_many("alice", ["t1"])["t1"]["running"] is False
+
+
+def test_status_many_empty_list_returns_empty() -> None:
+    assert _store().status_many("alice", []) == {}
+
+
+def test_status_many_fail_soft_returns_all_false() -> None:
+    redis = MagicMock()
+    redis.pipeline.side_effect = redis_lib.ConnectionError("down")
+    store = ChatStreamStore(redis)
+    assert store.status_many("a", ["t1", "t2"]) == {
+        "t1": {"running": False, "hasNewReply": False},
+        "t2": {"running": False, "hasNewReply": False},
+    }
