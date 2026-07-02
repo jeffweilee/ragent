@@ -261,9 +261,16 @@ fan-out (any API replica's producer reaches every subscriber). Payloads mirror t
 list fields:
 
 - `{session, running:true}` when a run starts,
-- `{session, running:false, hasNewReply:true}` when it finishes,
+- `{session, running:false, hasNewReply:true}` when it finishes with a new reply,
+- `{session, running:false}` when it finishes **without** one (`RUN_ERROR` /
+  control-only cancelled resume) — `hasNewReply` is omitted because the run never
+  touched the unread flag; an absolute `false` would wipe an earlier still-unread
+  reply's dot from live subscribers,
 - `{session, hasNewReply:false}` when the client explicitly marks the session read
   (`POST /session/read`).
+
+Deltas are **partial**: an event only carries the fields that transition actually
+changed, and the client merges per-field over its snapshot state.
 
 Publishing is **best-effort / fire-and-forget** (`run_coroutine_threadsafe` from the
 producer thread); a publish failure costs only one live nudge. NATS is unconfigured

@@ -617,10 +617,14 @@ def _run_producer(
             if reply:
                 store.mark_unread(user_id, thread_id)
             if nats_publisher is not None:
-                nats_publisher.publish(
-                    user_id,
-                    {"session": thread_id, "running": False, "hasNewReply": reply},
-                )
+                # Deltas only carry fields this run actually changed. A no-reply
+                # finish never touched the unread flag, so it must omit hasNewReply —
+                # an absolute false would wipe an earlier still-unread reply's dot
+                # from live subscribers (clearing is client-owned: POST /session/read).
+                done_event: dict[str, object] = {"session": thread_id, "running": False}
+                if reply:
+                    done_event["hasNewReply"] = True
+                nats_publisher.publish(user_id, done_event)
             store.mark_done(key)
     except Exception as exc:
         logger.error(

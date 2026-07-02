@@ -790,6 +790,25 @@ def test_run_producer_publishes_running_transitions_over_nats() -> None:
     assert {"session": "t", "running": False, "hasNewReply": True} in events
 
 
+def test_run_producer_omits_has_new_reply_when_no_reply_was_produced() -> None:
+    # A no-reply finish (RUN_ERROR here) never touched the unread flag, so its delta
+    # must omit hasNewReply entirely: an absolute false would wrongly wipe a live
+    # subscriber's existing dot (an earlier still-unread reply) until the next
+    # snapshot re-sync — clearing is client-owned (POST /session/read) now.
+    from ragent.routers.chatagent_v3 import _run_producer
+
+    pub = MagicMock(spec=NatsSessionPublisher)
+    store = _store()
+    store.mark_unread("alice", "t")  # dot from an earlier, still-unread reply
+    key = ChatStreamStore.key("alice", "t", "r")
+    _run_producer(store, pub, key, _ErroredAgent(), object(), "", "alice", "t", reply_expected=True)
+
+    events = [call.args[1] for call in pub.publish.call_args_list]
+    assert {"session": "t", "running": False} in events  # spinner still cleared
+    assert not any(e.get("hasNewReply") is False for e in events)
+    assert store.has_unread("alice", "t") is True  # flag untouched by the errored run
+
+
 def test_run_producer_logs_instead_of_swallowing_a_background_error() -> None:
     # Fire-and-forget: an escaping error (e.g. mark_done on a Redis drop) must be logged,
     # not silently swallowed by the executor Future.
