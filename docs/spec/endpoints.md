@@ -55,5 +55,6 @@ Future-phase auth: JWT verify (auth) + `PermissionClient` post-retrieval gate (p
 
 - Skills CRUD (`/skills/v1`): [`docs/spec/skills.md`](skills.md)
 - ChatAgent v1/v2/v3 (`/chatagent/v1`, `/v2`, `/v3`): [`docs/spec/chatagent_v3.md`](chatagent_v3.md)
+- brainagent v1 (`/brainagent/v1` run + reconnect + cancel + `/brainagent/v1/*` brain management proxy): [`docs/spec/brainagent_v1.md`](brainagent_v1.md)
 - Chat Attachments (`/chatagent/v3/attachments`): [`docs/spec/chat_attachments.md`](chat_attachments.md)
 - twp-ai Adapter (`/twp/v1/run`): [`docs/spec/twp_ai.md`](twp_ai.md)
