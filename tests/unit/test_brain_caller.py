@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import httpx
 import pytest
 from twp_ai.schemas import RunAgentInput
@@ -91,6 +93,20 @@ def test_non_2xx_raises_typed_upstream_error() -> None:
     with pytest.raises(UpstreamServiceError) as exc:
         list(_caller(handler).stream_frames(_request(), ""))
     assert exc.value.error_code == HttpErrorCode.BRAINAGENT_UPSTREAM_ERROR
+
+
+def test_preserves_required_null_fields() -> None:
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["body"] = json.loads(request.read())
+        return httpx.Response(200, content=b"", headers={"content-type": "text/event-stream"})
+
+    list(_caller(handler).stream_frames(_request(), ""))
+    # state/forwardedProps are required (nullable) in RunAgentInput — the relayed
+    # body must keep the keys with null values, not drop them (else brain 422s).
+    assert seen["body"]["state"] is None
+    assert seen["body"]["forwardedProps"] is None
 
 
 def test_injects_model_only_when_body_has_none() -> None:

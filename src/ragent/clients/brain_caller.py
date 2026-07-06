@@ -55,8 +55,11 @@ class BrainCaller:
     def stream_frames(self, request: RunAgentInput, model: str) -> Generator[str, None, None]:
         # Forward the body verbatim (camelCase wire form). brain reads the
         # structured context/state fields directly, so no <hidden> preamble is
-        # built. `model` is only injected when the body did not already carry one.
-        payload = request.model_dump(by_alias=True, exclude_none=True)
+        # built. Do NOT drop null fields — `state`/`forwardedProps` are required
+        # (nullable) in RunAgentInput, so excluding their null values would make a
+        # twp-ai-native brain reject the run with 422. `model` is only injected
+        # when the body did not already carry one.
+        payload = request.model_dump(by_alias=True)
         if model and not payload.get("model"):
             payload["model"] = model
 

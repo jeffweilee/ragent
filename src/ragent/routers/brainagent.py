@@ -216,7 +216,12 @@ def create_brainagent_v1_router(
         except httpx.RequestError:
             logger.warning("brainagent.cancel_error", user_id=user_id, run_id=run_id)
             return JSONResponse({"cancelled": False}, status_code=502)
-        body_out = resp.json() if resp.content else {}
+        # brain may return a non-JSON error page (HTML 502/500); guard the decode
+        # so the cancel route never crashes into an unhandled 500.
+        try:
+            body_out = resp.json() if resp.content else {}
+        except ValueError:
+            body_out = {"cancelled": False}
         return JSONResponse(body_out, status_code=resp.status_code)
 
     return router

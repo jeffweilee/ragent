@@ -127,6 +127,20 @@ def test_cancel_proxies_to_brain_with_owner_headers() -> None:
     assert headers["X-Brain-Key"] == "sekret"
 
 
+def test_cancel_survives_non_json_upstream_response() -> None:
+    http_mock = MagicMock(spec=httpx.Client)
+    resp = MagicMock(spec=httpx.Response)
+    resp.status_code = 502
+    resp.content = b"<html>502 Bad Gateway</html>"
+    resp.json.side_effect = ValueError("not json")
+    http_mock.post.return_value = resp
+    app, _ = _make_app(http_client=http_mock)
+    with TestClient(app) as client:
+        r = client.post("/brainagent/v1/runs/x/cancel", headers={"X-User-Id": "alice"})
+    assert r.status_code == 502
+    assert r.json() == {"cancelled": False}
+
+
 def test_cancel_relays_404() -> None:
     http_mock = MagicMock(spec=httpx.Client)
     resp = MagicMock(spec=httpx.Response)

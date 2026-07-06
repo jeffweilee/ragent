@@ -40,6 +40,12 @@ logger = structlog.get_logger(__name__)
 # that httpx already accounts for; re-sending them would corrupt the relay.
 _STRIP_RESPONSE_HEADERS = {"content-length", "transfer-encoding", "connection", "content-encoding"}
 
+# brain /upstream paths that must NOT be reachable through the user-authenticated
+# proxy. `reindex` is a server-to-server admin rebuild (requires brain's
+# X-Brain-Admin-Key); the spec excludes it from this surface, so a user-scoped
+# request must never reach it. Returned as 404 (the route does not exist here).
+_DENIED_PATHS = {"reindex"}
+
 
 def create_brain_upstream_proxy_router(
     http_client: httpx.Client,
@@ -64,12 +70,15 @@ def create_brain_upstream_proxy_router(
         x_user_id: str | None = Depends(get_user_id),
     ) -> Response:
         user_id = x_user_id or "anonymous"
+        if path.strip("/") in _DENIED_PATHS:
+            return Response(status_code=404)
         url = f"{base}/upstream/{path}"
 
         # Force user = resolved caller in the query string (brain reads ?user= on
-        # GET/DELETE), overriding any forged client value.
-        params = dict(request.query_params)
-        params["user"] = user_id
+        # GET/DELETE), overriding any forged client value. multi_items() preserves
+        # repeated keys (?tag=a&tag=b); dict() would collapse them to the last one.
+        params = [(k, v) for k, v in request.query_params.multi_items() if k != "user"]
+        params.append(("user", user_id))
 
         # …and in the JSON body (brain reads body.user on POST/PUT), same override.
         raw_body = await request.body()
@@ -84,6 +93,11 @@ def create_brain_upstream_proxy_router(
                 json_body = parsed
 
         headers = _upstream_headers(user_id)
+        # Forward content negotiation from the client so binary/artifact downloads
+        # negotiate correctly at brain. (Content-Type is forwarded only on the
+        # raw-body path below; the json= path lets httpx set application/json.)
+        if "accept" in request.headers:
+            headers["Accept"] = request.headers["accept"]
         try:
             if json_body is not None:
                 resp = await run_in_threadpool(
@@ -96,7 +110,10 @@ def create_brain_upstream_proxy_router(
                     timeout=timeout,
                 )
             elif raw_body:
-                # Non-JSON body — forward the raw bytes unchanged.
+                # Non-JSON body — forward the raw bytes unchanged, preserving the
+                # client's Content-Type so brain can parse them (e.g. multipart).
+                if "content-type" in request.headers:
+                    headers["Content-Type"] = request.headers["content-type"]
                 resp = await run_in_threadpool(
                     http_client.request,
                     request.method,
