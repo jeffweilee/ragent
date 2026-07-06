@@ -79,6 +79,12 @@ class HttpErrorCode(StrEnum):
     # client falls back to GET /chatagent/v3/session for completed history.
     CHATAGENT_STREAM_EXPIRED = "CHATAGENT_STREAM_EXPIRED"
 
+    # brainagent (ragent-brain upstream). SSE-error only — every /brainagent/v1
+    # POST failure surfaces as a RUN_ERROR over a 200 stream, never an HTTP code.
+    BRAINAGENT_RATE_LIMITED = "BRAINAGENT_RATE_LIMITED"
+    BRAINAGENT_UPSTREAM_ERROR = "BRAINAGENT_UPSTREAM_ERROR"
+    BRAINAGENT_TIMEOUT = "BRAINAGENT_TIMEOUT"
+
     # LLM stream interrupt (502) — stream closed before [DONE] sentinel.
     LLM_STREAM_INTERRUPTED = "LLM_STREAM_INTERRUPTED"
 

@@ -32,7 +32,10 @@
 | `MISSING_USER_ID`                    | 422         | User-id header absent or empty after JWT verification | Identity middleware |
 | `CHAT_RATE_LIMITED`                  | 429 + `Retry-After` | Per-user fixed-window quota exceeded on `/chat/v1[/stream]` (B31, S37) | Router-level Depends T3.16 |
 | `CHATAGENT_INVALID_RESUME`           | SSE-error only | `/chatagent/v3` resume carries >1 `resolved` interrupt — upstream takes a single `lastMessageId` (emitted as `RUN_ERROR` over a 200 stream) | `ADKCaller` resume validation |
-| `CHATAGENT_STREAM_EXPIRED`           | SSE-error only | `GET /chatagent/v3/reconnect` target buffer is gone (TTL expired, never existed, or owned by another user); client falls back to `GET /chatagent/v3/session` (emitted as `RUN_ERROR` over a 200 stream) | v3 reconnect route |
+| `CHATAGENT_STREAM_EXPIRED`           | SSE-error only | `GET /chatagent/v3/reconnect` target buffer is gone (TTL expired, never existed, or owned by another user); client falls back to `GET /chatagent/v3/session` (emitted as `RUN_ERROR` over a 200 stream) | v3 reconnect route (reused by `/brainagent/v1/reconnect`) |
+| `BRAINAGENT_RATE_LIMITED`            | SSE-error only | Per-user quota exceeded on `POST /brainagent/v1` (emitted as `RUN_ERROR` over a 200 stream, no upstream call) | brainagent router |
+| `BRAINAGENT_UPSTREAM_ERROR`          | SSE-error only / 502 | ragent-brain unreachable / connection error / non-2xx before the stream started — as `RUN_ERROR` on `POST /brainagent/v1`, as `502` on the `/brainagent/v1/*` proxy | `BrainCaller` / brain proxy |
+| `BRAINAGENT_TIMEOUT`                 | SSE-error only / 504 | Transport timeout to ragent-brain — as `RUN_ERROR` on `POST /brainagent/v1`, as `504` on the `/brainagent/v1/*` proxy | `BrainCaller` / brain proxy |
 | `ATTACHMENT_MIME_UNSUPPORTED`        | 415         | MIME outside the §3.4.9 allow-list (T-CAT.1) | Router T-CAT.12 |
 | `ATTACHMENT_TOO_LARGE`               | 413         | File size exceeds cap (T-CAT.1) | Router T-CAT.12 |
 | `ATTACHMENT_PARSE_FAILED`            | 422         | AST build failed during `chat_attachment` pipeline (T-CAT.1) | `ChatAttachmentService` T-CAT.11 |

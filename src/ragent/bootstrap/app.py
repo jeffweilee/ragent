@@ -32,6 +32,8 @@ from ragent.routers.admin_embedding import create_router as create_admin_embeddi
 from ragent.routers.admin_ingest import create_router as create_upload_ingest_router
 from ragent.routers.admin_ops import create_admin_ops_router
 from ragent.routers.attachments import create_attachments_router
+from ragent.routers.brain_upstream_proxy import create_brain_upstream_proxy_router
+from ragent.routers.brainagent import create_brainagent_v1_router
 from ragent.routers.chat import create_chat_router
 from ragent.routers.chatagent import create_chatagent_router
 from ragent.routers.chatagent_v2 import create_chatagent_v2_router
@@ -503,6 +505,32 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
                 attachment_context_resolver=container.attachment_context_resolver,
                 attachment_service=attachment_svc,
                 attachment_max_files=container.attachment_max_files,
+            )
+        )
+    if container.brain_api_url:
+        # Run surface FIRST so its explicit routes ("", /reconnect,
+        # /runs/{id}/cancel) win over the proxy's catch-all on the shared prefix.
+        app.include_router(
+            create_brainagent_v1_router(
+                http_client=container.http,
+                brain_url=container.brain_api_url,
+                brain_key=container.brain_key,
+                agent_factory=container.brain_agent_factory,
+                rate_limiter=container.rate_limiter,
+                rate_limit=container.rate_limit,
+                rate_limit_window=container.rate_limit_window,
+                timeout=container.brain_timeout,
+                chat_stream_store=container.chat_stream_store,
+                nats_publisher=container.nats_publisher,
+                stream_idle_timeout=_float_env("CHATAGENT_STREAM_IDLE_TIMEOUT_SECONDS", 30.0),
+            )
+        )
+        app.include_router(
+            create_brain_upstream_proxy_router(
+                http_client=container.http,
+                brain_url=container.brain_api_url,
+                brain_key=container.brain_key,
+                timeout=container.brain_timeout,
             )
         )
     app.include_router(

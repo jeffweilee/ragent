@@ -93,7 +93,9 @@
 | `retrieve.py` | `/retrieve/v1` | 無 LLM 純檢索 |
 | `chatagent.py` | `/chatagent/v1` | ChatAgent 上游代理(POST + sessionList / session GET/PUT/DELETE)|
 | `chatagent_v2.py` | `/chatagent/v2` | ChatAgent raw-proxy(原樣轉發上游 payload,串流/非串流)|
-| `chatagent_v3.py` | `/chatagent/v3` | twp-ai protocol 代理(`RunAgentInput` → AG-UI SSE)+ v3 session 管理(twp-ai message shape)。POST handler 依賴注入的 `agent_factory: AgentFactory`（`Callable[[user_id, user_token], twp_ai.agent.Agent]`），**不**直接 import `ADKAgent`/`ADKCaller` 等具體類別（T-CAv3.DIP）。 |
+| `chatagent_v3.py` | `/chatagent/v3` | twp-ai protocol 代理(`RunAgentInput` → AG-UI SSE)+ v3 session 管理(twp-ai message shape)。POST handler 依賴注入的 `agent_factory: AgentFactory`（`Callable[[user_id, user_token], twp_ai.agent.Agent]`），**不**直接 import `ADKAgent`/`ADKCaller` 等具體類別（T-CAv3.DIP）。亦為 resumable-stream plumbing(`_spawn_producer`/`_consume_stream`/`_reconnect_stream`)的歸屬處,`brainagent.py` 重用之。 |
+| `brainagent.py` | `/brainagent/v1` | ragent-brain 上游的 twp-ai **passthrough** run 代理(POST run + `/reconnect` + `/runs/{id}/cancel`)。依賴注入的 `agent_factory: BrainAgentFactory`（`Callable[[user_id], twp_ai.agent.Agent]`），**不**直接 import `BrainAgent`/`BrainCaller`(T-BRAIN.DIP,由 `composition.py::_build_brain_agent_factory()` 組裝)。brain 原生說 twp-ai,故為 relay(不注入 skill/attachment、不重發 RUN_STARTED/RUN_FINISHED)。 |
+| `brain_upstream_proxy.py` | `/brainagent/v1/{path}` | brain 整個 `/upstream/*` 管理面的**通用認證反向代理**。以 JWT 解出的 `user` 覆蓋 query 與 JSON body 的 `user`(防越權),附 `X-Brain-Key`,status/body 原樣轉(422 i18n 信封、artifacts 二進位皆透傳;timeout→504、連不上→502)。掛載於 `brainagent.py` **之後**,讓其明確路由勝過此 catch-all。 |
 | `_chatagent_proxy.py` | —(共用 helper)| v1/v3 session 路由共用的 proxy_get / proxy_write 轉發與 timeout→504 / error→502 映射 |
 | `feedback.py` | `/feedback/v1` | 使用者回饋 HMAC token 驗證與雙寫 |
 | `mcp.py` | `/mcp/v1` | JSON-RPC 2.0 MCP Tool Server（P2.5）|
@@ -221,6 +223,7 @@
 | `rerank.py` | `RerankClient` — 重排，fail-open on 5xx（C4）|
 | `rate_limiter.py` | `RateLimiter` — Redis fixed-window per user |
 | `adk_caller.py` | `ADKCaller` — `/chatagent/v3` twp-ai run 的上游代理 backend(`RunAgentInput` → v2 wire → `UpstreamMessage` stream)。由 `bootstrap/composition.py::_build_chatagent_agent_factory()` 組裝注入,router 不再直接 import。|
+| `brain_caller.py` | `BrainCaller` — `/brainagent/v1` run 的 ragent-brain 上游 relay backend。brain 原生說 twp-ai,故把 `RunAgentInput` 原樣 POST 到 `{BRAIN_API_URL}/run`(帶 `X-User-Id`+`X-Brain-Key`)並原樣 yield brain 的 SSE frame(無 wire 翻譯);transport 失敗 raise typed `Upstream*Error`。由 `bootstrap/composition.py::_build_brain_agent_factory()` 組裝注入,router 不直接 import。搭配 `packages/twp-ai` 的 `twp_ai/agents/brain.py`(`BrainAgent` relay)+ `twp_ai/callers/brain.py`(`BrainCaller` protocol)。|
 | `embedding_model_config.py` | embedding model identity 設定(B50);ES `dense_vector.dims` 界限於 boot 驗證 |
 | `unprotect.py` | `UnprotectClient` — 外部 unprotect API 取回原始 binary(T-UP.3)|
 | `chat_stream_store.py` | `ChatStreamStore`(T-CAv3R) — Redis Stream tee/replay，讓 `/chatagent/v3` SSE run 可斷線重連 |

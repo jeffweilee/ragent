@@ -91,6 +91,9 @@
 | `CHATAGENT_SESSION_API_URL`           | (optional)       | GET `/chatagent/v1/session` proxy endpoint. When unset that route is not registered. |
 | `CHATAGENT_AP_NAME`                   | `ragent`         | `apName` injected into all outbound chatagent requests. |
 | `CHATAGENT_AUTH`                      | (optional)       | Raw value for the `Authorization` header on all outbound chatagent calls (e.g. `Basic dXNlcjpwYXNz`). **Never logged, never echoed.** |
+| `BRAIN_API_URL`                       | (optional)       | ragent-brain base URL (e.g. `http://brain:8100`). When unset the whole `/brainagent/v1` surface (run + reconnect + cancel + `/upstream/*` proxy) is not registered. |
+| `BRAIN_KEY`                           | (optional)       | `X-Brain-Key` service-to-service secret sent on every outbound brain call. **Never logged.** |
+| `BRAIN_TIMEOUT_SECONDS`               | `30`             | per-call timeout for all `/brainagent/v1` proxy + run HTTP calls to brain. |
 | `TWP_DEFAULT_MODEL`                   | (optional)       | Fallback model for `POST /twp/v1/run` when the request body omits `model`. |
 | `UNPROTECT_ENABLED`                   | `false`          | When `true`, worker calls the unprotect API before passing `file`/`upload` ingest bytes to the pipeline. `ingest_type=inline` rows are always skipped (content is caller-supplied UTF-8 text). On unprotect failure the worker logs a warning and continues with the original MinIO bytes. |
 | `UNPROTECT_API_URL`                   | (required when enabled) | Full URL of the unprotect endpoint (multipart POST). |

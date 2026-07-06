@@ -11,6 +11,7 @@ from ragent.services.attachment_ingest_service import ATTACHMENT_MAX_SIZE_BYTES_
 
 if TYPE_CHECKING:
     from ragent.repositories.session_document_repository import SessionDocumentRepository
+    from ragent.routers.brainagent import BrainAgentFactory
     from ragent.routers.chatagent_v3 import AgentFactory
     from ragent.services.attachment_context_resolver import AttachmentContextResolver
     from ragent.services.retrieve_v2_service import RetrieveV2Service
@@ -80,6 +81,13 @@ class Container:
     # T-CAv3.DIP — (user_id, user_token) -> twp_ai.agent.Agent. None when v3 is
     # disabled (chatagent_api_url unset); set whenever v3 is enabled.
     chatagent_agent_factory: AgentFactory | None = None
+    # T-BRAIN — ragent-brain upstream surface (/brainagent/v1). None disables the
+    # whole surface (BRAIN_API_URL unset).
+    brain_api_url: str | None = None
+    brain_key: str | None = None
+    brain_timeout: float = 30.0
+    # T-BRAIN.DIP — user_id -> twp_ai.agent.Agent (BrainAgent(BrainCaller)).
+    brain_agent_factory: BrainAgentFactory | None = None
     # T-CAT — ingest-backed file attachments (ingest pipeline, session_documents).
     session_document_repo: SessionDocumentRepository | None = None
     attachment_context_resolver: AttachmentContextResolver | None = None
@@ -137,6 +145,39 @@ def _build_chatagent_agent_factory(
             attachments_instruction=attachments.instruction if attachments else None,
         )
         return ADKAgent(caller)
+
+    return factory
+
+
+def _build_brain_agent_factory(
+    http_client: Any,
+    *,
+    brain_url: str,
+    brain_key: str | None,
+    timeout: float,
+) -> BrainAgentFactory:
+    """Assemble the user_id -> Agent closure for /brainagent/v1.
+
+    The composition root is the only layer allowed to name the concrete
+    BrainAgent/BrainCaller classes (DIP). BrainCaller carries the per-request
+    X-User-Id, so it cannot be a singleton — the router receives this factory
+    and calls it per request. brain speaks twp-ai natively, so BrainAgent is a
+    passthrough relay (no ADK-style translation).
+    """
+    from twp_ai.agent import Agent
+    from twp_ai.agents.brain import BrainAgent
+
+    from ragent.clients.brain_caller import BrainCaller
+
+    def factory(user_id: str) -> Agent:
+        caller = BrainCaller(
+            http_client=http_client,
+            brain_url=brain_url,
+            user_id=user_id,
+            brain_key=brain_key,
+            timeout=timeout,
+        )
+        return BrainAgent(caller)
 
     return factory
 
@@ -487,13 +528,18 @@ def build_container() -> Container:
     chatagent_session_api_url = os.environ.get("CHATAGENT_SESSION_API_URL") or None
     chatagent_ap_name = os.environ.get("CHATAGENT_AP_NAME", "ragent")
     chatagent_auth = os.environ.get("CHATAGENT_AUTH") or None
-    # Only stand up the resumable-stream buffer + NATS status publisher when v3 is
-    # configured. The publisher reads its config here (env seam) but connects later
-    # in the lifespan (async); NATS_SERVERS unset → publish is a no-op (snapshot only).
+    brain_api_url = os.environ.get("BRAIN_API_URL") or None
+    brain_key = os.environ.get("BRAIN_KEY") or None
+    brain_timeout = _float_env("BRAIN_TIMEOUT_SECONDS", 30.0)
+    # Stand up the resumable-stream buffer + NATS status publisher when EITHER the
+    # v3 or the brain chat surface is configured — both reuse the same singletons.
+    # The publisher reads its config here (env seam) but connects later in the
+    # lifespan (async); NATS_SERVERS unset → publish is a no-op (snapshot only).
     chat_stream_store = None
     nats_publisher = None
     chatagent_agent_factory = None
-    if chatagent_api_url is not None:
+    brain_agent_factory = None
+    if chatagent_api_url is not None or brain_api_url is not None:
         from ragent.clients.chat_stream_store import ChatStreamStore
         from ragent.clients.nats_publisher import NatsSessionPublisher
 
@@ -510,13 +556,21 @@ def build_container() -> Container:
             connect_timeout_seconds=_float_env("NATS_CONNECT_TIMEOUT_SECONDS", 10.0),
             jwt_refresh_seconds=_float_env("NATS_JWT_REFRESH_SECONDS", 30.0),
         )
-        chatagent_agent_factory = _build_chatagent_agent_factory(
-            http,
-            api_url=chatagent_api_url,
-            ap_name=chatagent_ap_name,
-            auth=chatagent_auth,
-            timeout=_float_env("CHATAGENT_TIMEOUT_SECONDS", 30.0),
-        )
+        if chatagent_api_url is not None:
+            chatagent_agent_factory = _build_chatagent_agent_factory(
+                http,
+                api_url=chatagent_api_url,
+                ap_name=chatagent_ap_name,
+                auth=chatagent_auth,
+                timeout=_float_env("CHATAGENT_TIMEOUT_SECONDS", 30.0),
+            )
+        if brain_api_url is not None:
+            brain_agent_factory = _build_brain_agent_factory(
+                http,
+                brain_url=brain_api_url,
+                brain_key=brain_key,
+                timeout=brain_timeout,
+            )
 
     return Container(
         token_managers=(llm_tm, embedding_tm, rerank_tm),
@@ -558,6 +612,10 @@ def build_container() -> Container:
         chat_stream_store=chat_stream_store,
         nats_publisher=nats_publisher,
         chatagent_agent_factory=chatagent_agent_factory,
+        brain_api_url=brain_api_url,
+        brain_key=brain_key,
+        brain_timeout=brain_timeout,
+        brain_agent_factory=brain_agent_factory,
         session_document_repo=session_document_repo,
         attachment_context_resolver=attachment_context_resolver,
         retrieve_v2_service=retrieve_v2_service,
