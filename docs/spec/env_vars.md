@@ -95,7 +95,8 @@
 | `BRAIN_KEY`                           | (optional)       | `X-Brain-Key` service-to-service secret sent on every outbound brain call. **Never logged.** |
 | `BRAIN_TIMEOUT_SECONDS`               | `30`             | per-call timeout for all `/brainagent/v1` proxy + run HTTP calls to brain. |
 | `BRAIN_UNPROTECT_API_URL`             | (optional)       | ragent-brain: full URL of the DRM-unprotect service endpoint. When unset, `.docx`/`.xlsx`/`.pptx`/`.pdf` uploads skip unprotect and go straight to text extraction. |
-| `BRAIN_UNPROTECT_API_KEY`             | (optional)       | ragent-brain: `X-Unprotect-Key` header value sent to the unprotect service. **Never logged.** |
+| `BRAIN_UNPROTECT_API_KEY`             | (optional)       | ragent-brain: raw JWT sent as `apikey` request header (no `Bearer` prefix). **Never logged.** |
+| `BRAIN_UNPROTECT_DELEGATED_USER_SUFFIX` | (optional)     | ragent-brain: suffix appended to `user_id` to form the multipart `delegatedUser` field: `{user_id}{suffix}`. |
 | `BRAIN_UNPROTECT_TIMEOUT_SECONDS`     | `30`             | ragent-brain: HTTP timeout (seconds) for calls to the unprotect service. |
 | `BRAIN_UNPROTECT_ENABLED`             | `true`           | ragent-brain: set `false` to globally disable the unprotect step even when `BRAIN_UNPROTECT_API_URL` is set. |
 | `BRAIN_UNPROTECT_MAX_BYTES`           | `500000`         | ragent-brain: files larger than this (bytes) are not sent to the unprotect API; they go straight to text extraction. |
