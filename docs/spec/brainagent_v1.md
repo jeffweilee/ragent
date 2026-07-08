@@ -121,8 +121,8 @@ ragent and new brain `/upstream/*` routes are covered automatically. ragent path
 5. **Response.** Status + body are relayed. brain's `422 {"error": code,
    "params": {...}}` i18n envelope is passed through verbatim (the frontend
    depends on the stable `code`). **Binary responses** (artifact download,
-   `GET /upstream/artifacts/{id}`) relay the raw bytes with `Content-Type` and
-   `Content-Disposition` preserved — not JSON-decoded.
+   `GET /upstream/artifacts/{id}`, `GET /upstream/projects/{id}/sources/{doc_id}/download`)
+   relay the raw bytes with `Content-Type` and `Content-Disposition` preserved — not JSON-decoded.
 6. **Transport errors.** timeout → `504`, unreachable / connection error →
    `502` (`application/problem+json`), matching the `_chatagent_proxy` JSON
    convention. (The `RUN_ERROR` SSE framing applies **only** to `POST
@@ -136,7 +136,7 @@ the generic proxy:
 | session | `GET /session`, `GET /sessionList`, `PUT /session`, `DELETE /session` |
 | memory | `GET /memory`, `PUT /memory/core`, `POST /memory/archival`, `DELETE /memory/archival/{mem_id}` |
 | projects | `GET /projects`, `POST /projects`, `PUT /projects/{id}`, `DELETE /projects/{id}` |
-| sources | `GET /projects/{id}/sources`, `POST /projects/{id}/sources`, `DELETE /projects/{id}/sources/{doc_id}` |
+| sources | `GET /projects/{id}/sources`, `POST /projects/{id}/sources` (body: `{user, filename, contentBase64}`), `GET /projects/{id}/sources/{doc_id}/download` (binary), `DELETE /projects/{id}/sources/{doc_id}` |
 | artifacts | `GET /artifacts`, `POST /artifacts`, `GET /artifacts/{id}` (binary), `DELETE /artifacts/{id}` |
 | skills | `GET /skills`, `POST /skills`, `PUT /skills/{id}`, `PUT /skills/{id}/enabled`, `DELETE /skills/{id}` |
 | preferences | `GET /preferences/candidates`, `POST /preferences/candidates/{id}` |

@@ -1093,3 +1093,38 @@
 | # | Category | Task | Commit | Status | Owner |
 |---|---|---|:-:|:-:|---|
 | T-AUD.1 | Behavioral | • **Achieve:** Replace hard-delete-only `document_repository.delete()` with an atomic INSERT-SELECT into `documents_deleted` + hard-DELETE from `documents` in the same transaction. All existing `documents` SELECT queries are untouched — no `deleted_at IS NULL` filters needed. `documents_deleted` stores the full row snapshot plus `deleted_at DATETIME(6)` for forensics.<br>• **Deliver:** `alembic/sql/upgrade/016_documents_deleted.sql` (CREATE TABLE); `alembic/sql/downgrade/016_documents_deleted.sql` (DROP TABLE); `alembic/env.py` (chain entry 16); `migrations/schema.sql` (table added); `src/ragent/repositories/document_repository.py` (`delete()` rewritten); `tests/unit/test_document_repository.py` (two new tests); `tests/unit/test_alembic_migration_chain.py` (chain-head + content tests updated).<br>• **Success criteria:** `pytest tests/unit/` green; INSERT fails → DELETE never executes; no change to any document SELECT path. | TBD | [x] | Dev |
+
+---
+
+## Track T-ENC — Encoding Fix + Office/PDF Upload & Download
+
+> Source: 2026-07-08 design session. Root cause: browser `file.text()` always
+> decodes as UTF-8, silently corrupting Big5/GBK and binary files (DOCX, XLSX,
+> PPTX, PDF) before they reach the brain. Fix: frontend encodes file bytes as
+> base64 (arrayBuffer → btoa), brain decodes back to original bytes, detects
+> encoding with chardet, extracts text with python-docx/pdfminer as needed.
+>
+> **Locked decisions:**
+> - **base64 transport**: `SourceAddBody.text` → `SourceAddBody.contentBase64`;
+>   ragent proxy is transparent JSON, no change needed there.
+> - **FileProcessor**: new `brain/file_processor.py` — `unprotect()` (async,
+>   whitelist-gated for .docx/.xlsx/.pptx/.pdf) + `extract_text()` (sync,
+>   chardet for plain text; python-docx/pdfminer for office/PDF).
+> - **MinIO stores raw bytes** (pre-unprotect) so original file download works;
+>   unprotect + extract_text re-run on reindex.
+> - **No DB migration**: content_type inferred from filename at runtime.
+> - **Unprotect whitelist** hardcoded: `.docx`, `.xlsx`, `.pptx`, `.pdf`.
+
+**Counter: 完成 9 / 未完成 0 / descope 0**
+
+| # | Category | Task | Commit | Status | Owner |
+|---|---|---|:-:|:---:|---|
+| T-ENC.1 | Red | Failing tests for `FileProcessor` — encoding detection, binary format text extraction, unprotect whitelist, base64 decode in sources endpoint. | nickjazz/ragent-brain@261d49d | [x] | Dev |
+| T-ENC.2 | Green | `FileProcessor` implementation: `brain/file_processor.py` + deps (`chardet`, `python-docx`, `pdfminer.six`, `openpyxl`). | nickjazz/ragent-brain@261d49d | [x] | Dev |
+| T-ENC.3 | Green | `SourceAddBody.contentBase64`; `documents.add(raw: bytes)`; bootstrap wires `FileProcessor`; `BRAIN_UNPROTECT_*` env vars. | nickjazz/ragent-brain@261d49d | [x] | Dev |
+| T-ENC.4 | Red | Failing tests for source download endpoint (`test_source_download.py`). | nickjazz/ragent-brain@261d49d | [x] | Dev |
+| T-ENC.5 | Green | `fetch_bytes()` in `DocumentStore`; `GET /upstream/projects/{id}/sources/{doc_id}/download`; shared `_attachment_response()` RFC 5987 helper. | nickjazz/ragent-brain@261d49d | [x] | Dev |
+| T-ENC.6 | Red | Failing tests for `read_artifact` BrainTool (`test_read_artifact_tool.py`). | nickjazz/ragent-brain@261d49d | [x] | Dev |
+| T-ENC.7 | Green | `read_artifact` BrainTool in `artifact_tools()`; `file_processor` param injection. | nickjazz/ragent-brain@261d49d | [x] | Dev |
+| T-ENC.FE1 | Red+Green | mco-clean: `fileToBase64()` + `contentBase64` upload; `downloadAiProjectSource()`; SOURCE_ACCEPT expanded; download button. | nickjazz/mco-clean@f65e102 | [x] | Dev |
+| T-ENC.D1 | Structural | `docs/spec/env_vars.md` + `ragent-brain/.env.example` + `docs/spec/brainagent_v1.md` updated. | fa7eb67 | [x] | Dev |
