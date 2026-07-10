@@ -13,9 +13,8 @@ from structlog.testing import capture_logs
 
 from mcp_hub.mcp_hub import (
     _INCOMING_HEADERS,
-    _ToolSpec,
     _make_tool_callable,
-    _parse_tool,
+    _ToolSpec,
     build_hub,
 )
 

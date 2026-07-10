@@ -34,7 +34,16 @@ def render_secrets(content: str, env: Mapping[str, str]) -> str:
             )
         return env[key]
 
-    return _SECRET_RE.sub(_sub, content)
+    result = _SECRET_RE.sub(_sub, content)
+    remaining = _ANY_SECRET_RE.search(result)
+    if remaining:
+        key = remaining.group(1)
+        raise KeyError(
+            f"Secret placeholder '{{% .Secrets.{key} %}}' was not rendered. "
+            f"Key {key!r} is invalid (must match [A-Z][A-Z0-9_]*). "
+            f"Run mcp-hub-doctor --placeholder-ok to catch this before deploying."
+        )
+    return result
 
 
 def validate_placeholder_syntax(content: str) -> list[str]:

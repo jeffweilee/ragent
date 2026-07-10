@@ -1,9 +1,13 @@
-.PHONY: check format lint test test-gate test-e2e-golden test-chaos bootstrap doctor
+.PHONY: check format lint test test-gate test-e2e-golden test-chaos bootstrap doctor mcp-hub-check
 
 bootstrap:
 	uv sync --extra dev
 
-check: format lint test
+check: format lint mcp-hub-check test
+
+mcp-hub-check:
+	cd services/mcp-hub && uv run mcp-hub-doctor src/mcp_hub/tools.example.d --placeholder-ok
+	cd services/mcp-hub && uv run pytest -q
 
 format:
 	uv run ruff format .

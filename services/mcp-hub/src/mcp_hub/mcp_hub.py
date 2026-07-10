@@ -25,8 +25,8 @@ import yaml
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
-from .metrics import record_mcp_hub_load_failure, record_mcp_hub_tool_call
 from ._render import render_secrets
+from .metrics import record_mcp_hub_load_failure, record_mcp_hub_tool_call
 
 logger = structlog.get_logger(__name__)
 
@@ -182,9 +182,7 @@ def _parse_tool(raw: dict[str, Any]) -> _ToolSpec:
         raw.get("forward_headers"), owner=f"tool {name!r} forward_headers"
     )
 
-    overlap = {h.lower() for h in static_headers}.intersection(
-        {h.lower() for h in forward_headers}
-    )
+    overlap = {h.lower() for h in static_headers}.intersection({h.lower() for h in forward_headers})
     if overlap:
         raise ValueError(
             f"tool {name!r}: header(s) {sorted(overlap)} declared in both "
@@ -193,9 +191,7 @@ def _parse_tool(raw: dict[str, Any]) -> _ToolSpec:
 
     params = tuple(_parse_param(p) for p in raw.get("parameters") or [])
 
-    file_param_names: frozenset[str] = frozenset(
-        p.name for p in params if p.raw_type == "file"
-    )
+    file_param_names: frozenset[str] = frozenset(p.name for p in params if p.raw_type == "file")
 
     # file params are only valid inside multipart body
     for p in params:
@@ -212,9 +208,7 @@ def _parse_tool(raw: dict[str, Any]) -> _ToolSpec:
                 )
 
     header_arg_names = {p.name.replace("_", "-").lower() for p in params if p.location == "header"}
-    config_header_names = {h.lower() for h in static_headers} | {
-        h.lower() for h in forward_headers
-    }
+    config_header_names = {h.lower() for h in static_headers} | {h.lower() for h in forward_headers}
     collisions = header_arg_names & config_header_names
     if collisions:
         raise ValueError(
@@ -240,7 +234,7 @@ def _parse_tool(raw: dict[str, Any]) -> _ToolSpec:
     )
 
 
-_YAML_SUFFIXES = (".yaml", ".yml")
+_YAML_SUFFIXES = (".yaml",)
 _DEFAULT_TIMEOUT = 30.0
 _DEFAULT_MAX_CONNECTIONS = 100
 
@@ -258,9 +252,7 @@ def _parse_system_spec(doc: dict[str, Any], source: Path) -> _SystemSpec:
         base_url=str(defaults.get("base_url") or ""),
         timeout=float(defaults.get("timeout", _DEFAULT_TIMEOUT)),
         max_connections=int(defaults.get("max_connections", _DEFAULT_MAX_CONNECTIONS)),
-        default_headers=_parse_headers(
-            defaults.get("headers"), owner=f"{source} defaults.headers"
-        ),
+        default_headers=_parse_headers(defaults.get("headers"), owner=f"{source} defaults.headers"),
         source=source,
         verify_ssl=raw_verify,
     )
@@ -300,20 +292,26 @@ def _load_one_file(
 ) -> None:
     try:
         raw = source.read_text(encoding="utf-8")
-        if env is not None:
-            raw = render_secrets(raw, env)
+    except OSError as exc:
+        _record_failure(
+            result, str(source), exc, strict=strict, system=source.stem, phase="file_parse"
+        )
+        return
+
+    if env is not None:
+        # KeyError from render_secrets means a secret is missing from the environment.
+        # Let it propagate — a CrashLoop is visible; a literal placeholder reaching
+        # upstream is not. This matches the render_secrets() module contract.
+        raw = render_secrets(raw, env)
+
+    try:
         doc = yaml.safe_load(raw) or {}
         if not isinstance(doc, dict):
             raise ValueError(f"top-level yaml must be a mapping, got {type(doc).__name__}")
         system = _parse_system_spec(doc, source)
-    except (OSError, ValueError, yaml.YAMLError, KeyError) as exc:
+    except (ValueError, yaml.YAMLError) as exc:
         _record_failure(
-            result,
-            str(source),
-            exc,
-            strict=strict,
-            system=source.stem,
-            phase="file_parse",
+            result, str(source), exc, strict=strict, system=source.stem, phase="file_parse"
         )
         return
 
@@ -491,7 +489,9 @@ def _render_forward_template(template: str, incoming: dict[str, str]) -> str | N
         return value
 
     rendered = _TEMPLATE_PLACEHOLDER.sub(_sub, template)
-    return None if missing else rendered
+    if missing or "{" in rendered:
+        return None
+    return rendered
 
 
 def _make_tool_callable(
@@ -554,23 +554,30 @@ def _make_tool_callable(
                 for k, v in body.items():
                     if k in spec.file_param_names and isinstance(v, str):
                         try:
-                            decoded = base64.b64decode(v)
+                            decoded = base64.b64decode(v, validate=True)
                         except Exception as exc:
                             raise ToolError(
-                                json.dumps({"type": "invalid_base64", "param": k, "detail": str(exc)})
+                                json.dumps(
+                                    {"type": "invalid_base64", "param": k, "detail": str(exc)}
+                                )
                             ) from exc
                         if len(decoded) > _MAX_FILE_BYTES:
                             raise ToolError(
-                                json.dumps({
-                                    "type": "file_too_large",
-                                    "param": k,
-                                    "max_bytes": _MAX_FILE_BYTES,
-                                    "received_bytes": len(decoded),
-                                })
+                                json.dumps(
+                                    {
+                                        "type": "file_too_large",
+                                        "param": k,
+                                        "max_bytes": _MAX_FILE_BYTES,
+                                        "received_bytes": len(decoded),
+                                    }
+                                )
                             )
                         multipart[k] = decoded
                     else:
-                        multipart[k] = (None, str(v))
+                        if isinstance(v, (dict, list)):
+                            multipart[k] = (None, json.dumps(v), "application/json")
+                        else:
+                            multipart[k] = (None, str(v))
                 if multipart:
                     request_kwargs["files"] = multipart
             else:

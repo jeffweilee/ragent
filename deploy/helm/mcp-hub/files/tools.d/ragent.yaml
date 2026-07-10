@@ -23,6 +23,9 @@ tools:
     path: /retrieve/v1
     forward_headers:
       X-User-Id: "{x-user-id}"
+      # ragent JWT guard (RAGENT_JWT_HEADER, default X-Auth-Token).
+      # The MCP client must include this header so /retrieve/v1 passes auth.
+      X-Auth-Token: "{x-auth-token}"
     parameters:
       - name: query
         type: string

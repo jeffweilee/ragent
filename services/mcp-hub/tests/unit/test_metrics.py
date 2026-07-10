@@ -26,15 +26,15 @@ import pytest
 from prometheus_client import REGISTRY
 from structlog.testing import capture_logs
 
-from mcp_hub.metrics import (
-    record_mcp_hub_load_failure,
-    record_mcp_hub_tool_call,
-)
 from mcp_hub.mcp_hub import (
     LoadFailure,
     _SystemSpec,
     build_hub,
     load_tools_yaml,
+)
+from mcp_hub.metrics import (
+    record_mcp_hub_load_failure,
+    record_mcp_hub_tool_call,
 )
 
 

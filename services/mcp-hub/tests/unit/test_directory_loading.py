@@ -64,22 +64,6 @@ def test_directory_loads_every_yaml(tmp_path: Path):
     assert names == ["billing.list_charges", "identity.get_profile"]
 
 
-def test_directory_picks_up_yml_extension_too(tmp_path: Path):
-    d = tmp_path / "tools.d"
-    d.mkdir()
-    _write(
-        d / "catalog.yml",
-        """
-        tools:
-          - name: search
-            method: GET
-            path: https://catalog.example.com/search
-        """,
-    )
-    tools = load_tools_yaml(d).tools
-    assert [t.name for t in tools] == ["catalog.search"]
-
-
 def test_explicit_system_overrides_filename(tmp_path: Path):
     d = tmp_path / "tools.d"
     d.mkdir()

@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 from string import Formatter
 
-from ._render import PLACEHOLDER_ENV, validate_placeholder_syntax
+from ._render import validate_placeholder_syntax
 from .mcp_hub import _BODY_METHODS, _YAML_SUFFIXES, load_tools_yaml
 
 
@@ -56,7 +56,10 @@ def check_yaml(path: str | Path, *, placeholder_ok: bool = False) -> tuple[list[
                 continue
             for err in validate_placeholder_syntax(content):
                 raw_errors.append(f"{f}: {err}")
-        env_arg = PLACEHOLDER_ENV
+        # Skip render_secrets entirely — syntax was already checked above.
+        # Passing env=None lets load_tools_yaml parse the raw YAML with literal
+        # placeholders as strings, avoiding KeyError on malformed keys.
+        env_arg = None
     else:
         env_arg = dict(os.environ)
 
@@ -94,6 +97,13 @@ def check_yaml(path: str | Path, *, placeholder_ok: bool = False) -> tuple[list[
                 f"{tool.name}: body parameters {sorted(body_params)} but method is "
                 f"{tool.method} (only POST/PUT/PATCH accept a body)"
             )
+
+        for p in tool.params:
+            if not p.name.isidentifier():
+                errors.append(
+                    f"{tool.name}: param name {p.name!r} is not a valid Python identifier "
+                    f"(FastMCP registration will fail at startup)"
+                )
 
     return errors, len(result.tools)
 

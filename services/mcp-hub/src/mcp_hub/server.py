@@ -55,7 +55,9 @@ class HeaderForwardMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
-        headers = {k.decode().lower(): v.decode() for k, v in scope.get("headers", [])}
+        headers = {
+            k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])
+        }
         token = _INCOMING_HEADERS.set(headers)
         try:
             await self.app(scope, receive, send)

@@ -268,6 +268,28 @@ def test_placeholder_ok_rejects_invalid_key_format(tmp_path: Path):
     assert any("placeholder" in e.lower() or "secret" in e.lower() for e in errors)
 
 
+def test_invalid_param_name_flagged(tmp_path: Path):
+    """Parameter names that aren't valid Python identifiers are reported."""
+    yml = _write(
+        tmp_path / "tools.yaml",
+        """
+        defaults:
+          base_url: https://api.example.com
+        tools:
+          - name: get
+            method: GET
+            path: /items
+            parameters:
+              - name: "invalid-name"
+                type: string
+                location: query
+                required: false
+        """,
+    )
+    errors, _ = check_yaml(yml)
+    assert any("not a valid Python identifier" in e for e in errors)
+
+
 def test_placeholder_ok_flag_in_cli(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
     """CLI --placeholder-ok flag produces 'OK (placeholder-ok)' output."""
     yml = _write(
