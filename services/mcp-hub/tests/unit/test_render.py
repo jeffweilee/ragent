@@ -19,10 +19,7 @@ from mcp_hub._render import (
 
 
 def test_render_substitutes_all_placeholders():
-    content = (
-        "X-Api-Token: \"{% .Secrets.API_TOKEN %}\"\n"
-        "X-Other: \"{% .Secrets.OTHER_KEY %}\"\n"
-    )
+    content = 'X-Api-Token: "{% .Secrets.API_TOKEN %}"\nX-Other: "{% .Secrets.OTHER_KEY %}"\n'
     env = {"API_TOKEN": "tok-abc", "OTHER_KEY": "val-xyz"}
     result = render_secrets(content, env)
     assert '"tok-abc"' in result
@@ -58,10 +55,7 @@ def test_placeholder_env_returns_placeholder_for_any_key():
 
 
 def test_placeholder_env_with_render_replaces_all():
-    content = (
-        'token: "{% .Secrets.TOKEN %}"\n'
-        'secret: "{% .Secrets.SECRET %}"\n'
-    )
+    content = 'token: "{% .Secrets.TOKEN %}"\nsecret: "{% .Secrets.SECRET %}"\n'
     result = render_secrets(content, PLACEHOLDER_ENV)
     assert "PLACEHOLDER" in result
     assert "{% " not in result

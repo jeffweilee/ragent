@@ -22,7 +22,6 @@ import asyncio
 import hmac
 import json
 import os
-import re
 import sys
 from contextlib import asynccontextmanager
 from typing import Any
@@ -35,7 +34,7 @@ from starlette.responses import Response
 from starlette.routing import Route
 
 from ._env import bool_env, int_env, str_env
-from .mcp_hub import _INCOMING_HEADERS, HubBundle, _TEMPLATE_PLACEHOLDER, build_hub
+from .mcp_hub import _INCOMING_HEADERS, _TEMPLATE_PLACEHOLDER, HubBundle, build_hub
 
 logger = structlog.get_logger(__name__)
 
@@ -101,10 +100,12 @@ class AuthMiddleware:
                 stripped.append((k, v))
 
         if not hmac.compare_digest(token_value, self._token):
-            body = json.dumps({
-                "error": "missing_or_invalid_token",
-                "expected_header": self._header_name,
-            }).encode()
+            body = json.dumps(
+                {
+                    "error": "missing_or_invalid_token",
+                    "expected_header": self._header_name,
+                }
+            ).encode()
             resp_headers = [
                 (b"content-type", b"application/json"),
                 (b"content-length", str(len(body)).encode()),

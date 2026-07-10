@@ -15,8 +15,8 @@ import sys
 
 import pytest
 
-from mcp_hub.server import AuthMiddleware, _validate_auth_forward_conflict
 from mcp_hub.mcp_hub import build_hub
+from mcp_hub.server import AuthMiddleware, _validate_auth_forward_conflict
 
 
 def _make_scope(path: str, headers: list[tuple[bytes, bytes]]) -> dict:

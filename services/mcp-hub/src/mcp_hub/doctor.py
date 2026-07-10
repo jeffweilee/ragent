@@ -29,9 +29,7 @@ def _is_absolute_url(path: str) -> bool:
     return path.startswith(("http://", "https://"))
 
 
-def check_yaml(
-    path: str | Path, *, placeholder_ok: bool = False
-) -> tuple[list[str], int]:
+def check_yaml(path: str | Path, *, placeholder_ok: bool = False) -> tuple[list[str], int]:
     """Return (validation errors, tool count). Empty errors list means OK.
 
     placeholder_ok=True: validates placeholder key format + YAML structure
@@ -48,9 +46,7 @@ def check_yaml(
     if placeholder_ok:
         # Validate placeholder syntax on raw content before substitution
         files = (
-            sorted(fp for fp in p.iterdir() if fp.suffix in _YAML_SUFFIXES)
-            if p.is_dir()
-            else [p]
+            sorted(fp for fp in p.iterdir() if fp.suffix in _YAML_SUFFIXES) if p.is_dir() else [p]
         )
         for f in files:
             try:
@@ -74,8 +70,7 @@ def check_yaml(
     for tool in result.tools:
         if not tool.base_url and not _is_absolute_url(tool.path):
             errors.append(
-                f"{tool.name}: relative path {tool.path!r} with no base_url"
-                f" (system or per-tool)"
+                f"{tool.name}: relative path {tool.path!r} with no base_url (system or per-tool)"
             )
         placeholders = _path_placeholders(tool.path)
         path_params = {p.name for p in tool.params if p.location == "path"}
