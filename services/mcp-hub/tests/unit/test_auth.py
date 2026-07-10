@@ -214,6 +214,32 @@ def test_build_mcp_app_exits_on_invalid_config(tmp_path, monkeypatch):
     assert exit_calls == [1]
 
 
+def test_build_mcp_app_tolerates_bad_yaml_system(tmp_path, monkeypatch):
+    """A YAML-parse failure in one system must not prevent the hub from starting.
+    The bad system is fault-isolated; other tools remain available."""
+    from structlog.testing import capture_logs
+
+    d = tmp_path / "tools.d"
+    d.mkdir()
+    (d / "ok.yaml").write_text(
+        "defaults:\n"
+        "  base_url: https://api.example.com\n"
+        "tools:\n"
+        "  - name: ping\n"
+        "    method: GET\n"
+        "    path: /ping\n"
+    )
+    (d / "broken.yaml").write_text("this: is: not: valid: yaml:\n  - [unbalanced")
+    monkeypatch.setenv("MCP_HUB_TOOLS_YAML", str(d))
+    exit_calls = []
+    monkeypatch.setattr(sys, "exit", lambda code: exit_calls.append(code))
+    with capture_logs() as logs:
+        build_mcp_app()
+    assert exit_calls == [], "hub must not exit when a system has a YAML parse error"
+    assert any(e.get("event") == "mcp_hub.system_skipped" for e in logs)
+    assert any(e.get("event") == "mcp_hub.config_ok" for e in logs)
+
+
 def test_build_mcp_app_logs_config_ok(tmp_path, monkeypatch):
     """build_mcp_app logs mcp_hub.config_ok when the config passes doctor."""
     from structlog.testing import capture_logs

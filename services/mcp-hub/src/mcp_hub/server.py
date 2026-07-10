@@ -195,6 +195,16 @@ def _validate_auth_forward_conflict(bundle: HubBundle, auth_header: str) -> None
                 sys.exit(1)
 
 
+def _is_load_failure_error(err: str) -> bool:
+    """True when a check_yaml error came from a parse/IO failure (file-path prefix).
+
+    Static analysis errors use tool names as prefix (e.g. 'billing.list_charges: ...')
+    which never contain path separators. LoadFailure and raw_errors use file paths.
+    """
+    prefix = err.split(":")[0]
+    return "/" in prefix or "\\" in prefix
+
+
 def build_mcp_app() -> Any:
     """0-arg factory for ``uvicorn mcp_hub.server:build_mcp_app --factory``."""
     yaml_path = str_env("MCP_HUB_TOOLS_YAML", "tools.yaml")
@@ -211,14 +221,27 @@ def build_mcp_app() -> Any:
             reason="MCP_HUB_AUTH_TOKEN not set; hub accepts unauthenticated requests",
         )
 
-    errors, tool_count = check_yaml(yaml_path, placeholder_ok=True)
-    if errors:
-        for err in errors:
+    # Static analysis pre-check: catch errors where every call would fail (path
+    # placeholder mismatches, non-identifier param names, body on wrong method).
+    # parse/IO failures are fault-isolated by build_hub(strict=False) below —
+    # they surface as bundle.failures (warnings) not as a hard exit.
+    errors, _ = check_yaml(yaml_path, placeholder_ok=True)
+    static_errors = [e for e in errors if not _is_load_failure_error(e)]
+    if static_errors:
+        for err in static_errors:
             logger.error("mcp_hub.config_invalid", detail=err)
         sys.exit(1)
-    logger.info("mcp_hub.config_ok", tool_count=tool_count, path=yaml_path)
 
     bundle = build_hub(yaml_path, name=name, env=os.environ)
+
+    for f in bundle.failures:
+        logger.warning("mcp_hub.system_skipped", source=f.source, reason=f.reason, phase=f.phase)
+    logger.info(
+        "mcp_hub.config_ok",
+        tool_count=len(bundle.tools),
+        skipped_systems=len(bundle.failures),
+        path=yaml_path,
+    )
 
     if auth_token:
         _validate_auth_forward_conflict(bundle, auth_header)
