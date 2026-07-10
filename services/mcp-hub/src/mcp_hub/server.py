@@ -100,6 +100,12 @@ class AuthMiddleware:
                 stripped.append((k, v))
 
         if not hmac.compare_digest(token_value, self._token):
+            logger.warning(
+                "mcp_hub.auth_rejected",
+                reason="missing or invalid token",
+                expected_header=self._header_name,
+                path=scope.get("path"),
+            )
             body = json.dumps(
                 {
                     "error": "missing_or_invalid_token",
