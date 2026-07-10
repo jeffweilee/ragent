@@ -16,7 +16,7 @@ import sys
 import pytest
 
 from mcp_hub.mcp_hub import build_hub
-from mcp_hub.server import AuthMiddleware, _validate_auth_forward_conflict
+from mcp_hub.server import AuthMiddleware, _validate_auth_forward_conflict, build_mcp_app
 
 
 def _make_scope(path: str, headers: list[tuple[bytes, bytes]]) -> dict:
@@ -192,3 +192,43 @@ def test_validate_auth_forward_conflict_ok_when_no_conflict(tmp_path):
     )
     bundle = build_hub(d, name="t")
     _validate_auth_forward_conflict(bundle, "X-MCP-Hub-Token")
+
+
+def test_build_mcp_app_exits_on_invalid_config(tmp_path, monkeypatch):
+    """build_mcp_app must call check_yaml and abort if the config is invalid."""
+    d = tmp_path / "tools.d"
+    d.mkdir()
+    # Path placeholder with no matching parameter — doctor catches this.
+    (d / "bad.yaml").write_text(
+        "defaults:\n"
+        "  base_url: https://api.example.com\n"
+        "tools:\n"
+        "  - name: get\n"
+        "    method: GET\n"
+        "    path: /items/{item_id}\n"
+    )
+    monkeypatch.setenv("MCP_HUB_TOOLS_YAML", str(d))
+    exit_calls = []
+    monkeypatch.setattr(sys, "exit", lambda code: exit_calls.append(code))
+    build_mcp_app()
+    assert exit_calls == [1]
+
+
+def test_build_mcp_app_logs_config_ok(tmp_path, monkeypatch):
+    """build_mcp_app logs mcp_hub.config_ok when the config passes doctor."""
+    from structlog.testing import capture_logs
+
+    d = tmp_path / "tools.d"
+    d.mkdir()
+    (d / "ok.yaml").write_text(
+        "defaults:\n"
+        "  base_url: https://api.example.com\n"
+        "tools:\n"
+        "  - name: ping\n"
+        "    method: GET\n"
+        "    path: /ping\n"
+    )
+    monkeypatch.setenv("MCP_HUB_TOOLS_YAML", str(d))
+    with capture_logs() as logs:
+        build_mcp_app()
+    assert any(e.get("event") == "mcp_hub.config_ok" for e in logs)

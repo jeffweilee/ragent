@@ -34,6 +34,7 @@ from starlette.responses import Response
 from starlette.routing import Route
 
 from ._env import bool_env, int_env, str_env
+from .doctor import check_yaml
 from .mcp_hub import _INCOMING_HEADERS, _TEMPLATE_PLACEHOLDER, HubBundle, build_hub
 
 logger = structlog.get_logger(__name__)
@@ -209,6 +210,13 @@ def build_mcp_app() -> Any:
             "mcp_hub.auth_disabled",
             reason="MCP_HUB_AUTH_TOKEN not set; hub accepts unauthenticated requests",
         )
+
+    errors, tool_count = check_yaml(yaml_path, placeholder_ok=True)
+    if errors:
+        for err in errors:
+            logger.error("mcp_hub.config_invalid", detail=err)
+        sys.exit(1)
+    logger.info("mcp_hub.config_ok", tool_count=tool_count, path=yaml_path)
 
     bundle = build_hub(yaml_path, name=name, env=os.environ)
 
