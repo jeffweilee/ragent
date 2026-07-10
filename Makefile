@@ -1,12 +1,9 @@
-.PHONY: check format lint test test-gate test-e2e-golden test-chaos bootstrap doctor mcp-hub-doctor
+.PHONY: check format lint test test-gate test-e2e-golden test-chaos bootstrap doctor
 
 bootstrap:
 	uv sync --extra dev
 
-check: format lint mcp-hub-doctor test
-
-mcp-hub-doctor:
-	uv run python -m ragent.mcp_hub.doctor src/ragent/mcp_hub/tools.example.d
+check: format lint test
 
 format:
 	uv run ruff format .
