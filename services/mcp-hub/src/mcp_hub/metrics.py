@@ -7,7 +7,7 @@ when the hub runs as a standalone service.
 
 from __future__ import annotations
 
-from prometheus_client import Counter, Histogram
+from prometheus_client import Counter, Gauge, Histogram
 
 _MCP_HUB_LOAD_PHASES = frozenset({"file_parse", "tool_parse", "registration"})
 _MCP_HUB_CALL_OUTCOMES = frozenset(
@@ -34,6 +34,26 @@ mcp_hub_tool_call_duration_seconds = Histogram(
     labelnames=("system", "outcome"),
 )
 
+# Inventory gauge: one time-series per registered tool, value always 1.
+# Solves the zero-cardinality gap — tools that are never called still appear
+# in Prometheus so dashboards and alerts can verify the expected tool set.
+mcp_hub_tool_info = Gauge(
+    "mcp_hub_tool_info",
+    "Registered tool inventory; value is always 1. "
+    "Exposes all tools at startup so alert rules can detect missing tools "
+    "even before the first call.",
+    labelnames=("system", "tool", "method"),
+)
+
+# Per-system liveness gauge: 1 = loaded successfully, 0 = skipped due to
+# load failure. Resets on every restart; pairs with
+# mcp_hub_tool_load_failures_total for a complete startup-health picture.
+mcp_hub_system_up = Gauge(
+    "mcp_hub_system_up",
+    "1 if the system loaded successfully at startup, 0 if skipped due to load failure.",
+    labelnames=("system",),
+)
+
 
 def record_mcp_hub_load_failure(*, system: str, phase: str) -> None:
     if phase not in _MCP_HUB_LOAD_PHASES:
@@ -50,3 +70,11 @@ def record_mcp_hub_tool_call(
     mcp_hub_tool_call_duration_seconds.labels(system=system, outcome=outcome).observe(
         duration_seconds
     )
+
+
+def record_mcp_hub_tool_registered(*, system: str, tool: str, method: str) -> None:
+    mcp_hub_tool_info.labels(system=system, tool=tool, method=method).set(1)
+
+
+def record_mcp_hub_system_up(*, system: str, up: bool) -> None:
+    mcp_hub_system_up.labels(system=system).set(1 if up else 0)

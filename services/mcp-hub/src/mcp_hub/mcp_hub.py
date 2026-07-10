@@ -26,7 +26,12 @@ from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
 from ._render import render_secrets
-from .metrics import record_mcp_hub_load_failure, record_mcp_hub_tool_call
+from .metrics import (
+    record_mcp_hub_load_failure,
+    record_mcp_hub_system_up,
+    record_mcp_hub_tool_call,
+    record_mcp_hub_tool_registered,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -720,6 +725,7 @@ def build_hub(
             fn = _make_tool_callable(spec, client)
             mcp.add_tool(fn)
             registered += 1
+            record_mcp_hub_tool_registered(system=spec.system, tool=spec.name, method=spec.method)
         except Exception as exc:  # noqa: BLE001
             result.failures.append(
                 LoadFailure(
@@ -742,7 +748,9 @@ def build_hub(
         )
         record_mcp_hub_load_failure(system=failure.system, phase=failure.phase)
 
+    failed_systems = {f.system for f in result.failures if f.phase == "file_parse" and f.system}
     for sys_name, sys_spec in result.systems.items():
+        record_mcp_hub_system_up(system=sys_name, up=True)
         logger.info(
             "mcp_hub.system_configured",
             system=sys_name,
@@ -751,6 +759,8 @@ def build_hub(
             max_connections=sys_spec.max_connections,
             verify_ssl=sys_spec.verify_ssl,
         )
+    for sys_name in failed_systems - result.systems.keys():
+        record_mcp_hub_system_up(system=sys_name, up=False)
     logger.info(
         "mcp_hub.ready",
         systems=sorted(result.systems),

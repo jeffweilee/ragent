@@ -1,6 +1,6 @@
-"""Hub-level Prometheus counters/histograms + the verify_ssl per-system knob.
+"""Hub-level Prometheus metrics + the verify_ssl per-system knob.
 
-Three signal families:
+Five signal families:
 - `mcp_hub_tool_load_failures_total{system, phase}` — startup-time yaml /
   registration failures, phased so dashboards can distinguish "bad file"
   from "bad tool" from "FastMCP add_tool rejection".
@@ -10,6 +10,11 @@ Three signal families:
   upstream call latency. `tool` is deliberately dropped from this
   metric's labels to keep le-bucket cardinality bounded; the counter
   retains it for drill-down.
+- `mcp_hub_tool_info{system, tool, method}` — inventory gauge (always 1)
+  set at startup for every registered tool; solves the zero-cardinality
+  gap so alert rules fire even for tools that are never called.
+- `mcp_hub_system_up{system}` — 1 = loaded OK, 0 = skipped due to load
+  failure; resets on restart so dashboards show current state.
 
 Plus a per-system `verify_ssl: bool` knob in `defaults` that flows into
 the system's `httpx.AsyncClient(verify=...)`.
@@ -34,7 +39,9 @@ from mcp_hub.mcp_hub import (
 )
 from mcp_hub.metrics import (
     record_mcp_hub_load_failure,
+    record_mcp_hub_system_up,
     record_mcp_hub_tool_call,
+    record_mcp_hub_tool_registered,
 )
 
 
@@ -243,6 +250,65 @@ def test_make_client_passes_verify_through_to_httpx():
     finally:
         asyncio.run(cli_off.aclose())
         asyncio.run(cli_on.aclose())
+
+
+def test_record_tool_registered_sets_info_gauge_to_one():
+    record_mcp_hub_tool_registered(system="svc", tool="svc.search", method="GET")
+    assert (
+        REGISTRY.get_sample_value(
+            "mcp_hub_tool_info", {"system": "svc", "tool": "svc.search", "method": "GET"}
+        )
+        == 1.0
+    )
+
+
+def test_record_system_up_sets_gauge_correctly():
+    record_mcp_hub_system_up(system="up_svc", up=True)
+    assert REGISTRY.get_sample_value("mcp_hub_system_up", {"system": "up_svc"}) == 1.0
+
+    record_mcp_hub_system_up(system="down_svc", up=False)
+    assert REGISTRY.get_sample_value("mcp_hub_system_up", {"system": "down_svc"}) == 0.0
+
+
+@pytest.mark.asyncio
+async def test_build_hub_sets_tool_info_and_system_up_gauges(tmp_path: Path):
+    """After build_hub, each registered tool has tool_info=1 and its system has system_up=1.
+    A system that fails to load gets system_up=0."""
+    good = tmp_path / "good.yaml"
+    good.write_text(
+        textwrap.dedent(
+            """\
+            system: goodsvc
+            defaults:
+              base_url: https://api.example.com
+            tools:
+              - name: ping
+                method: GET
+                path: /ping
+            """
+        )
+    )
+    bad = tmp_path / "broken.yaml"
+    bad.write_text("this: is: not: valid: yaml:\n  - [unbalanced")
+
+    bundle = build_hub(tmp_path)
+    try:
+        assert (
+            REGISTRY.get_sample_value(
+                "mcp_hub_tool_info",
+                {"system": "goodsvc", "tool": "goodsvc.ping", "method": "GET"},
+            )
+            == 1.0
+        ), "registered tool must set mcp_hub_tool_info gauge to 1"
+        assert REGISTRY.get_sample_value("mcp_hub_system_up", {"system": "goodsvc"}) == 1.0, (
+            "successfully loaded system must have mcp_hub_system_up=1"
+        )
+        assert REGISTRY.get_sample_value("mcp_hub_system_up", {"system": "broken"}) == 0.0, (
+            "load-failed system must have mcp_hub_system_up=0"
+        )
+    finally:
+        for c in bundle.clients.values():
+            await c.aclose()
 
 
 @pytest.mark.asyncio
