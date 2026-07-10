@@ -1,0 +1,22 @@
+# ConfigMap: one entry per *.yaml file under files/tools.d/.
+# YAML files contain {% .Secrets.KEY %} placeholders — safe for Git / ConfigMap
+# because no real secret values live here. The hub renders them at startup from
+# env vars injected by the VaultSecret-sourced Secret.
+#
+# Adding a new upstream system: add payment.yaml to files/tools.d/, push → ArgoCD
+# syncs the ConfigMap → stakater/reloader restarts the Pod. Zero code rebuild.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "mcp-hub.fullname" . }}-tools
+  labels:
+    {{- include "mcp-hub.labels" . | nindent 4 }}
+  annotations:
+    {{- if .Values.reloader.enabled }}
+    reloader.stakater.com/match: "true"
+    {{- end }}
+data:
+  {{- range $path, $content := .Files.Glob "files/tools.d/*.yaml" }}
+  {{ base $path }}: |
+    {{- $content | toString | nindent 4 }}
+  {{- end }}

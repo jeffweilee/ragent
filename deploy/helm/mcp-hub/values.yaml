@@ -1,0 +1,41 @@
+# Default values for mcp-hub.
+# Each upstream system has its own YAML file under files/tools.d/.
+# Secrets are injected via VaultSecret CR → K8s Secret → envFrom.
+
+replicaCount: 1
+
+image:
+  repository: ghcr.io/jeffweilee/ragent/mcp-hub
+  pullPolicy: IfNotPresent
+  tag: ""  # defaults to .Chart.AppVersion
+
+service:
+  type: ClusterIP
+  port: 9000
+
+hub:
+  # Mount path for the MCP streamable-HTTP endpoint.
+  path: /mcp
+  # Auth header name — must not clash with any forward_headers in tool YAMLs.
+  authHeader: X-MCP-Hub-Token
+  statelessHttp: false
+  jsonResponse: false
+  logLevel: INFO
+
+vault:
+  # ricoberger/vault-secrets-operator path (KV-v2 must include /data/).
+  path: kv/data/mcp-hub/prod
+  # Vault auth role that maps the mcp-hub ServiceAccount to a Vault policy.
+  role: mcp-hub
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 256Mi
+
+# stakater/reloader: restart Pod when the tools ConfigMap changes (CD-only deploy).
+reloader:
+  enabled: true

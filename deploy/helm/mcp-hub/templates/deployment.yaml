@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "mcp-hub.fullname" . }}
+  labels:
+    {{- include "mcp-hub.labels" . | nindent 4 }}
+  annotations:
+    {{- if .Values.reloader.enabled }}
+    reloader.stakater.com/auto: "true"
+    {{- end }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "mcp-hub.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "mcp-hub.selectorLabels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "mcp-hub.fullname" . }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+      containers:
+        - name: mcp-hub
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 9000
+              protocol: TCP
+          env:
+            - name: MCP_HUB_TOOLS_YAML
+              value: /etc/mcp-hub/tools.d
+            - name: MCP_HUB_HOST
+              value: "0.0.0.0"
+            - name: MCP_HUB_PORT
+              value: "9000"
+            - name: MCP_HUB_PATH
+              value: {{ .Values.hub.path | quote }}
+            - name: MCP_HUB_AUTH_HEADER
+              value: {{ .Values.hub.authHeader | quote }}
+            - name: MCP_HUB_STATELESS_HTTP
+              value: {{ .Values.hub.statelessHttp | toString | quote }}
+            - name: MCP_HUB_JSON_RESPONSE
+              value: {{ .Values.hub.jsonResponse | toString | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.hub.logLevel | quote }}
+          envFrom:
+            # Vault-synced Secret: provides MCP_HUB_AUTH_TOKEN and all
+            # {% .Secrets.KEY %} values referenced in tool YAMLs.
+            - secretRef:
+                name: {{ include "mcp-hub.fullname" . }}-secrets
+          volumeMounts:
+            - name: tools
+              mountPath: /etc/mcp-hub/tools.d
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /metrics
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: http
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: tools
+          configMap:
+            name: {{ include "mcp-hub.fullname" . }}-tools
