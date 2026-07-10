@@ -1,0 +1,48 @@
+# system "httpbin" — second example system demonstrating:
+#   - GET with query parameter
+#   - POST with json body
+#   - static_headers with {% .Secrets.KEY %} injection
+#   - forward_headers multi-placeholder combine
+#
+# base_url uses a placeholder domain — replace per environment.
+# In production, HTTPBIN_TOKEN is injected from Vault via VaultSecret CR.
+
+system: httpbin
+
+defaults:
+  base_url: https://httpbin.example.internal
+  timeout: 10.0
+  max_connections: 20
+  headers:
+    Accept: application/json
+
+tools:
+  - name: get_ip
+    description: Returns the requester's IP address.
+    method: GET
+    path: /ip
+    # static_headers: value injected from Vault at startup via {% .Secrets.KEY %}
+    static_headers:
+      X-Api-Token: "{% .Secrets.HTTPBIN_TOKEN %}"
+    # forward_headers: multi-placeholder — combines two incoming headers into one value
+    forward_headers:
+      X-User-Context: "{x-user-id}@{x-tenant-id}"
+
+  - name: post_json
+    description: Echoes the posted JSON body back to the caller.
+    method: POST
+    body_format: json
+    path: /post
+    static_headers:
+      X-Api-Token: "{% .Secrets.HTTPBIN_TOKEN %}"
+    parameters:
+      - name: message
+        type: string
+        location: body
+        required: true
+        description: Arbitrary message to echo back.
+      - name: tags
+        type: array
+        location: body
+        required: false
+        description: Optional list of string tags.
