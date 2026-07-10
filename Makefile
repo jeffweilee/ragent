@@ -6,8 +6,8 @@ bootstrap:
 check: format lint mcp-hub-check test
 
 mcp-hub-check:
-	cd services/mcp-hub && uv run mcp-hub-doctor src/mcp_hub/tools.example.d --placeholder-ok
-	cd services/mcp-hub && uv run pytest -q
+	cd mcp_hub && uv run mcp-hub-doctor src/mcp_hub/tools.example.d --placeholder-ok
+	cd mcp_hub && uv run python -m pytest -q
 
 format:
 	uv run ruff format .
