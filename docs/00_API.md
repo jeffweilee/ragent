@@ -257,6 +257,8 @@ curl -X POST http://localhost:8000/chat/v1 \
 
 `request_id` + `feedback_token` are emitted **only when `CHAT_FEEDBACK_ENABLED=true` AND `X-User-Id` present**. `content` is always a string (empty `""` if LLM returns null/missing). Full-width brackets `【N】` in LLM output are post-processed to `[N]`.
 
+**Rate limiting:** when a rate limiter is wired and `X-User-Id` is present, both `/chat/v1` and `/chat/v1/stream` enforce a per-user limit (default 60 requests / 60 s window) and return `429 CHAT_RATE_LIMITED` with a `Retry-After` header on exceed.
+
 ### `POST /chat/v1/stream` — Streaming chat (SSE)
 
 ```bash
@@ -418,7 +420,7 @@ Same upstream as v2 (`CHATAGENT_API_URL`, `CHATAGENT_AUTH`, rate limit, `CHATAGE
 
 - `threadId` — session id, **server-owned** (Model B): omit it on a brand-new conversation and ragent mints one; the assigned id is echoed back in `RUN_STARTED.threadId` and the client reuses it on every later turn.
 - `messages[].id` — **currently not used by ragent**: the client's optimistic id. The proxy ignores it (only the last `role="user"` message text is forwarded); the upstream assigns the authoritative `messageId` returned in the stream / session history — never key on this value server-side. Rationale: `docs/00_spec.md §3.4.7` (Session id ownership).
-- `attachmentIds` — optional list of previously-uploaded attachment ids (see [Attachments](#attachments-chatagentv3attachments)) to resolve into a metadata-only `<attachments>` block inside the `<hidden>` preamble. The block lists `documentId`/`filename`/`uploadedAt` and instructs the LLM to call the `/mcp/v1` `retrieve` tool for actual content. When omitted, `null`, or empty, the resolver falls back to listing all attachments uploaded in the session (newest-first).
+- `attachmentIds` — optional list of previously-uploaded attachment ids (see [Attachments](#attachments-chatagentv3attachments)) to resolve into a metadata-only `<attachments>` block inside the `<hidden>` preamble. The block lists `documentId`/`filename`/`uploadedAt` and instructs the LLM to call the `/mcp/v1` `retrieve` tool for actual content. When omitted, `null`, or empty, the resolver falls back to listing all attachments uploaded in the session (newest-first). Exceeding `ATTACHMENT_MAX_FILES` (default 10) returns a `RUN_ERROR` event with `code=ATTACHMENT_TOO_MANY_FILES`.
 
 ```json
 {
@@ -601,7 +603,7 @@ Same upstream and registration env vars as the `/chatagent/v1/session*` routes (
 
 These session routes register independently of `POST /chatagent/v3`: a session-only deployment (only `CHATAGENT_SESSIONLIST_API_URL`/`CHATAGENT_SESSION_API_URL` set, `CHATAGENT_API_URL` unset) starts cleanly with just the session routes registered — `POST /chatagent/v3` (and its `Agent` factory) is omitted entirely rather than crashing at startup.
 
-- `GET /chatagent/v3/sessionList?startTime=&endTime=` — as v1, but each entry's `sessionName` has the machine-context wrapper stripped, and (when the stream store is wired) each entry carries `running` (a run is in flight → spinner) and `hasNewReply` (a reply finished the user has not opened → dot). `session_id == thread_id`.
+- `GET /chatagent/v3/sessionList?startTime=&endTime=&project=` — as v1, but each entry's `sessionName` has the machine-context wrapper stripped, and (when the stream store is wired) each entry carries `running` (a run is in flight → spinner) and `hasNewReply` (a reply finished the user has not opened → dot). `session_id == thread_id`. Optional `project` scopes the list to that project's conversations; omitting it returns the caller's full unscoped list.
 - `GET /chatagent/v3/session?session=<id>` — `sessionName` stripped as above; every `messages[]` entry is reshaped to `{id, role, content, createTime, updateTime}` (`id` = upstream `messageId`; `role` via the same `node_to_role` rule as the v3 stream; machine-context wrapper stripped from `content`; `createTime`/`updateTime` = upstream persistence timestamps passed through, null when absent). Loading history does **not** clear the `hasNewReply` dot (read is decoupled — see `POST /session/read`).
 - `POST /chatagent/v3/session/read?session=<id>` — explicit, client-owned mark-read: the frontend calls it when the user has seen the session's latest reply. Clears the `hasNewReply` flag **and** publishes `{session, hasNewReply:false}` over NATS so the user's other tabs drop the dot in realtime — the broadcast fires only when a flag was actually cleared, so per-view repeat calls are silent no-ops. Returns `204`, idempotent. The **only** path that marks a session read. Unlike the read-only session routes above, this one registers with the **chat feature** (`CHATAGENT_API_URL`), co-located with the unread stream store it operates on — the store exists only when `CHATAGENT_API_URL` is set, and gating mark-read on the session-history URL instead would leave dots unclearable in a chat-without-history deployment. A no-op `204` when the store is unavailable (Redis down); absent entirely in a pure session-only deployment where the unread feature is off.
 - `PUT /chatagent/v3/session` / `DELETE /chatagent/v3/session` — rename / delete, proxied unchanged (same bodies as v1).
@@ -886,7 +888,7 @@ The instructions ride the existing `<hidden>` machine-context block (the upstrea
 | `tools/call` | Invokes `retrieve` (see below) or `create_skill`. |
 | `ping` | Returns `{}`. |
 
-**`tools/call retrieve`** — `inputSchema` requires `query` + `document_id_list` (1–100 ids) and accepts optional `top_k` (1–3, default 3, `additionalProperties:false`). Anti-IDOR ownership check runs before ES access. Result `structuredContent.sources` is the machine-readable source list (for the frontend's retrieved-sources panel); `content[0].text` is a `<context>`-wrapped markdown citation table + `### [N]` excerpt blocks for LLM grounding (no internal fields like `document_id`/`score`; cells injection-safe — CR/LF stripped, `\|` escaped; only http(s) `source_url` linkified with markdown-breaking chars percent-encoded; literal `<context>` tags in corpus text neutralised).
+**`tools/call retrieve`** — `inputSchema` requires `query` + `document_id_list` (1–100 ids) and accepts optional `top_k` (1–3, default 3) and `min_score` (post-retrieval score floor, default `null`), `additionalProperties:false`. Anti-IDOR ownership check runs before ES access. Result `structuredContent.sources` is the machine-readable source list (for the frontend's retrieved-sources panel); `content[0].text` is a `<context>`-wrapped markdown citation table + `### [N]` excerpt blocks for LLM grounding (no internal fields like `document_id`/`score`; cells injection-safe — CR/LF stripped, `\|` escaped; only http(s) `source_url` linkified with markdown-breaking chars percent-encoded; literal `<context>` tags in corpus text neutralised).
 
 **`tools/call create_skill`** — `arguments: {name, description?, instructions, enabled?}` (`additionalProperties:false`). Creates a skill under the **authenticated caller** (`X-User-Id`/JWT resolved at the endpoint); `user_id` is **not** an argument and a stray one is rejected (`MCP_TOOL_INPUT_INVALID`). No identity → fails closed with `MISSING_USER_ID`. Name collision (incl. a built-in preset name, case-insensitive) → `SKILL_NAME_CONFLICT`. Non-object `arguments` → `MCP_TOOL_INPUT_INVALID`; an unexpected backend failure → `MCP_TOOL_EXECUTION_FAILED` (JSON-RPC envelope, never an HTTP 500). Result: `structuredContent.skill = {skill_id, name, description, enabled, readonly}`. Example:
 ```json
@@ -915,9 +917,9 @@ The instructions ride the existing `<hidden>` machine-context block (the upstrea
 - `409 EMBEDDING_LIFECYCLE_INVALID_STATE` — all state-mutation endpoints when transition is invalid.
 - `409 EMBEDDING_CUTOVER_PREFLIGHT_FAILED` — `/cutover` when hard gates fail; body carries `preflight` report with failed gate names and details.
 - `422 EMBEDDING_INVALID_CONFIG` / `EMBEDDING_FIELD_NAME_COLLISION` — `/promote` validation failures.
-- `503` — `/backfill` when broker is not wired; `/embedding/v1/state` as `EMBEDDING_REGISTRY_NOT_READY` when the registry has not completed its first refresh.
+- `503` — `/backfill` when broker is not wired (plain `{"detail": "broker not wired"}`, **not** problem+json — an exception to the §Errors guarantee above); `/embedding/v1/state` as `EMBEDDING_REGISTRY_NOT_READY` when the registry has not completed its first refresh.
 
-Cutover hard gates: `state_is_candidate`, `field_dim_matches`, `candidate_coverage` (≥ 99%), `dual_write_warmup` (≥ 2 × cache TTL). See [`docs/team/2026_05_15_embedding_model_lifecycle.md`](team/2026_05_15_embedding_model_lifecycle.md) for full semantics.
+Cutover hard gates: `state_is_candidate`, `candidate_coverage` (≥ 99%), `dual_write_warmup` (≥ 2 × cache TTL). See [`docs/team/2026_05_15_embedding_model_lifecycle.md`](team/2026_05_15_embedding_model_lifecycle.md) for full semantics.
 
 ---
 
@@ -964,7 +966,7 @@ curl -X POST "http://localhost:8000/chatagent/v3/attachments/upload" \
 
 Polls a single attachment's processing status. Clients poll after upload with backoff until `status` is `READY` or `FAILED`.
 
-`status` values: `PENDING` / `UPLOADED` → mapped to `PROCESSING` in the response; `READY`; `FAILED`.
+`status` values: `PENDING` / `DELETING` → mapped to `PROCESSING` in the response; `UPLOADED` (unchanged); `READY`; `FAILED`.
 
 ```bash
 curl "http://localhost:8000/chatagent/v3/attachments/01J9ABCDEFGHJKMNPQRSTVWXYZ" \

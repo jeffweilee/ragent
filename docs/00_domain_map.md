@@ -157,7 +157,7 @@ Bootstrap (Composition Root) — 唯一組裝點
 | `ingest/loader.py` | `_TextLoader`、`ALLOWED_MIMES` |
 | `ingest/splitter.py` | `_MimeAwareSplitter`、`_MarkdownASTSplitter`、`_HtmlASTSplitter`、`_DocxASTSplitter`、`_PptxASTSplitter`、`_PdfASTSplitter`、`_CsvASTSplitter`、`INGEST_PDF_MARGIN_PTS` |
 | `ingest/chunker.py` | `_BudgetChunker`、`_pack_atoms`、`validate_chunk_config`、`CHUNK_TARGET_CHARS`、`CHUNK_MAX_CHARS`、`CHUNK_OVERLAP_CHARS`、`CHUNK_MAX_PIECES_PER_ATOM` |
-| `ingest/embedder.py` | `_DocumentEmbedder` |
+| `ingest/embedder.py` | `DocumentEmbedder` |
 | `retrieve/__init__.py` | `build_retrieval_pipeline()`、`run_retrieval()` — 公用介面；re-exports 所有 sub-module 符號 |
 | `retrieve/_constants.py` | `DEFAULT_TOP_K`、`DEFAULT_MIN_SCORE`、`MAX_TOP_K`、`EXCERPT_MAX_CHARS_DEFAULT`、`_VALID_MODES` |
 | `retrieve/joiner.py` | `build_es_filters`、`dedupe_by_document`、`doc_to_source_entry` |
@@ -345,7 +345,6 @@ Bootstrap (Composition Root) — 唯一組裝點
 | `ingest.py` | `ingest.pipeline` task — TX-A claim → pipeline body（pipelines/ingest）→ TX-B 終態；`ingest.supersede` 選舉（呼叫 `services/ingest_service.IngestService`） |
 | `backfill.py` | `ingest.backfill_candidate` task（T-EM-R.9）— scroll stable_index、補嵌入到 candidate_index |
 | `heartbeat.py` | PENDING row 30s heartbeat 背景迴圈 |
-| `attachment.py` | `attachment.process` task（T-CAT.W2）— 呼叫 `services/chat_attachment_service.ChatAttachmentService.process()`；`RAGENT_KEK_BASE64` 未設定時 no-op + log |
 | `startup_sweep.py` | `run_startup_sweep()`（T-ATTACH-R.1a）— worker 開機時重新派送 stale PENDING/UPLOADED rows |
 | `maintenance.py` | `run_maintenance_cycle()`（T-ATTACH-R.3c）— 週期迴圈：超額 attempt 標記 FAILED、恢復 stale DELETING、重派 stale PENDING/UPLOADED |
 
@@ -364,7 +363,7 @@ Bootstrap (Composition Root) — 唯一組裝點
 
 | 項目 | 說明 |
 |---|---|
-| **路徑** | `src/ragent/mcp_hub/` |
+| **路徑** | `mcp_hub/`（獨立 top-level package，與 `src/ragent/` 平行，非其子目錄；`packages/twp-ai` 同構） |
 | **責任** | 獨立 FastMCP 服務；從 `tools.yaml` 動態載入第三方 REST API 工具。 |
 | **允許依賴** | `utility/`、`errors/`。**完全獨立**於 ragent 主服務。 |
 | **禁止事項** | ❌ 不得與 ragent main process 共用任何 singleton。❌ 不得依賴 `bootstrap/composition.py`。 |
