@@ -180,7 +180,7 @@ def _map_message(raw: dict[str, Any]) -> dict[str, Any]:
         unwrapped = _strip_tool_response_prefix(unwrapped)
     # `or "assistant"`: a present-but-null `role` must fall back too, not just a
     # missing key — keeps a non-empty string for node_to_role.
-    return {
+    mapped: dict[str, Any] = {
         "id": raw.get("messageId") or "",
         "role": node_to_role(raw.get("role") or "assistant", langgraph_node),
         "content": strip_machine_context(unwrapped) if unwrapped is not None else content,
@@ -192,3 +192,12 @@ def _map_message(raw: dict[str, Any]) -> dict[str, Any]:
         if unwrapped is not None
         else None,
     }
+    # Structured cards (sources/attachments/spreadsheet/…) persisted by a
+    # brain-backed session store ride the upstream message verbatim; pass them
+    # through so reloaded history keeps its citation chips instead of silently
+    # degrading to plain text. Key only present when there are cards — no null
+    # noise on ordinary messages, and non-list shapes are dropped.
+    cards = raw.get("cards")
+    if isinstance(cards, list) and cards:
+        mapped["cards"] = cards
+    return mapped

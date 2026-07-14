@@ -567,3 +567,20 @@ def test_prefix_stripping_is_not_applied_to_tool_turns() -> None:
     out = map_session_payload(payload)
 
     assert out["messages"][0]["content"] == '{"skill": "result"}tool output'
+
+
+def test_assistant_cards_pass_through() -> None:
+    cards = [{"kind": "sources", "payload": {"items": [{"n": 1, "title": "doc.txt"}]}}]
+    payload = _session(
+        [{"messageId": "m1", "role": "assistant", "content": "answer [1]", "cards": cards}]
+    )
+    out = map_session_payload(payload)
+    assert out["messages"][0]["cards"] == cards
+
+
+def test_non_list_cards_dropped() -> None:
+    payload = _session(
+        [{"messageId": "m1", "role": "assistant", "content": "hi", "cards": "bogus"}]
+    )
+    out = map_session_payload(payload)
+    assert "cards" not in out["messages"][0]
