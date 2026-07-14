@@ -143,7 +143,7 @@ the generic proxy:
 | Family | brain routes (relative to `/upstream`) |
 |---|---|
 | session | `GET /session`, `GET /sessionList`, `PUT /session`, `DELETE /session` |
-| memory | `GET /memory`, `PUT /memory/core`, `POST /memory/archival`, `DELETE /memory/archival/{mem_id}` |
+| memory | `GET /memory`, `PUT /memory/core`, `POST /memory/archival`, `DELETE /memory/archival`, `DELETE /memory/archival/{mem_id}` |
 | projects | `GET /projects`, `POST /projects`, `PUT /projects/{id}`, `DELETE /projects/{id}` |
 | sources | `GET /projects/{id}/sources`, `POST /projects/{id}/sources`, `DELETE /projects/{id}/sources/{doc_id}` |
 | artifacts | `GET /artifacts`, `POST /artifacts`, `GET /artifacts/{id}` (binary), `DELETE /artifacts/{id}` |
