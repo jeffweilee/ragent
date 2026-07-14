@@ -257,7 +257,7 @@ curl -X POST http://localhost:8000/chat/v1 \
 
 `request_id` + `feedback_token` are emitted **only when `CHAT_FEEDBACK_ENABLED=true` AND `X-User-Id` present**. `content` is always a string (empty `""` if LLM returns null/missing). Full-width brackets `【N】` in LLM output are post-processed to `[N]`.
 
-**Rate limiting:** when a rate limiter is wired and `X-User-Id` is present, both `/chat/v1` and `/chat/v1/stream` enforce a per-user limit (default 60 requests / 60 s window) and return `429 CHAT_RATE_LIMITED` with a `Retry-After` header on exceed.
+**Rate limiting:** when a rate limiter is wired and a user id is resolved — from `X-User-Id`, or from a JWT claim under `jwt_header`/`jwt_prefer_header` `RAGENT_AUTH_MODE` — both `/chat/v1` and `/chat/v1/stream` enforce a per-user limit (`CHAT_RATE_LIMIT_PER_MINUTE` / `CHAT_RATE_LIMIT_WINDOW_SECONDS`, see `docs/spec/env_vars.md`) and return `429 CHAT_RATE_LIMITED` with a `Retry-After` header on exceed.
 
 ### `POST /chat/v1/stream` — Streaming chat (SSE)
 
@@ -888,7 +888,7 @@ The instructions ride the existing `<hidden>` machine-context block (the upstrea
 | `tools/call` | Invokes `retrieve` (see below) or `create_skill`. |
 | `ping` | Returns `{}`. |
 
-**`tools/call retrieve`** — `inputSchema` requires `query` + `document_id_list` (1–100 ids) and accepts optional `top_k` (1–3, default 3) and `min_score` (post-retrieval score floor, default `null`), `additionalProperties:false`. Anti-IDOR ownership check runs before ES access. Result `structuredContent.sources` is the machine-readable source list (for the frontend's retrieved-sources panel); `content[0].text` is a `<context>`-wrapped markdown citation table + `### [N]` excerpt blocks for LLM grounding (no internal fields like `document_id`/`score`; cells injection-safe — CR/LF stripped, `\|` escaped; only http(s) `source_url` linkified with markdown-breaking chars percent-encoded; literal `<context>` tags in corpus text neutralised).
+**`tools/call retrieve`** — `inputSchema` requires `query` + `document_id_list` (1–100 ids) and accepts optional `top_k` (1–3, default 3) and `min_score` (post-retrieval score floor; schema type is `number`, not nullable — omit the field for no floor, do **not** send `null`), `additionalProperties:false`. Anti-IDOR ownership check runs before ES access. Result `structuredContent.sources` is the machine-readable source list (for the frontend's retrieved-sources panel); `content[0].text` is a `<context>`-wrapped markdown citation table + `### [N]` excerpt blocks for LLM grounding (no internal fields like `document_id`/`score`; cells injection-safe — CR/LF stripped, `\|` escaped; only http(s) `source_url` linkified with markdown-breaking chars percent-encoded; literal `<context>` tags in corpus text neutralised).
 
 **`tools/call create_skill`** — `arguments: {name, description?, instructions, enabled?}` (`additionalProperties:false`). Creates a skill under the **authenticated caller** (`X-User-Id`/JWT resolved at the endpoint); `user_id` is **not** an argument and a stray one is rejected (`MCP_TOOL_INPUT_INVALID`). No identity → fails closed with `MISSING_USER_ID`. Name collision (incl. a built-in preset name, case-insensitive) → `SKILL_NAME_CONFLICT`. Non-object `arguments` → `MCP_TOOL_INPUT_INVALID`; an unexpected backend failure → `MCP_TOOL_EXECUTION_FAILED` (JSON-RPC envelope, never an HTTP 500). Result: `structuredContent.skill = {skill_id, name, description, enabled, readonly}`. Example:
 ```json
