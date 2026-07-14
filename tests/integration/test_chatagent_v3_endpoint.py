@@ -279,6 +279,35 @@ def test_v3_session_list_strips_session_names():
     assert [s["sessionName"] for s in r.json()["sessions"]] == ["First chat", "Plain"]
 
 
+def test_v3_session_list_forwards_project_scope():
+    # A project-scoped list must pass `project` through to the store, or every
+    # project shows the full unscoped conversation list.
+    app, http_mock = _make_app()
+    http_mock.get.return_value = _get_ok({"sessions": []})
+
+    with TestClient(app) as client:
+        r = client.get(
+            "/chatagent/v3/sessionList",
+            params={"project": "proj-123"},
+            headers={"X-User-Id": "alice"},
+        )
+
+    assert r.status_code == 200
+    assert http_mock.get.call_args.kwargs["params"]["project"] == "proj-123"
+
+
+def test_v3_session_list_omits_project_when_unscoped():
+    # The global recent list has no project and must not send an empty one.
+    app, http_mock = _make_app()
+    http_mock.get.return_value = _get_ok({"sessions": []})
+
+    with TestClient(app) as client:
+        r = client.get("/chatagent/v3/sessionList", headers={"X-User-Id": "alice"})
+
+    assert r.status_code == 200
+    assert "project" not in http_mock.get.call_args.kwargs["params"]
+
+
 def test_v3_session_rename_forwards_payload():
     app, http_mock = _make_app()
     upstream_body = {"returnCode": 96200, "returnData": {"session": "s1", "sessionName": "new"}}

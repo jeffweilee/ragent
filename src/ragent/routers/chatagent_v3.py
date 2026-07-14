@@ -363,6 +363,7 @@ def create_chatagent_v3_router(
             x_user_id: Annotated[str | None, Depends(get_user_id)] = None,
             startTime: str | None = None,
             endTime: str | None = None,
+            project: str | None = None,
         ) -> Response:
             user_id = x_user_id or "anonymous"
             params: dict[str, str] = {"user": user_id, "apName": chatagent_ap_name}
@@ -370,6 +371,12 @@ def create_chatagent_v3_router(
                 params["startTime"] = startTime
             if endTime:
                 params["endTime"] = endTime
+            # A project-scoped list must forward `project` to the store so it
+            # returns only that project's conversations; without it the handler
+            # silently dropped the param and every project showed the full,
+            # unscoped conversation list.
+            if project:
+                params["project"] = project
             # Strip the machine-context wrapper from each session title and enrich
             # each entry with its live {running, hasNewReply} status, batched in one
             # status_many call (no store → list degrades to title-only).
