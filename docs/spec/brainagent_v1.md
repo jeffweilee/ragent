@@ -100,6 +100,20 @@ buffer (emitting a reconstructed `USER_MESSAGE` on a from-start replay). All
 `CHATAGENT_STREAM_*` semantics, TTLs, and the legacy-fallback-on-Redis-outage
 behaviour carry over unchanged. No store wired → legacy connection-bound stream.
 
+### `POST /brainagent/v1/session/read`
+
+Client-owned mark-read (`?session={thread_id}` → `204`). read/unread is a
+**ragent-side** signal that lives in the reused `ChatStreamStore` Redis (the
+`hasNewReply` flag surfaced by `sessionList`), **not** a brain concept — so this
+route is handled **locally** (clears the unread flag, best-effort NATS broadcast
+of the cleared dot) and is **never** relayed to brain. It is therefore an
+explicit route on the run router, mounted before the generic `/upstream/*` proxy;
+without it a mark-read would fall through to the proxy and `404` at brain (which
+has no `/upstream/session/read`). Registered **unconditionally** (not store-gated)
+so the degraded no-Redis case is a harmless local no-op `204` rather than leaking
+to the proxy and `404`-ing at brain. Idempotent — only an actual flag deletion
+broadcasts. Mirrors `/chatagent/v3/session/read` verbatim.
+
 ### `POST /brainagent/v1/runs/{run_id}/cancel`
 
 Cooperative cancel. Proxies to brain `POST /runs/{run_id}/cancel` with
