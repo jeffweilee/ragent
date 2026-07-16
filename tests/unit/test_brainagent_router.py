@@ -174,10 +174,7 @@ def test_session_read_clears_unread_and_publishes_locally() -> None:
         )
     assert r.status_code == 204
     assert store.has_unread("alice", "thread_1") is False
-    assert any(
-        call.args[1] == {"session": "thread_1", "hasNewReply": False}
-        for call in pub.publish.call_args_list
-    )
+    pub.publish.assert_called_once_with("alice", {"session": "thread_1", "hasNewReply": False})
     http_mock.request.assert_not_called()  # never leaked to the brain proxy
 
 
