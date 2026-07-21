@@ -64,6 +64,7 @@ MIGRATION_CHAIN = [
         "upgrade": "016_documents_deleted.sql",
         "downgrade": "016_documents_deleted.sql",
     },
+    {"version": 17, "upgrade": "017_pat.sql", "downgrade": "017_pat.sql"},
 ]
 
 BASE_DIR = Path(__file__).resolve().parent

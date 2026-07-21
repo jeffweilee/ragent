@@ -47,6 +47,7 @@ from ragent.routers.feedback import create_feedback_router
 from ragent.routers.health import create_health_router
 from ragent.routers.ingest import create_router as create_ingest_router
 from ragent.routers.mcp import create_mcp_router
+from ragent.routers.pat import create_pat_router
 from ragent.routers.retrieve import create_retrieve_router
 from ragent.routers.retrieve_v2 import create_retrieve_v2_router
 from ragent.routers.skill import create_skill_router
@@ -560,6 +561,10 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
                 brain_url=container.brain_api_url,
                 brain_key=container.brain_key,
                 timeout=container.brain_timeout,
+                # T-PAT.12 — attach the caller's PAT for the upstream (drive tool via
+                # brain). Fail-open + None when PAT_PUBLIC_KEY is unset.
+                pat_service=container.pat_service,
+                pat_header_name=container.pat_upstream_header_name,
             )
         )
     app.include_router(
@@ -585,6 +590,10 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
             )
         )
     app.include_router(create_skill_router(skill_service=container.skill_service))
+    # T-PAT — authorization endpoint; mounted only when the PAT slice is wired
+    # (PAT_PUBLIC_KEY set).
+    if container.pat_service is not None:
+        app.include_router(create_pat_router(pat_service=container.pat_service))
     app.include_router(
         create_mcp_router(
             retrieval_pipeline=container.retrieval_pipeline,

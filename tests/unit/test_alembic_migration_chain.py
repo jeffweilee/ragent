@@ -61,11 +61,24 @@ def test_verify_and_get_chain_matches_disk(env):
         assert Path(item["down_path"]).exists()
 
 
-def test_chain_head_is_016_documents_deleted(env):
+def test_chain_head_is_017_pat(env):
     head = env.MIGRATION_CHAIN[-1]
-    assert head["version"] == 16
-    assert head["upgrade"] == "016_documents_deleted.sql"
-    assert head["downgrade"] == "016_documents_deleted.sql"
+    assert head["version"] == 17
+    assert head["upgrade"] == "017_pat.sql"
+    assert head["downgrade"] == "017_pat.sql"
+
+
+def test_017_upgrade_creates_pat(env):
+    sql = (env.UPGRADE_DIR / "017_pat.sql").read_text(encoding="utf-8")
+    assert "CREATE TABLE IF NOT EXISTS pat" in sql
+    assert "UNIQUE KEY uq_pat_user (user_id)" in sql
+    assert "pat_cipher" in sql
+    assert "status" in sql
+
+
+def test_017_downgrade_drops_pat(env):
+    sql = (env.DOWNGRADE_DIR / "017_pat.sql").read_text(encoding="utf-8")
+    assert "DROP TABLE IF EXISTS pat" in sql
 
 
 def test_015_upgrade_drops_attachment_tables_and_creates_session_documents(env):
@@ -108,6 +121,7 @@ def test_schema_snapshot_reflects_016():
     assert "CREATE TABLE IF NOT EXISTS chat_attachments" not in schema
     assert "CREATE TABLE IF NOT EXISTS chat_attachment_artifacts" not in schema
     assert "size_bytes" in schema
+    assert "CREATE TABLE IF NOT EXISTS pat" in schema  # 017 head folded into snapshot
 
 
 def test_verify_and_get_chain_raises_on_gap(env, monkeypatch):

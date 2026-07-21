@@ -89,6 +89,10 @@ class Container:
     brain_timeout: float = 30.0
     # T-BRAIN.DIP — user_id -> twp_ai.agent.Agent (BrainAgent(BrainCaller)).
     brain_agent_factory: BrainAgentFactory | None = None
+    # T-PAT — Personal Access Token slice. None when PAT_PUBLIC_KEY is unset
+    # (the /pat/v1 router is not mounted and the /brainagent/v1 proxy attaches no PAT).
+    pat_service: Any = None
+    pat_upstream_header_name: str = "X-Pat-Token"
     # T-CAT — ingest-backed file attachments (ingest pipeline, session_documents).
     session_document_repo: SessionDocumentRepository | None = None
     attachment_context_resolver: AttachmentContextResolver | None = None
@@ -574,6 +578,50 @@ def build_container() -> Container:
                 timeout=brain_timeout,
             )
 
+    # T-PAT — Personal Access Token slice, feature-gated on PAT_PUBLIC_KEY. When
+    # set, the PAT is verified against that static key, encrypted with the same
+    # KeyManager DEK as attachments, stored one-per-user, cached in redis, and
+    # rotated via the refresh service. The /pat/v1 router + the /brainagent/v1
+    # PAT attach only exist when this is wired.
+    pat_service = None
+    pat_upstream_header_name = os.environ.get("PAT_UPSTREAM_HEADER_NAME", "X-Pat-Token")
+    pat_public_key = os.environ.get("PAT_PUBLIC_KEY") or None
+    if pat_public_key is not None:
+        from ragent.auth.pat_jwt import PatTokenVerifier, import_pat_public_key
+        from ragent.clients.pat_cache import PatCache
+        from ragent.clients.pat_refresh_client import PatRefreshClient
+        from ragent.repositories.pat_repository import PatRepository
+        from ragent.security.key_manager import KeyManager
+        from ragent.security.pat_cipher import PATCipher
+        from ragent.services.pat_service import PatService
+
+        pat_alg = os.environ.get("PAT_JWT_ALG", "RS256")
+        pat_key_manager = KeyManager(
+            kek_b64=_require("RAGENT_KEK_BASE64"),
+            encrypted_dek_b64=_require("RAGENT_ENCRYPTED_DEK_BASE64"),
+        )
+        pat_service = PatService(
+            verifier=PatTokenVerifier(
+                key=import_pat_public_key(pat_public_key, pat_alg),
+                algorithm=pat_alg,
+                expected_iss=_require("PAT_ISS"),
+                expected_aud=_require("PAT_AUD"),
+                nt_claim=_require("PAT_NT_KEY_NAME"),
+            ),
+            cipher=PATCipher(pat_key_manager),
+            repo=PatRepository(engine=engine),
+            cache=PatCache.from_env(),
+            refresh_client=PatRefreshClient(
+                http,
+                refresh_url=_require("PAT_REFRESH_API"),
+                header_key=_require("PAT_API_HEADER_TOKEN_KEY"),
+                header_value=_require("PAT_API_HEADER_TOKEN_VALUE"),
+                timeout=_float_env("PAT_REFRESH_TIMEOUT_SECONDS", 30.0),
+            ),
+            max_retries=_int_env("PAT_REFRESH_MAX_RETRIES", 3),
+            backoff_base_seconds=_float_env("PAT_REFRESH_BACKOFF_SECONDS", 0.5),
+        )
+
     return Container(
         token_managers=(llm_tm, embedding_tm, rerank_tm),
         embedding_client=embedding_client,
@@ -618,6 +666,8 @@ def build_container() -> Container:
         brain_key=brain_key,
         brain_timeout=brain_timeout,
         brain_agent_factory=brain_agent_factory,
+        pat_service=pat_service,
+        pat_upstream_header_name=pat_upstream_header_name,
         session_document_repo=session_document_repo,
         attachment_context_resolver=attachment_context_resolver,
         retrieve_v2_service=retrieve_v2_service,

@@ -24,7 +24,7 @@ routes win over this catch-all.
 from __future__ import annotations
 
 import json
-from typing import Annotated
+from typing import Annotated, Any
 
 import httpx
 import structlog
@@ -55,6 +55,8 @@ def create_brain_upstream_proxy_router(
     brain_url: str,
     brain_key: str | None = None,
     timeout: float = 30.0,
+    pat_service: Any = None,
+    pat_header_name: str = "X-Pat-Token",
 ) -> APIRouter:
     router = APIRouter(prefix="/brainagent/v1")
     base = brain_url.rstrip("/")
@@ -64,6 +66,21 @@ def create_brain_upstream_proxy_router(
         # (case-insensitive) forwarded header — a forged value cannot cross
         # tenants or spoof the secret. ``None`` forwarded is handled safely.
         return build_brain_headers(user_id, brain_key, forwarded)
+
+    async def _attach_pat(headers: dict[str, str], user_id: str) -> None:
+        # T-PAT.12 — attach the caller's resolved PAT for the upstream (drive tool
+        # reached through brain). FAIL-OPEN: no PAT / invalid / redis miss → the
+        # header is simply absent and the proxy behaves exactly as before. The PAT
+        # slice is off entirely when pat_service is None (PAT_PUBLIC_KEY unset).
+        if pat_service is None:
+            return
+        try:
+            token = await pat_service.resolve_best_effort(user_id)
+        except Exception:  # noqa: BLE001 — attach is additive; never break the proxy
+            logger.warning("brainagent.proxy.pat_attach_failed", user_id=user_id)
+            return
+        if token:
+            headers[pat_header_name] = token
 
     @router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
     async def proxy(
@@ -96,6 +113,7 @@ def create_brain_upstream_proxy_router(
                 json_body = parsed
 
         headers = _upstream_headers(user_id, forwarded_headers)
+        await _attach_pat(headers, user_id)
         # Forward content negotiation from the client so binary/artifact downloads
         # negotiate correctly at brain. (Content-Type is forwarded only on the
         # raw-body path below; the json= path lets httpx set application/json.)

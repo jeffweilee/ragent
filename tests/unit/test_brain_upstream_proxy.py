@@ -183,3 +183,101 @@ def test_forwards_accept_header() -> None:
             headers={"X-User-Id": "alice", "Accept": "image/png"},
         )
     assert seen["accept"] == "image/png"
+
+
+# --- T-PAT.12: PAT attach on the upstream call (fail-open) -------------------
+
+
+class _StubPatService:
+    def __init__(self, *, token=None, raises=False):
+        self._token = token
+        self._raises = raises
+        self.calls: list[str] = []
+
+    async def resolve_best_effort(self, nt: str):
+        self.calls.append(nt)
+        if self._raises:
+            raise RuntimeError("boom")
+        return self._token
+
+
+def _make_app_with_pat(handler, pat_service, header_name="X-Pat-Token"):
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    app = FastAPI()
+    app.include_router(
+        create_brain_upstream_proxy_router(
+            http_client=client,
+            brain_url="http://brain:8100",
+            brain_key="sekret",
+            timeout=5.0,
+            pat_service=pat_service,
+            pat_header_name=header_name,
+        )
+    )
+    return app
+
+
+def test_resolved_pat_rides_the_upstream_header() -> None:
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["pat"] = request.headers.get("X-Pat-Token")
+        return httpx.Response(200, json={"ok": True})
+
+    svc = _StubPatService(token="PAT-123")
+    with TestClient(_make_app_with_pat(handler, svc)) as client:
+        r = client.get("/brainagent/v1/memory", headers={"X-User-Id": "alice"})
+    assert r.status_code == 200
+    assert seen["pat"] == "PAT-123"
+    assert svc.calls == ["alice"]
+
+
+def test_no_pat_leaves_request_unchanged() -> None:
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["pat"] = request.headers.get("X-Pat-Token")
+        return httpx.Response(200, json={"ok": True})
+
+    svc = _StubPatService(token=None)
+    with TestClient(_make_app_with_pat(handler, svc)) as client:
+        r = client.get("/brainagent/v1/memory", headers={"X-User-Id": "alice"})
+    assert r.status_code == 200
+    assert seen["pat"] is None
+
+
+def test_raising_resolve_never_breaks_the_proxy() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"ok": True})
+
+    svc = _StubPatService(raises=True)
+    with TestClient(_make_app_with_pat(handler, svc)) as client:
+        r = client.get("/brainagent/v1/memory", headers={"X-User-Id": "alice"})
+    assert r.status_code == 200  # fail-open: attach failure is swallowed
+
+
+def test_pat_disabled_when_service_absent() -> None:
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["pat"] = request.headers.get("X-Pat-Token")
+        return httpx.Response(200, json={"ok": True})
+
+    # pat_service=None → slice off entirely (PAT_PUBLIC_KEY unset)
+    with TestClient(_make_app_with_pat(handler, None)) as client:
+        r = client.get("/brainagent/v1/memory", headers={"X-User-Id": "alice"})
+    assert r.status_code == 200
+    assert seen["pat"] is None
+
+
+def test_custom_header_name_is_honoured() -> None:
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["pat"] = request.headers.get("X-Drive-Pat")
+        return httpx.Response(200, json={"ok": True})
+
+    svc = _StubPatService(token="PAT-9")
+    with TestClient(_make_app_with_pat(handler, svc, header_name="X-Drive-Pat")) as client:
+        client.get("/brainagent/v1/memory", headers={"X-User-Id": "alice"})
+    assert seen["pat"] == "PAT-9"

@@ -197,3 +197,31 @@
 | `RAGENT_METRICS_SOURCE_APP_ALLOWLIST` | (empty)          | Comma-separated allow-list of `source_app` values that pass through verbatim as a Prometheus label. Anything outside the list is collapsed to `RAGENT_METRICS_SOURCE_APP_FALLBACK` to bound label cardinality. |
 | `RAGENT_METRICS_SOURCE_APP_FALLBACK`  | `other`          | Bucket name for `source_app` values not in the allow-list. |
 | `HTTP_ERROR_LOG_MAX_BYTES`            | `8192`           | Max bytes of request/response body included in `http.upstream_error` log records. Bodies above this size are truncated with `request_truncated` / `response_truncated` set to `true`. Sensitive headers (`Authorization`, `apikey`, `Cookie`, `X-API-Key`, `Proxy-Authorization`, plus the configured values of `EMBEDDING_AUTH_HEADER_NAME` / `LLM_AUTH_HEADER_NAME` / `RERANK_AUTH_HEADER_NAME`) and the J1 `key` field of the auth POST are always redacted regardless of size. |
+
+#### 4.6.9 PAT — Personal Access Token authorization (T-PAT)
+
+> The whole slice is **feature-gated on `PAT_PUBLIC_KEY`**: unset → the `/pat/v1`
+> router is not mounted and the `/brainagent/v1` proxy attaches no PAT (existing
+> behaviour unchanged). When set, `PAT_ISS` / `PAT_AUD` / `PAT_NT_KEY_NAME` /
+> `PAT_REFRESH_API` / `PAT_API_HEADER_TOKEN_KEY` / `PAT_API_HEADER_TOKEN_VALUE`
+> and the encryption keys (`RAGENT_KEK_BASE64` / `RAGENT_ENCRYPTED_DEK_BASE64`,
+> §4.6.x) become required. Full flow: [`docs/spec/pat.md`](pat.md).
+
+| Variable | Default | Description |
+|---|---|---|
+| `PAT_PUBLIC_KEY`                      | (optional)       | PEM public key that signs the PAT JWT; presence enables the PAT slice. Verifies the PAT signature at authorize + resolve. **Never logged.** |
+| `PAT_JWT_ALG`                         | `RS256`          | JWS algorithm for PAT verification (asymmetric — matches how the SSO service signs the PAT). |
+| `PAT_ISS`                             | (required when enabled) | Expected `iss` claim of the PAT JWT. |
+| `PAT_AUD`                             | (required when enabled) | Expected `aud` claim of the PAT JWT. |
+| `PAT_NT_KEY_NAME`                     | (required when enabled) | Claim name inside the PAT holding the SSO nt; must equal the resolved caller identity (binding check). |
+| `PAT_REFRESH_API`                     | (required when enabled) | `PUT` URL of the PAT refresh service (`{"patToken": current}` → `{"patToken": new}`). |
+| `PAT_API_HEADER_TOKEN_KEY`            | (required when enabled) | Header **name** carrying the service credential on the refresh call. |
+| `PAT_API_HEADER_TOKEN_VALUE`          | (required when enabled) | Header **value** (service credential) sent under `PAT_API_HEADER_TOKEN_KEY`. **Never logged.** |
+| `PAT_UPSTREAM_HEADER_NAME`            | `X-Pat-Token`    | Header under which the resolved PAT is attached to the `/brainagent/v1` upstream request (fail-open — omitted when no PAT resolves). |
+| `PAT_REFRESH_MAX_RETRIES`             | `3`              | Max exp-backoff retries on a `429` from the refresh API before rejecting the request (PAT stays `active`). |
+| `PAT_REFRESH_BACKOFF_SECONDS`         | `0.5`            | Base delay for exp-backoff between `429` refresh retries (`base × 2^attempt`). |
+| `PAT_REFRESH_TIMEOUT_SECONDS`         | `30`             | Per-call timeout for the `PUT PAT_REFRESH_API` refresh request. |
+| `REDIS_PAT_TTL_SECONDS`               | `41400`          | PAT cache TTL (11.5 h — 0.5 h under the 12 h PAT lifetime). |
+| `REDIS_PAT_URL`                       | `redis://localhost:6379/3` | Standalone redis URL for the PAT cache (`REDIS_MODE=standalone`). |
+| `REDIS_PAT_SENTINEL_MASTER`           | `pat-master`     | Master name for the PAT cache instance (`REDIS_MODE=sentinel`). |
+| `REDIS_PAT_LOCK_TTL_SECONDS`          | `10`             | TTL of the per-nt refresh lock (bounds a crashed refresh holder). |

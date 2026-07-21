@@ -162,3 +162,18 @@ CREATE TABLE IF NOT EXISTS skills (
   UNIQUE KEY uq_user_name (user_id, name),
   KEY idx_user_created (user_id, created_at, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- One encrypted Personal Access Token (PAT) per user (T-PAT / 017_pat.sql).
+-- user_id UNIQUE (one nt <-> one PAT); pat_cipher is the AES-256-GCM envelope
+-- (never the plaintext); status active|invalid. No physical FK. Point lookups
+-- ride uq_pat_user, so no extra index is needed.
+CREATE TABLE IF NOT EXISTS pat (
+  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id     VARCHAR(64)  NOT NULL,
+  pat_cipher  TEXT         NOT NULL,
+  status      VARCHAR(16)  NOT NULL DEFAULT 'active',
+  created_at  DATETIME(6)  NOT NULL,
+  updated_at  DATETIME(6)  NOT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uq_pat_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
