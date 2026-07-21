@@ -209,7 +209,7 @@
 
 | Variable | Default | Description |
 |---|---|---|
-| `PAT_PUBLIC_KEY`                      | (optional)       | PEM public key that signs the PAT JWT; presence enables the PAT slice. Verifies the PAT signature at authorize + resolve. **Never logged.** |
+| `PAT_PUBLIC_KEY`                      | (optional)       | Public key that signs the PAT JWT; presence enables the PAT slice. Accepts a full PEM **or** the headerless one-line base64 DER (SubjectPublicKeyInfo) SSO services commonly hand out (a multi-line PEM cannot survive a `.env`); literal `\n` escapes are un-escaped. Verifies the PAT signature at authorize + resolve. **Never logged.** |
 | `PAT_JWT_ALG`                         | `RS256`          | JWS algorithm for PAT verification (asymmetric — matches how the SSO service signs the PAT). |
 | `PAT_ISS`                             | (required when enabled) | Expected `iss` claim of the PAT JWT. |
 | `PAT_AUD`                             | (required when enabled) | Expected `aud` claim of the PAT JWT. |

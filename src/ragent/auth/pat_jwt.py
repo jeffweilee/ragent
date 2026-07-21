@@ -2,7 +2,9 @@
 
 Unlike `VerifyingTokenManager` (JWKS-backed via OIDC discovery, `auth/jwt.py`),
 a PAT is verified against a **single static public key** read from
-`PAT_PUBLIC_KEY` at composition. The PAT is an SSO-signed JWT; a valid one has
+`PAT_PUBLIC_KEY` at composition (a PEM, or the headerless one-line base64 DER
+SSO services often hand out — see `import_pat_public_key`). The PAT is an
+SSO-signed JWT; a valid one has
 an unexpired `exp`, `iss == PAT_ISS`, `aud == PAT_AUD`, and a signature that
 verifies under the configured key/algorithm.
 
@@ -14,6 +16,7 @@ claim-missing split.
 
 from __future__ import annotations
 
+import base64
 from dataclasses import dataclass
 from typing import Any
 
@@ -25,18 +28,32 @@ from joserfc.jwt import JWTClaimsRegistry
 from ragent.errors.codes import HttpErrorCode
 
 
-def import_pat_public_key(pem: str, algorithm: str) -> Key:
-    """Load the static PAT public key (PEM) for the configured JWS algorithm.
+def import_pat_public_key(value: str, algorithm: str) -> Key:
+    """Load the static PAT public key for the configured JWS algorithm.
+
+    Accepts EITHER a full PEM (``-----BEGIN PUBLIC KEY-----`` …) OR the
+    headerless one-line base64 DER (SubjectPublicKeyInfo) that SSO services
+    commonly hand out — the latter cannot be a multi-line PEM inside a ``.env``
+    file, so it is normalised to DER bytes here. Literal ``\\n`` escapes (a
+    common env-file pitfall) are un-escaped first.
 
     Picks the joserfc key class by algorithm family (`RS*`/`PS*` → RSA, `ES*` →
     EC, `EdDSA` → OKP) so an operator can run any asymmetric signer, not only
     the default RS256."""
+    text = value.strip().replace("\\n", "\n")
+    key_material: str | bytes = text
+    if "-----BEGIN" not in text:
+        try:
+            key_material = base64.b64decode(text, validate=True)
+        except ValueError as exc:
+            raise ValueError("PAT_PUBLIC_KEY is neither a PEM nor a base64 DER public key") from exc
+
     if algorithm.startswith(("RS", "PS")):
-        return RSAKey.import_key(pem)
+        return RSAKey.import_key(key_material)
     if algorithm.startswith("ES"):
-        return ECKey.import_key(pem)
+        return ECKey.import_key(key_material)
     if algorithm == "EdDSA":
-        return OKPKey.import_key(pem)
+        return OKPKey.import_key(key_material)
     raise ValueError(f"unsupported PAT_JWT_ALG {algorithm!r}")
 
 
