@@ -102,3 +102,41 @@ async def test_refresh_lock_loser_uses_freshly_cached_token() -> None:
     # (valid), so resolve returns it directly. Drive the lock path explicitly:
     assert await service._refresh("alice", sign("alice", exp_delta=-10)) == fresh
     assert rc.calls == []  # loser never called the refresh service
+
+
+async def test_refresh_loser_polls_until_winner_publishes_token() -> None:
+    # Lock is held by another holder; the cache is initially stale, then the
+    # "winner" publishes a fresh token during our first poll-sleep. The loser
+    # must return it WITHOUT stampeding the refresh service.
+    rc = FakeRefreshClient([])  # a call would IndexError
+    fresh = sign("alice")
+
+    published: dict = {}
+
+    async def sleeper(_seconds: float) -> None:
+        # Simulate the winner finishing mid-poll: publish the rotated token once.
+        if not published:
+            published["done"] = True
+            cache.put("alice", cipher.encrypt(fresh))
+
+    service, repo, cache, cipher = build_service(refresh_client=rc)
+    # rebuild service with our side-effecting sleeper + the same collaborators
+    from ragent.services.pat_service import PatService
+
+    service = PatService(
+        verifier=service._verifier,
+        cipher=cipher,
+        repo=repo,
+        cache=cache,
+        refresh_client=rc,
+        sleeper=sleeper,
+    )
+    cache.acquire_refresh_lock("alice")  # another holder owns the lock
+    repo.rows["alice"] = {
+        "user_id": "alice",
+        "pat_cipher": cipher.encrypt(sign("alice", exp_delta=-10)),
+        "status": "active",
+    }
+
+    assert await service._refresh("alice", sign("alice", exp_delta=-10)) == fresh
+    assert rc.calls == []

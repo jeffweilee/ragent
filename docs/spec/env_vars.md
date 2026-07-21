@@ -224,4 +224,4 @@
 | `REDIS_PAT_TTL_SECONDS`               | `41400`          | PAT cache TTL (11.5 h — 0.5 h under the 12 h PAT lifetime). |
 | `REDIS_PAT_URL`                       | `redis://localhost:6379/3` | Standalone redis URL for the PAT cache (`REDIS_MODE=standalone`). |
 | `REDIS_PAT_SENTINEL_MASTER`           | `pat-master`     | Master name for the PAT cache instance (`REDIS_MODE=sentinel`). |
-| `REDIS_PAT_LOCK_TTL_SECONDS`          | `10`             | TTL of the per-nt refresh lock (bounds a crashed refresh holder). |
+| `REDIS_PAT_LOCK_TTL_SECONDS`          | `45`             | TTL of the per-nt refresh lock (bounds a crashed refresh holder). Set above a normal refresh (`PAT_REFRESH_TIMEOUT_SECONDS`) so the holder keeps its lock through the call; release is owner-checked so an expiry-then-reacquire never cross-deletes. |

@@ -281,3 +281,21 @@ def test_custom_header_name_is_honoured() -> None:
     with TestClient(_make_app_with_pat(handler, svc, header_name="X-Drive-Pat")) as client:
         client.get("/brainagent/v1/memory", headers={"X-User-Id": "alice"})
     assert seen["pat"] == "PAT-9"
+
+
+def test_pat_header_name_colliding_with_service_header_is_not_attached() -> None:
+    # An operator misconfigures PAT_UPSTREAM_HEADER_NAME as a service-owned header;
+    # the PAT must NOT overwrite the real X-User-Id / X-Brain-Key.
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["x-user-id"] = request.headers.get("x-user-id")
+        seen["x-brain-key"] = request.headers.get("x-brain-key")
+        return httpx.Response(200, json={"ok": True})
+
+    svc = _StubPatService(token="PAT-EVIL")
+    with TestClient(_make_app_with_pat(handler, svc, header_name="X-User-Id")) as client:
+        r = client.get("/brainagent/v1/memory", headers={"X-User-Id": "alice"})
+    assert r.status_code == 200
+    assert seen["x-user-id"] == "alice"  # identity preserved, not overwritten by the PAT
+    assert svc.calls == []  # attach short-circuited before resolving

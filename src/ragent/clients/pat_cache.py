@@ -15,6 +15,7 @@ a fail-soft `False` on Redis error simply means the caller proceeds unserialised
 from __future__ import annotations
 
 import os
+import uuid
 from typing import Any
 
 import redis as redis_lib
@@ -51,16 +52,38 @@ class PatCache:
         except redis_lib.RedisError as exc:
             self._unavailable("evict", exc)
 
-    def acquire_refresh_lock(self, nt: str) -> bool:
+    def acquire_refresh_lock(self, nt: str) -> str | None:
+        """Try to take the per-nt refresh lock. Returns a unique owner token on
+        success (pass it back to :meth:`release_refresh_lock`), or ``None`` if
+        another holder has it / Redis is unavailable.
+
+        The token identifies THIS holder: if the lock's TTL expires mid-refresh
+        and another request re-acquires it, our release must not delete the new
+        owner's lock (Codex review r3619473859)."""
+        token = uuid.uuid4().hex
         try:
-            return bool(self._redis.set(f"{_LOCK_PREFIX}{nt}", "1", nx=True, ex=self._lock_ttl))
+            acquired = self._redis.set(f"{_LOCK_PREFIX}{nt}", token, nx=True, ex=self._lock_ttl)
         except redis_lib.RedisError as exc:
             self._unavailable("lock", exc)
-            return False
+            return None
+        return token if acquired else None
 
-    def release_refresh_lock(self, nt: str) -> None:
+    def release_refresh_lock(self, nt: str, token: str) -> None:
+        """Release the lock only if we still own it (atomic compare-and-delete
+        via WATCH/MULTI) — never delete a lock a later holder re-acquired."""
+        key = f"{_LOCK_PREFIX}{nt}"
         try:
-            self._redis.delete(f"{_LOCK_PREFIX}{nt}")
+            with self._redis.pipeline() as pipe:
+                pipe.watch(key)
+                if pipe.get(key) == token:
+                    pipe.multi()
+                    pipe.delete(key)
+                    pipe.execute()
+                else:
+                    pipe.unwatch()
+        except redis_lib.WatchError:
+            # Someone changed the key between WATCH and MULTI — not ours to delete.
+            pass
         except redis_lib.RedisError as exc:
             self._unavailable("unlock", exc)
 
@@ -71,7 +94,7 @@ class PatCache:
     @classmethod
     def from_env(cls) -> PatCache:
         ttl = int(os.environ.get("REDIS_PAT_TTL_SECONDS", "41400"))
-        lock_ttl = int(os.environ.get("REDIS_PAT_LOCK_TTL_SECONDS", "10"))
+        lock_ttl = int(os.environ.get("REDIS_PAT_LOCK_TTL_SECONDS", "45"))
         mode = os.environ.get("REDIS_MODE", "standalone")
         if mode == "sentinel":
             from redis.sentinel import Sentinel

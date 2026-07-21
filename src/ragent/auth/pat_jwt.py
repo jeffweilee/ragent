@@ -79,7 +79,14 @@ class PatTokenVerifier:
 
         claims = decoded.claims
         try:
-            JWTClaimsRegistry(aud={"essential": True, "value": self.expected_aud}).validate(claims)
+            # `exp` is essential: joserfc only runs the expiry validator when the
+            # claim is present, so without this a PAT that omits `exp` would
+            # verify forever and resolve() would never refresh it (contradicting
+            # the 12 h lifetime — Codex review r3619473868).
+            JWTClaimsRegistry(
+                exp={"essential": True},
+                aud={"essential": True, "value": self.expected_aud},
+            ).validate(claims)
         except JoseError as exc:
             raise PatTokenInvalid() from exc
 

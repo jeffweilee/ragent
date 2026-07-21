@@ -80,3 +80,10 @@ def test_missing_nt_claim_raises() -> None:
     claims = verifier.verify(_sign(nt=""))
     with pytest.raises(PatTokenInvalid):
         verifier.nt_of(claims)
+
+
+def test_missing_exp_is_rejected() -> None:
+    # A PAT with no exp must NOT verify — otherwise it would never be refreshed.
+    no_exp = _jwt.encode({"alg": "RS256"}, {"iss": _ISS, "aud": _AUD, "nt": "alice"}, _KEY)
+    with pytest.raises(PatTokenInvalid):
+        _verifier().verify(no_exp)

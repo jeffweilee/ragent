@@ -43,10 +43,25 @@ def test_evict_removes_the_entry() -> None:
 
 def test_refresh_lock_is_single_flight() -> None:
     cache = _cache()
-    assert cache.acquire_refresh_lock("alice") is True
-    assert cache.acquire_refresh_lock("alice") is False  # already held
-    cache.release_refresh_lock("alice")
-    assert cache.acquire_refresh_lock("alice") is True  # released → reacquirable
+    token = cache.acquire_refresh_lock("alice")
+    assert token  # a unique owner token
+    assert cache.acquire_refresh_lock("alice") is None  # already held
+    cache.release_refresh_lock("alice", token)
+    assert cache.acquire_refresh_lock("alice")  # released → reacquirable
+
+
+def test_release_only_deletes_own_lock() -> None:
+    client = fakeredis.FakeStrictRedis(decode_responses=True)
+    cache = PatCache(client, ttl_seconds=41400, lock_ttl_seconds=45)
+
+    stale_token = cache.acquire_refresh_lock("alice")
+    assert stale_token
+    # Simulate the lock TTL expiring and a *new* holder re-acquiring it.
+    client.set("ragent:pat:lock:alice", "new-owner-token")
+
+    cache.release_refresh_lock("alice", stale_token)  # must NOT delete the new owner's lock
+
+    assert client.get("ragent:pat:lock:alice") == "new-owner-token"
 
 
 class _RaisingRedis:
@@ -57,6 +72,9 @@ class _RaisingRedis:
         raise redis_lib.RedisError("down")
 
     def delete(self, *a, **k):
+        raise redis_lib.RedisError("down")
+
+    def pipeline(self, *a, **k):
         raise redis_lib.RedisError("down")
 
 
@@ -74,5 +92,9 @@ def test_put_evict_are_fail_soft(failing_cache: PatCache) -> None:
     failing_cache.evict("alice")  # must not raise
 
 
-def test_acquire_lock_fail_soft_returns_false(failing_cache: PatCache) -> None:
-    assert failing_cache.acquire_refresh_lock("alice") is False
+def test_acquire_lock_fail_soft_returns_none(failing_cache: PatCache) -> None:
+    assert failing_cache.acquire_refresh_lock("alice") is None
+
+
+def test_release_lock_is_fail_soft(failing_cache: PatCache) -> None:
+    failing_cache.release_refresh_lock("alice", "tok")  # must not raise

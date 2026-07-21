@@ -65,6 +65,8 @@ class PatService:
         max_retries: int = 3,
         backoff_base_seconds: float = 0.5,
         sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        lock_poll_attempts: int = 10,
+        lock_poll_interval_seconds: float = 0.5,
     ) -> None:
         self._verifier = verifier
         self._cipher = cipher
@@ -74,6 +76,8 @@ class PatService:
         self._max_retries = max_retries
         self._backoff_base = backoff_base_seconds
         self._sleeper = sleeper
+        self._lock_poll_attempts = lock_poll_attempts
+        self._lock_poll_interval = lock_poll_interval_seconds
 
     # --- Part 1: authorization write -------------------------------------
     async def authorize(self, *, nt: str, pat_token: str) -> None:
@@ -125,20 +129,29 @@ class PatService:
 
     # --- Refresh state machine -------------------------------------------
     async def _refresh(self, nt: str, current: str) -> str:
-        acquired = self._cache.acquire_refresh_lock(nt)
-        if not acquired:
-            # Another refresh is in flight; it may already have written the new
-            # token. Re-read the cache before falling back to our own refresh.
-            cached = self._cache.get(nt)
-            if cached is not None:
-                token = self._safe_decrypt(cached)
-                if token and self._is_valid(token):
-                    return token
+        # Single-flight: only the lock holder calls the refresh service. A loser
+        # POLLS (not immediately self-refreshes) — sleeping between tries and
+        # returning the winner's rotated token as soon as it lands, so concurrent
+        # requests don't stampede the refresh API (gemini review r3619465015).
+        lock_token = None
+        for _ in range(self._lock_poll_attempts):
+            lock_token = self._cache.acquire_refresh_lock(nt)
+            if lock_token:
+                break
+            await self._sleeper(self._lock_poll_interval)
+            fresh = self._cached_valid(nt)
+            if fresh:
+                return fresh
         try:
+            # Double-checked locking: the previous holder may have rotated the
+            # token while we waited for the lock.
+            fresh = self._cached_valid(nt)
+            if fresh:
+                return fresh
             return await self._do_refresh(nt, current)
         finally:
-            if acquired:
-                self._cache.release_refresh_lock(nt)
+            if lock_token:
+                self._cache.release_refresh_lock(nt, lock_token)
 
     async def _do_refresh(self, nt: str, current: str) -> str:
         attempt = 0
@@ -174,6 +187,14 @@ class PatService:
             return True
         except PatTokenInvalid:
             return False
+
+    def _cached_valid(self, nt: str) -> str | None:
+        """The cached PAT if present, decryptable, and locally valid; else None."""
+        cached = self._cache.get(nt)
+        if cached is None:
+            return None
+        token = self._safe_decrypt(cached)
+        return token if token and self._is_valid(token) else None
 
     def _safe_decrypt(self, cipher_text: str) -> str | None:
         try:

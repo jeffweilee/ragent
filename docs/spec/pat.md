@@ -65,10 +65,15 @@ attach so a missing/invalid PAT never breaks the existing proxy surface.
 `PUT PAT_REFRESH_API`, header `{PAT_API_HEADER_TOKEN_KEY: PAT_API_HEADER_TOKEN_VALUE}`,
 body `{"patToken": current}` → response `{"patToken": new}`.
 
-- A **per-nt redis lock** (`set nx ex REDIS_PAT_LOCK_TTL_SECONDS`) serialises
-  refresh; a loser re-reads the cache (the winner may have written the new
-  token) before falling back. This prevents thundering-herd + rotation clobber;
-  the crash-between-rotate-and-persist race is covered by the upstream grace, so
+- A **per-nt redis lock** (`SET NX EX REDIS_PAT_LOCK_TTL_SECONDS`) serialises
+  refresh. The lock value is a **unique owner token**; release is an atomic
+  compare-and-delete, so if the lock's TTL expires mid-refresh and another
+  request re-acquires it, the first holder never deletes the new owner's lock.
+  A loser **polls** — sleeping between tries and returning the winner's rotated
+  token as soon as it lands — instead of immediately stampeding the refresh
+  service; only after the poll budget is exhausted does it self-refresh
+  (double-checking the cache once more after finally acquiring the lock). The
+  crash-between-rotate-and-persist race is covered by the upstream grace, so
   ragent stores only one token.
 - On success: encrypt `new` → rewrite DB (`active`) + redis → return `new`.
 
