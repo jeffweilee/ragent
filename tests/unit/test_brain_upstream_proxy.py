@@ -299,3 +299,42 @@ def test_pat_header_name_colliding_with_service_header_is_not_attached() -> None
     assert r.status_code == 200
     assert seen["x-user-id"] == "alice"  # identity preserved, not overwritten by the PAT
     assert svc.calls == []  # attach short-circuited before resolving
+
+
+def test_forwarded_client_pat_header_is_replaced_by_resolved_pat() -> None:
+    # Misconfig: an operator allowlisted the PAT header, so a client can smuggle
+    # one in via forwarded_headers (different case). The server-resolved PAT must
+    # be the SOLE X-Pat-Token brain sees — no duplicate line, no forged value.
+    from ragent.auth.deps import get_forwarded_headers
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["pat_values"] = request.headers.get_list("x-pat-token")
+        return httpx.Response(200, json={"ok": True})
+
+    svc = _StubPatService(token="SERVER-PAT")
+    app = _make_app_with_pat(handler, svc)
+    app.dependency_overrides[get_forwarded_headers] = lambda: {"x-pat-token": "FORGED"}
+    with TestClient(app) as client:
+        r = client.get("/brainagent/v1/memory", headers={"X-User-Id": "alice"})
+    assert r.status_code == 200
+    assert seen["pat_values"] == ["SERVER-PAT"]  # exactly one, the server's
+
+
+def test_forwarded_client_pat_header_is_stripped_when_no_server_pat() -> None:
+    from ragent.auth.deps import get_forwarded_headers
+
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["pat_values"] = request.headers.get_list("x-pat-token")
+        return httpx.Response(200, json={"ok": True})
+
+    svc = _StubPatService(token=None)  # user not authorized → no server PAT
+    app = _make_app_with_pat(handler, svc)
+    app.dependency_overrides[get_forwarded_headers] = lambda: {"X-Pat-Token": "FORGED"}
+    with TestClient(app) as client:
+        r = client.get("/brainagent/v1/memory", headers={"X-User-Id": "alice"})
+    assert r.status_code == 200
+    assert seen["pat_values"] == []  # forged header stripped; client can't inject a PAT

@@ -99,3 +99,11 @@ brain upstream request. **Fail-open**: no PAT / invalid / redis miss → the
 header is omitted and the request is byte-for-byte what it is today. brain needs
 no change; the drive/upstream side trusts the PAT and checks
 `PAT[PAT_NT_KEY_NAME] == sso user`.
+
+**A client cannot supply its own PAT.** Inbound headers only reach brain if
+they are in the `BRAIN_FORWARD_HEADERS` allowlist, so by default a client-sent
+`X-Pat-Token` is dropped at the edge. Even if an operator mistakenly allowlists
+that name, the attach step strips any case-variant of `PAT_UPSTREAM_HEADER_NAME`
+before setting the server-resolved value, so exactly one PAT header (the
+server's) ever reaches brain. And a header name that collides with a
+service-owned header (`X-User-Id`/`X-Brain-Key`) is refused outright.

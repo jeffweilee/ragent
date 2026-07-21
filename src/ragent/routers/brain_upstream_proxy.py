@@ -91,6 +91,12 @@ def create_brain_upstream_proxy_router(
         except Exception:  # noqa: BLE001 — attach is additive; never break the proxy
             logger.warning("brainagent.proxy.pat_attach_failed", user_id=user_id)
             return
+        # Drop any case-variant of the PAT header a client smuggled in via a
+        # forwarded-header allowlist BEFORE setting ours — otherwise httpx would
+        # emit two `X-Pat-Token` lines (different dict keys) and brain could read
+        # the forged one. The server-resolved PAT must be the sole value.
+        for existing in [h for h in headers if h.lower() == pat_header_name.lower()]:
+            del headers[existing]
         if token:
             headers[pat_header_name] = token
 
