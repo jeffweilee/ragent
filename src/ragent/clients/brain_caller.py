@@ -16,6 +16,7 @@ data by), so each instance is scoped to one run — mirroring `ADKCaller`.
 from __future__ import annotations
 
 from collections.abc import Generator, Mapping
+from typing import Any
 
 import httpx
 import structlog
@@ -43,13 +44,46 @@ def build_brain_headers(
     e.g. both ``x-user-id`` (forged) and ``X-User-Id`` (real), and httpx emits BOTH
     lines so a FastAPI brain reads the first, defeating the override. ``None``
     forwarded is treated as empty (no crash)."""
-    headers = {
-        k: v for k, v in (forwarded or {}).items() if k.lower() not in SERVICE_HEADER_NAMES
-    }
+    headers = {k: v for k, v in (forwarded or {}).items() if k.lower() not in SERVICE_HEADER_NAMES}
     headers["X-User-Id"] = user_id
     if brain_key:
         headers["X-Brain-Key"] = brain_key
     return headers
+
+
+async def apply_resolved_pat(
+    headers: dict[str, str],
+    *,
+    user_id: str,
+    pat_service: Any,
+    pat_header_name: str,
+) -> None:
+    """Attach the server-resolved PAT to outbound brain ``headers`` in place (T-PAT.15).
+
+    Shared by every ragent → brain call site (the run agent, the cancel route,
+    and the reverse proxy) so all of ``/brainagent/v1`` carries the PAT uniformly.
+
+    - **Fail-open**: no PAT / invalid / redis miss / resolve error → ``headers``
+      is left untouched and the call proceeds exactly as before.
+    - **Resolved wins over forwarded**: any case-variant of ``pat_header_name`` a
+      client smuggled in (via the forwarded-header allowlist) is stripped BEFORE
+      the resolved value is set, so brain only ever sees the server's PAT.
+    - **Refuses a service-owned name**: a ``pat_header_name`` colliding with
+      X-User-Id / X-Brain-Key is never attached (it would overwrite identity/secret).
+    """
+    if pat_service is None or pat_header_name.lower() in SERVICE_HEADER_NAMES:
+        return
+    try:
+        token = await pat_service.resolve_best_effort(user_id)
+    except Exception:  # noqa: BLE001 — attach is additive; never break the brain call
+        logger.warning("brain.pat_attach_failed", user_id=user_id)
+        return
+    for existing in [h for h in headers if h.lower() == pat_header_name.lower()]:
+        del headers[existing]
+    if token:
+        headers[pat_header_name] = token
+
+
 # Client-visible message for any upstream failure. Never interpolate upstream or
 # httpx exception text here — the raw detail goes to the server log only.
 _UPSTREAM_GENERIC_MESSAGE = "brain upstream request failed"

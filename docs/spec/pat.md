@@ -91,13 +91,23 @@ body `{"patToken": current}` → response `{"patToken": new}`.
 - **Successful refresh** → new PAT overwrites, `status='active'`, redis updated.
 - **Refresh 401** → `status='invalid'`, redis cleared → user re-authorizes.
 
-## 7. `/brainagent/v1` attach (this cycle's only consumer)
+## 7. `/brainagent/v1` attach (all brain-bound calls)
 
-The proxy calls `resolve_best_effort(user_id)` and, when a token comes back,
-attaches it under `PAT_UPSTREAM_HEADER_NAME` (default `X-Pat-Token`) to the
-brain upstream request. **Fail-open**: no PAT / invalid / redis miss → the
-header is omitted and the request is byte-for-byte what it is today. brain needs
-no change; the drive/upstream side trusts the PAT and checks
+**Every** ragent → brain call under `/brainagent/v1` attaches the resolved PAT
+under `PAT_UPSTREAM_HEADER_NAME` (default `X-Pat-Token`), via the shared
+`clients/brain_caller.py::apply_resolved_pat` helper:
+
+- the twp-ai **run** path (`POST /brainagent/v1` → brain `/run`) — merged into
+  `BrainCaller`'s extra headers, so a drive tool invoked *during* the run
+  carries it;
+- the **cancel** path (`POST /brainagent/v1/runs/{id}/cancel`);
+- the **reverse proxy** (`/brainagent/v1/{path}` → brain `/upstream/{path}`).
+
+(`/reconnect` and `/session/read` make no upstream call — nothing to attach.)
+
+**Fail-open**: no PAT / invalid / redis miss / resolve error → the header is
+omitted and the request is byte-for-byte what it is today. brain needs no
+change; the drive/upstream side trusts the PAT and checks
 `PAT[PAT_NT_KEY_NAME] == sso user`.
 
 **A client cannot supply its own PAT.** Inbound headers only reach brain if

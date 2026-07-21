@@ -206,3 +206,77 @@ def test_session_read_is_noop_204_without_store() -> None:
         )
     assert r.status_code == 204
     http_mock.request.assert_not_called()  # never leaked to the brain proxy
+
+
+# --- T-PAT.15: PAT attach on the run + cancel paths -------------------------
+
+from ragent.auth.deps import get_forwarded_headers  # noqa: E402
+
+
+class _StubPat:
+    def __init__(self, *, token=None):
+        self._token = token
+
+    async def resolve_best_effort(self, nt: str):
+        return self._token
+
+
+def _pat_app(*, pat_service, http_client=None, capture=None, header_name="pat"):
+    def factory(user_id, extra_headers=None):
+        if capture is not None:
+            capture["extra"] = extra_headers
+        return _EchoAgent()
+
+    app = FastAPI()
+    app.include_router(
+        create_brainagent_v1_router(
+            http_client=http_client or MagicMock(spec=httpx.Client),
+            brain_url="http://brain:8100",
+            brain_key="sekret",
+            agent_factory=factory,
+            pat_service=pat_service,
+            pat_header_name=header_name,
+        )
+    )
+    return app
+
+
+def test_run_path_attaches_resolved_pat() -> None:
+    capture: dict = {}
+    app = _pat_app(pat_service=_StubPat(token="SERVER-PAT"), capture=capture)
+    with TestClient(app) as client:
+        r = client.post("/brainagent/v1", json=_run_input(), headers={"X-User-Id": "alice"})
+    assert r.status_code == 200
+    assert capture["extra"]["pat"] == "SERVER-PAT"  # PAT rode into BrainCaller's extra_headers
+
+
+def test_run_path_fail_open_without_pat() -> None:
+    capture: dict = {}
+    app = _pat_app(pat_service=None, capture=capture)  # PAT slice off
+    with TestClient(app) as client:
+        client.post("/brainagent/v1", json=_run_input(), headers={"X-User-Id": "alice"})
+    assert "pat" not in (capture["extra"] or {})
+
+
+def test_run_path_resolved_pat_wins_over_forwarded() -> None:
+    capture: dict = {}
+    app = _pat_app(pat_service=_StubPat(token="SERVER-PAT"), capture=capture)
+    app.dependency_overrides[get_forwarded_headers] = lambda: {"pat": "FORGED"}
+    with TestClient(app) as client:
+        client.post("/brainagent/v1", json=_run_input(), headers={"X-User-Id": "alice"})
+    assert capture["extra"]["pat"] == "SERVER-PAT"  # resolved wins over the forwarded value
+
+
+def test_cancel_path_attaches_resolved_pat() -> None:
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["pat"] = request.headers.get("pat")
+        return httpx.Response(200, json={"cancelled": True})
+
+    http = httpx.Client(transport=httpx.MockTransport(handler))
+    app = _pat_app(pat_service=_StubPat(token="SERVER-PAT"), http_client=http)
+    with TestClient(app) as client:
+        r = client.post("/brainagent/v1/runs/run_1/cancel", headers={"X-User-Id": "alice"})
+    assert r.status_code == 200
+    assert seen["pat"] == "SERVER-PAT"

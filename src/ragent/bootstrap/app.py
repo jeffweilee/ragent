@@ -553,6 +553,9 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
                 chat_stream_store=container.chat_stream_store,
                 nats_publisher=container.nats_publisher,
                 stream_idle_timeout=_float_env("CHATAGENT_STREAM_IDLE_TIMEOUT_SECONDS", 30.0),
+                # T-PAT.15 — attach the resolved PAT on the run + cancel paths too.
+                pat_service=container.pat_service,
+                pat_header_name=container.pat_upstream_header_name,
             )
         )
         app.include_router(

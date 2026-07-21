@@ -32,7 +32,11 @@ from fastapi import APIRouter, Depends, Request, Response
 from fastapi.concurrency import run_in_threadpool
 
 from ragent.auth.deps import get_forwarded_headers, get_user_id
-from ragent.clients.brain_caller import SERVICE_HEADER_NAMES, build_brain_headers
+from ragent.clients.brain_caller import (
+    SERVICE_HEADER_NAMES,
+    apply_resolved_pat,
+    build_brain_headers,
+)
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
 
@@ -79,27 +83,6 @@ def create_brain_upstream_proxy_router(
         # tenants or spoof the secret. ``None`` forwarded is handled safely.
         return build_brain_headers(user_id, brain_key, forwarded)
 
-    async def _attach_pat(headers: dict[str, str], user_id: str) -> None:
-        # T-PAT.12 — attach the caller's resolved PAT for the upstream (drive tool
-        # reached through brain). FAIL-OPEN: no PAT / invalid / redis miss → the
-        # header is simply absent and the proxy behaves exactly as before. The PAT
-        # slice is off entirely when pat_service is None (PAT_PUBLIC_KEY unset).
-        if pat_service is None or not _pat_header_safe:
-            return
-        try:
-            token = await pat_service.resolve_best_effort(user_id)
-        except Exception:  # noqa: BLE001 — attach is additive; never break the proxy
-            logger.warning("brainagent.proxy.pat_attach_failed", user_id=user_id)
-            return
-        # Drop any case-variant of the PAT header a client smuggled in via a
-        # forwarded-header allowlist BEFORE setting ours — otherwise httpx would
-        # emit two `X-Pat-Token` lines (different dict keys) and brain could read
-        # the forged one. The server-resolved PAT must be the sole value.
-        for existing in [h for h in headers if h.lower() == pat_header_name.lower()]:
-            del headers[existing]
-        if token:
-            headers[pat_header_name] = token
-
     @router.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
     async def proxy(
         path: str,
@@ -131,7 +114,9 @@ def create_brain_upstream_proxy_router(
                 json_body = parsed
 
         headers = _upstream_headers(user_id, forwarded_headers)
-        await _attach_pat(headers, user_id)
+        await apply_resolved_pat(
+            headers, user_id=user_id, pat_service=pat_service, pat_header_name=pat_header_name
+        )
         # Forward content negotiation from the client so binary/artifact downloads
         # negotiate correctly at brain. (Content-Type is forwarded only on the
         # raw-body path below; the json= path lets httpx set application/json.)
