@@ -13,6 +13,7 @@ from twp_ai.events import RunFinishedEvent, RunStartedEvent, to_sse
 from twp_ai.schemas import RunAgentInput
 
 from ragent.clients.chat_stream_store import ChatStreamStore
+from ragent.clients.nats_publisher import NatsSessionPublisher
 from ragent.clients.rate_limiter import RateLimiter, RateLimitResult
 from ragent.errors.codes import HttpErrorCode
 from ragent.routers.brainagent import create_brainagent_v1_router
@@ -35,6 +36,7 @@ def _make_app(
     *,
     rate_limiter: RateLimiter | None = None,
     chat_stream_store: ChatStreamStore | None = None,
+    nats_publisher: NatsSessionPublisher | None = None,
     http_client: httpx.Client | None = None,
 ):
     http_mock = http_client or MagicMock(spec=httpx.Client)
@@ -47,6 +49,7 @@ def _make_app(
             agent_factory=lambda user_id, extra_headers=None: _EchoAgent(),
             rate_limiter=rate_limiter,
             chat_stream_store=chat_stream_store,
+            nats_publisher=nats_publisher,
             stream_idle_timeout=3.0,
         )
     )
@@ -152,3 +155,54 @@ def test_cancel_relays_404() -> None:
     with TestClient(app) as client:
         r = client.post("/brainagent/v1/runs/x/cancel", headers={"X-User-Id": "alice"})
     assert r.status_code == 404
+
+
+def test_session_read_clears_unread_and_publishes_locally() -> None:
+    # Mark-read is ragent-owned (read/unread lives in ragent's Redis, not brain).
+    # It must be handled locally with a 204 — never proxied upstream, which would
+    # 404 at brain (which has no /upstream/session/read route).
+    store = _store()
+    store.mark_unread("alice", "thread_1")
+    pub = MagicMock(spec=NatsSessionPublisher)
+    http_mock = MagicMock(spec=httpx.Client)
+    app, _ = _make_app(chat_stream_store=store, nats_publisher=pub, http_client=http_mock)
+    with TestClient(app) as client:
+        r = client.post(
+            "/brainagent/v1/session/read",
+            params={"session": "thread_1"},
+            headers={"X-User-Id": "alice"},
+        )
+    assert r.status_code == 204
+    assert store.has_unread("alice", "thread_1") is False
+    pub.publish.assert_called_once_with("alice", {"session": "thread_1", "hasNewReply": False})
+    http_mock.request.assert_not_called()  # never leaked to the brain proxy
+
+
+def test_session_read_skips_broadcast_when_already_read() -> None:
+    # Repeat mark-reads are silent: only an actual flag deletion broadcasts.
+    store = _store()  # no unread flag set
+    pub = MagicMock(spec=NatsSessionPublisher)
+    app, _ = _make_app(chat_stream_store=store, nats_publisher=pub)
+    with TestClient(app) as client:
+        r = client.post(
+            "/brainagent/v1/session/read",
+            params={"session": "thread_1"},
+            headers={"X-User-Id": "alice"},
+        )
+    assert r.status_code == 204
+    pub.publish.assert_not_called()
+
+
+def test_session_read_is_noop_204_without_store() -> None:
+    # No stream store wired (unread feature off) → harmless local no-op 204. The
+    # route stays registered so it never leaks to the proxy and 404s at brain.
+    http_mock = MagicMock(spec=httpx.Client)
+    app, _ = _make_app(chat_stream_store=None, http_client=http_mock)
+    with TestClient(app) as client:
+        r = client.post(
+            "/brainagent/v1/session/read",
+            params={"session": "thread_1"},
+            headers={"X-User-Id": "alice"},
+        )
+    assert r.status_code == 204
+    http_mock.request.assert_not_called()  # never leaked to the brain proxy

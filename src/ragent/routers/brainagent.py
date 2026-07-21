@@ -21,7 +21,7 @@ from typing import Annotated
 
 import httpx
 import structlog
-from fastapi import APIRouter, Depends, Header, Request
+from fastapi import APIRouter, Depends, Header, Request, Response
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 from twp_ai.agent import Agent
@@ -199,6 +199,27 @@ def create_brainagent_v1_router(
             ),
             media_type="text/event-stream",
         )
+
+    @router.post("/session/read", status_code=204)
+    async def brainagent_v1_session_read(
+        session: str,
+        x_user_id: Annotated[str | None, Depends(get_user_id)] = None,
+    ) -> Response:
+        """Client-owned mark-read — clears ragent's unread flag and broadcasts the
+        cleared dot over NATS. Read/unread lives in ragent's Redis (the reused
+        ChatStreamStore machinery), not brain, so this is handled locally and never
+        proxied upstream — a proxied call would 404 at brain, which has no
+        /upstream/session/read route. Registered unconditionally (not store-gated) so
+        the degraded no-Redis case is a harmless no-op 204 here rather than leaking to
+        the generic proxy and 404-ing at brain. Mirrors /chatagent/v3's mark-read
+        semantics: idempotent, and only an actual flag deletion broadcasts.
+        """
+        user_id = x_user_id or "anonymous"
+        if chat_stream_store is not None:
+            cleared = chat_stream_store.clear_unread(user_id, session)
+            if cleared and nats_publisher is not None:
+                nats_publisher.publish(user_id, {"session": session, "hasNewReply": False})
+        return Response(status_code=204)
 
     @router.post("/runs/{run_id}/cancel")
     async def brainagent_v1_cancel(

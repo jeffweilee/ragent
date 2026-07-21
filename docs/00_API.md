@@ -703,6 +703,14 @@ Owner-scoped proxy to brain's `POST /runs/{run_id}/cancel` (attaches `X-User-Id`
 curl -X POST http://localhost:8000/brainagent/v1/runs/run_1/cancel -H "X-Auth-Token: <jwt>"
 ```
 
+### `POST /brainagent/v1/session/read` — Mark a session read
+
+Client-owned mark-read (`?session={thread_id}` → `204`). read/unread is a **ragent-side** signal held in ragent's Redis (`ChatStreamStore`'s `hasNewReply` flag, surfaced by `sessionList`), **not** a brain concept — so this route is handled **locally** (clears the unread flag + best-effort NATS cleared-dot broadcast) and is **never** relayed to the reverse proxy below. It is registered unconditionally, so a no-Redis deployment is a harmless no-op `204` here rather than a proxied `404` at brain (which has no `/upstream/session/read`). Idempotent — only an actual flag deletion broadcasts. Mirrors `POST /chatagent/v3/session/read`.
+
+```bash
+curl -X POST "http://localhost:8000/brainagent/v1/session/read?session=thread_1" -H "X-Auth-Token: <jwt>"
+```
+
 ### `{GET,POST,PUT,DELETE} /brainagent/v1/{path}` — Management reverse proxy
 
 Generic authenticated reverse proxy onto brain's entire `/upstream/*` management surface (session / memory / projects / sources / artifacts / skills / preferences / schedules) — `/brainagent/v1/{path}` → `{BRAIN_API_URL}/upstream/{path}`. **Security-critical:** the caller's `user` is forced to the JWT-resolved identity in both the query string and (when the body is a JSON object) the body, overriding any client-supplied value — a forged `user` can never cross tenants. `X-Brain-Key` is attached server-to-server. Responses relay verbatim, including brain's `422 {"error","params"}` i18n envelope and binary artifact downloads (bytes + `Content-Type`/`Content-Disposition`); timeout → `504`, unreachable → `502`. `reindex` is explicitly denied (`404`) — it is a server-to-server admin rebuild requiring brain's own admin key, not reachable through this user-authenticated proxy. Not fronted at all: `/healthz` (infra) and the A2A plane (`/agent/card`, `/.well-known/*`, `/a2a` — different trust boundary).
