@@ -241,3 +241,64 @@
 | T-SK.D2 | Structural | • **Achieve:** Domain-map orientation for the new Skills slice.<br>• **Deliver:** `docs/00_domain_map.md` router/service/repo/schema rows updated.<br>• **Success criteria:** new files appear in the module lists. | [x] | Dev |
 | T-SK.FE1 | Red+Green | • **Achieve:** Frontend (mco-clean) Skills management UI + skill picker that sends `forwardedProps.skillId`. **(frontend — out of this backend cycle)**<br>• **Deliver:** mco-clean `@twp/ai` skills client (list/get/create/update/delete) + Skills management route + `SkillPicker` in the chat composer; atoms wiring `activeSkillId` → `forwardedProps.skillId`.<br>• **Success criteria:** users CRUD their own skills and select one for a chat turn; unit tests in `packages/ai` pass. | [ ] | Dev |
 
+---
+
+## Track T-PAT — Personal Access Token (PAT) authorization & lifecycle
+
+> Source: 2026-07-21 design session. Goal: let a user authorize ragent (the
+> downstream agent) to act on their behalf against upstream services (drive
+> tool, reached **through** brain). ragent stores an encrypted PAT per user,
+> serves a valid one on demand (redis→DB→refresh→invalidate), and attaches it
+> to the `/brainagent/v1` upstream call. **brain requires zero code change**;
+> the drive/upstream side merely trusts the PAT and checks
+> `PAT[PAT_NT_KEY_NAME] == sso user`. Spec: [`docs/spec/pat.md`](spec/pat.md).
+>
+> **Locked decisions (design session):**
+> - **Single self-rotating credential**: one nt ⇄ one PAT (12 h), shared across
+>   all upstreams; the PAT is a JWT the SSO service signs. No separate refresh
+>   token.
+> - **DB = current token**: every successful refresh rewrites the DB row (not
+>   only re-authorization). Redis (`ragent:pat:{nt}` → encrypted PAT, TTL 11.5 h)
+>   is a cache of the DB row.
+> - **Local validity** (no upstream round-trip): `exp` + `iss==PAT_ISS` +
+>   `aud==PAT_AUD` + signature by `PAT_PUBLIC_KEY`. Refresh is triggered by a
+>   locally-expired `exp` only (lazy — expired PATs are refreshable + upstream
+>   grace covers the rotation race, so no proactive refresh).
+> - **Refresh error matrix** (responses from `PAT_REFRESH_API`, NOT the drive
+>   upstream): **401** → mark DB `invalid` + clear redis + `PAT_REAUTH_REQUIRED`
+>   (no retry); **400** → our bug, 500 + log, PAT state untouched; **429** →
+>   exp-backoff retry ≤3, still failing → reject *this* request, PAT stays
+>   `active` (never invalidate on rate-limit).
+> - **Grace is upstream-side** → ragent stores only one token; a per-nt redis
+>   lock serializes refresh so rotation can't clobber itself.
+> - **Encryption reuses** the existing `KeyManager` DEK (`RAGENT_KEK_BASE64` /
+>   `RAGENT_ENCRYPTED_DEK_BASE64`) — AES-256-GCM envelope, same as attachments.
+> - **Part 1 (FE-manual PAT)**: SSO identity from the request header
+>   (`Depends(get_user_id)`), PAT from the body — swapped for the fetch-PAT API
+>   when it lands. Binding check `PAT[PAT_NT_KEY_NAME] == resolved nt` (never
+>   trust a body-supplied identity).
+> - **`/brainagent/v1` attach is fail-open**: no PAT / invalid / redis miss →
+>   the proxy behaves exactly as today (PAT is additive, never blocks the
+>   existing surface). Feature activates only when `PAT_PUBLIC_KEY` is set.
+
+**Counter: 完成 15 / 未完成 1 / descope 0**
+
+| # | Category | Task | Status | Owner |
+|---|---|---|---|---|
+| T-PAT.1 | Structural | • **Achieve:** `pat` table + error code + env inventory land before any behaviour.<br>• **Deliver:** `alembic/sql/upgrade/017_pat.sql` + `alembic/sql/downgrade/017_pat.sql` + `MIGRATION_CHAIN` entry + `migrations/schema.sql` append; `errors/codes.py` `PAT_REAUTH_REQUIRED` (401) + `docs/spec/error_codes.md` row; `docs/spec/env_vars.md §4.6.9` + `.env.example` PAT block.<br>• **Success criteria:** schema applies under `init_mariadb`; drift + env-example tests green; new code present in the catalog. | [x] | Dev |
+| T-PAT.2 | Red+Green | • **Achieve:** `PATCipher.encrypt(str)→str` / `decrypt(str)→str` — AES-256-GCM compact envelope keyed by `KeyManager.dek`; tamper/wrong-key → `PATDecryptionError`.<br>• **Deliver:** `src/ragent/security/pat_cipher.py`; `tests/unit/test_pat_cipher.py`.<br>• **Success criteria:** round-trip returns the plaintext; a flipped byte raises; ciphertext ≠ plaintext. | [x] | Dev |
+| T-PAT.3 | Red+Green | • **Achieve:** `PatTokenVerifier.verify(token)→claims` via joserfc single static PEM key — `exp` + `iss==PAT_ISS` + `aud==PAT_AUD` + signature; typed `PatTokenInvalid` on any failure; `nt_of(claims)` reads `PAT_NT_KEY_NAME`.<br>• **Deliver:** `src/ragent/auth/pat_jwt.py`; `tests/unit/test_pat_jwt.py`.<br>• **Success criteria:** valid token → claims; wrong iss/aud/sig/expired → `PatTokenInvalid`; missing nt claim → typed error. | [x] | Dev |
+| T-PAT.4 | Red+Green | • **Achieve:** `PatRepository` — `upsert(nt, cipher)` (INSERT … ON DUPLICATE KEY UPDATE, sets `status='active'`), `get(nt)→RowMapping|None`, `mark_invalid(nt)→int`. Owner-unique (`uq_pat_user`).<br>• **Deliver:** `src/ragent/repositories/pat_repository.py`; `tests/unit/test_pat_repository.py` (asserts SQL + bound params).<br>• **Success criteria:** upsert overwrites + reactivates; get filters by nt; mark_invalid flips status. | [x] | Dev |
+| T-PAT.5 | Red+Green | • **Achieve:** `PatCache` — `get(nt)`, `put(nt, cipher)` (`set ex=TTL`), `evict(nt)`, `acquire_refresh_lock(nt)`/`release_refresh_lock(nt)` (`set nx ex`); every op fail-soft on `RedisError` (log `pat.redis_unavailable`, safe default).<br>• **Deliver:** `src/ragent/clients/pat_cache.py`; `tests/unit/test_pat_cache.py` (fakeredis).<br>• **Success criteria:** put→get round-trips with TTL; lock is single-flight; a raising client degrades to miss/None, never throws. | [x] | Dev |
+| T-PAT.6 | Red+Green | • **Achieve:** `PatRefreshClient.refresh(current)→new` — `PUT PAT_REFRESH_API` with `{PAT_API_HEADER_TOKEN_KEY: value}` header + `{"patToken": current}` body → `{"patToken": new}`; maps 401→`PatRefreshUnauthorized`, 400→`PatRefreshBadRequest`, 429→`PatRefreshRateLimited`, other 5xx/transport→`PatRefreshTransient`.<br>• **Deliver:** `src/ragent/clients/pat_refresh_client.py`; `tests/unit/test_pat_refresh_client.py` (MockTransport).<br>• **Success criteria:** 200 returns new token; each status maps to its typed error; body/header shape asserted. | [x] | Dev |
+| T-PAT.7 | Red+Green | • **Achieve:** `PatService.authorize(nt, pat_token)` — verify (T-PAT.3) + binding `nt_of == nt` (else `PatTokenInvalid`) → encrypt → `repo.upsert` → `cache.put`; boundary logs carry identity only.<br>• **Deliver:** `src/ragent/services/pat_service.py`; `tests/unit/test_pat_service_authorize.py`.<br>• **Success criteria:** happy path writes DB+redis active; bad token / nt-mismatch raises and writes nothing. | [x] | Dev |
+| T-PAT.8 | Red+Green | • **Achieve:** `PatService.resolve(nt)→token` — redis hit+valid → return; hit+expired → refresh; miss → DB (active+valid → repopulate redis+return; active+expired → refresh; invalid/absent → `PatReauthRequired`). `resolve_best_effort(nt)→token|None` swallows `PatReauthRequired` for the fail-open proxy.<br>• **Deliver:** `services/pat_service.py`; `tests/unit/test_pat_service_resolve.py`.<br>• **Success criteria:** each branch returns/raises as specified; best-effort never raises. | [x] | Dev |
+| T-PAT.9 | Red+Green | • **Achieve:** `PatService._refresh(nt, current)` — per-nt redis lock (loser re-reads cache); on 200 rewrite DB+redis+return; **401** → `mark_invalid`+`evict`+`PatReauthRequired`; **400** → `PatInternalError` (500); **429** → exp-backoff retry ≤`PAT_REFRESH_MAX_RETRIES` then `PatRefreshExhausted` (request rejected, PAT stays active); injected `sleeper` for deterministic tests.<br>• **Deliver:** `services/pat_service.py`; `tests/unit/test_pat_service_refresh.py`.<br>• **Success criteria:** 401 invalidates + clears; 429 retries then rejects without invalidating; success rotates DB+redis; lock serialises. | [x] | Dev |
+| T-PAT.10 | Red+Green | • **Achieve:** `POST /pat/v1/authorize` — nt from `Depends(get_user_id)` (fail-closed `MISSING_USER_ID`), body `{patToken}` → `service.authorize` → `204`; `PatTokenInvalid` → `401 PAT_REAUTH_REQUIRED`.<br>• **Deliver:** `src/ragent/routers/pat.py` + `src/ragent/schemas/pat.py`; `tests/unit/test_pat_router.py`.<br>• **Success criteria:** 204 on success; 401 on bad/mismatched token; 422 when no identity; owner never a body field. | [x] | Dev |
+| T-PAT.11 | Behavioral | • **Achieve:** Wire PAT slice in composition (feature-gated on `PAT_PUBLIC_KEY`): `KeyManager`+`PatCipher`, `PatTokenVerifier`, `PatRepository`, `PatCache.from_env`, `PatRefreshClient`, `PatService`; add `Container` fields; mount `/pat/v1`.<br>• **Deliver:** `bootstrap/composition.py`, `bootstrap/app.py`; `tests/unit/test_composition_smoke_coverage.py` extension.<br>• **Success criteria:** app boots with PAT unset (slice absent) and with PAT set (router mounted); env drift green. | [x] | Dev |
+| T-PAT.12 | Red+Green | • **Achieve:** the `/brainagent/v1/{path}` **reverse-proxy** attaches `PAT_UPSTREAM_HEADER_NAME: <resolved PAT>` via `service.resolve_best_effort(user_id)` — fail-open (None → header absent, existing behaviour unchanged); a header name colliding with a service-owned header (`X-User-Id`/`X-Brain-Key`) is refused. **Scope: the reverse-proxy path only** — the twp-ai run path (`POST /brainagent/v1` → brain `/run`) is deferred to T-PAT.15 (matches the design decision "don't manage the upstream").<br>• **Deliver:** `routers/brain_upstream_proxy.py` (+ wiring param); `tests/unit/test_brain_upstream_proxy.py` extension.<br>• **Success criteria:** a resolvable PAT rides the reverse-proxy request header; no PAT → request identical to today; a raising resolve never breaks the proxy; a service-owned header name is not attached. | [x] | Dev |
+| T-PAT.15 | Red+Green | • **Achieve:** attach the resolved PAT on **every** brain-bound `/brainagent/v1` call, not only the reverse proxy — the twp-ai **run** path (`POST /brainagent/v1` → brain `/run`, via `BrainCaller` extra headers) and the **cancel** path (`POST /runs/{id}/cancel`). `/reconnect` + `/session/read` make no upstream call, so nothing to attach. Shared `apply_resolved_pat` helper (fail-open, resolved-wins-over-forwarded, service-header-collision-safe) reused by all three sites.<br>• **Deliver:** `clients/brain_caller.py` (`apply_resolved_pat`), `routers/brainagent.py` (run + cancel), `routers/brain_upstream_proxy.py` (refactor to the helper), `bootstrap/app.py` (wire pat into the run router); `tests/unit/test_brainagent_router.py` + `test_brain_upstream_proxy.py`.<br>• **Success criteria:** run + cancel carry the server-resolved PAT; resolved wins over a forwarded same-name header; unauthorized → fail-open unchanged. | [x] | Dev |
+| T-PAT.13 | Structural | • **Achieve:** Document the PAT domain: endpoint row (§4.1), error code (§4.1.2), data structure (§5), env (§4.6), domain-map rows, and `docs/spec/pat.md` (flow + refresh matrix + redis/DB contract).<br>• **Deliver:** `docs/00_spec.md`, `docs/00_domain_map.md`, `docs/spec/pat.md`.<br>• **Success criteria:** spec carries the authorize contract, resolve/refresh state machine, and the fail-open attach rule. | [x] | Dev |
+| T-PAT.14 | Red+Green | • **Achieve:** Integration proof — `PatRepository` against real MariaDB: upsert is idempotent per nt (one row), re-auth overwrites + reactivates, `mark_invalid` flips status.<br>• **Deliver:** `tests/integration/test_pat_repository_int.py` (`@pytest.mark.docker`).<br>• **Success criteria:** suite green under testcontainers MariaDB. | [x] | QA |
+| T-PAT.FE1 | Red+Green | • **Achieve:** Frontend authorization UI — obtain SSO nt, submit the PAT to `POST /pat/v1/authorize`, and surface `PAT_REAUTH_REQUIRED` as a re-authorize prompt. **(frontend — out of this backend cycle)**<br>• **Deliver:** FE PAT client + re-auth flow.<br>• **Success criteria:** a user authorizes once; an invalidated PAT drives them back through authorization. | [ ] | Dev |
+

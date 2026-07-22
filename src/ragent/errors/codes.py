@@ -85,6 +85,12 @@ class HttpErrorCode(StrEnum):
     BRAINAGENT_UPSTREAM_ERROR = "BRAINAGENT_UPSTREAM_ERROR"
     BRAINAGENT_TIMEOUT = "BRAINAGENT_TIMEOUT"
 
+    # PAT — Personal Access Token authorization (401, T-PAT). A PAT fails
+    # verification / nt-binding on POST /pat/v1/authorize, or a stored PAT is
+    # `invalid` / the refresh service returned 401 during resolve — the user
+    # must re-authorize.
+    PAT_REAUTH_REQUIRED = "PAT_REAUTH_REQUIRED"  # 401
+
     # LLM stream interrupt (502) — stream closed before [DONE] sentinel.
     LLM_STREAM_INTERRUPTED = "LLM_STREAM_INTERRUPTED"
 

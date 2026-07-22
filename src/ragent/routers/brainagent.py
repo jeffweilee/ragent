@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
-from typing import Annotated
+from typing import Annotated, Any
 
 import httpx
 import structlog
@@ -28,7 +28,7 @@ from twp_ai.agent import Agent
 from twp_ai.schemas import RunAgentInput
 
 from ragent.auth.deps import get_forwarded_headers, get_user_id
-from ragent.clients.brain_caller import build_brain_headers
+from ragent.clients.brain_caller import apply_resolved_pat, build_brain_headers
 from ragent.clients.chat_stream_store import ChatStreamStore
 from ragent.clients.nats_publisher import NatsSessionPublisher
 from ragent.clients.rate_limiter import RateLimiter
@@ -68,6 +68,8 @@ def create_brainagent_v1_router(
     stream_idle_timeout: float = 30.0,
     stream_poll_interval: float = 0.05,
     stream_producer_workers: int = 64,
+    pat_service: Any = None,
+    pat_header_name: str = "X-Pat-Token",
 ) -> APIRouter:
     router = APIRouter(prefix="/brainagent/v1")
 
@@ -112,7 +114,15 @@ def create_brainagent_v1_router(
                 body.thread_id,
             )
 
-        agent = agent_factory(user_id, forwarded_headers)
+        # T-PAT.15 — attach the server-resolved PAT so a drive tool invoked during
+        # the brain run carries it. Merge into the forwarded bag (resolved wins over
+        # any client-forwarded same-name header) before it becomes BrainCaller's
+        # extra_headers; fail-open + service-header-collision-safe.
+        pat_headers = dict(forwarded_headers or {})
+        await apply_resolved_pat(
+            pat_headers, user_id=user_id, pat_service=pat_service, pat_header_name=pat_header_name
+        )
+        agent = agent_factory(user_id, pat_headers)
         logger.info("brainagent.request", user_id=user_id)
 
         # No store wired (e.g. Redis down at boot) → legacy connection-bound
@@ -230,6 +240,9 @@ def create_brainagent_v1_router(
         """Cooperative cancel — owner-scoped proxy to brain's POST /runs/{id}/cancel."""
         user_id = x_user_id or "anonymous"
         headers = build_brain_headers(user_id, brain_key, forwarded_headers)
+        await apply_resolved_pat(
+            headers, user_id=user_id, pat_service=pat_service, pat_header_name=pat_header_name
+        )
         url = f"{brain_url.rstrip('/')}/runs/{run_id}/cancel"
         try:
             resp = await run_in_threadpool(http_client.post, url, headers=headers, timeout=timeout)

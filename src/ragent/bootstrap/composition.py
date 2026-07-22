@@ -89,6 +89,10 @@ class Container:
     brain_timeout: float = 30.0
     # T-BRAIN.DIP — user_id -> twp_ai.agent.Agent (BrainAgent(BrainCaller)).
     brain_agent_factory: BrainAgentFactory | None = None
+    # T-PAT — Personal Access Token slice. None when PAT_PUBLIC_KEY is unset
+    # (the /pat/v1 router is not mounted and the /brainagent/v1 proxy attaches no PAT).
+    pat_service: Any = None
+    pat_upstream_header_name: str = "X-Pat-Token"
     # T-CAT — ingest-backed file attachments (ingest pipeline, session_documents).
     session_document_repo: SessionDocumentRepository | None = None
     attachment_context_resolver: AttachmentContextResolver | None = None
@@ -228,8 +232,14 @@ def build_container() -> Container:
     from ragent.services.skill_service import SkillService
     from ragent.storage.minio_registry import MinioSiteRegistry
 
-    http = httpx.Client(timeout=60.0)
-    auth_http = httpx.Client(timeout=10.0)  # dedicated client for token exchange (10 s per spec)
+    # Global outbound-TLS verify default. Each per-client verify env below falls
+    # back to this, so RAGENT_TLS_VERIFY=false flips every upstream at once while
+    # an explicit per-client env still overrides it. verify=False disables cert
+    # validation (dev/self-signed only) — for prod with a private CA, keep it true
+    # and mount the CA via SSL_CERT_FILE instead.
+    tls_verify = _bool_env("RAGENT_TLS_VERIFY", True)
+    http = httpx.Client(timeout=60.0, verify=tls_verify)
+    auth_http = httpx.Client(timeout=10.0, verify=tls_verify)  # token exchange (10 s per spec)
     install_error_logging(http, client_name="upstream")
     install_error_logging(auth_http, client_name="auth", redact_auth_body=True)
 
@@ -294,7 +304,7 @@ def build_container() -> Container:
     minio_registry = MinioSiteRegistry.from_env()
 
     es_hosts = _require("ES_HOSTS").split(",")
-    es_verify_certs = os.environ.get("ES_VERIFY_CERTS", "true").lower() == "true"
+    es_verify_certs = _bool_env("ES_VERIFY_CERTS", tls_verify)
     _es_password = os.environ.get("ES_PASSWORD")
     es_basic_auth = (
         (os.environ.get("ES_USERNAME", "elastic"), _es_password)
@@ -520,7 +530,7 @@ def build_container() -> Container:
             domain=_require("OIDC_DOMAIN"),
             audience=_require("OIDC_AUDIENCE"),
             use_https=_bool_env("OIDC_USE_HTTPS", True),
-            verify_ssl=_bool_env("OIDC_VERIFY_SSL", True),
+            verify_ssl=_bool_env("OIDC_VERIFY_SSL", tls_verify),
             verify_aud=_bool_env("RAGENT_JWT_VERIFY_AUD", True),
             verify_exp=_bool_env("RAGENT_JWT_VERIFY_EXP", True),
         )
@@ -554,7 +564,7 @@ def build_container() -> Container:
             subject_template=os.environ.get(
                 "NATS_SESSION_SUBJECT_TEMPLATE", "session.{user}.status"
             ),
-            verify_certs=_bool_env("NATS_AUTH_VERIFY_CERTS", True),
+            verify_certs=_bool_env("NATS_AUTH_VERIFY_CERTS", tls_verify),
             connect_timeout_seconds=_float_env("NATS_CONNECT_TIMEOUT_SECONDS", 10.0),
             jwt_refresh_seconds=_float_env("NATS_JWT_REFRESH_SECONDS", 30.0),
         )
@@ -573,6 +583,50 @@ def build_container() -> Container:
                 brain_key=brain_key,
                 timeout=brain_timeout,
             )
+
+    # T-PAT — Personal Access Token slice, feature-gated on PAT_PUBLIC_KEY. When
+    # set, the PAT is verified against that static key, encrypted with the same
+    # KeyManager DEK as attachments, stored one-per-user, cached in redis, and
+    # rotated via the refresh service. The /pat/v1 router + the /brainagent/v1
+    # PAT attach only exist when this is wired.
+    pat_service = None
+    pat_upstream_header_name = os.environ.get("PAT_UPSTREAM_HEADER_NAME", "X-Pat-Token")
+    pat_public_key = os.environ.get("PAT_PUBLIC_KEY") or None
+    if pat_public_key is not None:
+        from ragent.auth.pat_jwt import PatTokenVerifier, import_pat_public_key
+        from ragent.clients.pat_cache import PatCache
+        from ragent.clients.pat_refresh_client import PatRefreshClient
+        from ragent.repositories.pat_repository import PatRepository
+        from ragent.security.key_manager import KeyManager
+        from ragent.security.pat_cipher import PATCipher
+        from ragent.services.pat_service import PatService
+
+        pat_alg = os.environ.get("PAT_JWT_ALG", "RS256")
+        pat_key_manager = KeyManager(
+            kek_b64=_require("RAGENT_KEK_BASE64"),
+            encrypted_dek_b64=_require("RAGENT_ENCRYPTED_DEK_BASE64"),
+        )
+        pat_service = PatService(
+            verifier=PatTokenVerifier(
+                key=import_pat_public_key(pat_public_key, pat_alg),
+                algorithm=pat_alg,
+                expected_iss=_require("PAT_ISS"),
+                expected_aud=_require("PAT_AUD"),
+                nt_claim=_require("PAT_NT_KEY_NAME"),
+            ),
+            cipher=PATCipher(pat_key_manager),
+            repo=PatRepository(engine=engine),
+            cache=PatCache.from_env(),
+            refresh_client=PatRefreshClient(
+                http,
+                refresh_url=_require("PAT_REFRESH_API"),
+                header_key=_require("PAT_API_HEADER_TOKEN_KEY"),
+                header_value=_require("PAT_API_HEADER_TOKEN_VALUE"),
+                timeout=_float_env("PAT_REFRESH_TIMEOUT_SECONDS", 30.0),
+            ),
+            max_retries=_int_env("PAT_REFRESH_MAX_RETRIES", 3),
+            backoff_base_seconds=_float_env("PAT_REFRESH_BACKOFF_SECONDS", 0.5),
+        )
 
     return Container(
         token_managers=(llm_tm, embedding_tm, rerank_tm),
@@ -618,6 +672,8 @@ def build_container() -> Container:
         brain_key=brain_key,
         brain_timeout=brain_timeout,
         brain_agent_factory=brain_agent_factory,
+        pat_service=pat_service,
+        pat_upstream_header_name=pat_upstream_header_name,
         session_document_repo=session_document_repo,
         attachment_context_resolver=attachment_context_resolver,
         retrieve_v2_service=retrieve_v2_service,

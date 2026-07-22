@@ -9,6 +9,7 @@
 | Variable | Default | Description |
 |---|---|---|
 | `RAGENT_ENV`                          | (required)       | `dev` \| `staging` \| `prod`. Modes `none`/`user_header`/`jwt_prefer_header` require `dev`; `jwt_header` tolerates any value (§1, §3.5). |
+| `RAGENT_TLS_VERIFY`                    | `true`           | **Global** outbound-TLS verify default. Every outbound client's verify env (`OIDC_VERIFY_SSL`, `NATS_AUTH_VERIFY_CERTS`, `ES_VERIFY_CERTS`) falls back to this, and the shared upstream httpx clients (`http` used by embedding/LLM/rerank/brain/chatagent/PAT-refresh/unprotect, and `auth_http` for token exchange) honour it directly. `false` disables certificate validation on **all** outbound TLS at once — dev/self-signed only (MITM risk); an explicit per-client env still overrides it. For prod with a private CA, keep `true` and mount the CA via `SSL_CERT_FILE` instead. |
 | `RAGENT_AUTH_MODE`                    | `user_header`    | `none` \| `user_header` \| `jwt_header` \| `jwt_prefer_header`. `none`: inject `"anonymous"`, no header needed (dev only). `user_header`: trust `<RAGENT_USER_ID_HEADER>` directly (dev only). `jwt_header`: OIDC JWT only. `jwt_prefer_header`: JWT wins when present, fallback to header (dev only). |
 | `RAGENT_USER_ID_HEADER`               | `X-User-Id`      | Canonical header name carrying the downstream `user_id`. In `user_header`/`jwt_prefer_header` mode this is the inbound header read directly; in JWT modes the extracted claim is injected into this header on the request scope. `RequestLoggingMiddleware` reads `request.scope["ragent.user_id"]` — not the header name — so customising this does not break `api.request` logging. |
 | `RAGENT_JWT_HEADER`                   | `X-Auth-Token`   | **`jwt_header`/`jwt_prefer_header` only.** Inbound header carrying the raw JWT (no `Bearer ` prefix). |
@@ -16,7 +17,7 @@
 | `OIDC_DOMAIN`                         | (required for JWT modes) | OIDC issuer domain. JWKS is fetched from `{scheme}://<OIDC_DOMAIN>/.well-known/jwks.json`; verifier validates `iss == discovery["issuer"]`. Guard exits if unset for `jwt_header`/`jwt_prefer_header`. |
 | `OIDC_AUDIENCE`                       | (required for JWT modes) | Expected `aud` claim. Tokens with mismatched `aud` → 401 `AUTH_TOKEN_INVALID`. |
 | `OIDC_USE_HTTPS`                      | `true`           | Scheme toggle for the OIDC discovery + JWKS URL. Set `false` ONLY for in-cluster discovery or local fixture; production deployments MUST keep `true`. |
-| `OIDC_VERIFY_SSL`                     | `true`           | Verify the IdP's TLS certificate during OIDC discovery + JWKS fetch. Set `false` ONLY for dev/staging against self-signed Keycloak. For production with a private CA, leave `true` and mount the CA via `SSL_CERT_FILE` instead. |
+| `OIDC_VERIFY_SSL`                     | `RAGENT_TLS_VERIFY` | Verify the IdP's TLS certificate during OIDC discovery + JWKS fetch. Defaults to the global `RAGENT_TLS_VERIFY`; set explicitly to override. Set `false` ONLY for dev/staging against self-signed Keycloak. For production with a private CA, leave `true` and mount the CA via `SSL_CERT_FILE` instead. |
 | `RAGENT_JWT_VERIFY_AUD`               | `true`           | **`jwt_header`/`jwt_prefer_header` only.** When `false`, audience claim check is skipped. Guard requires `RAGENT_ENV=dev`. |
 | `RAGENT_JWT_VERIFY_EXP`               | `true`           | **`jwt_header`/`jwt_prefer_header` only.** When `false`, expiry claim check is skipped. Guard requires `RAGENT_ENV=dev`. |
 | `RAGENT_PERMISSION_INGEST_ENABLED`    | `false`          | **P2 only.** When `true`, `GET/DELETE /ingest/v1/{id}` and `GET /ingest/v1` enforce `PermissionClient` (§3.5). Default off — gate is wired but inert until OpenFGA tuples exist. |
@@ -36,7 +37,7 @@
 | `ES_USERNAME`                         | (optional)       | Basic-auth username; omit for unauthenticated dev clusters. |
 | `ES_PASSWORD`                         | (optional)       | Basic-auth password. |
 | `ES_API_KEY`                          | (optional)       | Alternative to user/password (mutually exclusive). |
-| `ES_VERIFY_CERTS`                     | `true`           | Set `false` for self-signed dev clusters. |
+| `ES_VERIFY_CERTS`                     | `RAGENT_TLS_VERIFY` | Verify the Elasticsearch TLS cert. Defaults to the global `RAGENT_TLS_VERIFY`; set `false` for self-signed dev clusters to override. |
 | `ES_CHUNKS_INDEX`                     | `chunks_v1`      | Chunks index name. Threaded through `Container.chunks_index_name` to `ElasticsearchDocumentStore`, `_FeedbackMemoryRetriever`, `VectorExtractor`, `Reconciler`, and `/readyz` ES probe (T-EI.1). `init_es` also honours it when PUT-ing the `chunks_v1.json` schema, so override-and-rename works end-to-end (T-EI.6 / B60). Non-chunks resources (e.g. `feedback_v1.json`) keep filename-as-name semantics. |
 | `MINIO_SITES`                         | (required)       | v2: JSON list of `{name, endpoint, access_key, secret_key, bucket, secure?, read_only?}`. Must include `name="__default__"` (inline ingest). Supersedes the five legacy vars below. |
 | `MINIO_ENDPOINT`                      | (optional)       | DEPRECATED. |
@@ -65,7 +66,7 @@
 | `NATS_AUTH_SERVICE_URL`               | (unset)          | Base URL of the NATS auth service. ragent mints an ephemeral Ed25519 nkey and POSTs `<url>/api/v1/auth` (app flow) to exchange it for a NATS user JWT before connecting. |
 | `NATS_AUTH_CLIENT_SECRET`             | (unset)          | The app's `client_secret`, sent as the auth-service `token` in the app-flow exchange. |
 | `NATS_AUTH_NAMESPACE`                 | (unset)          | The app `namespace` sent in the app-flow exchange (identifies this backend to the auth service). |
-| `NATS_AUTH_VERIFY_CERTS`              | `true`           | Set `false` to skip TLS certificate verification on the `POST <NATS_AUTH_SERVICE_URL>/api/v1/auth` JWT exchange — dev/self-signed CA or a broken intermediate chain on the auth service only. Same default-secure convention as `ES_VERIFY_CERTS`/`OIDC_VERIFY_SSL`, parsed via `bool_env` (accepts `1`/`true`/`yes`/`on`). |
+| `NATS_AUTH_VERIFY_CERTS`              | `RAGENT_TLS_VERIFY` | Verify TLS on the `POST <NATS_AUTH_SERVICE_URL>/api/v1/auth` JWT exchange. Defaults to the global `RAGENT_TLS_VERIFY`; set `false` to override — dev/self-signed CA or a broken intermediate chain on the auth service only. Parsed via `bool_env` (accepts `1`/`true`/`yes`/`on`). |
 | `NATS_SESSION_SUBJECT_TEMPLATE`       | `session.{user}.status` | Operator-configurable per-user status subject; `{user}` is replaced with the user id. |
 | `NATS_CONNECT_TIMEOUT_SECONDS`        | `10`             | Bounds the lifespan-startup `nats.connect()` call. nats-py retries internally (default up to ~60 attempts × 2s ≈ 2 min) when the broker is unreachable even on the *initial* connect; without this bound a NATS outage would stall FastAPI lifespan startup, not just degrade to snapshot-only. A timeout is caught by the same fail-soft `except` as any other connect failure. |
 | `NATS_JWT_REFRESH_SECONDS`            | `30`             | **Fallback** cadence for the connection supervisor's proactive reconnect, used only when the auth response omits `expiresIn` (otherwise the interval is `0.8 × expiresIn`); both branches are floored at 5s so a misconfigured tiny value can't hot-loop, and a non-numeric `expiresIn` is coerced away to the fallback. Each tick mints a FRESH ephemeral keypair (the auth service treats an exchange as a one-time key registration; re-POSTing a registered publicKey is rejected), swaps the (keypair, token) pair atomically, and re-handshakes the connection (or rebuilds it if it was found closed). Must stay under the platform JWT TTL (~1 min): the server sends `Authorization Violation` and nats-py **closes the connection permanently** when a JWT expires, so the supervisor must reconnect with a fresh token *before* that happens. |
@@ -197,3 +198,31 @@
 | `RAGENT_METRICS_SOURCE_APP_ALLOWLIST` | (empty)          | Comma-separated allow-list of `source_app` values that pass through verbatim as a Prometheus label. Anything outside the list is collapsed to `RAGENT_METRICS_SOURCE_APP_FALLBACK` to bound label cardinality. |
 | `RAGENT_METRICS_SOURCE_APP_FALLBACK`  | `other`          | Bucket name for `source_app` values not in the allow-list. |
 | `HTTP_ERROR_LOG_MAX_BYTES`            | `8192`           | Max bytes of request/response body included in `http.upstream_error` log records. Bodies above this size are truncated with `request_truncated` / `response_truncated` set to `true`. Sensitive headers (`Authorization`, `apikey`, `Cookie`, `X-API-Key`, `Proxy-Authorization`, plus the configured values of `EMBEDDING_AUTH_HEADER_NAME` / `LLM_AUTH_HEADER_NAME` / `RERANK_AUTH_HEADER_NAME`) and the J1 `key` field of the auth POST are always redacted regardless of size. |
+
+#### 4.6.9 PAT — Personal Access Token authorization (T-PAT)
+
+> The whole slice is **feature-gated on `PAT_PUBLIC_KEY`**: unset → the `/pat/v1`
+> router is not mounted and the `/brainagent/v1` proxy attaches no PAT (existing
+> behaviour unchanged). When set, `PAT_ISS` / `PAT_AUD` / `PAT_NT_KEY_NAME` /
+> `PAT_REFRESH_API` / `PAT_API_HEADER_TOKEN_KEY` / `PAT_API_HEADER_TOKEN_VALUE`
+> and the encryption keys (`RAGENT_KEK_BASE64` / `RAGENT_ENCRYPTED_DEK_BASE64`,
+> §4.6.x) become required. Full flow: [`docs/spec/pat.md`](pat.md).
+
+| Variable | Default | Description |
+|---|---|---|
+| `PAT_PUBLIC_KEY`                      | (optional)       | Public key that signs the PAT JWT; presence enables the PAT slice. Accepts a full PEM **or** the headerless one-line base64 DER (SubjectPublicKeyInfo) SSO services commonly hand out (a multi-line PEM cannot survive a `.env`); literal `\n` escapes are un-escaped. Verifies the PAT signature at authorize + resolve. **Never logged.** |
+| `PAT_JWT_ALG`                         | `RS256`          | JWS algorithm for PAT verification (asymmetric — matches how the SSO service signs the PAT). |
+| `PAT_ISS`                             | (required when enabled) | Expected `iss` claim of the PAT JWT. |
+| `PAT_AUD`                             | (required when enabled) | Expected `aud` claim of the PAT JWT. |
+| `PAT_NT_KEY_NAME`                     | (required when enabled) | Claim name inside the PAT holding the SSO nt; must equal the resolved caller identity (binding check). |
+| `PAT_REFRESH_API`                     | (required when enabled) | `PUT` URL of the PAT refresh service (`{"patToken": current}` → `{"patToken": new}`). |
+| `PAT_API_HEADER_TOKEN_KEY`            | (required when enabled) | Header **name** carrying the service credential on the refresh call. |
+| `PAT_API_HEADER_TOKEN_VALUE`          | (required when enabled) | Header **value** (service credential) sent under `PAT_API_HEADER_TOKEN_KEY`. **Never logged.** |
+| `PAT_UPSTREAM_HEADER_NAME`            | `X-Pat-Token`    | Header under which the resolved PAT is attached to the `/brainagent/v1` upstream request (fail-open — omitted when no PAT resolves). |
+| `PAT_REFRESH_MAX_RETRIES`             | `3`              | Max exp-backoff retries on a `429` from the refresh API before rejecting the request (PAT stays `active`). |
+| `PAT_REFRESH_BACKOFF_SECONDS`         | `0.5`            | Base delay for exp-backoff between `429` refresh retries (`base × 2^attempt`). |
+| `PAT_REFRESH_TIMEOUT_SECONDS`         | `30`             | Per-call timeout for the `PUT PAT_REFRESH_API` refresh request. |
+| `REDIS_PAT_TTL_SECONDS`               | `41400`          | PAT cache TTL (11.5 h — 0.5 h under the 12 h PAT lifetime). |
+| `REDIS_PAT_URL`                       | `redis://localhost:6379/3` | Standalone redis URL for the PAT cache (`REDIS_MODE=standalone`). |
+| `REDIS_PAT_SENTINEL_MASTER`           | `pat-master`     | Master name for the PAT cache instance (`REDIS_MODE=sentinel`). |
+| `REDIS_PAT_LOCK_TTL_SECONDS`          | `45`             | TTL of the per-nt refresh lock (bounds a crashed refresh holder). Set above a normal refresh (`PAT_REFRESH_TIMEOUT_SECONDS`) so the holder keeps its lock through the call; release is owner-checked so an expiry-then-reacquire never cross-deletes. |

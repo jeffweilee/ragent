@@ -17,6 +17,8 @@ from urllib.request import Request, urlopen
 import structlog
 from sqlalchemy import text
 
+from ragent.utility.env import bool_env
+
 logger = structlog.get_logger(__name__)
 
 _MIGRATIONS = Path(__file__).parents[3] / "migrations"
@@ -38,7 +40,9 @@ def _es_auth_headers() -> dict[str, str]:
 
 def _es_ssl_context() -> ssl.SSLContext:
     ctx = ssl.create_default_context()
-    if os.environ.get("ES_VERIFY_CERTS", "true").lower() in ("false", "0"):
+    # ES_VERIFY_CERTS falls back to the global RAGENT_TLS_VERIFY when unset, so
+    # the one switch flips ES too (an explicit ES_VERIFY_CERTS still wins).
+    if not bool_env("ES_VERIFY_CERTS", bool_env("RAGENT_TLS_VERIFY", True)):
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
     return ctx

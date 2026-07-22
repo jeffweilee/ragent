@@ -358,6 +358,7 @@ All business paths carry a `/v<N>` version segment (§API Endpoint Naming, `00_r
 | POST   | `/chat/v1/stream`          | `X-User-Id` | §3.4.1 schema | `text/event-stream` per §3.4.3 (`data: {type:delta\|done\|error}`) |
 | POST   | `/feedback/v1`             | `X-User-Id` | §3.4.5 schema | `204` on success; `401`/`410`/`422` `application/problem+json` per §3.4.5. |
 | POST   | `/mcp/v1`               | `<RAGENT_USER_ID_HEADER>` (P1) / `<RAGENT_JWT_HEADER>` (P2) | JSON-RPC 2.0 envelope per §3.8 — tools: `retrieve` (`query` + `document_id_list` required, 1–100 ids; Anti-IDOR ownership check; `top_k` 1–3, default 3); optionally `create_skill` | `200` JSON-RPC response; DOCUMENT_FORBIDDEN → `{code:-32002}`; auth failure (401) returns `application/problem+json` per §3.8.1. |
+| POST   | `/pat/v1/authorize`     | `X-User-Id` | `{ patToken }` (SSO identity from the header, PAT in the body — temporary until the fetch-PAT API lands) | `204` on success; `401 PAT_REAUTH_REQUIRED` if the PAT fails verification or its `PAT_NT_KEY_NAME` claim ≠ the resolved caller; `422 MISSING_USER_ID` with no identity. Encrypts + stores the PAT (one row per user) and caches it in redis. See [`docs/spec/pat.md`](spec/pat.md). |
 | GET    | `/livez`                | none        | — | `200 {"status":"ok"}` — process up; no dependency probes |
 | GET    | `/startupz`             | none        | — | `200 {"status":"ok"}` once all probes have been green at least once since boot; `503` until then. Latch: flips permanently to ready after first green `/readyz` sweep. |
 | GET    | `/readyz`               | none        | — | `200` if all dep probes pass; else `503 application/problem+json` listing failed deps. Probes: **MariaDB** (`SELECT 1`), **ES** (`GET /_cluster/health` + `analysis-icu` plugin loaded + every `resources/es/*.json` index exists; B26, I5), **Redis broker & rate-limiter** (`PING` against active topology per `REDIS_MODE`; B27), **MinIO** (`ListBuckets`). Each probe ≤ 2 s. |
@@ -463,7 +464,7 @@ All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on 
 
 > Full schemas: [`docs/spec/data_structures.md`](spec/data_structures.md)
 
-MariaDB tables: `documents`, `feedback`, `system_settings`, `skills`, `session_documents`. ES indexes: `chunks_v1` (text + embeddings), `feedback_v1`. ID format: UUIDv7 → 26-char Crockford Base32.
+MariaDB tables: `documents`, `feedback`, `system_settings`, `skills`, `session_documents`, `pat` (one encrypted PAT per user — `user_id` UNIQUE, `pat_cipher` AES-256-GCM envelope, `status` active|invalid; §PAT). ES indexes: `chunks_v1` (text + embeddings), `feedback_v1`. ID format: UUIDv7 → 26-char Crockford Base32.
 
 ---
 
