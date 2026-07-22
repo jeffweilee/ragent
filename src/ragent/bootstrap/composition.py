@@ -232,8 +232,14 @@ def build_container() -> Container:
     from ragent.services.skill_service import SkillService
     from ragent.storage.minio_registry import MinioSiteRegistry
 
-    http = httpx.Client(timeout=60.0)
-    auth_http = httpx.Client(timeout=10.0)  # dedicated client for token exchange (10 s per spec)
+    # Global outbound-TLS verify default. Each per-client verify env below falls
+    # back to this, so RAGENT_TLS_VERIFY=false flips every upstream at once while
+    # an explicit per-client env still overrides it. verify=False disables cert
+    # validation (dev/self-signed only) — for prod with a private CA, keep it true
+    # and mount the CA via SSL_CERT_FILE instead.
+    tls_verify = _bool_env("RAGENT_TLS_VERIFY", True)
+    http = httpx.Client(timeout=60.0, verify=tls_verify)
+    auth_http = httpx.Client(timeout=10.0, verify=tls_verify)  # token exchange (10 s per spec)
     install_error_logging(http, client_name="upstream")
     install_error_logging(auth_http, client_name="auth", redact_auth_body=True)
 
@@ -298,7 +304,7 @@ def build_container() -> Container:
     minio_registry = MinioSiteRegistry.from_env()
 
     es_hosts = _require("ES_HOSTS").split(",")
-    es_verify_certs = os.environ.get("ES_VERIFY_CERTS", "true").lower() == "true"
+    es_verify_certs = _bool_env("ES_VERIFY_CERTS", tls_verify)
     _es_password = os.environ.get("ES_PASSWORD")
     es_basic_auth = (
         (os.environ.get("ES_USERNAME", "elastic"), _es_password)
@@ -524,7 +530,7 @@ def build_container() -> Container:
             domain=_require("OIDC_DOMAIN"),
             audience=_require("OIDC_AUDIENCE"),
             use_https=_bool_env("OIDC_USE_HTTPS", True),
-            verify_ssl=_bool_env("OIDC_VERIFY_SSL", True),
+            verify_ssl=_bool_env("OIDC_VERIFY_SSL", tls_verify),
             verify_aud=_bool_env("RAGENT_JWT_VERIFY_AUD", True),
             verify_exp=_bool_env("RAGENT_JWT_VERIFY_EXP", True),
         )
@@ -558,7 +564,7 @@ def build_container() -> Container:
             subject_template=os.environ.get(
                 "NATS_SESSION_SUBJECT_TEMPLATE", "session.{user}.status"
             ),
-            verify_certs=_bool_env("NATS_AUTH_VERIFY_CERTS", True),
+            verify_certs=_bool_env("NATS_AUTH_VERIFY_CERTS", tls_verify),
             connect_timeout_seconds=_float_env("NATS_CONNECT_TIMEOUT_SECONDS", 10.0),
             jwt_refresh_seconds=_float_env("NATS_JWT_REFRESH_SECONDS", 30.0),
         )

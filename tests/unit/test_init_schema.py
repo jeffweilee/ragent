@@ -3,6 +3,7 @@
 import base64
 import json
 import os
+import ssl
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
@@ -13,6 +14,7 @@ from ragent.bootstrap.init_schema import (
     _ES_RESOURCES,
     _es_auth_headers,
     _es_request,
+    _es_ssl_context,
     auto_init,
     init_es,
     init_mariadb,
@@ -567,3 +569,35 @@ def test_init_es_creates_alias_with_correct_name_for_custom_chunks_index(tmp_pat
     assert add_actions, "alias POST body must include add action"
     assert add_actions[0]["alias"] == "foo_active"
     assert add_actions[0]["index"] == "foo"
+
+
+# --- ES TLS verify: per-client env + RAGENT_TLS_VERIFY global fallback -------
+
+
+@pytest.mark.parametrize(
+    ("env", "expect_verify"),
+    [
+        ({}, True),  # both unset → verify on (default-secure)
+        ({"RAGENT_TLS_VERIFY": "false"}, False),  # global off → ES follows
+        ({"RAGENT_TLS_VERIFY": "true"}, True),
+        ({"ES_VERIFY_CERTS": "false"}, False),  # explicit ES off
+        ({"RAGENT_TLS_VERIFY": "false", "ES_VERIFY_CERTS": "true"}, True),  # ES overrides global
+        ({"RAGENT_TLS_VERIFY": "true", "ES_VERIFY_CERTS": "false"}, False),
+    ],
+)
+def test_es_ssl_context_follows_global_with_per_client_override(
+    monkeypatch: pytest.MonkeyPatch, env: dict, expect_verify: bool
+) -> None:
+    monkeypatch.delenv("RAGENT_TLS_VERIFY", raising=False)
+    monkeypatch.delenv("ES_VERIFY_CERTS", raising=False)
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
+
+    ctx = _es_ssl_context()
+
+    if expect_verify:
+        assert ctx.verify_mode == ssl.CERT_REQUIRED
+        assert ctx.check_hostname is True
+    else:
+        assert ctx.verify_mode == ssl.CERT_NONE
+        assert ctx.check_hostname is False
