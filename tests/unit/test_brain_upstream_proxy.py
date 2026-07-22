@@ -183,3 +183,45 @@ def test_forwards_accept_header() -> None:
             headers={"X-User-Id": "alice", "Accept": "image/png"},
         )
     assert seen["accept"] == "image/png"
+
+
+def test_delete_single_archival_memory_passes_path_param_and_user_override() -> None:
+    """DELETE /memory/archival/{mem_id} — path param reaches brain; user forced."""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["method"] = request.method
+        return httpx.Response(200, json={"ok": True})
+
+    app = _make_app(handler)
+    with TestClient(app) as client:
+        r = client.delete(
+            "/brainagent/v1/memory/archival/mem-42",
+            headers={"X-User-Id": "alice"},
+        )
+    assert r.status_code == 200
+    assert seen["method"] == "DELETE"
+    assert seen["url"] == "http://brain:8100/upstream/memory/archival/mem-42?user=alice"
+
+
+def test_delete_all_archival_memory_overrides_user_in_query() -> None:
+    """DELETE /memory/archival (no path param) — user forced in query; brain response relayed."""
+    seen: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["url"] = str(request.url)
+        seen["method"] = request.method
+        return httpx.Response(200, json={"ok": True, "removed": 3})
+
+    app = _make_app(handler)
+    with TestClient(app) as client:
+        # forged user must be overridden
+        r = client.delete(
+            "/brainagent/v1/memory/archival?user=evil",
+            headers={"X-User-Id": "alice"},
+        )
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "removed": 3}
+    assert seen["method"] == "DELETE"
+    assert seen["url"] == "http://brain:8100/upstream/memory/archival?user=alice"
