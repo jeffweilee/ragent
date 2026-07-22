@@ -20,25 +20,13 @@ curl http://localhost:8000/livez                         # verify — expect {"s
 make doctor PROBE_LIVE=1                                 # post-launch — also probes /livez and /readyz
 
 uv export --format requirements-txt --no-hashes --dev -o requirements.txt # export requirement.txt
-```
 
-### MCP Hub
-
-Standalone FastMCP service that federates arbitrary third-party REST APIs as MCP tools.
-
-```bash
-export MCP_HUB_TOOLS_YAML=src/ragent/mcp_hub/tools.example.d   # demo registry
-uv run python -m ragent.mcp_hub.doctor                          # validate yaml
-uv run uvicorn ragent.mcp_hub.server:build_mcp_app --factory --host "${MCP_HUB_HOST:-0.0.0.0}" --port "${MCP_HUB_PORT:-9000}"  # binds /mcp
-```
-
-### Development
-
-```bash
 make check        # format + lint + test (Linux / macOS)
 make test         # full suite with 92% coverage gate
 make test-gate    # unit + integration only (pre-commit gate)
 ```
+
+MCP Hub (federates third-party REST APIs as MCP tools) is a separate top-level package with its own setup — see [`docs/mcp_hub.md`](docs/mcp_hub.md).
 
 ---
 
@@ -55,7 +43,6 @@ src/ragent/
   extractors/       — pluggable extractors: VectorExtractor, StubGraphExtractor
   workers/          — TaskIQ task entrypoints: ingest, backfill, heartbeat, maintenance, startup sweep
   clients/          — 3rd-party clients: EmbeddingClient, LLMClient, RerankClient
-  mcp_hub/          — standalone FastMCP hub (separate process)
   storage/          — MinIO site registry
   auth/             — JWT verification, permission deps
   middleware/       — request logging, TaskIQ context propagation
@@ -65,6 +52,7 @@ src/ragent/
   schemas/          — Pydantic request/response models
 migrations/         — Alembic SQL + schema.sql snapshot
 resources/es/       — Elasticsearch index/pipeline/alias definitions
+mcp_hub/            — standalone FastMCP hub package (separate process, own pyproject.toml)
 tests/{unit,integration,e2e}/
 docs/               — spec, plan, journal, API reference
 ```
@@ -84,3 +72,4 @@ docs/               — spec, plan, journal, API reference
 | [`docs/00_plan.md`](docs/00_plan.md) | Active TDD implementation checklist (completed tracks archived in [`docs/00_plan_done.md`](docs/00_plan_done.md)) |
 | [`docs/00_agent_team.md`](docs/00_agent_team.md) | Agent team and workflow |
 | [`docs/00_journal.md`](docs/00_journal.md) | Team reflection and blameless guidelines |
+| [`docs/mcp_hub.md`](docs/mcp_hub.md) | MCP Hub design and setup (separate package) |
