@@ -242,6 +242,13 @@ Update this counter whenever an item status changes. The counts cover all items 
 
 ---
 
+### Exception-Type Erasure: Preserve Classification Through Wrapping
+
+- **Rule**: Before catching broadly (`except Exception`) to wrap, re-raise, or log, audit every downstream consumer on that call path that dispatches on exception type/attributes (`isinstance` checks, `classify_upstream_error`, named log events, `error_code` propagation). The wrapper **must** preserve the original type/`error_code`, or reclassify explicitly before wrapping — never let a broad catch silently erase a distinction a downstream consumer relies on. Recurred 4× (TokenManager `RuntimeError` wrap broke timeout/5xx dispatch; worker terminal-handler `isinstance` filter dropped `error_code` for other typed exceptions; bare `except Exception` in LLM streaming collapsed all failure reasons into one log event; mid-stream caller exceptions surfaced raw `type(exc).__name__`).
+- **Verification**: any new broad `except Exception` handler on a path with typed domain exceptions needs a test asserting the original `error_code`/type survives the catch (or is deliberately reclassified).
+
+---
+
 ### TaskIQ / Async Broker: Producer Contract
 
 - **Rule: Broker lifecycle is mandatory.** Every process that enqueues tasks MUST `await broker.startup()` once at boot (FastAPI lifespan, reconciler `__main__`) and `await broker.shutdown()` at graceful exit. Omitting `startup()` causes the first `kiq()` call to fail with no Redis connection; omitting `shutdown()` leaks sockets. Failure at either step aborts boot — never silently degrade.
