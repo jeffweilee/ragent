@@ -95,7 +95,7 @@ Before writing tests, update two documents:
    ref, response schema ref, and notes. Add a scenario (`S-XX`) if there is a
    behaviour contract worth pinning (happy path, error codes, edge cases).
 
-2. **`docs/00_plan.md`** — append a new task row under the active track and update the track counter:
+2. **`docs/00_plan.md`** — append a new task row under the active track and update the track's `**Counter: 完成 N / 未完成 N / descope N**` line (mandatory per `docs/00_rule.md §docs/00_plan.md`):
    ```
    | T-XX.N | Red   | • **Achieve:** Pin <endpoint> contract.<br>• **Deliver:** `tests/unit/test_<resource>_router.py` — <what the test covers>.<br>• **Success criteria:** `pytest tests/unit/test_<resource>_router.py` exits non-zero with all new test IDs collected and failing (red). | [ ] | QA |
    | T-XX.N | Green | • **Achieve:** Implement <endpoint>.<br>• **Deliver:** `src/ragent/routers/<resource>.py::<handler>`.<br>• **Success criteria:** `pytest tests/unit/test_<resource>_router.py` exits 0; `make test-gate` still green. | [ ] | Dev |

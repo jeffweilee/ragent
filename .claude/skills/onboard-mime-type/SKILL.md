@@ -214,7 +214,7 @@ takes you to 50 — fine. If already over, push back before adding.
 
 ## Step 5 — Mandatory TDD sequence
 
-Per `CLAUDE.md`, every MIME ships Red → Green → Refactor. **Ordering
+Per `CLAUDE.md`, every MIME ships Red → Green → Refactor. Before writing tests, append task rows to `docs/00_plan.md` under the active track and update its `**Counter: 完成 N / 未完成 N / descope N**` line (mandatory per `docs/00_rule.md §docs/00_plan.md`). **Ordering
 constraint**: the `IngestMime` enum, `ALLOWED_MIMES`, the router `elif`,
 and `_MimeAwareSplitter.__init__` construction must ship in **one
 commit**. Adding the enum alone makes `POST /ingest` accept the new mime
