@@ -817,6 +817,29 @@ Dual-write: MariaDB `feedback` (truth) → ES `feedback_v1` (serving view). ES f
 
 ---
 
+## PAT
+
+### `POST /pat/v1/authorize` — Bind a Personal Access Token to the caller's identity
+
+Mounted only when `PAT_PUBLIC_KEY` is set (PAT slice wired in `composition.py`). **Headers:** `X-User-Id` (or JWT-resolved identity) required — the SSO identity comes from `Depends(get_user_id)`, never a body field.
+
+```json
+{
+  "patToken": "<jwt>"
+}
+```
+
+Verifies the PAT (joserfc, static PEM key, `exp`/`iss`/`aud`/signature), checks its `PAT_NT_KEY_NAME` claim matches the caller's resolved identity, then encrypts (AES-256-GCM) and upserts it (MariaDB `pat` table + Redis cache).
+
+**Response:** `204 No Content`.
+
+| Status | `error_code` | When |
+|---|---|---|
+| 401 | `PAT_REAUTH_REQUIRED` | Token fails verification, or its `nt` claim doesn't match the caller's identity. |
+| 422 | `MISSING_USER_ID` | No resolved caller identity. |
+
+---
+
 ## Skills
 
 Per-user reusable instruction presets (a persona / system instruction the user can attach to a `/chatagent/v3` turn). Every skill is **private to its owner**: the owner is the resolved `X-User-Id`, never a body field, and every query filters by it — a foreign `skill_id` is indistinguishable from a missing one (404). **Headers:** `X-User-Id` required.

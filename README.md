@@ -21,7 +21,7 @@ make doctor PROBE_LIVE=1                                 # post-launch — also 
 
 uv export --format requirements-txt --no-hashes --dev -o requirements.txt # export requirement.txt
 
-make check        # format + lint + test (Linux / macOS)
+make check        # format + lint + mcp-hub-check + test (Linux / macOS)
 make test         # full suite with 92% coverage gate
 make test-gate    # unit + integration only (pre-commit gate)
 ```
@@ -50,7 +50,8 @@ src/ragent/
   errors/           — error codes, RFC 9457 problem details
   utility/          — env/datetime helpers, feedback token HMAC
   schemas/          — Pydantic request/response models
-migrations/         — Alembic SQL + schema.sql snapshot
+migrations/         — schema.sql snapshot
+alembic/            — Alembic upgrade/downgrade SQL + env.py
 resources/es/       — Elasticsearch index/pipeline/alias definitions
 mcp_hub/            — standalone FastMCP hub package (separate process, own pyproject.toml)
 tests/{unit,integration,e2e}/

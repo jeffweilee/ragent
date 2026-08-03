@@ -97,7 +97,7 @@ Rules:
 
 ## Step 5 — Mandatory TDD sequence
 
-Per `CLAUDE.md`, every metric ships as Red → Green → Refactor with structural / behavioral commits split.
+Per `CLAUDE.md`, every metric ships as Red → Green → Refactor with structural / behavioral commits split. Before writing tests, append a task row to `docs/00_plan.md` under the active track and update its `**Counter: 完成 N / 未完成 N / descope N**` line (mandatory per `docs/00_rule.md §docs/00_plan.md`).
 
 1. **Red** — write a unit test that asserts the metric appears in the registry with the expected labels and value. Use `prometheus_client.REGISTRY.get_sample_value(name, labels)`. Reset the allow-list cache in an `autouse` fixture so test order doesn't matter:
    ```python

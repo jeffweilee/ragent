@@ -9,7 +9,6 @@
 - **Always** refer to `00_agent_team.md` and use "RAGENT Agent Team" workflow for planning, implementation, delivery.
 - **Always** refer to "Context7" MCP for any library and framework standard spec and example.
 
-
 ## Document
 
 ### `docs/00_spec.md`: Specification Standards
@@ -23,7 +22,6 @@
 | **Scenario Testing** | Behavior-Driven Development (TDD/BDD). Fields: Domain, Scenario, Given, When, Then | Actual implementation code |
 | **System Interface** | (Optional) API endpoints, Interface definitions, and samples | Internal implementation class or object naming details |
 | **Data Structure** | (Optional) Database schemas/fields, Elasticsearch Index settings, and mappings | Internal implementation class or object or Data models or naming details |
-
 
 ### `docs/00_plan.md`: Master TDD Implementation Checklist
 
@@ -61,7 +59,6 @@ Update this counter whenever an item status changes. The counts cover all items 
 | T-XX.1 | Red | • **Achieve:** Pin the `<endpoint>` contract.<br>• **Deliver:** `tests/unit/test_<resource>_router.py` — covers happy path, 422, and upstream error.<br>• **Success criteria:** `pytest tests/unit/test_<resource>_router.py` exits 0 with all new test IDs collected. | [ ] | QA |
 | T-XX.2 | Green | • **Achieve:** Implement `<endpoint>`.<br>• **Deliver:** `src/ragent/routers/<resource>.py::<handler>`.<br>• **Success criteria:** `pytest tests/unit/test_<resource>_router.py` exits 0; `make test-gate` still green. | [ ] | Dev |
 
-
 ### `docs/00_journal.md` (Blameless Team Reflection)
 
 > **Goal:** Prevent recurrence through actionable, domain-specific guidelines rather than individual blame.
@@ -74,9 +71,7 @@ Update this counter whenever an item status changes. The counts cover all items 
 | :--- | :--- | :--- | :--- | :--- |
 | 2026-05-04 | Concurrency | Race condition during high-concurrency wallet updates. | Missing atomicity at the DB transaction level. | **[Rule]** All balance-related mutations must use Pessimistic Locking and be wrapped in an atomic decorator. |
 
-
 ---
-
 
 ## Standard
 
@@ -139,6 +134,12 @@ Update this counter whenever an item status changes. The counts cover all items 
 
 ---
 
+### ES Write-Time Housekeeping Fields: Ingest Pipeline, Never Python Writer
+
+- **Rule**: Write-time housekeeping fields on ES documents (timestamps, derived fingerprints, schema versions) MUST be populated via an ES **ingest pipeline** — never stamped by a Python writer (`datetime.utcnow()` into `_source` is a code-review rejection). Pick the processor by field type: `set` for a fixed/templated value (timestamps via `{{{_ingest.timestamp}}}`, schema versions); a `fingerprint`/`script` processor for a derived content hash — `set` cannot compute a digest and would silently store a constant instead. Bootstrap MUST `PUT _ingest/pipeline/<name>` before `PUT <index>`. Under `DuplicatePolicy.OVERWRITE` the pipeline reruns on every write, so the timestamp's semantic is **last-write time**, not first-creation — name the field `indexed_at` unless the doc never receives in-place overwrites; `set { override: false }` does not fake first-write semantics (it inspects the incoming `_source`, not the stored doc). The mapping MUST declare the field's type explicitly (never rely on dynamic mapping). Recurred 4× uncodified before this rule (Architecture journal 2026-05-19).
+
+---
+
 ### ID Generation Strategy: UUIDv7 + Base32
 
 - **Rule**: Primary keys for all new tables **must** adopt this strategy.
@@ -156,7 +157,6 @@ Update this counter whenever an item status changes. The counts cover all items 
     1. During serialization, timestamps **must** be converted to an **ISO 8601** format string with a `+00:00` or `Z` suffix.
     2. When reading naive datetimes from the database, you **must** manually attach the UTC timezone (`.replace(tzinfo=UTC)`).
 - **Prohibition**: Do not transmit or store any naive datetimes that lack timezone information.
-
 
 ---
 
@@ -210,7 +210,7 @@ Update this counter whenever an item status changes. The counts cover all items 
 
 - **Rule: All business API paths carry a `/v<N>` version segment at position `/<resource>/v<N>[/<rest>]`.**
   - **Format:** `/<resource>/v<N>` for collection operations; `/<resource>/v<N>/{id}` for item operations; `/<resource>/v<N>/<sub-resource>` for nested actions.
-  - **Current surface:** `POST /ingest/v1`, `GET /ingest/v1/{id}`, `DELETE /ingest/v1/{id}`, `GET /ingest/v1`, `POST /chat/v1`, `POST /chat/v1/stream`, `POST /retrieve/v1`, `POST /mcp/v1`.
+  - **Current surface:** see `docs/00_API.md` for the enumerated, currently-live set — do not hardcode a route list here, it drifts on every new router.
   - **Excluded (no version segment):** Infrastructure endpoints `/livez`, `/readyz`, `/startupz`, `/metrics` — these are process health surfaces, not business API.
 
 - **Rule: Resource names are lowercase, hyphen-separated nouns. The version token is `v` followed by a positive integer — no suffix variants (`v1`, never `v1.0`, `v1-beta`, `v1_stable`).**
@@ -227,7 +227,6 @@ Update this counter whenever an item status changes. The counts cover all items 
 - **Verification:** The test `tests/unit/test_api_versioning.py` asserts that every route registered on the FastAPI app (via `app.routes`) whose path does not match the infrastructure set (`/livez`, `/readyz`, `/startupz`, `/metrics`, `/docs`, `/redoc`, `/openapi.json`) satisfies `re.match(r"^/[a-z][a-z0-9-]*/v[1-9]\d*", path)`. This test must pass before every commit that adds or modifies a router registration in `bootstrap/app.py`.
 
 ---
-
 
 ### API Error Honesty: Domain Code Must Survive to the Wire
 
@@ -261,10 +260,9 @@ Update this counter whenever an item status changes. The counts cover all items 
 
 - **Sync-from-async bridge**: when a sync call site (FastAPI `run_in_threadpool` worker thread) must enqueue, wrap the async dispatcher in a sync facade using `anyio.from_thread.run` — valid because `run_in_threadpool` uses `anyio.to_thread.run_sync`. Document this constraint at the facade class. Never call `asyncio.run()` from a thread that is already inside a running event loop.
 
-- **Rule: Every new `@broker.task` function MUST have a top-level `try/except Exception`** that (a) logs `error_type=type(exc).__name__, error=str(exc)` via structlog at `ERROR` level and (b) re-raises. The re-raise ensures TaskIQ marks the task failed so its retry/DLQ logic fires. Tasks that write to DB on failure also update the status row; tasks with no DB state still need the log + re-raise. **Exception:** `ingest_pipeline_task` pre-dates this rule and uses per-phase error handling; its pre-pipeline setup path (container init, registry refresh, claim) is unguarded — accepted as-is until retrofitted (tracked in issue #135). Audit: `grep -n "@broker.task" src/` on every PR; flag **new** decorated functions that lack the wrapper. (SRE journal 2026-05-27)
+- **Rule: Every new `@broker.task` function MUST have a top-level `try/except Exception`** that (a) logs `error_type=type(exc).__name__, error=str(exc)` via structlog at `ERROR` level and (b) re-raises. The re-raise ensures TaskIQ marks the task failed so its retry/DLQ logic fires. Tasks that write to DB on failure also update the status row; tasks with no DB state still need the log + re-raise. **Exception:** `ingest_pipeline_task` pre-dates this rule and uses per-phase error handling; its pre-pipeline setup path (container init, registry refresh, claim) is unguarded — accepted as-is until retrofitted (tracked in issue #238). Audit: `grep -n "@broker.task" src/` on every PR; flag **new** decorated functions that lack the wrapper. (SRE journal 2026-05-27)
 
 ---
-
 
 ### Composition Root: Production-Wiring Coverage
 
@@ -272,13 +270,11 @@ Update this counter whenever an item status changes. The counts cover all items 
 
 ---
 
-
 ### Exhaustive Enumeration for Finite External Shape Sets
 
 - **Rule**: When a predicate/parser/retry-set must classify a finite-but-large external shape space (path-traversal forms, vendor error codes, CLI argument shapes), enumerate the full set from the authoritative source (vendor docs, RFC, CLI `--help`) before writing the first test — do not derive the set from memory. Paste the enumeration command's output into the PR/journal row for auditability. Recurred 4+ times across distinct domains (path traversal, S3 non-retry errors, Alembic CLI target shapes, async-driver call contexts). (Journal Security 2026-05-15, QA 2026-05-23, SRE 2026-06-30, Process 2026-05-19)
 
 ---
-
 
 ### Haystack Pipeline Contracts
 
@@ -291,9 +287,7 @@ Update this counter whenever an item status changes. The counts cover all items 
 
 - **Rule: Custom `@component` wrappers are preferable to adapting stock components beyond their documented input type.** Haystack's `FileTypeRouter` only routes `ByteStream` / `Path`, not `Document`; forcing it over `Document` inputs requires adapter shims that add more code than a bespoke `@component`. Default to a purpose-built component when the stock signature is incompatible with the pipeline's data shape.
 
-
 ---
-
 
 ### Shell Hook Testing
 
@@ -308,7 +302,6 @@ Update this counter whenever an item status changes. The counts cover all items 
 - **Test location**: `tests/unit/test_quality_gate_hooks.py` using `subprocess.run` against a temporary git repo fixture. Every new hook branch is a behavioural change and requires a corresponding test before commit.
 
 ---
-
 
 ### Test Log Capture: `structlog.testing.capture_logs`, NOT `caplog` bridge
 
@@ -356,7 +349,6 @@ Update this counter whenever an item status changes. The counts cover all items 
 
 ---
 
-
 ### OpenTelemetry: Initialize Once, Re-init After Fork
 
 - **Rule**: The global `TracerProvider` is set **exactly once per OS process**. Do not replace it at runtime; do not call `set_tracer_provider` from request paths, hot-reload paths, or library code.
@@ -381,8 +373,6 @@ Update this counter whenever an item status changes. The counts cover all items 
 
 ---
 
-
-
 ### Prompt Injection via Context Tags
 
 - **Rule**: Chunk text stored in ES and rendered into the LLM context MUST be sanitised to prevent prompt injection via structural XML/HTML tags. Before assembling the `<context>` block passed to the LLM, every chunk body MUST escape (or strip) `<context>` and `</context>` sequences. The attack surface: an ingested HTML/XML document whose content contains `</context><system>…` can break out of the context block and inject instructions into the system prompt.
@@ -397,7 +387,6 @@ Update this counter whenever an item status changes. The counts cover all items 
 - **Rule**: Any per-item size/count cap paired with an LLM-context aggregate injection (e.g. N attachments, each individually capped) MUST also enforce an aggregate cap across all items in the same turn — a per-item cap is not a per-aggregate cap. Multi-cap truncation MUST compute one `effective_max = min(...)` and truncate once; chaining separate truncation calls can double-append the truncation marker. The marker's own length must be reserved **inside** the cap, never appended after it (a marker that doesn't shrink output defeats the cap). Aggregate-budget checks MUST gate expensive I/O/decrypt work before it runs, not just the final assembled output. Recurred 4x in one cycle (T-CAT.W20 attachment injection). (Journal Spec 2026-06-30)
 
 ---
-
 
 ## Third-Party API
 
@@ -437,14 +426,13 @@ Update this counter whenever an item status changes. The counts cover all items 
 
 ---
 
-
 ### Deployment (K8s & CLI)
 
 - **Rule**: K8s `command:` arrays that reference executables installed by `uv sync` MUST use the full venv path `/app/.venv/bin/<exe>` (e.g. `/app/.venv/bin/uvicorn`). The Dockerfile does not add `.venv/bin` to `PATH`; bare executable names are not found. Verify the path once when adding a new entry point.
 
 - **Rule**: Documented startup commands (in spec, README, 00_API.md) that accept a variable the runtime reads MUST use `${VAR:-default}` form — never bare `$VAR`. Bare `$VAR` silently produces an empty-string argument when the variable is unset, which can bind to an unintended address or crash the process. Specifically: when a CLI `--host` / `--port` argument maps to an env var that has a documented code-side default, the shell command in docs MUST use `${VAR:-<same default>}` so the CLI and the guard read the same value.
 
-# Command
+## Command
 
 **Always** run these commands before commit.
 
@@ -474,8 +462,7 @@ docker ps &>/dev/null && echo "Docker ready" || {
 **(Mandatory) Full pre-commit sequence — no commit is valid unless every step is green:**
 
 ```bash
-# 0. Start Docker daemon FIRST (see Docker section above) — required before pytest
-docker ps &>/dev/null || { sudo dockerd --host=unix:///var/run/docker.sock &>/tmp/dockerd.log & for i in {1..30}; do docker ps &>/dev/null && break; sleep 1; done; docker ps &>/dev/null || { echo "Docker daemon failed to start within 30s"; exit 1; }; }
+# 0. Start Docker daemon FIRST — run the start sequence from the Docker section above if `docker ps` fails.
 
 # 1-4. Quality gate (use `make` so pre-commit and CI run identical commands, incl. coverage)
 make format
