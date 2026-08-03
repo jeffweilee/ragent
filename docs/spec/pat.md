@@ -5,9 +5,20 @@
 > valid PAT. Calling an upstream *with* the PAT is the consumer's concern; the
 > only consumer wired in this cycle is the `/brainagent/v1` proxy (fail-open).
 >
-> **Authorization requires an SSO id token**, so the PAT slice is only usable
-> under a JWT auth mode (`RAGENT_AUTH_MODE=jwt_header` / `jwt_prefer_header`) —
-> a trust-header deployment has no id token to forward to the init service.
+> **Authorization requires an SSO id token.** Under `jwt_header` /
+> `jwt_prefer_header` the middleware already requires it. Under `user_header` /
+> `none` the mode does not, so a caller must send `RAGENT_JWT_HEADER`
+> explicitly — composition logs `pat.authorize_needs_id_token_header` at boot,
+> and the OpenAPI schema marks the operation as needing that header
+> (`jwt_required_paths`) so Swagger and generated clients supply it. Authorizing
+> that way is still safe: init validates the id token, and the nt-binding check
+> (§3 step 3) rejects a PAT minted for anyone but the resolved caller.
+> `resolve` needs no id token at all, so the `/brainagent/v1` attach is
+> unaffected by the mode.
+>
+> **Credentials never reach logs**: the init/refresh credential headers, the
+> forwarded id token, and the attached PAT are all registered with the
+> `http.upstream_error` redactor (`docs/spec/env_vars.md` §4.6.8).
 
 ## 1. Model
 

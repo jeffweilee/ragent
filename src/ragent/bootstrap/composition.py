@@ -607,18 +607,20 @@ def build_container() -> Container:
         from ragent.services.pat_service import PatService
 
         # `POST /pat/v1/authorize` forwards the caller's SSO id token to the init
-        # service, so it can only work under a JWT auth mode. Warn rather than
-        # abort: `resolve` needs no id token, so a deployment with PATs already
-        # stored still serves the /brainagent/v1 attach correctly — only the
-        # authorize endpoint is unusable, and it would otherwise 401 silently.
+        # service. Outside a JWT mode the middleware never requires that header,
+        # so a caller who omits it gets 401 — but one who DOES send it still
+        # authorizes successfully (init validates the token, and the nt-binding
+        # check rejects a PAT minted for anyone other than the resolved caller).
+        # Hence a warning, not an abort: the mode is usable, just not self-
+        # describing, and `resolve` needs no id token at all.
         if parse_auth_mode() not in (AuthMode.jwt_header, AuthMode.jwt_prefer_header):
             logger.warning(
-                "pat.authorize_unavailable_in_auth_mode",
+                "pat.authorize_needs_id_token_header",
                 auth_mode=str(parse_auth_mode()),
                 detail=(
                     "PAT_PUBLIC_KEY is set but RAGENT_AUTH_MODE is not jwt_header/"
-                    "jwt_prefer_header; POST /pat/v1/authorize has no SSO id token to "
-                    "forward and will always return 401 PAT_REAUTH_REQUIRED"
+                    "jwt_prefer_header; callers of POST /pat/v1/authorize must send "
+                    "RAGENT_JWT_HEADER explicitly or they receive 401 PAT_REAUTH_REQUIRED"
                 ),
             )
 

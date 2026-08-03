@@ -169,11 +169,12 @@ def test_out_of_range_expire_days_aborts_boot(
         _build()
 
 
-def test_non_jwt_auth_mode_warns_that_authorize_is_unusable(
+def test_non_jwt_auth_mode_warns_that_authorize_needs_the_id_token_header(
     _base_env: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """PAT enabled under a trust-header mode still boots (resolve works), but the
-    operator gets a signal that /pat/v1/authorize has no id token to forward."""
+    """PAT enabled under a trust-header mode still boots (resolve works, and
+    authorize works for a caller who sends the JWT header explicitly), but the
+    operator gets a signal that the mode does not require that header."""
     from structlog.testing import capture_logs
 
     _set_pat_env(monkeypatch)
@@ -183,6 +184,6 @@ def test_non_jwt_auth_mode_warns_that_authorize_is_unusable(
         container = _build()
 
     assert container.pat_service is not None  # slice still wired — resolve is fine
-    warnings = [e for e in captured if e.get("event") == "pat.authorize_unavailable_in_auth_mode"]
+    warnings = [e for e in captured if e.get("event") == "pat.authorize_needs_id_token_header"]
     assert len(warnings) == 1
     assert warnings[0]["log_level"] == "warning"

@@ -326,3 +326,51 @@ def test_streaming_request_body_unread_uses_placeholder(
     assert rec is not None
     assert rec["http_request_payload"] == "<stream>"
     assert rec["request_truncated"] is False
+
+
+@pytest.mark.parametrize(
+    "env_var,header,secret",
+    [
+        ("PAT_INIT_API_TOKEN_HEADER_KEY_NAME", "X-Pat-Init-Token", "init-service-credential"),
+        ("PAT_INIT_AUTHORIZE_HEADER_KEY_NAME", "X-Auth-Token", "callers-sso-id-token"),
+        ("PAT_API_HEADER_TOKEN_KEY", "X-Pat-Service-Token", "refresh-service-credential"),
+        ("PAT_UPSTREAM_HEADER_NAME", "X-Pat-Token", "the-resolved-pat"),
+    ],
+)
+def test_pat_credential_headers_are_redacted(
+    monkeypatch: pytest.MonkeyPatch, env_var: str, header: str, secret: str
+) -> None:
+    """Every PAT header rides the SHARED `http` client, so an upstream 4xx would
+    otherwise write a bearer-equivalent secret — including the caller's own SSO
+    id token — into `http.upstream_error.headers` (Codex review PR #240, P1)."""
+    monkeypatch.setenv(env_var, header)
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, content=b"nope")
+
+    client = _client(handler)
+    with structlog.testing.capture_logs() as logs:
+        client.post("/api/pat/token", json={"expireDate": "2027/07/29"}, headers={header: secret})
+
+    rec = _find_error_log(logs)
+    assert rec is not None
+    headers = {k.lower(): v for k, v in rec["headers"].items()}
+    assert headers[header.lower()] == "***"
+    assert secret not in json.dumps(rec["headers"])
+
+
+def test_pat_sso_site_header_is_not_redacted(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The SSO *site url* is not a credential — keep it readable for diagnosis."""
+    monkeypatch.setenv("PAT_INIT_SSO_HEADER_KEY_NAME", "X-Sso-Site")
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, content=b"err")
+
+    client = _client(handler)
+    with structlog.testing.capture_logs() as logs:
+        client.post("/api/pat/token", headers={"X-Sso-Site": "https://sso.example"})
+
+    rec = _find_error_log(logs)
+    assert rec is not None
+    headers = {k.lower(): v for k, v in rec["headers"].items()}
+    assert headers["x-sso-site"] == "https://sso.example"
