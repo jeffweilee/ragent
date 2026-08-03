@@ -204,9 +204,12 @@
 > The whole slice is **feature-gated on `PAT_PUBLIC_KEY`**: unset → the `/pat/v1`
 > router is not mounted and the `/brainagent/v1` proxy attaches no PAT (existing
 > behaviour unchanged). When set, `PAT_ISS` / `PAT_AUD` / `PAT_NT_KEY_NAME` /
-> `PAT_REFRESH_API` / `PAT_API_HEADER_TOKEN_KEY` / `PAT_API_HEADER_TOKEN_VALUE`
-> and the encryption keys (`RAGENT_KEK_BASE64` / `RAGENT_ENCRYPTED_DEK_BASE64`,
-> §4.6.x) become required. Full flow: [`docs/spec/pat.md`](pat.md).
+> `PAT_REFRESH_API` / `PAT_API_HEADER_TOKEN_KEY` / `PAT_API_HEADER_TOKEN_VALUE`,
+> the `PAT_INIT_*` mint credentials, and the encryption keys
+> (`RAGENT_KEK_BASE64` / `RAGENT_ENCRYPTED_DEK_BASE64`, §4.6.x) become required.
+> Authorization forwards the caller's SSO id token, so the slice also needs a JWT
+> auth mode (`RAGENT_AUTH_MODE=jwt_header` / `jwt_prefer_header`).
+> Full flow: [`docs/spec/pat.md`](pat.md).
 
 | Variable | Default | Description |
 |---|---|---|
@@ -215,6 +218,14 @@
 | `PAT_ISS`                             | (required when enabled) | Expected `iss` claim of the PAT JWT. |
 | `PAT_AUD`                             | (required when enabled) | Expected `aud` claim of the PAT JWT. |
 | `PAT_NT_KEY_NAME`                     | (required when enabled) | Claim name inside the PAT holding the SSO nt; must equal the resolved caller identity (binding check). |
+| `PAT_INIT_API_URL`                    | (required when enabled) | Base URL of the PAT **init** service; ragent posts to `{PAT_INIT_API_URL}/api/pat/token` to mint a PAT on `POST /pat/v1/authorize`. |
+| `PAT_INIT_API_TOKEN`                  | (required when enabled) | Service credential sent under `PAT_INIT_API_TOKEN_HEADER_KEY_NAME` on the init call. **Never logged.** |
+| `PAT_INIT_API_TOKEN_HEADER_KEY_NAME`  | (required when enabled) | Header **name** carrying `PAT_INIT_API_TOKEN` on the init call. |
+| `PAT_INIT_AUTHORIZE_HEADER_KEY_NAME`  | (required when enabled) | Header **name** carrying the caller's inbound SSO id token (read from `RAGENT_JWT_HEADER`) on the init call — the on-behalf-of credential. |
+| `PAT_INIT_SSO_HEADER_KEY_NAME`        | (required when enabled) | Header **name** carrying `PAT_INIT_SSO_SITE_URL` on the init call. |
+| `PAT_INIT_SSO_SITE_URL`               | (required when enabled) | SSO site URL sent under `PAT_INIT_SSO_HEADER_KEY_NAME` — identifies which SSO site the id token came from. |
+| `PAT_INIT_EXPIRE_DAYS`                | `360`            | Days ahead of today for the init `expireDate` body field. Must be `1..364` — the init API returns `400` beyond one year, so an out-of-range value **aborts boot** rather than failing every mint at runtime. The ceiling stops a day short of the anniversary because ragent computes the date in UTC while init evaluates it in its own timezone; the default leaves further margin. |
+| `PAT_INIT_TIMEOUT_SECONDS`            | `30`             | Per-call timeout for the `POST {PAT_INIT_API_URL}/api/pat/token` mint request. |
 | `PAT_REFRESH_API`                     | (required when enabled) | `PUT` URL of the PAT refresh service (`{"patToken": current}` → `{"patToken": new}`). |
 | `PAT_API_HEADER_TOKEN_KEY`            | (required when enabled) | Header **name** carrying the service credential on the refresh call. |
 | `PAT_API_HEADER_TOKEN_VALUE`          | (required when enabled) | Header **value** (service credential) sent under `PAT_API_HEADER_TOKEN_KEY`. **Never logged.** |

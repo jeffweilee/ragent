@@ -7,6 +7,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import structlog
+
 from ragent.bootstrap.auth_mode import AuthMode, parse_auth_mode
 from ragent.services.attachment_ingest_service import ATTACHMENT_MAX_SIZE_BYTES_DEFAULT
 
@@ -20,6 +22,8 @@ from ragent.utility.env import bool_env as _bool_env
 from ragent.utility.env import float_env as _float_env
 from ragent.utility.env import int_env as _int_env
 from ragent.utility.env import require as _require
+
+logger = structlog.get_logger(__name__)
 
 _K8S_SA_TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 
@@ -595,11 +599,28 @@ def build_container() -> Container:
     if pat_public_key is not None:
         from ragent.auth.pat_jwt import PatTokenVerifier, import_pat_public_key
         from ragent.clients.pat_cache import PatCache
+        from ragent.clients.pat_init_client import PatInitClient
         from ragent.clients.pat_refresh_client import PatRefreshClient
         from ragent.repositories.pat_repository import PatRepository
         from ragent.security.key_manager import KeyManager
         from ragent.security.pat_cipher import PATCipher
         from ragent.services.pat_service import PatService
+
+        # `POST /pat/v1/authorize` forwards the caller's SSO id token to the init
+        # service, so it can only work under a JWT auth mode. Warn rather than
+        # abort: `resolve` needs no id token, so a deployment with PATs already
+        # stored still serves the /brainagent/v1 attach correctly — only the
+        # authorize endpoint is unusable, and it would otherwise 401 silently.
+        if parse_auth_mode() not in (AuthMode.jwt_header, AuthMode.jwt_prefer_header):
+            logger.warning(
+                "pat.authorize_unavailable_in_auth_mode",
+                auth_mode=str(parse_auth_mode()),
+                detail=(
+                    "PAT_PUBLIC_KEY is set but RAGENT_AUTH_MODE is not jwt_header/"
+                    "jwt_prefer_header; POST /pat/v1/authorize has no SSO id token to "
+                    "forward and will always return 401 PAT_REAUTH_REQUIRED"
+                ),
+            )
 
         pat_alg = os.environ.get("PAT_JWT_ALG", "RS256")
         pat_key_manager = KeyManager(
@@ -623,6 +644,17 @@ def build_container() -> Container:
                 header_key=_require("PAT_API_HEADER_TOKEN_KEY"),
                 header_value=_require("PAT_API_HEADER_TOKEN_VALUE"),
                 timeout=_float_env("PAT_REFRESH_TIMEOUT_SECONDS", 30.0),
+            ),
+            init_client=PatInitClient(
+                http,
+                base_url=_require("PAT_INIT_API_URL"),
+                api_token_header_key=_require("PAT_INIT_API_TOKEN_HEADER_KEY_NAME"),
+                api_token_value=_require("PAT_INIT_API_TOKEN"),
+                authorize_header_key=_require("PAT_INIT_AUTHORIZE_HEADER_KEY_NAME"),
+                sso_header_key=_require("PAT_INIT_SSO_HEADER_KEY_NAME"),
+                sso_site_url=_require("PAT_INIT_SSO_SITE_URL"),
+                expire_days=_int_env("PAT_INIT_EXPIRE_DAYS", 360),
+                timeout=_float_env("PAT_INIT_TIMEOUT_SECONDS", 30.0),
             ),
             max_retries=_int_env("PAT_REFRESH_MAX_RETRIES", 3),
             backoff_base_seconds=_float_env("PAT_REFRESH_BACKOFF_SECONDS", 0.5),

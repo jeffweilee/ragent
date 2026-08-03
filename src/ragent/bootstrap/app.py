@@ -596,7 +596,12 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
     # T-PAT — authorization endpoint; mounted only when the PAT slice is wired
     # (PAT_PUBLIC_KEY set).
     if container.pat_service is not None:
-        app.include_router(create_pat_router(pat_service=container.pat_service))
+        app.include_router(
+            create_pat_router(
+                pat_service=container.pat_service,
+                id_token_header_name=str_env("RAGENT_JWT_HEADER", _DEFAULT_JWT_HEADER),
+            )
+        )
     app.include_router(
         create_mcp_router(
             retrieval_pipeline=container.retrieval_pipeline,

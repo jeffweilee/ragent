@@ -78,6 +78,22 @@ class FakeRefreshClient:
         return item
 
 
+class FakeInitClient:
+    """Returns ``result`` (a minted PAT str) or raises it when it is an Exception.
+
+    Records the forwarded id token so authorize's on-behalf-of wiring is checked."""
+
+    def __init__(self, result: Any) -> None:
+        self._result = result
+        self.calls: list[str] = []
+
+    def init(self, id_token: str) -> str:
+        self.calls.append(id_token)
+        if isinstance(self._result, Exception):
+            raise self._result
+        return self._result
+
+
 async def _no_sleep(_seconds: float) -> None:
     return None
 
@@ -86,6 +102,7 @@ def build_service(
     *,
     repo: FakeRepo | None = None,
     refresh_client: FakeRefreshClient | None = None,
+    init_client: FakeInitClient | None = None,
     cache: PatCache | None = None,
     cipher: PATCipher | None = None,
     max_retries: int = 3,
@@ -112,6 +129,7 @@ def build_service(
         repo=repo,
         cache=cache,
         refresh_client=refresh_client if refresh_client is not None else FakeRefreshClient([]),
+        init_client=init_client if init_client is not None else FakeInitClient(sign()),
         max_retries=max_retries,
         backoff_base_seconds=0.0,
         sleeper=_no_sleep,

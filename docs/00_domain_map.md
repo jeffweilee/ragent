@@ -82,7 +82,7 @@ Bootstrap (Composition Root) — 唯一組裝點
 | `feedback.py` | `/feedback/v1` | 使用者回饋 HMAC token 驗證與雙寫 |
 | `mcp.py` | `/mcp/v1` | JSON-RPC 2.0 MCP Tool Server（P2.5）|
 | `skill.py` | `/skills/v1` | 使用者 skill preset CRUD（owner-scoped；T-SK）|
-| `pat.py` | `/pat/v1` | PAT 授權寫入(`POST /authorize`;SSO nt 由 header 解析、PAT 由 body 暫傳;驗證+綁定+加密+存 DB/redis;T-PAT)|
+| `pat.py` | `/pat/v1` | PAT 授權寫入(`POST /authorize`,**無 body**;SSO nt 由 identity header 解析、id token 由 `RAGENT_JWT_HEADER` 讀出轉發給 init service 換發 PAT;驗證+綁定+加密+存 DB/redis;T-PAT)|
 | `mcp_tools/` | —(tool 描述子)| 每個 sub-module 定義一個 MCP tool 的 input model / inputSchema / Tool descriptor |
 | `admin_embedding.py` | `/embedding/v1` | embedding model 生命週期管理（B50；promote/cutover/rollback/commit/abort/state）|
 | `admin_ingest.py` | `/ingest/v1/upload` | multipart 上傳路由（direct route；no `APIRouter` prefix）|
@@ -119,7 +119,7 @@ Bootstrap (Composition Root) — 唯一組裝點
 | `attachment_ingest_service.py` | `upload()`：`IngestService.create_from_upload()` → `session_document_repo.create()`。`get/list_by_thread/list_by_user/delete/delete_by_session`：`session_documents` join `documents`，status 映射到 4-value 合約（PENDING/DELETING→PROCESSING）|
 | `attachment_context_resolver.py` | `resolve(session_id, user_id, attachment_ids)` → `AttachmentContext(files_json, instruction)` または `None`；顯式 ids 做 owner+session 校驗；session fallback 倒序＋latest flag；永不注入文件內容 |
 | `retrieve_v2_service.py` | `assert_owner(user_id, document_ids)`：`document_repo.get_by_document_ids()` 批次查；任一 id 不屬於 user → `DocumentForbidden` |
-| `pat_service.py` | PAT 生命週期協調(T-PAT)：`authorize`(驗證+綁定+加密+存)、`resolve`/`resolve_best_effort`(redis→DB→refresh→invalidate)、`_refresh`(per-nt 鎖 + 401/400/429 狀態機)|
+| `pat_service.py` | PAT 生命週期協調(T-PAT)：`authorize`(init 換發+驗證+綁定+加密+存)、`resolve`/`resolve_best_effort`(redis→DB→refresh→invalidate)、`_refresh`(per-nt 鎖 + 401/400/429 狀態機)、`_mint`(init 401/400/429/transient 映射)|
 
 ---
 ### 2.4 Repositories（資料持久層）
@@ -215,6 +215,7 @@ Bootstrap (Composition Root) — 唯一組裝點
 | `nats_publisher.py` | `NatsSessionPublisher`(T-CAv3N) — sessionList 即時狀態（running/hasNewReply）發布到 per-user NATS subject；app-flow JWT 換發 + 連線 supervisor，全程 fail-soft |
 | `pat_cache.py` | `PatCache`(T-PAT) — PAT redis 快取(`ragent:pat:{nt}`，TTL 11.5h)+ per-nt refresh 鎖(`SET NX EX`)；全 op fail-soft |
 | `pat_refresh_client.py` | `PatRefreshClient`(T-PAT) — `PUT {PAT_REFRESH_API}` rotate PAT；401/400/429/transient 映射為 typed error 供 service 狀態機 |
+| `pat_init_client.py` | `PatInitClient`(T-PAT) — `POST {PAT_INIT_API_URL}/api/pat/token` 以使用者 SSO id token 換發新 PAT(三個 header + `{expireDate}` body，日期取 `today + PAT_INIT_EXPIRE_DAYS`，須 < 1 年)；401/400/429/transient 映射為 typed error |
 
 ---
 ### 2.8 Schemas（I/O DTO）
@@ -259,7 +260,7 @@ Bootstrap (Composition Root) — 唯一組裝點
 | **允許依賴** | `errors/`、`utility/`。 |
 | **禁止事項** | ❌ 不得在 auth 層做授權（permission check）— 授權屬 OpenFGA P2 範疇。❌ 不得在 route handler 中直接讀 `Header(alias="X-User-Id")` — 必須 `Depends(get_user_id)`。❌ `VerifyingTokenManager`（JWT 驗證）與 `TokenManager`（J1/J2 API token）是完全不同的類別，不得混用。 |
 
-主要檔案：`jwt.py`（VerifyingTokenManager — JWKS + joserfc 驗簽）、`deps.py`（get_user_id FastAPI Depends）、`pat_jwt.py`（`PatTokenVerifier` — 靜態 PEM 公鑰驗 PAT JWT 的 exp/iss/aud/sign + nt 綁定；T-PAT，與 JWKS 路徑無關）。
+主要檔案：`jwt.py`（VerifyingTokenManager — JWKS + joserfc 驗簽）、`deps.py`（`get_user_id` FastAPI Depends；`id_token_of(request, header_name)` — 讀取原始 inbound SSO id token 供 PAT init 轉發，刻意不做成 `Depends` factory,見該函式 docstring）、`pat_jwt.py`（`PatTokenVerifier` — 靜態 PEM 公鑰驗 PAT JWT 的 exp/iss/aud/sign + nt 綁定；T-PAT，與 JWKS 路徑無關）。
 
 ---
 ### 2.11 Middleware（HTTP 中介層）

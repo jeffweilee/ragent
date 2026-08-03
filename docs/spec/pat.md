@@ -4,6 +4,10 @@
 > PAT **service** in ragent — authorization write + on-demand resolution of a
 > valid PAT. Calling an upstream *with* the PAT is the consumer's concern; the
 > only consumer wired in this cycle is the `/brainagent/v1` proxy (fail-open).
+>
+> **Authorization requires an SSO id token**, so the PAT slice is only usable
+> under a JWT auth mode (`RAGENT_AUTH_MODE=jwt_header` / `jwt_prefer_header`) —
+> a trust-header deployment has no id token to forward to the init service.
 
 ## 1. Model
 
@@ -31,18 +35,56 @@ no proactive refresh is needed.
 
 ## 3. Part 1 — authorization write (`POST /pat/v1/authorize`)
 
-SSO identity comes from the request header (`Depends(get_user_id)` → nt); the
-PAT is supplied in the body `{patToken}` (temporary — swapped for the fetch-PAT
-API when it lands). Steps:
+**The request carries no body.** SSO identity comes from the request header
+(`Depends(get_user_id)` → nt) and the inbound SSO **id token** is read from
+`RAGENT_JWT_HEADER` (the same header the JWT middleware verified — the token
+itself survives on `request.headers`). ragent mints the PAT itself via the init
+service; the FE never handles a PAT. Steps:
 
-1. Verify the PAT (§2).
-2. **Binding check**: `PAT[PAT_NT_KEY_NAME] == resolved nt` (never trust a
-   body-supplied identity). Mismatch → `401 PAT_REAUTH_REQUIRED`.
-3. Encrypt → `repo.upsert(nt, cipher)` (`INSERT … ON DUPLICATE KEY UPDATE`,
+1. **Mint** — `PatInitClient.init(id_token)` (§3.1). A missing id token short-
+   circuits to `401 PAT_REAUTH_REQUIRED` without calling the service.
+2. Verify the minted PAT (§2).
+3. **Binding check**: `PAT[PAT_NT_KEY_NAME] == resolved nt` (never trust an
+   upstream-supplied identity — init is trusted to mint, not to name the owner).
+   Mismatch → `401 PAT_REAUTH_REQUIRED`.
+4. Encrypt → `repo.upsert(nt, cipher)` (`INSERT … ON DUPLICATE KEY UPDATE`,
    `status='active'` — re-authorization overwrites and reactivates an
    `invalid` row) → `cache.put(nt, cipher)`.
 
 `204` on success. Failure writes nothing.
+
+### 3.1 Init call — `PatInitClient.init(id_token) → patToken`
+
+`POST {PAT_INIT_API_URL}/api/pat/token`, `content-type: application/json`, with
+three headers and a date body:
+
+| Header (name from env) | Value |
+|---|---|
+| `PAT_INIT_API_TOKEN_HEADER_KEY_NAME` | `PAT_INIT_API_TOKEN` (service credential) |
+| `PAT_INIT_AUTHORIZE_HEADER_KEY_NAME` | the caller's inbound SSO id token |
+| `PAT_INIT_SSO_HEADER_KEY_NAME`       | `PAT_INIT_SSO_SITE_URL` |
+
+Body `{"expireDate": "YYYY/MM/DD"}` — `today + PAT_INIT_EXPIRE_DAYS` (default
+360, a margin under the API's **one-year ceiling**). Response `{"patToken": …}`.
+
+**Error matrix** (responses from the init API):
+
+| Status | Meaning | Action |
+|---|---|---|
+| **401** | bad id token or api token | `PatReauthRequired` → `401 PAT_REAUTH_REQUIRED` |
+| **400** | `expireDate` > 1 year / empty body → our bug | `PatInternalError` → `500` + log. Nothing written. |
+| **429** | rate limited — init caps **10 per 60 s per client + nt** | `PatInitThrottled` → `429 PAT_INIT_RATE_LIMITED`. **No retry** — retrying would burn the same budget; the PAT is meant to be minted once and kept, then rotated via `PAT_REFRESH_API` (§5). |
+| **any other status / transport / malformed 200** | transient | `PatInitUnavailable` → `503 PAT_INIT_UNAVAILABLE`. Note this also swallows permanent 4xx (a wrong `PAT_INIT_API_URL` reads as "transiently unavailable") — same behaviour as `PatRefreshClient`; the `pat.init_unexpected_status` log carries the real status. |
+
+Init is called **only** on `POST /pat/v1/authorize` — never on the request path.
+Steady state is one mint per user, then self-rotation via refresh.
+
+**Explicit authorize always re-mints** — it does not short-circuit when the
+caller already holds a valid PAT. Re-authorization is the documented remedy for
+an `invalid` row (§6), so it must reach the init service rather than return the
+token it is trying to replace. The cost is that a client which calls authorize
+on every page load burns the 10/60 s budget and starts seeing `429`; authorize
+is a one-off user action, and the request path never touches init.
 
 ## 4. Request path — `PatService.resolve(nt) → token`
 

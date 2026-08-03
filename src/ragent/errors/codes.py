@@ -90,6 +90,10 @@ class HttpErrorCode(StrEnum):
     # `invalid` / the refresh service returned 401 during resolve — the user
     # must re-authorize.
     PAT_REAUTH_REQUIRED = "PAT_REAUTH_REQUIRED"  # 401
+    # The init service (mints a fresh PAT on POST /pat/v1/authorize) rate-limited
+    # us (429 — caps 10/60s per client+nt) or is transiently unavailable (503).
+    PAT_INIT_RATE_LIMITED = "PAT_INIT_RATE_LIMITED"  # 429
+    PAT_INIT_UNAVAILABLE = "PAT_INIT_UNAVAILABLE"  # 503
 
     # LLM stream interrupt (502) — stream closed before [DONE] sentinel.
     LLM_STREAM_INTERRUPTED = "LLM_STREAM_INTERRUPTED"

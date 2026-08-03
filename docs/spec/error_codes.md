@@ -62,7 +62,9 @@
 | `SKILL_NAME_CONFLICT`                | 409             | Duplicate `(user_id, name)` on create/update (T-SK) | Skills router |
 | `SKILL_VALIDATION`                   | 422             | Skill request fails schema / field bounds (T-SK) | Skills router |
 | `SKILL_READONLY`                     | 409             | `PUT`/`DELETE` targeting a built-in preset skill (T-SK) | Skills router |
-| `PAT_REAUTH_REQUIRED`                | 401             | PAT fails verification / nt-binding on `POST /pat/v1/authorize`, or a stored PAT is `invalid` / refresh returned 401 on resolve — the user must re-authorize (T-PAT) | PAT router / `PatService` |
+| `PAT_REAUTH_REQUIRED`                | 401             | PAT fails verification / nt-binding on `POST /pat/v1/authorize`, the caller sent no SSO id token, the init service rejected the id/api token (401), or a stored PAT is `invalid` / refresh returned 401 on resolve — the user must re-authorize (T-PAT) | PAT router / `PatService` |
+| `PAT_INIT_RATE_LIMITED`              | 429             | The PAT init service rate-limited the mint (caps 10 per 60 s per client + nt) on `POST /pat/v1/authorize`; not retried — retry later (T-PAT) | PAT router / `PatService` |
+| `PAT_INIT_UNAVAILABLE`               | 503             | The PAT init service is transiently unavailable (5xx / transport failure / malformed 200) on `POST /pat/v1/authorize` (T-PAT) | PAT router / `PatService` |
 | `ES_PLUGIN_MISSING`                  | 503 (`/readyz`) | ES cluster missing `analysis-icu` plugin (B26, T0.8g) | Bootstrap / readyz |
 | `ES_INDEX_MISSING`                   | 503 (`/readyz`) | A `resources/es/*.json` index is absent at boot | Bootstrap / readyz |
 | `SCHEMA_DRIFT`                       | 503 (`/readyz`) + log `event=schema.drift` | Live schema differs from `schema.sql` / `resources/es/` | Bootstrap |

@@ -1,13 +1,15 @@
 """PatService — PAT authorization write + on-demand resolution (T-PAT).
 
-Coordinates the PAT slice: verify + bind + encrypt + persist on authorization;
-redis→DB→refresh→invalidate on resolution; the refresh state machine (per-nt
-lock, 401→invalidate, 400→internal, 429/transient→bounded backoff). Full flow +
-contracts: `docs/spec/pat.md`.
+Coordinates the PAT slice: mint (via the init service) + verify + bind + encrypt
++ persist on authorization; redis→DB→refresh→invalidate on resolution; the
+refresh state machine (per-nt lock, 401→invalidate, 400→internal,
+429/transient→bounded backoff). Init errors map to 401/429/500/503 and are never
+retried — the init API is rate limited, so a stored PAT is rotated via refresh
+instead. Full flow + contracts: `docs/spec/pat.md`.
 
 Async because the repository rides the async engine; the (fast) redis cache is
-called directly (fail-soft), and the (blocking) refresh HTTP call is offloaded
-with `run_in_threadpool` so it never stalls the event loop.
+called directly (fail-soft), and the (blocking) init + refresh HTTP calls are
+offloaded with `run_in_threadpool` so they never stall the event loop.
 """
 
 from __future__ import annotations
@@ -21,6 +23,13 @@ from fastapi.concurrency import run_in_threadpool
 
 from ragent.auth.pat_jwt import PatTokenInvalid, PatTokenVerifier
 from ragent.clients.pat_cache import PatCache
+from ragent.clients.pat_init_client import (
+    PatInitBadRequest,
+    PatInitClient,
+    PatInitError,
+    PatInitRateLimited,
+    PatInitUnauthorized,
+)
 from ragent.clients.pat_refresh_client import (
     PatRefreshBadRequest,
     PatRefreshClient,
@@ -41,8 +50,9 @@ class PatReauthRequired(Exception):
 
 
 class PatInternalError(Exception):
-    """The refresh service rejected our own request (400) — a ragent-side bug."""
+    """The refresh / init service rejected our own request (400) — a ragent-side bug."""
 
+    error_code = HttpErrorCode.INTERNAL_ERROR
     http_status = 500
 
 
@@ -50,6 +60,21 @@ class PatRefreshExhausted(Exception):
     """Refresh kept failing transiently (429/5xx) past the retry budget; the PAT
     stays active and the request is rejected for now."""
 
+    http_status = 503
+
+
+class PatInitThrottled(Exception):
+    """The init service rate-limited the mint (429 — caps 10/60s per client+nt);
+    the caller should retry later (downstream keeps + refreshes the PAT)."""
+
+    error_code = HttpErrorCode.PAT_INIT_RATE_LIMITED
+    http_status = 429
+
+
+class PatInitUnavailable(Exception):
+    """The init service is transiently unavailable (5xx / transport / malformed)."""
+
+    error_code = HttpErrorCode.PAT_INIT_UNAVAILABLE
     http_status = 503
 
 
@@ -62,6 +87,7 @@ class PatService:
         repo: Any,
         cache: PatCache,
         refresh_client: PatRefreshClient,
+        init_client: PatInitClient,
         max_retries: int = 3,
         backoff_base_seconds: float = 0.5,
         sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep,
@@ -73,6 +99,7 @@ class PatService:
         self._repo = repo
         self._cache = cache
         self._refresh_client = refresh_client
+        self._init_client = init_client
         self._max_retries = max_retries
         self._backoff_base = backoff_base_seconds
         self._sleeper = sleeper
@@ -80,20 +107,67 @@ class PatService:
         self._lock_poll_interval = lock_poll_interval_seconds
 
     # --- Part 1: authorization write -------------------------------------
-    async def authorize(self, *, nt: str, pat_token: str) -> None:
-        """Verify + bind + encrypt + persist a user-supplied PAT.
+    async def authorize(self, *, nt: str, id_token: str) -> None:
+        """Mint a PAT via the init service (on-behalf-of ``id_token``), then
+        verify + bind + encrypt + persist it.
 
-        Raises ``PatTokenInvalid`` (401 ``PAT_REAUTH_REQUIRED``) on a bad token
-        or an nt-binding mismatch; writes nothing on failure."""
+        Raises ``PatTokenInvalid`` (401 ``PAT_REAUTH_REQUIRED``) on a bad minted
+        token or an nt-binding mismatch, or a mapped init error
+        (``PatReauthRequired`` / ``PatInternalError`` / ``PatInitThrottled`` /
+        ``PatInitUnavailable``); writes nothing on failure."""
         logger.info("pat.authorize.started", user_id=nt)
-        claims = self._verifier.verify(pat_token)
-        if self._verifier.nt_of(claims) != nt:
-            logger.warning("pat.authorize.nt_mismatch", user_id=nt)
+        pat_token = await self._mint(nt, id_token)
+        # A minted PAT that fails verification means the init service handed us
+        # something unusable — log the terminal event so `started` is never left
+        # dangling without an outcome (00_rule.md §Service Boundary Logs).
+        try:
+            claims = self._verifier.verify(pat_token)
+            bound_nt = self._verifier.nt_of(claims)
+        except PatTokenInvalid:
+            logger.warning(
+                "pat.authorize.failed",
+                user_id=nt,
+                error_code=HttpErrorCode.PAT_REAUTH_REQUIRED,
+                reason="minted_token_invalid",
+            )
+            raise
+        if bound_nt != nt:
+            logger.warning(
+                "pat.authorize.failed",
+                user_id=nt,
+                error_code=HttpErrorCode.PAT_REAUTH_REQUIRED,
+                reason="nt_mismatch",
+            )
             raise PatTokenInvalid()
         cipher_text = self._cipher.encrypt(pat_token)
         await self._repo.upsert(user_id=nt, pat_cipher=cipher_text)
         self._cache.put(nt, cipher_text)
         logger.info("pat.authorize.stored", user_id=nt)
+
+    async def _mint(self, nt: str, id_token: str) -> str:
+        """Call the init service and map its typed HTTP errors to service errors."""
+        try:
+            return await run_in_threadpool(self._init_client.init, id_token)
+        except PatInitUnauthorized as exc:
+            logger.warning(
+                "pat.init.unauthorized", user_id=nt, error_code=HttpErrorCode.PAT_REAUTH_REQUIRED
+            )
+            raise PatReauthRequired() from exc
+        except PatInitBadRequest as exc:
+            logger.error(
+                "pat.init.bad_request", user_id=nt, error_code=HttpErrorCode.INTERNAL_ERROR
+            )
+            raise PatInternalError("init service rejected our request (400)") from exc
+        except PatInitRateLimited as exc:
+            logger.warning(
+                "pat.init.rate_limited", user_id=nt, error_code=HttpErrorCode.PAT_INIT_RATE_LIMITED
+            )
+            raise PatInitThrottled() from exc
+        except PatInitError as exc:  # transient / transport / malformed
+            logger.warning(
+                "pat.init.unavailable", user_id=nt, error_code=HttpErrorCode.PAT_INIT_UNAVAILABLE
+            )
+            raise PatInitUnavailable() from exc
 
     # --- Request path: resolve a usable PAT ------------------------------
     async def resolve(self, nt: str) -> str:

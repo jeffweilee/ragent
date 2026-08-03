@@ -1084,6 +1084,36 @@ curl -X POST "http://localhost:8000/chatagent/v3/attachments/01J9ABCDEFGHJKMNPQR
 
 ---
 
+## PAT Authorization (`/pat/v1`)
+
+### `POST /pat/v1/authorize` — Authorize ragent to act on the user's behalf
+
+Mounted only when the PAT slice is wired (`PAT_PUBLIC_KEY` set). ragent mints a Personal Access Token by calling the init service on-behalf-of the caller's SSO id token, then encrypts and stores it (one row per user) so every `/brainagent/v1` call can carry it. Full flow: [`docs/spec/pat.md`](spec/pat.md).
+
+**Headers:** `X-User-Id` (identity) **and** `<RAGENT_JWT_HEADER>` (default `X-Auth-Token`) carrying the SSO id token — so this endpoint requires a JWT auth mode (`RAGENT_AUTH_MODE=jwt_header` / `jwt_prefer_header`). **No request body** — the client never handles a PAT.
+
+```http
+POST /pat/v1/authorize
+X-User-Id: alice
+X-Auth-Token: <sso id token>
+```
+
+Server-side, ragent calls `POST {PAT_INIT_API_URL}/api/pat/token` with the service credential, the caller's id token, and the SSO site url, plus body `{"expireDate": "<today + PAT_INIT_EXPIRE_DAYS>"}` (`YYYY/MM/DD`, kept under the API's one-year ceiling). The minted PAT is verified and its `PAT_NT_KEY_NAME` claim must equal the resolved caller before anything is stored.
+
+**Response:** `204 No Content`. Nothing is written on failure.
+
+| Status | `error_code` | When |
+|---|---|---|
+| 401 | `PAT_REAUTH_REQUIRED` | No SSO id token on the request, init rejected the id/api token, or the minted PAT fails verification / is bound to another nt. |
+| 429 | `PAT_INIT_RATE_LIMITED` | Init rate-limited the mint (10 per 60 s per client + nt). Not retried — retry later; an authorized PAT self-rotates and needs no re-init. |
+| 500 | `INTERNAL_ERROR` | Init rejected our request (`400` — `expireDate` beyond one year / empty body); a ragent-side bug. |
+| 503 | `PAT_INIT_UNAVAILABLE` | Init transiently unavailable (5xx / transport failure / malformed `200`). |
+| 422 | `MISSING_USER_ID` | No identity header. |
+
+Re-authorizing overwrites the stored PAT and reactivates a row previously marked `invalid`.
+
+---
+
 ## Operational Endpoints (`/ops/v1`)
 
 ### `POST /ops/v1/retry` — Batch force-retry stuck documents
