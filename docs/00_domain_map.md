@@ -445,7 +445,7 @@ Bootstrap (Composition Root) — 唯一組裝點
   ❌ DELETING → 任何（DELETING 是 terminal 前的 transient）
 ```
 
-Supersede 選舉規則：**同一 `(source_id, source_app)` 最多一個 READY**。轉為 READY 前，用 `SELECT MAX(created_at) FOR UPDATE` 選出 survivor；落敗者自降 PENDING → DELETING。
+Supersede 選舉規則：**同一 `(source_id, source_app)` 最多一個 READY**。轉為 READY 前，用 atomic conditional `UPDATE … WHERE document_id = (SELECT … ORDER BY created_at DESC LIMIT 1)` 選出 survivor(無 `FOR UPDATE`)；落敗者自降 PENDING/READY → DELETING。
 
 ---
 ### R5：日誌規則摘要（所有 Domain）
