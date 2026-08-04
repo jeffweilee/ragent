@@ -86,7 +86,7 @@ Bootstrap (Composition Root) — 唯一組裝點
 | `mcp_tools/` | —(tool 描述子)| 每個 sub-module 定義一個 MCP tool 的 input model / inputSchema / Tool descriptor |
 | `admin_embedding.py` | `/embedding/v1` | embedding model 生命週期管理（B50；promote/cutover/rollback/commit/abort/state）|
 | `admin_ingest.py` | `/ingest/v1/upload` | multipart 上傳路由（direct route；no `APIRouter` prefix）|
-| `attachments.py` | `/chatagent/v3/attachments` | `POST /upload`(MIME/size 驗證 → `service.upload()` 快速 intake，202)/ `GET ?threadId=`(列出該對話的 attachments，含 `errorCode`/`errorReason`)/ `GET /{attachmentId}`(輪詢單筆狀態；不存在回 404 `ATTACHMENT_NOT_FOUND`，T-CAT.W2)；獨立檔案但與 `chatagent_v3.py` 共用 `/chatagent/v3` 路徑空間（同 `admin_ingest.py` 與 `ingest.py` 共用 `/ingest/v1` 的既有模式），滿足 `tests/unit/test_api_versioning.py` 的版本前綴規則 |
+| `attachments.py` | `/chatagent/v3/attachments` | `POST /upload`(MIME/size 驗證 → `service.upload()` 快速 intake，202)/ `GET ?threadId=`(列出該對話的 attachments，含 `errorCode`/`errorReason`)/ `GET /mine`(列出呼叫者名下所有 attachments)/ `GET /{attachmentId}`(輪詢單筆狀態；不存在回 404 `ATTACHMENT_NOT_FOUND`，T-CAT.W2)/ `POST /{attachmentId}/retry`(重試失敗的 intake)/ `DELETE /{attachmentId}`；獨立檔案但與 `chatagent_v3.py` 共用 `/chatagent/v3` 路徑空間（同 `admin_ingest.py` 與 `ingest.py` 共用 `/ingest/v1` 的既有模式），滿足 `tests/unit/test_api_versioning.py` 的版本前綴規則 |
 | `admin_ops.py` | `/ops/v1` | 維運操作(retry)|
 | `health.py` | `/livez`, `/readyz`, `/startupz`, `/metrics` | 健康探針、Prometheus 指標 |
 | `health_probes.py` | —(probe 實作)| `/readyz` 的 MariaDB / ES / Redis / MinIO probe 實作,由 `health.py` 注入 |
@@ -235,6 +235,7 @@ Bootstrap (Composition Root) — 唯一組裝點
 - `attachments.py`(`AttachmentMime` enum、`UNPROTECT_MIMES` frozenset、AttachmentUploadResponse / AttachmentListResponse)
 - `feedback.py`（FeedbackRequest / vote / reason enum）
 - `skill.py`（SkillWriteRequest / SkillResponse / SkillListResponse；T-SK）
+- `pat.py`（PatAuthorizeRequest；T-PAT）
 - `_common.py`(source_app / source_meta 共用 filter 欄位驗證)
 
 ---
@@ -305,7 +306,7 @@ Bootstrap (Composition Root) — 唯一組裝點
 
 | 檔案 | 職責 |
 |---|---|
-| `env.py` | `require()`, `int_env()`, `bool_env()`, `optional_str_env()` — env 讀取工具；空字串 `""` 視同 `None` |
+| `env.py` | `require()`, `int_env()`, `float_env()`, `float_env_or()`, `optional_float_env()`, `bool_env()`, `str_env()`, `list_env()` — env 讀取工具；空字串 `""` 視同 `None` |
 | `datetime.py` | UTC datetime 工具、naive datetime → aware 補丁 |
 | `compat.py` | Python 版本相容性 shim |
 | `embedding_lifecycle.py` | embedding model 生命週期工具函數（純計算）|
