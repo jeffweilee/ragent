@@ -449,6 +449,7 @@ a token exchange outage causes:
 | K8s SA token file missing | `clients/auth.py` | Mount the service account volume |
 | `RETRIEVAL_TOP_K` outside `[1, 200]` | `pipelines/retrieve.py` | Fix env var |
 | `PAT_INIT_EXPIRE_DAYS` outside `[1, 364]` | `clients/pat_init_client.py` | Fix env var — the init API 400s beyond one year |
+| `PAT_INIT_API_URL` has no path (a base URL) | `clients/pat_init_client.py` | Set the FULL mint endpoint, e.g. `https://pat.example/api/pat/token` |
 | A `PAT_INIT_*` var unset while `PAT_PUBLIC_KEY` is set | `bootstrap/composition.py` | Set the whole `PAT_INIT_*` block, or unset `PAT_PUBLIC_KEY` to disable the slice |
 | TaskIQ task label not registered | `bootstrap/app.py` | Ensure worker modules imported before `lifespan` |
 
@@ -599,7 +600,7 @@ POST /pat/v1/authorize   (no body)
         ├── claim == nt ?                                          [401 if not]
         └── PatService.authorize(nt, id_token)
               ├── _mint() → run_in_threadpool(PatInitClient.init)
-              │     └── POST {PAT_INIT_API_URL}/api/pat/token       [init service]
+              │     └── POST {PAT_INIT_API_URL}                     [init service]
               │           headers: api-token / id-token / sso-site
               │           body:    {"expireDate": today + PAT_INIT_EXPIRE_DAYS}
               ├── PatTokenVerifier.verify(minted)        [exp/iss/aud/signature]

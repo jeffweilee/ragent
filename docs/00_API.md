@@ -1123,7 +1123,7 @@ X-Id-Token:   <sso id token>
 
 ragent verifies `X-Id-Token` against the same JWKS / issuer / audience as the access token and requires its `<RAGENT_JWT_CLAIM_USER_ID>` claim to equal the resolved caller, so a valid id token belonging to someone else cannot mint a PAT — and an unverifiable one never reaches init.
 
-Server-side, ragent then calls `POST {PAT_INIT_API_URL}/api/pat/token` with the service credential, the caller's id token, and the SSO site url, plus body `{"expireDate": "<today + PAT_INIT_EXPIRE_DAYS>"}` (`YYYY/MM/DD`, kept under the API's one-year ceiling). The minted PAT is verified and its `PAT_NT_KEY_NAME` claim must equal the resolved caller before anything is stored.
+Server-side, ragent then calls `POST {PAT_INIT_API_URL}` (the full mint endpoint) with the service credential, the caller's id token, and the SSO site url, plus body `{"expireDate": "<today + PAT_INIT_EXPIRE_DAYS>"}` (`YYYY/MM/DD`, kept under the API's one-year ceiling). The minted PAT is verified and its `PAT_NT_KEY_NAME` claim must equal the resolved caller before anything is stored.
 
 **Response:** `204 No Content`. Nothing is written on failure.
 

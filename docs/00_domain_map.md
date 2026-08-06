@@ -215,7 +215,7 @@ Bootstrap (Composition Root) — 唯一組裝點
 | `nats_publisher.py` | `NatsSessionPublisher`(T-CAv3N) — sessionList 即時狀態（running/hasNewReply）發布到 per-user NATS subject；app-flow JWT 換發 + 連線 supervisor，全程 fail-soft |
 | `pat_cache.py` | `PatCache`(T-PAT) — PAT redis 快取(`ragent:pat:{nt}`，TTL 11.5h)+ per-nt refresh 鎖(`SET NX EX`)；全 op fail-soft |
 | `pat_refresh_client.py` | `PatRefreshClient`(T-PAT) — `PUT {PAT_REFRESH_API}` rotate PAT；401/400/429/transient 映射為 typed error 供 service 狀態機 |
-| `pat_init_client.py` | `PatInitClient`(T-PAT) — `POST {PAT_INIT_API_URL}/api/pat/token` 以使用者 SSO id token 換發新 PAT(三個 header + `{expireDate}` body，日期取 `today + PAT_INIT_EXPIRE_DAYS`，須 < 1 年)；401/400/429/transient 映射為 typed error |
+| `pat_init_client.py` | `PatInitClient`(T-PAT) — `POST {PAT_INIT_API_URL}`(env 即完整 mint endpoint,與 `PAT_REFRESH_API` 同形;無 path 則開機失敗)以使用者 SSO id token 換發新 PAT(三個 header + `{expireDate}` body，日期取 `today + PAT_INIT_EXPIRE_DAYS`，須 < 1 年)；401/400/429/transient 映射為 typed error |
 
 ---
 ### 2.8 Schemas（I/O DTO）

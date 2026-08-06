@@ -82,7 +82,7 @@ def _build_service() -> PatService:
                     lambda r: httpx.Response(200, json={"patToken": sign("alice")})
                 )
             ),
-            base_url="https://pat.example",
+            init_url="https://pat.example/api/pat/token",
             api_token_header_key="X-Pat-Init-Token",
             api_token_value="secret",
             authorize_header_key=_INIT_AUTHORIZE_HEADER,

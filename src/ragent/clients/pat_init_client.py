@@ -1,6 +1,7 @@
 """PatInitClient — mints a fresh PAT via the init service (T-PAT).
 
-`POST {PAT_INIT_API_URL}/api/pat/token` with three headers — the service
+`POST {PAT_INIT_API_URL}` — the FULL mint endpoint, same shape as
+`PAT_REFRESH_API` — with three headers: the service
 credential (`PAT_INIT_API_TOKEN_HEADER_KEY_NAME`), the inbound SSO id token
 forwarded on-behalf-of the user (`PAT_INIT_AUTHORIZE_HEADER_KEY_NAME`), and the
 SSO site url (`PAT_INIT_SSO_HEADER_KEY_NAME`) — plus body `{"expireDate": …}`
@@ -21,6 +22,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from datetime import date, timedelta
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 import structlog
@@ -29,9 +31,6 @@ from ragent.utility.datetime import utcnow
 
 logger = structlog.get_logger(__name__)
 
-# Path of the mint endpoint on the init service; part of the init API contract,
-# so the client owns it and callers configure only the base URL.
-_TOKEN_PATH = "/api/pat/token"
 # The init API rejects an expireDate more than a year out with a 400. Capped a
 # day short of the anniversary: we compute the date in UTC while the init
 # service evaluates the ceiling in its own timezone, so `today + 365` can land
@@ -68,7 +67,7 @@ class PatInitClient:
         self,
         http_client: httpx.Client,
         *,
-        base_url: str,
+        init_url: str,
         api_token_header_key: str,
         api_token_value: str,
         authorize_header_key: str,
@@ -85,8 +84,17 @@ class PatInitClient:
                 f"PAT_INIT_EXPIRE_DAYS must be in 1..{_MAX_EXPIRE_DAYS} (got {expire_days}) — "
                 "the init API rejects an expireDate more than a year out"
             )
+        # A path-less URL is almost certainly a leftover BASE url from before
+        # this variable carried the full endpoint. Left alone it would 404 on
+        # every mint, and a 404 maps to `PatInitTransient` — i.e. the slice
+        # would report "init transiently unavailable" forever. Fail at boot.
+        if urlparse(init_url).path.strip("/") == "":
+            raise ValueError(
+                "PAT_INIT_API_URL must be the FULL mint endpoint, not a base URL "
+                f"(got {init_url!r}) — e.g. https://pat.example/api/pat/token"
+            )
         self._http = http_client
-        self._url = base_url.rstrip("/") + _TOKEN_PATH
+        self._url = init_url
         # The two service-level headers never vary; only the id token is per-call.
         self._static_headers = {
             api_token_header_key: api_token_value,
