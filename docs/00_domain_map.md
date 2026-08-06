@@ -82,7 +82,7 @@ Bootstrap (Composition Root) — 唯一組裝點
 | `feedback.py` | `/feedback/v1` | 使用者回饋 HMAC token 驗證與雙寫 |
 | `mcp.py` | `/mcp/v1` | JSON-RPC 2.0 MCP Tool Server（P2.5）|
 | `skill.py` | `/skills/v1` | 使用者 skill preset CRUD（owner-scoped；T-SK）|
-| `pat.py` | `/pat/v1` | PAT 授權寫入(`POST /authorize`,**無 body**;SSO nt 由 identity header 解析、id token 由 `RAGENT_JWT_HEADER` 讀出轉發給 init service 換發 PAT;驗證+綁定+加密+存 DB/redis;T-PAT)|
+| `pat.py` | `/pat/v1` | PAT 授權寫入(`POST /authorize`,**無 body**;nt 由 identity header 解析,SSO id token 由固定的 `X-Id-Token` header 帶入 —— 與 access token 是不同的兩顆。先以同一組 JWKS 驗簽並要求其 user claim 等於 caller,再轉發給 init service 換發 PAT;驗證+綁定+加密+存 DB/redis;T-PAT)|
 | `mcp_tools/` | —(tool 描述子)| 每個 sub-module 定義一個 MCP tool 的 input model / inputSchema / Tool descriptor |
 | `admin_embedding.py` | `/embedding/v1` | embedding model 生命週期管理（B50；promote/cutover/rollback/commit/abort/state）|
 | `admin_ingest.py` | `/ingest/v1/upload` | multipart 上傳路由（direct route；no `APIRouter` prefix）|
@@ -260,7 +260,7 @@ Bootstrap (Composition Root) — 唯一組裝點
 | **允許依賴** | `errors/`、`utility/`。 |
 | **禁止事項** | ❌ 不得在 auth 層做授權（permission check）— 授權屬 OpenFGA P2 範疇。❌ 不得在 route handler 中直接讀 `Header(alias="X-User-Id")` — 必須 `Depends(get_user_id)`。❌ `VerifyingTokenManager`（JWT 驗證）與 `TokenManager`（J1/J2 API token）是完全不同的類別，不得混用。 |
 
-主要檔案：`jwt.py`（VerifyingTokenManager — JWKS + joserfc 驗簽）、`deps.py`（`get_user_id` FastAPI Depends；`id_token_of(request, header_name)` — 讀取原始 inbound SSO id token 供 PAT init 轉發，刻意不做成 `Depends` factory,見該函式 docstring）、`pat_jwt.py`（`PatTokenVerifier` — 靜態 PEM 公鑰驗 PAT JWT 的 exp/iss/aud/sign + nt 綁定；T-PAT，與 JWKS 路徑無關）。
+主要檔案：`jwt.py`（VerifyingTokenManager — JWKS + joserfc 驗簽）、`deps.py`（`get_user_id` FastAPI Depends）、`pat_jwt.py`（`PatTokenVerifier` — 靜態 PEM 公鑰驗 PAT JWT 的 exp/iss/aud/sign + nt 綁定；T-PAT，與 JWKS 路徑無關）。
 
 ---
 ### 2.11 Middleware（HTTP 中介層）

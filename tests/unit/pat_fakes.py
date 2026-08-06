@@ -13,8 +13,9 @@ from typing import Any
 
 import fakeredis
 from joserfc import jwt as _jwt
-from joserfc.jwk import RSAKey
+from joserfc.jwk import KeySet, RSAKey
 
+from ragent.auth.jwt import VerifyingTokenManager
 from ragent.auth.pat_jwt import PatTokenVerifier
 from ragent.clients.pat_cache import PatCache
 from ragent.security.pat_cipher import PATCipher
@@ -24,7 +25,39 @@ ISS = "https://sso.example/pat"
 AUD = "ragent-agent"
 NT_CLAIM = "nt"
 
+# The SSO id token the FE sends on POST /pat/v1/authorize is a DIFFERENT token
+# from the PAT: same IdP, but the OIDC issuer/audience and the username claim
+# the auth middleware reads. Kept distinct from ISS/AUD so a test that mixes
+# them up fails instead of silently passing.
+OIDC_ISS = "https://sso.example/realms/corp"
+OIDC_AUD = "ragent"
+JWT_CLAIM_USER_ID = "preferred_username"
+
 _KEY = RSAKey.generate_key(2048)
+
+
+def sign_id_token(
+    username: str = "alice",
+    *,
+    exp_delta: int = 3600,
+    iss: str = OIDC_ISS,
+    aud: str = OIDC_AUD,
+    claim: str = JWT_CLAIM_USER_ID,
+) -> str:
+    """An SSO id token for ``username``; override a kwarg to forge a bad one."""
+    now = int(time.time())
+    claims = {"iss": iss, "aud": aud, "exp": now + exp_delta, claim: username}
+    return _jwt.encode({"alg": "RS256"}, claims, _KEY)
+
+
+def id_token_manager() -> VerifyingTokenManager:
+    """A real `VerifyingTokenManager` over :func:`sign_id_token`'s key — the
+    same object `build_token_manager` produces at composition."""
+    return VerifyingTokenManager(
+        jwks=KeySet([_KEY]),
+        audience=OIDC_AUD,
+        expected_iss=OIDC_ISS,
+    )
 
 
 def sign(nt: str = "alice", *, exp_delta: int = 3600) -> str:

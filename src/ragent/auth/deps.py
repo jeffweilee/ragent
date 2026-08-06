@@ -34,20 +34,6 @@ async def get_user_id(request: Request) -> str | None:
     return request.headers.get(_USER_ID_HEADER) or None
 
 
-def id_token_of(request: Request, header_name: str) -> str | None:
-    """The raw inbound SSO id token carried on ``header_name``.
-
-    The JWT auth middleware verifies this header but leaves the token itself on
-    ``request.headers``, so the PAT init flow can forward it on-behalf-of the
-    user (``RAGENT_JWT_HEADER`` in production). Read directly instead of via a
-    ``Depends`` factory because the header name is per-router runtime config:
-    under ``from __future__ import annotations`` a factory-local closure named
-    inside ``Annotated[..., Depends(f)]`` never resolves (FastAPI evaluates the
-    string annotation against module globals) and the dependency is silently
-    dropped — the handler then always sees ``None``."""
-    return request.headers.get(header_name) or None
-
-
 async def get_forwarded_headers(request: Request) -> dict[str, str]:
     """Allowlisted inbound headers ragent carries through to the brain callers.
 

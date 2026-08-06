@@ -585,15 +585,18 @@ delete_by_session(session_id)
 ## 19. POST /pat/v1/authorize — PAT authorization (init mint)
 
 Mounted only when the PAT slice is wired (`PAT_PUBLIC_KEY` set). The request
-carries **no body**: the nt comes from the identity header and the SSO id token
-from `<RAGENT_JWT_HEADER>`, so the slice needs a JWT auth mode.
+carries **no body**: the nt comes from the identity header and the SSO **id
+token** from the fixed `X-Id-Token` header — a different token from the access
+token, verified here before it is forwarded. Works in every auth mode.
 
 ```
 POST /pat/v1/authorize   (no body)
   └── Middleware: JWT verify → scope[user_id]   (token stays on request.headers)
   └── PatRouter.authorize()
         ├── get_user_id(request)                        → nt      [422 if absent]
-        ├── id_token_of(request, RAGENT_JWT_HEADER)      → id_tok  [401 if absent]
+        ├── Header(X-Id-Token)                           → id_tok  [401 if absent]
+        ├── verify_jwt(id_tok, RAGENT_JWT_CLAIM_USER_ID) [401 sig/exp/aud/iss]
+        ├── claim == nt ?                                          [401 if not]
         └── PatService.authorize(nt, id_token)
               ├── _mint() → run_in_threadpool(PatInitClient.init)
               │     └── POST {PAT_INIT_API_URL}/api/pat/token       [init service]
@@ -613,7 +616,7 @@ Response: `204`. Failure writes nothing (no DB row, no cache entry).
 | Exception | Response |
 |---|---|
 | `user_id` is `None` | 422 `MISSING_USER_ID` |
-| no SSO id token on the header | 401 `PAT_REAUTH_REQUIRED` (init never called) |
+| `X-Id-Token` absent / unverifiable / owned by another user | 401 `PAT_REAUTH_REQUIRED` (init never called; reason on `pat.authorize.rejected`) |
 | `PatInitUnauthorized` (init 401) | 401 `PAT_REAUTH_REQUIRED` |
 | `PatTokenInvalid` (bad minted PAT / nt mismatch) | 401 `PAT_REAUTH_REQUIRED` |
 | `PatInitThrottled` (init 429) | 429 `PAT_INIT_RATE_LIMITED` — not retried (init caps 10/60 s per client + nt) |

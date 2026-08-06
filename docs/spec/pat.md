@@ -5,16 +5,15 @@
 > valid PAT. Calling an upstream *with* the PAT is the consumer's concern; the
 > only consumer wired in this cycle is the `/brainagent/v1` proxy (fail-open).
 >
-> **Authorization requires an SSO id token.** Under `jwt_header` /
-> `jwt_prefer_header` the middleware already requires it. Under `user_header` /
-> `none` the mode does not, so a caller must send `RAGENT_JWT_HEADER`
-> explicitly — composition logs `pat.authorize_needs_id_token_header` at boot,
-> and the OpenAPI schema marks the operation as needing that header
-> (`jwt_required_paths`) so Swagger and generated clients supply it. Authorizing
-> that way is still safe: init validates the id token, and the nt-binding check
-> (§3 step 3) rejects a PAT minted for anyone but the resolved caller.
-> `resolve` needs no id token at all, so the `/brainagent/v1` attach is
-> unaffected by the mode.
+> **Authorize takes TWO tokens.** ragent authenticates the caller with the
+> **access token** the middleware already verified, while the init service wants
+> an **SSO id token** as its on-behalf-of credential — different tokens with
+> different audiences (`OIDC_AUDIENCE` for the id token; the resource server,
+> `account` on a stock Keycloak, for the access token). The id token therefore
+> arrives separately on the fixed `X-Id-Token` header. This works in **every**
+> auth mode: identity comes from the mode's own scheme, the id token from its own
+> header. `resolve` needs no id token at all, so the `/brainagent/v1` attach is
+> unaffected.
 >
 > **Credentials never reach logs**: the init/refresh credential headers, the
 > forwarded id token, and the attached PAT are all registered with the
@@ -47,15 +46,19 @@ no proactive refresh is needed.
 ## 3. Part 1 — authorization write (`POST /pat/v1/authorize`)
 
 **The request carries no body.** SSO identity comes from the request header
-(`Depends(get_user_id)` → nt) and the inbound SSO **id token** is read from
-`RAGENT_JWT_HEADER` (the same header the JWT middleware verified — the token
-itself survives on `request.headers`). ragent mints the PAT itself via the init
-service; the FE never handles a PAT. Steps:
+(`Depends(get_user_id)` → nt); the SSO **id token** comes from the fixed
+`X-Id-Token` header. ragent mints the PAT itself via the init service; the FE
+never handles a PAT. Steps:
 
-1. **Mint** — `PatInitClient.init(id_token)` (§3.1). A missing id token short-
-   circuits to `401 PAT_REAUTH_REQUIRED` without calling the service.
-2. Verify the minted PAT (§2).
-3. **Binding check**: `PAT[PAT_NT_KEY_NAME] == resolved nt` (never trust an
+1. **Verify the id token** with the same JWKS / issuer / audience as the access
+   token (`auth/jwt.py::verify_jwt`), then require
+   `id_token[RAGENT_JWT_CLAIM_USER_ID] == resolved nt`. A missing, unverifiable,
+   or someone-else's id token short-circuits to `401 PAT_REAUTH_REQUIRED`
+   **without calling init** — so junk can neither impersonate nor burn init's
+   10/60 s budget. The reason rides `pat.authorize.rejected`; the response says
+   only "re-authorization required".
+2. **Mint** — `PatInitClient.init(id_token)` (§3.1), then verify the minted PAT (§2).
+3. **Binding check on the minted PAT**: `PAT[PAT_NT_KEY_NAME] == resolved nt` (never trust an
    upstream-supplied identity — init is trusted to mint, not to name the owner).
    Mismatch → `401 PAT_REAUTH_REQUIRED`.
 4. Encrypt → `repo.upsert(nt, cipher)` (`INSERT … ON DUPLICATE KEY UPDATE`,
@@ -72,7 +75,7 @@ three headers and a date body:
 | Header (name from env) | Value |
 |---|---|
 | `PAT_INIT_API_TOKEN_HEADER_KEY_NAME` | `PAT_INIT_API_TOKEN` (service credential) |
-| `PAT_INIT_AUTHORIZE_HEADER_KEY_NAME` | the caller's inbound SSO id token |
+| `PAT_INIT_AUTHORIZE_HEADER_KEY_NAME` | the caller's verified `X-Id-Token` |
 | `PAT_INIT_SSO_HEADER_KEY_NAME`       | `PAT_INIT_SSO_SITE_URL` |
 
 Body `{"expireDate": "YYYY/MM/DD"}` — `today + PAT_INIT_EXPIRE_DAYS` (default

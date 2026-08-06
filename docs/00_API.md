@@ -1090,21 +1090,23 @@ curl -X POST "http://localhost:8000/chatagent/v3/attachments/01J9ABCDEFGHJKMNPQR
 
 Mounted only when the PAT slice is wired (`PAT_PUBLIC_KEY` set). ragent mints a Personal Access Token by calling the init service on-behalf-of the caller's SSO id token, then encrypts and stores it (one row per user) so every `/brainagent/v1` call can carry it. Full flow: [`docs/spec/pat.md`](spec/pat.md).
 
-**Headers:** `X-User-Id` (identity) **and** `<RAGENT_JWT_HEADER>` (default `X-Auth-Token`) carrying the SSO id token — so this endpoint requires a JWT auth mode (`RAGENT_AUTH_MODE=jwt_header` / `jwt_prefer_header`). **No request body** — the client never handles a PAT.
+**Headers:** the usual identity credential for the active auth mode (`X-Auth-Token` access token, or `X-User-Id`) **plus `X-Id-Token`** carrying the SSO **id token**. These are two different tokens: ragent authenticates you with the access token, while the init service mints against the id token (whose `aud` is `OIDC_AUDIENCE`, unlike the access token's). **No request body** — the client never handles a PAT.
 
 ```http
 POST /pat/v1/authorize
-X-User-Id: alice
-X-Auth-Token: <sso id token>
+X-Auth-Token: <access token>
+X-Id-Token:   <sso id token>
 ```
 
-Server-side, ragent calls `POST {PAT_INIT_API_URL}/api/pat/token` with the service credential, the caller's id token, and the SSO site url, plus body `{"expireDate": "<today + PAT_INIT_EXPIRE_DAYS>"}` (`YYYY/MM/DD`, kept under the API's one-year ceiling). The minted PAT is verified and its `PAT_NT_KEY_NAME` claim must equal the resolved caller before anything is stored.
+ragent verifies `X-Id-Token` against the same JWKS / issuer / audience as the access token and requires its `<RAGENT_JWT_CLAIM_USER_ID>` claim to equal the resolved caller, so a valid id token belonging to someone else cannot mint a PAT — and an unverifiable one never reaches init.
+
+Server-side, ragent then calls `POST {PAT_INIT_API_URL}/api/pat/token` with the service credential, the caller's id token, and the SSO site url, plus body `{"expireDate": "<today + PAT_INIT_EXPIRE_DAYS>"}` (`YYYY/MM/DD`, kept under the API's one-year ceiling). The minted PAT is verified and its `PAT_NT_KEY_NAME` claim must equal the resolved caller before anything is stored.
 
 **Response:** `204 No Content`. Nothing is written on failure.
 
 | Status | `error_code` | When |
 |---|---|---|
-| 401 | `PAT_REAUTH_REQUIRED` | No SSO id token on the request, init rejected the id/api token, or the minted PAT fails verification / is bound to another nt. |
+| 401 | `PAT_REAUTH_REQUIRED` | `X-Id-Token` missing, unverifiable (bad signature / expired / wrong `aud` — e.g. an **access token** sent by mistake), or belonging to another user — in all of these init is never called. Also when init rejects the id/api token, or the minted PAT fails verification / is bound to another nt. |
 | 429 | `PAT_INIT_RATE_LIMITED` | Init rate-limited the mint (10 per 60 s per client + nt). Not retried — retry later; an authorized PAT self-rotates and needs no re-init. |
 | 500 | `INTERNAL_ERROR` | Init rejected our request (`400` — `expireDate` beyond one year / empty body); a ragent-side bug. |
 | 503 | `PAT_INIT_UNAVAILABLE` | Init transiently unavailable (5xx / transport failure / malformed `200`). |

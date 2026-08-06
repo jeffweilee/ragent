@@ -85,6 +85,23 @@ def _set_pat_env(monkeypatch: pytest.MonkeyPatch, *, omit: str | None = None) ->
         monkeypatch.setenv(key, value)
 
 
+def _fake_build_token_manager(**kwargs):
+    """A REAL `VerifyingTokenManager` (no OIDC/JWKS network) that honours the
+    verify flags — composition derives the PAT verifier from it via
+    `dataclasses.replace`, which a MagicMock cannot stand in for."""
+    from joserfc.jwk import KeySet
+
+    from ragent.auth.jwt import VerifyingTokenManager
+
+    return VerifyingTokenManager(
+        jwks=KeySet([]),
+        audience=kwargs["audience"],
+        expected_iss=f"https://{kwargs['domain']}",
+        verify_aud=kwargs.get("verify_aud", True),
+        verify_exp=kwargs.get("verify_exp", True),
+    )
+
+
 def _build():
     """Run build_container() with every external dependency stubbed."""
     with (
@@ -94,7 +111,7 @@ def _build():
         patch("ragent.clients.llm.LLMClient", MagicMock()),
         patch("ragent.clients.rerank.RerankClient", MagicMock()),
         patch("ragent.clients.auth.TokenManager", MagicMock()),
-        patch("ragent.auth.jwt.build_token_manager", MagicMock()),
+        patch("ragent.auth.jwt.build_token_manager", side_effect=_fake_build_token_manager),
         patch(
             "haystack_integrations.document_stores.elasticsearch.ElasticsearchDocumentStore",
             MagicMock(),
@@ -169,21 +186,33 @@ def test_out_of_range_expire_days_aborts_boot(
         _build()
 
 
-def test_non_jwt_auth_mode_warns_that_authorize_needs_the_id_token_header(
+def test_id_token_verifier_forces_aud_and_exp_checks(
     _base_env: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """PAT enabled under a trust-header mode still boots (resolve works, and
-    authorize works for a caller who sends the JWT header explicitly), but the
-    operator gets a signal that the mode does not require that header."""
-    from structlog.testing import capture_logs
+    """The X-Id-Token verifier must check `aud` even when a dev flag loosened the
+    middleware — that check is what separates an id token (aud=OIDC_AUDIENCE)
+    from an access token (aud=the resource server)."""
+    _set_pat_env(monkeypatch)
+    monkeypatch.setenv("RAGENT_ENV", "dev")
+    monkeypatch.setenv("RAGENT_JWT_VERIFY_AUD", "false")
+    monkeypatch.setenv("RAGENT_JWT_VERIFY_EXP", "false")
 
+    container = _build()
+
+    assert container.auth_token_manager.verify_aud is False  # middleware honours the flag
+    assert container.pat_id_token_manager.verify_aud is True  # the PAT check does not
+    assert container.pat_id_token_manager.verify_exp is True
+
+
+def test_id_token_verifier_is_built_in_trust_header_mode(
+    _base_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A trust-header deployment builds no middleware verifier, but authorize
+    still has to verify the caller-supplied id token — so the slice builds one."""
     _set_pat_env(monkeypatch)
     monkeypatch.setenv("RAGENT_AUTH_MODE", "user_header")
 
-    with capture_logs() as captured:
-        container = _build()
+    container = _build()
 
-    assert container.pat_service is not None  # slice still wired — resolve is fine
-    warnings = [e for e in captured if e.get("event") == "pat.authorize_needs_id_token_header"]
-    assert len(warnings) == 1
-    assert warnings[0]["log_level"] == "warning"
+    assert container.auth_token_manager is None
+    assert container.pat_id_token_manager is not None

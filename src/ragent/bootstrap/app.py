@@ -599,7 +599,11 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
         app.include_router(
             create_pat_router(
                 pat_service=container.pat_service,
-                id_token_header_name=str_env("RAGENT_JWT_HEADER", _DEFAULT_JWT_HEADER),
+                # Verifies the caller-supplied X-Id-Token against the same JWKS
+                # as the access token; built for the PAT slice even in
+                # trust-header modes, where the middleware needs no verifier.
+                token_manager=container.pat_id_token_manager,
+                jwt_claim_user_id=str_env("RAGENT_JWT_CLAIM_USER_ID", _DEFAULT_JWT_CLAIM),
             )
         )
     app.include_router(
@@ -655,10 +659,6 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
         user_id_header=_user_id_header,
         jwt_header=_jwt_header,
         public_paths=_PUBLIC_PATHS,
-        # T-PAT — authorize forwards the caller's raw SSO id token to the init
-        # service, so it needs this header even in a trust-header mode where the
-        # published identity scheme is X-User-Id.
-        jwt_required_paths=frozenset({"/pat/v1/authorize"}),
     )
     # CORSMiddleware is registered after _x_user_id_middleware so it runs
     # BEFORE the user-ID check (Starlette wraps in reverse order). This lets
