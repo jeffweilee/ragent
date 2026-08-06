@@ -197,16 +197,21 @@
 | `HAYSTACK_CONTENT_TRACING_ENABLED`    | `false`          | Include prompts and answers in OTEL spans. Keep `false` unless debugging; sensitive data. |
 | `RAGENT_METRICS_SOURCE_APP_ALLOWLIST` | (empty)          | Comma-separated allow-list of `source_app` values that pass through verbatim as a Prometheus label. Anything outside the list is collapsed to `RAGENT_METRICS_SOURCE_APP_FALLBACK` to bound label cardinality. |
 | `RAGENT_METRICS_SOURCE_APP_FALLBACK`  | `other`          | Bucket name for `source_app` values not in the allow-list. |
-| `HTTP_ERROR_LOG_MAX_BYTES`            | `8192`           | Max bytes of request/response body included in `http.upstream_error` log records. Bodies above this size are truncated with `request_truncated` / `response_truncated` set to `true`. Sensitive headers (`Authorization`, `apikey`, `Cookie`, `X-API-Key`, `Proxy-Authorization`, plus the configured values of `EMBEDDING_AUTH_HEADER_NAME` / `LLM_AUTH_HEADER_NAME` / `RERANK_AUTH_HEADER_NAME`) and the J1 `key` field of the auth POST are always redacted regardless of size. |
+| `HTTP_ERROR_LOG_MAX_BYTES`            | `8192`           | Max bytes of request/response body included in `http.upstream_error` log records. Bodies above this size are truncated with `request_truncated` / `response_truncated` set to `true`. Sensitive headers (`Authorization`, `apikey`, `Cookie`, `X-API-Key`, `Proxy-Authorization`, plus the configured values of `EMBEDDING_AUTH_HEADER_NAME` / `LLM_AUTH_HEADER_NAME` / `RERANK_AUTH_HEADER_NAME` / `PAT_INIT_API_TOKEN_HEADER_KEY_NAME` / `PAT_INIT_AUTHORIZE_HEADER_KEY_NAME` / `PAT_API_HEADER_TOKEN_KEY` / `PAT_UPSTREAM_HEADER_NAME`) and the J1 `key` field of the auth POST are always redacted regardless of size. |
 
 #### 4.6.9 PAT — Personal Access Token authorization (T-PAT)
 
 > The whole slice is **feature-gated on `PAT_PUBLIC_KEY`**: unset → the `/pat/v1`
 > router is not mounted and the `/brainagent/v1` proxy attaches no PAT (existing
 > behaviour unchanged). When set, `PAT_ISS` / `PAT_AUD` / `PAT_NT_KEY_NAME` /
-> `PAT_REFRESH_API` / `PAT_API_HEADER_TOKEN_KEY` / `PAT_API_HEADER_TOKEN_VALUE`
-> and the encryption keys (`RAGENT_KEK_BASE64` / `RAGENT_ENCRYPTED_DEK_BASE64`,
-> §4.6.x) become required. Full flow: [`docs/spec/pat.md`](pat.md).
+> `PAT_REFRESH_API` / `PAT_API_HEADER_TOKEN_KEY` / `PAT_API_HEADER_TOKEN_VALUE`,
+> the `PAT_INIT_*` mint credentials, and the encryption keys
+> (`RAGENT_KEK_BASE64` / `RAGENT_ENCRYPTED_DEK_BASE64`, §4.6.x) become required.
+> Authorization verifies + forwards the caller's SSO id token, so `OIDC_DOMAIN` /
+> `OIDC_AUDIENCE` become required whenever the slice is on (a JWKS verifier is built
+> for the PAT slice even in trust-header modes). Legacy note: the slice also needed a JWT
+> auth mode (`RAGENT_AUTH_MODE=jwt_header` / `jwt_prefer_header`).
+> Full flow: [`docs/spec/pat.md`](pat.md).
 
 | Variable | Default | Description |
 |---|---|---|
@@ -215,6 +220,14 @@
 | `PAT_ISS`                             | (required when enabled) | Expected `iss` claim of the PAT JWT. |
 | `PAT_AUD`                             | (required when enabled) | Expected `aud` claim of the PAT JWT. |
 | `PAT_NT_KEY_NAME`                     | (required when enabled) | Claim name inside the PAT holding the SSO nt; must equal the resolved caller identity (binding check). |
+| `PAT_INIT_API_URL`                    | (required when enabled) | Base URL of the PAT **init** service; ragent posts to `{PAT_INIT_API_URL}/api/pat/token` to mint a PAT on `POST /pat/v1/authorize`. |
+| `PAT_INIT_API_TOKEN`                  | (required when enabled) | Service credential sent under `PAT_INIT_API_TOKEN_HEADER_KEY_NAME` on the init call. **Never logged.** |
+| `PAT_INIT_API_TOKEN_HEADER_KEY_NAME`  | (required when enabled) | Header **name** carrying `PAT_INIT_API_TOKEN` on the init call. |
+| `PAT_INIT_AUTHORIZE_HEADER_KEY_NAME`  | (required when enabled) | Header **name** the init service expects the caller's SSO id token under — the on-behalf-of credential. ragent reads that token from its own fixed `X-Id-Token` request header (endpoint contract, not config) and verifies it before forwarding. |
+| `PAT_INIT_SSO_HEADER_KEY_NAME`        | (required when enabled) | Header **name** carrying `PAT_INIT_SSO_SITE_URL` on the init call. |
+| `PAT_INIT_SSO_SITE_URL`               | (required when enabled) | SSO site URL sent under `PAT_INIT_SSO_HEADER_KEY_NAME` — identifies which SSO site the id token came from. |
+| `PAT_INIT_EXPIRE_DAYS`                | `360`            | Days ahead of today for the init `expireDate` body field. Must be `1..364` — the init API returns `400` beyond one year, so an out-of-range value **aborts boot** rather than failing every mint at runtime. The ceiling stops a day short of the anniversary because ragent computes the date in UTC while init evaluates it in its own timezone; the default leaves further margin. |
+| `PAT_INIT_TIMEOUT_SECONDS`            | `30`             | Per-call timeout for the `POST {PAT_INIT_API_URL}/api/pat/token` mint request. |
 | `PAT_REFRESH_API`                     | (required when enabled) | `PUT` URL of the PAT refresh service (`{"patToken": current}` → `{"patToken": new}`). |
 | `PAT_API_HEADER_TOKEN_KEY`            | (required when enabled) | Header **name** carrying the service credential on the refresh call. |
 | `PAT_API_HEADER_TOKEN_VALUE`          | (required when enabled) | Header **value** (service credential) sent under `PAT_API_HEADER_TOKEN_KEY`. **Never logged.** |

@@ -596,7 +596,16 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
     # T-PAT — authorization endpoint; mounted only when the PAT slice is wired
     # (PAT_PUBLIC_KEY set).
     if container.pat_service is not None:
-        app.include_router(create_pat_router(pat_service=container.pat_service))
+        app.include_router(
+            create_pat_router(
+                pat_service=container.pat_service,
+                # Verifies the caller-supplied X-Id-Token against the same JWKS
+                # as the access token; built for the PAT slice even in
+                # trust-header modes, where the middleware needs no verifier.
+                token_manager=container.pat_id_token_manager,
+                jwt_claim_user_id=str_env("RAGENT_JWT_CLAIM_USER_ID", _DEFAULT_JWT_CLAIM),
+            )
+        )
     app.include_router(
         create_mcp_router(
             retrieval_pipeline=container.retrieval_pipeline,

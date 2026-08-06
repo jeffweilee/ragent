@@ -21,13 +21,28 @@ from fastapi.testclient import TestClient
 
 from ragent.auth.pat_jwt import PatTokenVerifier, import_pat_public_key
 from ragent.clients.pat_cache import PatCache
+from ragent.clients.pat_init_client import PatInitClient
 from ragent.clients.pat_refresh_client import PatRefreshClient
 from ragent.routers.brain_upstream_proxy import create_brain_upstream_proxy_router
-from ragent.routers.pat import create_pat_router
+from ragent.routers.pat import ID_TOKEN_HEADER, create_pat_router
 from ragent.security.key_manager import KeyManager
 from ragent.security.pat_cipher import PATCipher
 from ragent.services.pat_service import PatService
-from tests.unit.pat_fakes import AUD, ISS, NT_CLAIM, FakeRepo, public_pem, sign
+from tests.unit.pat_fakes import (
+    AUD,
+    ISS,
+    JWT_CLAIM_USER_ID,
+    NT_CLAIM,
+    FakeRepo,
+    id_token_manager,
+    public_pem,
+    sign,
+    sign_id_token,
+)
+
+# The init service's own header name (deployment config) — distinct from the
+# inbound `X-Id-Token` the FE sends us, which is fixed by our endpoint contract.
+_INIT_AUTHORIZE_HEADER = "X-Sso-Id-Token"
 
 
 def _real_key_manager() -> KeyManager:
@@ -58,13 +73,36 @@ def _build_service() -> PatService:
             refresh_url="https://pat.example/refresh",
             header_key="X-Pat-Service-Token",
             header_value="secret",
+            timeout=30.0,
+        ),
+        init_client=PatInitClient(
+            # Mirrors production: the init service mints a PAT bound to the caller.
+            httpx.Client(
+                transport=httpx.MockTransport(
+                    lambda r: httpx.Response(200, json={"patToken": sign("alice")})
+                )
+            ),
+            base_url="https://pat.example",
+            api_token_header_key="X-Pat-Init-Token",
+            api_token_value="secret",
+            authorize_header_key=_INIT_AUTHORIZE_HEADER,
+            sso_header_key="X-Sso-Site",
+            sso_site_url="https://sso.example",
+            expire_days=360,
+            timeout=30.0,
         ),
     )
 
 
 def _app(service: PatService, upstream_handler) -> FastAPI:
     app = FastAPI()
-    app.include_router(create_pat_router(pat_service=service))
+    app.include_router(
+        create_pat_router(
+            pat_service=service,
+            token_manager=id_token_manager(),
+            jwt_claim_user_id=JWT_CLAIM_USER_ID,
+        )
+    )
     app.include_router(
         create_brain_upstream_proxy_router(
             httpx.Client(transport=httpx.MockTransport(upstream_handler)),
@@ -87,7 +125,8 @@ def test_authorize_then_pat_rides_the_brainagent_path() -> None:
 
     with TestClient(_app(service, upstream)) as client:
         auth = client.post(
-            "/pat/v1/authorize", json={"patToken": sign("alice")}, headers={"X-User-Id": "alice"}
+            "/pat/v1/authorize",
+            headers={"X-User-Id": "alice", ID_TOKEN_HEADER: sign_id_token("alice")},
         )
         assert auth.status_code == 204
 

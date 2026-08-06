@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
+from dataclasses import replace as _replace
 from typing import TYPE_CHECKING, Any
 
 from ragent.bootstrap.auth_mode import AuthMode, parse_auth_mode
@@ -93,6 +94,10 @@ class Container:
     # (the /pat/v1 router is not mounted and the /brainagent/v1 proxy attaches no PAT).
     pat_service: Any = None
     pat_upstream_header_name: str = "X-Pat-Token"
+    # JWKS verifier for the caller-supplied X-Id-Token on POST /pat/v1/authorize.
+    # Set whenever pat_service is; separate from auth_token_manager because the
+    # PAT slice needs one even in trust-header modes.
+    pat_id_token_manager: Any = None
     # T-CAT — ingest-backed file attachments (ingest pipeline, session_documents).
     session_document_repo: SessionDocumentRepository | None = None
     attachment_context_resolver: AttachmentContextResolver | None = None
@@ -522,15 +527,21 @@ def build_container() -> Container:
     # auth is on. OIDC discovery + JWKS are fetched HERE (boot-time) so a
     # misconfigured OIDC_DOMAIN aborts startup rather than 500-ing the first
     # request; JWKS is then cached for the manager's lifetime (§3.5 cache-reuse).
-    auth_token_manager: Any = None
-    if parse_auth_mode() in (AuthMode.jwt_header, AuthMode.jwt_prefer_header):
+    def _build_oidc_token_manager(*, verify_aud: bool, verify_exp: bool) -> Any:
         from ragent.auth.jwt import build_token_manager
 
-        auth_token_manager = build_token_manager(
+        return build_token_manager(
             domain=_require("OIDC_DOMAIN"),
             audience=_require("OIDC_AUDIENCE"),
             use_https=_bool_env("OIDC_USE_HTTPS", True),
             verify_ssl=_bool_env("OIDC_VERIFY_SSL", tls_verify),
+            verify_aud=verify_aud,
+            verify_exp=verify_exp,
+        )
+
+    auth_token_manager: Any = None
+    if parse_auth_mode() in (AuthMode.jwt_header, AuthMode.jwt_prefer_header):
+        auth_token_manager = _build_oidc_token_manager(
             verify_aud=_bool_env("RAGENT_JWT_VERIFY_AUD", True),
             verify_exp=_bool_env("RAGENT_JWT_VERIFY_EXP", True),
         )
@@ -590,16 +601,37 @@ def build_container() -> Container:
     # rotated via the refresh service. The /pat/v1 router + the /brainagent/v1
     # PAT attach only exist when this is wired.
     pat_service = None
+    pat_id_token_manager = None
     pat_upstream_header_name = os.environ.get("PAT_UPSTREAM_HEADER_NAME", "X-Pat-Token")
     pat_public_key = os.environ.get("PAT_PUBLIC_KEY") or None
     if pat_public_key is not None:
         from ragent.auth.pat_jwt import PatTokenVerifier, import_pat_public_key
         from ragent.clients.pat_cache import PatCache
+        from ragent.clients.pat_init_client import PatInitClient
         from ragent.clients.pat_refresh_client import PatRefreshClient
         from ragent.repositories.pat_repository import PatRepository
         from ragent.security.key_manager import KeyManager
         from ragent.security.pat_cipher import PATCipher
         from ragent.services.pat_service import PatService
+
+        # `POST /pat/v1/authorize` verifies the caller-supplied `X-Id-Token`
+        # itself, so the slice needs a JWKS verifier in EVERY auth mode — a
+        # trust-header deployment builds none for the middleware. Reuse the
+        # middleware's JWKS when it exists (no second discovery round-trip);
+        # otherwise build one, which makes OIDC_DOMAIN / OIDC_AUDIENCE required
+        # whenever the PAT slice is on.
+        #
+        # `aud`/`exp` verification is forced ON regardless of
+        # RAGENT_JWT_VERIFY_AUD / _EXP: an id token's `aud` is OIDC_AUDIENCE
+        # while an access token's is the resource server (`account` on a stock
+        # Keycloak), so this check is what stops a caller pasting their ACCESS
+        # token into X-Id-Token and getting an opaque 401 from init instead.
+        # A dev flag loosening the middleware must not silently disable it.
+        pat_id_token_manager = (
+            _replace(auth_token_manager, verify_aud=True, verify_exp=True)
+            if auth_token_manager is not None
+            else _build_oidc_token_manager(verify_aud=True, verify_exp=True)
+        )
 
         pat_alg = os.environ.get("PAT_JWT_ALG", "RS256")
         pat_key_manager = KeyManager(
@@ -623,6 +655,17 @@ def build_container() -> Container:
                 header_key=_require("PAT_API_HEADER_TOKEN_KEY"),
                 header_value=_require("PAT_API_HEADER_TOKEN_VALUE"),
                 timeout=_float_env("PAT_REFRESH_TIMEOUT_SECONDS", 30.0),
+            ),
+            init_client=PatInitClient(
+                http,
+                base_url=_require("PAT_INIT_API_URL"),
+                api_token_header_key=_require("PAT_INIT_API_TOKEN_HEADER_KEY_NAME"),
+                api_token_value=_require("PAT_INIT_API_TOKEN"),
+                authorize_header_key=_require("PAT_INIT_AUTHORIZE_HEADER_KEY_NAME"),
+                sso_header_key=_require("PAT_INIT_SSO_HEADER_KEY_NAME"),
+                sso_site_url=_require("PAT_INIT_SSO_SITE_URL"),
+                expire_days=_int_env("PAT_INIT_EXPIRE_DAYS", 360),
+                timeout=_float_env("PAT_INIT_TIMEOUT_SECONDS", 30.0),
             ),
             max_retries=_int_env("PAT_REFRESH_MAX_RETRIES", 3),
             backoff_base_seconds=_float_env("PAT_REFRESH_BACKOFF_SECONDS", 0.5),
@@ -673,6 +716,7 @@ def build_container() -> Container:
         brain_timeout=brain_timeout,
         brain_agent_factory=brain_agent_factory,
         pat_service=pat_service,
+        pat_id_token_manager=pat_id_token_manager,
         pat_upstream_header_name=pat_upstream_header_name,
         session_document_repo=session_document_repo,
         attachment_context_resolver=attachment_context_resolver,

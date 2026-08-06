@@ -4,6 +4,20 @@
 > PAT **service** in ragent — authorization write + on-demand resolution of a
 > valid PAT. Calling an upstream *with* the PAT is the consumer's concern; the
 > only consumer wired in this cycle is the `/brainagent/v1` proxy (fail-open).
+>
+> **Authorize takes TWO tokens.** ragent authenticates the caller with the
+> **access token** the middleware already verified, while the init service wants
+> an **SSO id token** as its on-behalf-of credential — different tokens with
+> different audiences (`OIDC_AUDIENCE` for the id token; the resource server,
+> `account` on a stock Keycloak, for the access token). The id token therefore
+> arrives separately on the fixed `X-Id-Token` header. This works in **every**
+> auth mode: identity comes from the mode's own scheme, the id token from its own
+> header. `resolve` needs no id token at all, so the `/brainagent/v1` attach is
+> unaffected.
+>
+> **Credentials never reach logs**: the init/refresh credential headers, the
+> forwarded id token, and the attached PAT are all registered with the
+> `http.upstream_error` redactor (`docs/spec/env_vars.md` §4.6.8).
 
 ## 1. Model
 
@@ -31,18 +45,60 @@ no proactive refresh is needed.
 
 ## 3. Part 1 — authorization write (`POST /pat/v1/authorize`)
 
-SSO identity comes from the request header (`Depends(get_user_id)` → nt); the
-PAT is supplied in the body `{patToken}` (temporary — swapped for the fetch-PAT
-API when it lands). Steps:
+**The request carries no body.** SSO identity comes from the request header
+(`Depends(get_user_id)` → nt); the SSO **id token** comes from the fixed
+`X-Id-Token` header. ragent mints the PAT itself via the init service; the FE
+never handles a PAT. Steps:
 
-1. Verify the PAT (§2).
-2. **Binding check**: `PAT[PAT_NT_KEY_NAME] == resolved nt` (never trust a
-   body-supplied identity). Mismatch → `401 PAT_REAUTH_REQUIRED`.
-3. Encrypt → `repo.upsert(nt, cipher)` (`INSERT … ON DUPLICATE KEY UPDATE`,
+1. **Verify the id token** with the same JWKS / issuer / audience as the access
+   token (`auth/jwt.py::verify_jwt`), then require
+   `id_token[RAGENT_JWT_CLAIM_USER_ID] == resolved nt`. A missing, unverifiable,
+   or someone-else's id token short-circuits to `401 PAT_REAUTH_REQUIRED`
+   **without calling init** — so junk can neither impersonate nor burn init's
+   10/60 s budget. The reason rides `pat.authorize.rejected`; the response says
+   only "re-authorization required".
+2. **Mint** — `PatInitClient.init(id_token)` (§3.1), then verify the minted PAT (§2).
+3. **Binding check on the minted PAT**: `PAT[PAT_NT_KEY_NAME] == resolved nt` (never trust an
+   upstream-supplied identity — init is trusted to mint, not to name the owner).
+   Mismatch → `401 PAT_REAUTH_REQUIRED`.
+4. Encrypt → `repo.upsert(nt, cipher)` (`INSERT … ON DUPLICATE KEY UPDATE`,
    `status='active'` — re-authorization overwrites and reactivates an
    `invalid` row) → `cache.put(nt, cipher)`.
 
 `204` on success. Failure writes nothing.
+
+### 3.1 Init call — `PatInitClient.init(id_token) → patToken`
+
+`POST {PAT_INIT_API_URL}/api/pat/token`, `content-type: application/json`, with
+three headers and a date body:
+
+| Header (name from env) | Value |
+|---|---|
+| `PAT_INIT_API_TOKEN_HEADER_KEY_NAME` | `PAT_INIT_API_TOKEN` (service credential) |
+| `PAT_INIT_AUTHORIZE_HEADER_KEY_NAME` | the caller's verified `X-Id-Token` |
+| `PAT_INIT_SSO_HEADER_KEY_NAME`       | `PAT_INIT_SSO_SITE_URL` |
+
+Body `{"expireDate": "YYYY/MM/DD"}` — `today + PAT_INIT_EXPIRE_DAYS` (default
+360, a margin under the API's **one-year ceiling**). Response `{"patToken": …}`.
+
+**Error matrix** (responses from the init API):
+
+| Status | Meaning | Action |
+|---|---|---|
+| **401** | bad id token or api token | `PatReauthRequired` → `401 PAT_REAUTH_REQUIRED` |
+| **400** | `expireDate` > 1 year / empty body → our bug | `PatInternalError` → `500` + log. Nothing written. |
+| **429** | rate limited — init caps **10 per 60 s per client + nt** | `PatInitThrottled` → `429 PAT_INIT_RATE_LIMITED`. **No retry** — retrying would burn the same budget; the PAT is meant to be minted once and kept, then rotated via `PAT_REFRESH_API` (§5). |
+| **any other status / transport / malformed 200** | transient | `PatInitUnavailable` → `503 PAT_INIT_UNAVAILABLE`. Note this also swallows permanent 4xx (a wrong `PAT_INIT_API_URL` reads as "transiently unavailable") — same behaviour as `PatRefreshClient`; the `pat.init_unexpected_status` log carries the real status. |
+
+Init is called **only** on `POST /pat/v1/authorize` — never on the request path.
+Steady state is one mint per user, then self-rotation via refresh.
+
+**Explicit authorize always re-mints** — it does not short-circuit when the
+caller already holds a valid PAT. Re-authorization is the documented remedy for
+an `invalid` row (§6), so it must reach the init service rather than return the
+token it is trying to replace. The cost is that a client which calls authorize
+on every page load burns the 10/60 s budget and starts seeing `429`; authorize
+is a one-off user action, and the request path never touches init.
 
 ## 4. Request path — `PatService.resolve(nt) → token`
 

@@ -14,7 +14,7 @@ from ragent.services.pat_service import (
     PatReauthRequired,
     PatRefreshExhausted,
 )
-from tests.unit.pat_fakes import FakeRefreshClient, build_service, sign
+from tests.unit.pat_fakes import FakeInitClient, FakeRefreshClient, build_service, sign
 
 
 def _seed_expired(repo, cache, cipher, nt="alice"):
@@ -129,6 +129,7 @@ async def test_refresh_loser_polls_until_winner_publishes_token() -> None:
         repo=repo,
         cache=cache,
         refresh_client=rc,
+        init_client=FakeInitClient(sign()),
         sleeper=sleeper,
     )
     cache.acquire_refresh_lock("alice")  # another holder owns the lock

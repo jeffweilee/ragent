@@ -32,6 +32,7 @@ calls it makes, and annotates each chain with:
 13. [Reconciler: ingest.supersede + stuck-PENDING sweep](#13-reconciler-ingestsupersede--stuck-pending-sweep)
 14. [Token exchange — cross-cutting concern](#14-token-exchange--cross-cutting-concern)
 15. [Summary: exception surface map](#15-summary-exception-surface-map)
+(new: see §19 POST /pat/v1/authorize — PAT authorization)
 
 ---
 
@@ -447,6 +448,8 @@ a token exchange outage causes:
 | Token exchange 503 at boot | `clients/auth.py` + `bootstrap/app.py` | Fix `AI_API_AUTH_URL` / J1 token |
 | K8s SA token file missing | `clients/auth.py` | Mount the service account volume |
 | `RETRIEVAL_TOP_K` outside `[1, 200]` | `pipelines/retrieve.py` | Fix env var |
+| `PAT_INIT_EXPIRE_DAYS` outside `[1, 364]` | `clients/pat_init_client.py` | Fix env var — the init API 400s beyond one year |
+| A `PAT_INIT_*` var unset while `PAT_PUBLIC_KEY` is set | `bootstrap/composition.py` | Set the whole `PAT_INIT_*` block, or unset `PAT_PUBLIC_KEY` to disable the slice |
 | TaskIQ task label not registered | `bootstrap/app.py` | Ensure worker modules imported before `lifespan` |
 
 > **No runtime exception causes a process exit** — FastAPI's global exception handler
@@ -576,3 +579,50 @@ delete_by_session(session_id)
   ├── session_document_repo.delete_by_session(session_id) → [document_ids]   [MariaDB]
   └── for each document_id: ingest_service.delete(document_id)               [MariaDB + ES]
 ```
+
+---
+
+## 19. POST /pat/v1/authorize — PAT authorization (init mint)
+
+Mounted only when the PAT slice is wired (`PAT_PUBLIC_KEY` set). The request
+carries **no body**: the nt comes from the identity header and the SSO **id
+token** from the fixed `X-Id-Token` header — a different token from the access
+token, verified here before it is forwarded. Works in every auth mode.
+
+```
+POST /pat/v1/authorize   (no body)
+  └── Middleware: JWT verify → scope[user_id]   (token stays on request.headers)
+  └── PatRouter.authorize()
+        ├── get_user_id(request)                        → nt      [422 if absent]
+        ├── Header(X-Id-Token)                           → id_tok  [401 if absent]
+        ├── verify_jwt(id_tok, RAGENT_JWT_CLAIM_USER_ID) [401 sig/exp/aud/iss]
+        ├── claim == nt ?                                          [401 if not]
+        └── PatService.authorize(nt, id_token)
+              ├── _mint() → run_in_threadpool(PatInitClient.init)
+              │     └── POST {PAT_INIT_API_URL}/api/pat/token       [init service]
+              │           headers: api-token / id-token / sso-site
+              │           body:    {"expireDate": today + PAT_INIT_EXPIRE_DAYS}
+              ├── PatTokenVerifier.verify(minted)        [exp/iss/aud/signature]
+              ├── binding check: PAT[PAT_NT_KEY_NAME] == nt
+              ├── PATCipher.encrypt(minted)
+              ├── PatRepository.upsert(nt, cipher)                  [MariaDB]
+              └── PatCache.put(nt, cipher)                          [Redis]
+```
+
+Response: `204`. Failure writes nothing (no DB row, no cache entry).
+
+**Exception handling**:
+
+| Exception | Response |
+|---|---|
+| `user_id` is `None` | 422 `MISSING_USER_ID` |
+| `X-Id-Token` absent / unverifiable / owned by another user | 401 `PAT_REAUTH_REQUIRED` (init never called; reason on `pat.authorize.rejected`) |
+| `PatInitUnauthorized` (init 401) | 401 `PAT_REAUTH_REQUIRED` |
+| `PatTokenInvalid` (bad minted PAT / nt mismatch) | 401 `PAT_REAUTH_REQUIRED` |
+| `PatInitThrottled` (init 429) | 429 `PAT_INIT_RATE_LIMITED` — not retried (init caps 10/60 s per client + nt) |
+| `PatInternalError` (init 400 — `expireDate` > 1 y / empty body) | 500 `INTERNAL_ERROR` |
+| `PatInitUnavailable` (init 5xx / transport / malformed 200) | 503 `PAT_INIT_UNAVAILABLE` |
+| MariaDB down | 500 `INTERNAL_ERROR` |
+
+Init runs **only** here — never on the request path. Steady state is one mint
+per user, after which the PAT self-rotates via `PAT_REFRESH_API` (§`docs/spec/pat.md`).

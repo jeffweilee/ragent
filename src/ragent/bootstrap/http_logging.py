@@ -12,9 +12,12 @@ which sit outside the project's logging denylist
 upstream-error diagnostics. Sensitive headers are redacted at source:
 the default set covers `Authorization`, `apikey`, `Cookie`, `X-API-Key`,
 and `Proxy-Authorization`; any header whose name matches the values of
-`EMBEDDING_AUTH_HEADER_NAME`, `LLM_AUTH_HEADER_NAME`, or
-`RERANK_AUTH_HEADER_NAME` is also redacted so custom-named auth headers
-do not leak J2 tokens. When `redact_auth_body=True` the JSON `key` field
+`EMBEDDING_AUTH_HEADER_NAME`, `LLM_AUTH_HEADER_NAME`,
+`RERANK_AUTH_HEADER_NAME`, or the PAT slice's credential headers
+(`PAT_INIT_API_TOKEN_HEADER_KEY_NAME`, `PAT_INIT_AUTHORIZE_HEADER_KEY_NAME`,
+`PAT_API_HEADER_TOKEN_KEY`, `PAT_UPSTREAM_HEADER_NAME`) is also redacted so
+custom-named auth headers do not leak J2 tokens, PATs, or a caller's SSO id
+token. When `redact_auth_body=True` the JSON `key` field
 of the request body (the J1 token sent to `AI_API_AUTH_URL`) is replaced
 with ``"***"`` before logging.
 
@@ -42,6 +45,20 @@ _REDACT_HEADER_ENV_VARS = (
     "EMBEDDING_AUTH_HEADER_NAME",
     "LLM_AUTH_HEADER_NAME",
     "RERANK_AUTH_HEADER_NAME",
+    # PAT slice (T-PAT) — every one of these carries a bearer-equivalent secret
+    # on the SHARED `http` client, so an upstream 4xx/5xx would otherwise write
+    # it to `http.upstream_error.headers` in plaintext:
+    #   * the init service credential,
+    #   * the caller's SSO id token forwarded on-behalf-of them (a USER
+    #     credential — the most sensitive of the four),
+    #   * the refresh service credential,
+    #   * the resolved PAT itself, attached to every /brainagent/v1 upstream call.
+    # `PAT_INIT_SSO_HEADER_KEY_NAME` is deliberately absent: it carries a site
+    # URL, not a secret, and is useful in a failure record.
+    "PAT_INIT_API_TOKEN_HEADER_KEY_NAME",
+    "PAT_INIT_AUTHORIZE_HEADER_KEY_NAME",
+    "PAT_API_HEADER_TOKEN_KEY",
+    "PAT_UPSTREAM_HEADER_NAME",
 )
 _DEFAULT_MAX_BYTES = 8192
 

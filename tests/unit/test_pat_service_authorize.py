@@ -1,42 +1,93 @@
-"""T-PAT.7 — PatService.authorize: verify + bind + encrypt + persist."""
+"""T-PAT.17 — PatService.authorize: init-mint + verify + bind + encrypt + persist.
+
+The FE no longer submits a `{patToken}`; ragent mints one via the init service
+(on-behalf-of the inbound SSO id token) and then verifies + binds + stores it.
+Init HTTP failures surface as the service's typed exceptions.
+"""
 
 from __future__ import annotations
 
 import pytest
+from structlog.testing import capture_logs
 
 from ragent.auth.pat_jwt import PatTokenInvalid
-from tests.unit.pat_fakes import build_service, sign
+from ragent.clients.pat_init_client import (
+    PatInitBadRequest,
+    PatInitRateLimited,
+    PatInitTransient,
+    PatInitUnauthorized,
+)
+from ragent.services.pat_service import (
+    PatInitThrottled,
+    PatInitUnavailable,
+    PatInternalError,
+    PatReauthRequired,
+)
+from tests.unit.pat_fakes import FakeInitClient, build_service, sign
 
 
-async def test_authorize_writes_active_row_and_caches() -> None:
-    service, repo, cache, cipher = build_service()
-    pat = sign("alice")
+async def test_authorize_mints_via_init_and_writes_active_row() -> None:
+    minted = sign("alice")
+    init = FakeInitClient(minted)
+    service, repo, cache, cipher = build_service(init_client=init)
 
-    await service.authorize(nt="alice", pat_token=pat)
+    await service.authorize(nt="alice", id_token="ID-TOKEN")
 
+    assert init.calls == ["ID-TOKEN"]  # the inbound SSO id token was forwarded
     assert repo.rows["alice"]["status"] == "active"
-    # DB + redis both hold the *encrypted* PAT, decrypting back to what we stored.
-    assert cipher.decrypt(repo.rows["alice"]["pat_cipher"]) == pat
+    assert cipher.decrypt(repo.rows["alice"]["pat_cipher"]) == minted
     cached = cache.get("alice")
-    assert cached is not None and cipher.decrypt(cached) == pat
+    assert cached is not None and cipher.decrypt(cached) == minted
 
 
-async def test_authorize_rejects_bad_token_and_writes_nothing() -> None:
-    service, repo, cache, _ = build_service()
+async def test_authorize_rejects_nt_binding_mismatch() -> None:
+    # Init hands back a valid PAT bound to bob — alice must not be able to store it.
+    service, repo, cache, _ = build_service(init_client=FakeInitClient(sign("bob")))
 
     with pytest.raises(PatTokenInvalid):
-        await service.authorize(nt="alice", pat_token="not.a.jwt")
+        await service.authorize(nt="alice", id_token="ID-TOKEN")
 
     assert repo.rows == {}
     assert cache.get("alice") is None
 
 
-async def test_authorize_rejects_nt_binding_mismatch() -> None:
-    service, repo, cache, _ = build_service()
+@pytest.mark.parametrize(
+    "minted,reason",
+    [("not.a.jwt", "minted_token_invalid"), (None, "nt_mismatch")],
+)
+async def test_authorize_logs_a_terminal_failure_event(minted: str | None, reason: str) -> None:
+    """`pat.authorize.started` must never dangle without an outcome — a PAT the
+    init service minted badly (or for the wrong nt) logs `pat.authorize.failed`
+    carrying the error_code (00_rule.md §Service Boundary Logs)."""
+    token = minted if minted is not None else sign("bob")
+    service, _, _, _ = build_service(init_client=FakeInitClient(token))
 
-    # A valid PAT, but bound to bob — alice must not be able to store it.
-    with pytest.raises(PatTokenInvalid):
-        await service.authorize(nt="alice", pat_token=sign("bob"))
+    with capture_logs() as captured, pytest.raises(PatTokenInvalid):
+        await service.authorize(nt="alice", id_token="ID-TOKEN")
+
+    failures = [e for e in captured if e.get("event") == "pat.authorize.failed"]
+    assert len(failures) == 1
+    assert failures[0]["user_id"] == "alice"
+    assert failures[0]["error_code"] == "PAT_REAUTH_REQUIRED"
+    assert failures[0]["reason"] == reason
+
+
+@pytest.mark.parametrize(
+    "init_exc,expected",
+    [
+        (PatInitUnauthorized(), PatReauthRequired),
+        (PatInitBadRequest(), PatInternalError),
+        (PatInitRateLimited(), PatInitThrottled),
+        (PatInitTransient("boom"), PatInitUnavailable),
+    ],
+)
+async def test_authorize_maps_init_errors_and_writes_nothing(
+    init_exc: Exception, expected: type[Exception]
+) -> None:
+    service, repo, cache, _ = build_service(init_client=FakeInitClient(init_exc))
+
+    with pytest.raises(expected):
+        await service.authorize(nt="alice", id_token="ID-TOKEN")
 
     assert repo.rows == {}
     assert cache.get("alice") is None
