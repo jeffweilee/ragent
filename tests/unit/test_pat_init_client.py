@@ -21,18 +21,17 @@ from ragent.clients.pat_init_client import (
     PatInitUnauthorized,
 )
 
-_BASE = "https://pat.example"
-_URL = f"{_BASE}/api/pat/token"
+_URL = "https://pat.example/api/pat/token"
 
 
 def _client(
-    handler, *, expire_days: int = 360, today: date | None = None, base_url: str = _BASE
+    handler, *, expire_days: int = 360, today: date | None = None, init_url: str = _URL
 ) -> PatInitClient:
     http = httpx.Client(transport=httpx.MockTransport(handler))
     kwargs = {"clock": (lambda: today)} if today is not None else {}
     return PatInitClient(
         http,
-        base_url=base_url,
+        init_url=init_url,
         api_token_header_key="X-Pat-Init-Token",
         api_token_value="svc-secret",
         authorize_header_key="X-Id-Token",
@@ -70,19 +69,31 @@ def test_success_returns_token_and_sends_expected_shape() -> None:
     assert seen["body"] == {"expireDate": "2027/07/29"}
 
 
-@pytest.mark.parametrize("base", [_BASE, f"{_BASE}/", f"{_BASE}///"])
-def test_mint_path_is_appended_to_the_configured_base_url(base: str) -> None:
-    """`PAT_INIT_API_URL` is a base URL; the client owns the `/api/pat/token`
-    path and tolerates operator trailing slashes (no `//` in the request URL)."""
+def test_posts_to_the_configured_url_verbatim() -> None:
+    """`PAT_INIT_API_URL` is the FULL mint URL (same shape as `PAT_REFRESH_API`);
+    the client does not append or rewrite any path."""
     seen: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen["url"] = str(request.url)
         return httpx.Response(200, json={"patToken": "NEW"})
 
-    _client(handler, base_url=base).init("ID")
+    _client(handler, init_url="https://other.example/v2/mint").init("ID")
 
-    assert seen["url"] == _URL
+    assert seen["url"] == "https://other.example/v2/mint"
+
+
+@pytest.mark.parametrize(
+    "bad_url",
+    ["https://pat.example", "https://pat.example/", "http://host:8080", "https://pat.example//"],
+)
+def test_url_without_a_path_is_refused_at_construction(bad_url: str) -> None:
+    """The trap this env shape introduces: an operator who leaves the old BASE
+    url in place would otherwise get 404s from init, which map to
+    `PatInitUnavailable` — i.e. "transiently unavailable" forever. Fail at boot
+    with a message naming the variable instead."""
+    with pytest.raises(ValueError, match="PAT_INIT_API_URL"):
+        _client(lambda r: httpx.Response(200, json={"patToken": "NEW"}), init_url=bad_url)
 
 
 def test_expire_date_stays_within_one_year() -> None:

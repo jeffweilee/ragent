@@ -25,7 +25,7 @@ _PAT_ENV = {
     "PAT_REFRESH_API": "https://pat.example/refresh",
     "PAT_API_HEADER_TOKEN_KEY": "X-Pat-Service-Token",
     "PAT_API_HEADER_TOKEN_VALUE": "svc-secret",
-    "PAT_INIT_API_URL": "https://pat.example",
+    "PAT_INIT_API_URL": "https://pat.example/api/pat/token",
     "PAT_INIT_API_TOKEN": "init-secret",
     "PAT_INIT_API_TOKEN_HEADER_KEY_NAME": "X-Pat-Init-Token",
     "PAT_INIT_AUTHORIZE_HEADER_KEY_NAME": "X-Auth-Token",
@@ -216,3 +216,16 @@ def test_id_token_verifier_is_built_in_trust_header_mode(
 
     assert container.auth_token_manager is None
     assert container.pat_id_token_manager is not None
+
+
+def test_base_url_without_a_path_aborts_boot(
+    _base_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`PAT_INIT_API_URL` carries the FULL mint endpoint. A leftover base URL
+    would 404 on every mint and surface as `PAT_INIT_UNAVAILABLE` forever, so
+    composition refuses it at boot instead."""
+    _set_pat_env(monkeypatch)
+    monkeypatch.setenv("PAT_INIT_API_URL", "https://pat.example")
+
+    with pytest.raises(ValueError, match="PAT_INIT_API_URL"):
+        _build()

@@ -69,7 +69,7 @@ never handles a PAT. Steps:
 
 ### 3.1 Init call — `PatInitClient.init(id_token) → patToken`
 
-`POST {PAT_INIT_API_URL}/api/pat/token`, `content-type: application/json`, with
+`POST {PAT_INIT_API_URL}` (the full mint endpoint), `content-type: application/json`, with
 three headers and a date body:
 
 | Header (name from env) | Value |
@@ -88,7 +88,7 @@ Body `{"expireDate": "YYYY/MM/DD"}` — `today + PAT_INIT_EXPIRE_DAYS` (default
 | **401** | bad id token or api token | `PatReauthRequired` → `401 PAT_REAUTH_REQUIRED` |
 | **400** | `expireDate` > 1 year / empty body → our bug | `PatInternalError` → `500` + log. Nothing written. |
 | **429** | rate limited — init caps **10 per 60 s per client + nt** | `PatInitThrottled` → `429 PAT_INIT_RATE_LIMITED`. **No retry** — retrying would burn the same budget; the PAT is meant to be minted once and kept, then rotated via `PAT_REFRESH_API` (§5). |
-| **any other status / transport / malformed 200** | transient | `PatInitUnavailable` → `503 PAT_INIT_UNAVAILABLE`. Note this also swallows permanent 4xx (a wrong `PAT_INIT_API_URL` reads as "transiently unavailable") — same behaviour as `PatRefreshClient`; the `pat.init_unexpected_status` log carries the real status. |
+| **any other status / transport / malformed 200** | transient | `PatInitUnavailable` → `503 PAT_INIT_UNAVAILABLE`. Note this also swallows permanent 4xx (a wrong `PAT_INIT_API_URL` reads as "transiently unavailable" — which is why a path-less value is refused at boot) — same behaviour as `PatRefreshClient`; the `pat.init_unexpected_status` log carries the real status. |
 
 Init is called **only** on `POST /pat/v1/authorize` — never on the request path.
 Steady state is one mint per user, then self-rotation via refresh.

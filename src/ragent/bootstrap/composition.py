@@ -658,7 +658,7 @@ def build_container() -> Container:
             ),
             init_client=PatInitClient(
                 http,
-                base_url=_require("PAT_INIT_API_URL"),
+                init_url=_require("PAT_INIT_API_URL"),
                 api_token_header_key=_require("PAT_INIT_API_TOKEN_HEADER_KEY_NAME"),
                 api_token_value=_require("PAT_INIT_API_TOKEN"),
                 authorize_header_key=_require("PAT_INIT_AUTHORIZE_HEADER_KEY_NAME"),
