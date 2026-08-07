@@ -24,3 +24,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENAI.KEY: ${{ secrets.GEMINI_API_KEY }}
           CONFIG.MODEL: "gemini/gemini-2.5-pro"
+          # pr-agent's own default pr_actions omits `synchronize`, so it logged
+          # "Skipping action: synchronize" and did nothing on every push — even
+          # though the workflow's `types:` above asks for it. Listed explicitly so
+          # the two agree; drop `synchronize` here to review only on PR open.
+          GITHUB_ACTION_CONFIG.AUTO_REVIEW: "true"
+          GITHUB_ACTION_CONFIG.PR_ACTIONS: '["opened", "reopened", "ready_for_review", "review_requested", "synchronize"]'
