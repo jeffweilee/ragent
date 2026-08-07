@@ -33,6 +33,22 @@ _UPSERT_SQL = text(
     """
 )
 
+# Refresh rotates an EXISTING authorization, so it is UPDATE-only — deliberately
+# NOT the upsert above. `_do_refresh` runs concurrently with revoke and awaits
+# between its DB write and its cache write, so an INSERT here would let a
+# rotation that started before a revoke recreate the row it just deleted
+# (rowcount 0 tells the caller the authorization is gone). Creating a row is
+# authorize's job alone.
+_ROTATE_SQL = text(
+    """
+    UPDATE pat
+       SET pat_cipher = :pat_cipher,
+           status = 'active',
+           updated_at = :updated_at
+     WHERE user_id = :user_id
+    """
+)
+
 _GET_SQL = text("SELECT * FROM pat WHERE user_id = :user_id")
 
 _MARK_INVALID_SQL = text(
@@ -57,6 +73,16 @@ class PatRepository:
                     "updated_at": now,
                 },
             )
+
+    async def rotate(self, *, user_id: str, pat_cipher: str) -> int:
+        """Overwrite an existing PAT after a successful refresh. Returns rowcount
+        (0 == the authorization was revoked while the refresh was in flight)."""
+        async with self._engine.begin() as conn:
+            result = await conn.execute(
+                _ROTATE_SQL,
+                {"user_id": user_id, "pat_cipher": pat_cipher, "updated_at": utcnow()},
+            )
+            return result.rowcount
 
     async def get(self, *, user_id: str) -> RowMapping | None:
         async with self._engine.connect() as conn:

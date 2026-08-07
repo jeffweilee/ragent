@@ -85,6 +85,15 @@ class FakeRepo:
     async def upsert(self, *, user_id: str, pat_cipher: str) -> None:
         self.rows[user_id] = {"user_id": user_id, "pat_cipher": pat_cipher, "status": "active"}
 
+    async def rotate(self, *, user_id: str, pat_cipher: str) -> int:
+        """UPDATE-only, mirroring the real repo: a revoked row is NOT recreated."""
+        row = self.rows.get(user_id)
+        if row is None:
+            return 0
+        row["pat_cipher"] = pat_cipher
+        row["status"] = "active"
+        return 1
+
     async def get(self, *, user_id: str):
         return self.rows.get(user_id)
 

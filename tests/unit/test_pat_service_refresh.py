@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import pytest
+from structlog.testing import capture_logs
 
 from ragent.clients.pat_refresh_client import (
     PatRefreshBadRequest,
     PatRefreshRateLimited,
     PatRefreshUnauthorized,
 )
+from ragent.errors.codes import HttpErrorCode
 from ragent.services.pat_service import (
     PatInternalError,
     PatReauthRequired,
@@ -80,6 +82,60 @@ async def test_400_is_internal_error_and_leaves_state() -> None:
         await service.resolve("alice")
 
     assert repo.rows["alice"]["status"] == "active"
+
+
+async def test_revoked_mid_refresh_is_not_resurrected() -> None:
+    # T-PAT.24: the row is deleted (revoked) while the refresh HTTP call is in
+    # flight. The rotation must NOT recreate the authorization, must not publish
+    # the new token to redis, and must send the caller back through authorize.
+    new_pat = sign("alice")
+    rc = FakeRefreshClient([new_pat])
+    service, repo, cache, cipher = build_service(refresh_client=rc)
+    _seed_expired(repo, cache, cipher)
+    current = cipher.decrypt(repo.rows["alice"]["pat_cipher"])
+    del repo.rows["alice"]  # revoke lands while the refresh is in flight
+    cache.evict("alice")
+
+    with capture_logs() as captured, pytest.raises(PatReauthRequired):
+        await service._do_refresh("alice", current)
+
+    assert "alice" not in repo.rows  # no INSERT — the revoke stands
+    assert cache.get("alice") is None  # the rotated token never reaches redis
+    revoked = [e for e in captured if e.get("event") == "pat.refresh.revoked"]
+    assert len(revoked) == 1
+    assert revoked[0]["user_id"] == "alice"
+    assert revoked[0]["error_code"] == HttpErrorCode.PAT_REAUTH_REQUIRED
+
+
+async def test_unverifiable_rotation_is_not_persisted() -> None:
+    # T-PAT.24: `PatRefreshClient` only checks the envelope carries a non-empty
+    # `patToken`, so a malformed rotation would otherwise be encrypted and stored
+    # — leaving an `active` row holding a PAT nothing can use.
+    rc = FakeRefreshClient(["not-a-jwt"])
+    service, repo, cache, cipher = build_service(refresh_client=rc)
+    _seed_expired(repo, cache, cipher)
+    before = repo.rows["alice"]["pat_cipher"]
+
+    with pytest.raises(PatReauthRequired):
+        await service.resolve("alice")
+
+    assert repo.rows["alice"]["pat_cipher"] == before  # untouched
+    assert cipher.decrypt(cache.get("alice")) == cipher.decrypt(before)
+
+
+async def test_rotation_bound_to_another_nt_is_rejected() -> None:
+    # Never trust the refresh service to name the owner — same binding check
+    # authorize applies to a freshly minted PAT.
+    rc = FakeRefreshClient([sign("mallory")])
+    service, repo, cache, cipher = build_service(refresh_client=rc)
+    _seed_expired(repo, cache, cipher)
+    before = repo.rows["alice"]["pat_cipher"]
+
+    with pytest.raises(PatReauthRequired):
+        await service.resolve("alice")
+
+    assert repo.rows["alice"]["pat_cipher"] == before
+    assert repo.rows["alice"]["status"] == "active"  # nothing written on failure
 
 
 async def test_refresh_lock_loser_uses_freshly_cached_token() -> None:

@@ -53,6 +53,31 @@ async def test_upsert_overwrites_and_reactivates():
     assert params["pat_cipher"] == "v1.n.c"
 
 
+async def test_rotate_updates_in_place_and_never_inserts():
+    # T-PAT.24: refresh rotates an EXISTING authorization. It must not be able to
+    # create one — an INSERT here would resurrect a row revoked mid-refresh.
+    engine, conn = _mock_engine(rowcount=1)
+    repo = PatRepository(engine)
+
+    rc = await repo.rotate(user_id="alice", pat_cipher="v1.n.c")
+
+    assert rc == 1
+    sql = str(conn.execute.call_args.args[0])
+    params = conn.execute.call_args.args[1]
+    assert "UPDATE pat" in sql
+    assert "INSERT" not in sql
+    assert "status = 'active'" in sql
+    assert "WHERE user_id = :user_id" in sql
+    assert params["user_id"] == "alice"
+    assert params["pat_cipher"] == "v1.n.c"
+
+
+async def test_rotate_rowcount_zero_when_row_was_revoked():
+    engine, _ = _mock_engine(rowcount=0)
+    repo = PatRepository(engine)
+    assert await repo.rotate(user_id="ghost", pat_cipher="v1.n.c") == 0
+
+
 async def test_get_filters_by_user_id():
     engine, conn = _mock_engine(first=_row())
     repo = PatRepository(engine)

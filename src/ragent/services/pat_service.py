@@ -248,13 +248,53 @@ class PatService:
                 attempt += 1
                 continue
 
+            # Verify the rotation before it is persisted — the refresh client only
+            # checks the envelope carries a non-empty `patToken`, so without this a
+            # malformed or wrongly-signed token would be stored and cached, leaving
+            # an `active` row holding a PAT nothing downstream can use.
+            self._verify_rotation(new_token, nt)
             cipher_text = self._cipher.encrypt(new_token)
-            await self._repo.upsert(user_id=nt, pat_cipher=cipher_text)
+            # UPDATE-only: a revoke that landed while this refresh was in flight
+            # deleted the row, and re-creating it would silently undo the user's
+            # revocation. rowcount 0 means the authorization is gone.
+            if await self._repo.rotate(user_id=nt, pat_cipher=cipher_text) == 0:
+                logger.warning(
+                    "pat.refresh.revoked",
+                    user_id=nt,
+                    error_code=HttpErrorCode.PAT_REAUTH_REQUIRED,
+                )
+                raise PatReauthRequired()
             self._cache.put(nt, cipher_text)
             logger.info("pat.refresh.rotated", user_id=nt)
             return new_token
 
     # --- helpers ----------------------------------------------------------
+    def _verify_rotation(self, token: str, nt: str) -> None:
+        """Verify a refreshed PAT and require it to be bound to ``nt``.
+
+        The refresh service is trusted to *issue* a PAT, never to name its owner
+        — the same stance `authorize` takes toward the init service. Any failure
+        raises ``PatReauthRequired``: re-authorization is the single remedy, and
+        nothing is written.
+        """
+        try:
+            bound_nt = self._verifier.nt_of(self._verifier.verify(token))
+        except PatTokenInvalid as exc:
+            self._reject_rotation(nt, "rotated_token_invalid")
+            raise PatReauthRequired() from exc
+        if bound_nt != nt:
+            self._reject_rotation(nt, "nt_mismatch")
+            raise PatReauthRequired()
+
+    @staticmethod
+    def _reject_rotation(nt: str, reason: str) -> None:
+        logger.warning(
+            "pat.refresh.rejected",
+            user_id=nt,
+            error_code=HttpErrorCode.PAT_REAUTH_REQUIRED,
+            reason=reason,
+        )
+
     def _is_valid(self, token: str) -> bool:
         try:
             self._verifier.verify(token)
