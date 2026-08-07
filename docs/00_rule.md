@@ -202,7 +202,7 @@ Update this counter whenever an item status changes. The counts cover all items 
 - **Distributed seams (mandatory pair)**: any work crossing a process boundary **must** log on **both** sides. Producer emits `<domain>.dispatched` after `kiq()`; consumer emits `<domain>.task.started` on entry and `<domain>.completed` / `<domain>.failed` on exit. A consumer-side log without a matching producer-side log (or vice versa) means an operator cannot answer "did the message survive the queue?" and is a blocking gap.
 - **Silent filters (mandatory count)**: pipeline stages that drop input (e.g. retrieval hydrator filtering by `status='READY'`, dedupe stages, ACL post-filters) **must** log `<domain>.<stage>.dropped` with `dropped_count`, `before_count`, `after_count` — invisible drops disguise correctness gates as silent data loss.
 - **Naming**: follow §Logging naming convention (`<domain>.<event>`, ≤ 4 segments). New events reuse existing prefixes (`ingest.*`, `chat.*`, `reconciler.*`) before inventing.
-- **Verification**: every new service / task / reconciler arm landing in a PR **must** include a unit test that asserts the entry and exit events fire with the documented field set; the test uses `caplog` (records bound `structlog` events), never `capsys` (which misses logger handlers).
+- **Verification**: every new service / task / reconciler arm landing in a PR **must** include a unit test that asserts the entry and exit events fire with the documented field set; the test uses `structlog.testing.capture_logs()` (see §Test Log Capture — the `caplog` bridge is **banned**, it drops records under `pytest-cov`), never `capsys` (which misses logger handlers).
 
 ---
 
