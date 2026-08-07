@@ -13,7 +13,7 @@ Two properties matter more than the mapping itself:
 
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -128,6 +128,20 @@ async def test_timestamps_are_serialised_for_the_wire() -> None:
 
     assert result.authorization_expires_at == "2027-07-29"
     assert result.authorized_at is not None and result.authorized_at.endswith("Z")
+
+
+async def test_naive_db_datetime_is_serialised_as_utc() -> None:
+    # The MariaDB driver returns NAIVE datetimes. Formatting one directly would
+    # let `astimezone` read it as local time — correct only by accident on a UTC
+    # host, off by the offset anywhere else.
+    service, repo, _, cipher = build_service()
+    row = _row(cipher)
+    row["authorized_at"] = datetime(2026, 8, 7, 2, 14, 0)  # naive, as the driver hands it over
+    repo.rows["alice"] = row
+
+    result = await service.status(nt="alice")
+
+    assert result.authorized_at == "2026-08-07T02:14:00.000Z"
 
 
 async def test_absent_row_carries_no_timestamps() -> None:

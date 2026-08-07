@@ -1176,7 +1176,7 @@ X-Auth-Token: <access token>
 ```json
 {
   "status": "active",
-  "authorized_at": "2026-08-07T02:14:00Z",
+  "authorized_at": "2026-08-07T02:14:00.000Z",
   "authorization_expires_at": "2027-07-29"
 }
 ```
@@ -1191,7 +1191,7 @@ Three states rather than two on purpose: the copy differs, and operationally a s
 
 **Fields:**
 
-- `authorized_at` — when the user last authorized **by hand**. Not the first-ever authorization (re-authorizing restarts the window) and not the last refresh.
+- `authorized_at` — when the user last authorized **by hand** (ISO 8601 UTC, millisecond precision — the project-wide `to_iso` format). Not the first-ever authorization (re-authorizing restarts the window) and not the last refresh.
 - `authorization_expires_at` — end of the authorization window (`YYYY-MM-DD`). **Unlike the 12-hour token expiry, this deadline is real**: the PAT self-rotates every 12 h with no user involvement, but nothing renews this window. Warn when it is near (~14 days is a reasonable threshold; the server does not impose one). `null` means unknown — a row written before this field existed — not "never expires".
 
 | Status | `error_code` | When |

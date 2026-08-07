@@ -638,6 +638,13 @@ def build_container() -> Container:
             kek_b64=_require("RAGENT_KEK_BASE64"),
             encrypted_dek_b64=_require("RAGENT_ENCRYPTED_DEK_BASE64"),
         )
+        # Resolved once: the refresh budget sizes the refresh client, the service's
+        # retry loop AND the revocation tombstone (which must outlast the longest
+        # in-flight refresh). Reading them in more than one place would let the
+        # three drift apart.
+        pat_refresh_timeout = _float_env("PAT_REFRESH_TIMEOUT_SECONDS", 30.0)
+        pat_refresh_retries = _int_env("PAT_REFRESH_MAX_RETRIES", 3)
+        pat_refresh_backoff = _float_env("PAT_REFRESH_BACKOFF_SECONDS", 0.5)
         pat_service = PatService(
             verifier=PatTokenVerifier(
                 key=import_pat_public_key(pat_public_key, pat_alg),
@@ -648,13 +655,17 @@ def build_container() -> Container:
             ),
             cipher=PATCipher(pat_key_manager),
             repo=PatRepository(engine=engine),
-            cache=PatCache.from_env(),
+            cache=PatCache.from_env(
+                tombstone_ttl_seconds=PatCache.tombstone_ttl_for(
+                    pat_refresh_timeout, pat_refresh_retries, pat_refresh_backoff
+                )
+            ),
             refresh_client=PatRefreshClient(
                 http,
                 refresh_url=_require("PAT_REFRESH_API"),
                 header_key=_require("PAT_API_HEADER_TOKEN_KEY"),
                 header_value=_require("PAT_API_HEADER_TOKEN_VALUE"),
-                timeout=_float_env("PAT_REFRESH_TIMEOUT_SECONDS", 30.0),
+                timeout=pat_refresh_timeout,
             ),
             init_client=PatInitClient(
                 http,
@@ -667,8 +678,8 @@ def build_container() -> Container:
                 expire_days=_int_env("PAT_INIT_EXPIRE_DAYS", 360),
                 timeout=_float_env("PAT_INIT_TIMEOUT_SECONDS", 30.0),
             ),
-            max_retries=_int_env("PAT_REFRESH_MAX_RETRIES", 3),
-            backoff_base_seconds=_float_env("PAT_REFRESH_BACKOFF_SECONDS", 0.5),
+            max_retries=pat_refresh_retries,
+            backoff_base_seconds=pat_refresh_backoff,
         )
 
     return Container(

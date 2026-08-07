@@ -142,27 +142,29 @@ class PatCache:
         logger.warning("pat.redis_unavailable", op=op, error_type=type(exc).__name__)
 
     @staticmethod
-    def _tombstone_ttl_from_env() -> int:
+    def tombstone_ttl_for(timeout: float, max_retries: int, backoff_base: float) -> int:
         """Worst-case in-flight refresh, DERIVED from the refresh budget.
 
         A revoke must keep refusing cache writes until every refresh that started
         before it has finished. That bound is the refresh timeout across the
         initial call plus each retry, plus the summed exponential backoff between
-        them (~123 s at the 30/3/0.5 defaults). Deriving it — rather than adding
-        another env var or a constant — means retuning the refresh budget cannot
-        silently shrink the tombstone below the window it exists to cover.
+        them (~123 s at the 30/3/0.5 defaults).
+
+        Takes the values rather than reading the env itself: the composition root
+        already resolves this exact trio for `PatRefreshClient` and `PatService`,
+        and a second reader would carry its own copy of the defaults — so
+        retuning the refresh budget in one place would silently leave the
+        tombstone sized for the old one, which is the drift deriving it was meant
+        to rule out.
         """
-        timeout = float(os.environ.get("PAT_REFRESH_TIMEOUT_SECONDS", "30"))
-        retries = int(os.environ.get("PAT_REFRESH_MAX_RETRIES", "3"))
-        backoff_base = float(os.environ.get("PAT_REFRESH_BACKOFF_SECONDS", "0.5"))
-        backoff_total = backoff_base * (2**retries - 1)  # base * (2^0 + … + 2^(n-1))
-        return math.ceil(timeout * (retries + 1) + backoff_total)
+        backoff_total = backoff_base * (2**max_retries - 1)  # base * (2^0 + … + 2^(n-1))
+        return math.ceil(timeout * (max_retries + 1) + backoff_total)
 
     @classmethod
-    def from_env(cls) -> PatCache:
+    def from_env(cls, *, tombstone_ttl_seconds: int) -> PatCache:
         ttl = int(os.environ.get("REDIS_PAT_TTL_SECONDS", "41400"))
         lock_ttl = int(os.environ.get("REDIS_PAT_LOCK_TTL_SECONDS", "45"))
-        tombstone_ttl = cls._tombstone_ttl_from_env()
+        tombstone_ttl = tombstone_ttl_seconds
         mode = os.environ.get("REDIS_MODE", "standalone")
         if mode == "sentinel":
             from redis.sentinel import Sentinel

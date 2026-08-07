@@ -40,7 +40,7 @@ from ragent.clients.pat_refresh_client import (
 from ragent.errors.codes import HttpErrorCode
 from ragent.schemas.pat import PatStatus, PatStatusResponse
 from ragent.security.pat_cipher import PATCipher, PATDecryptionError
-from ragent.utility.datetime import utcnow
+from ragent.utility.datetime import from_db, to_iso, utcnow
 
 logger = structlog.get_logger(__name__)
 
@@ -226,10 +226,13 @@ class PatService:
         refresh-401 reaches the user.
         """
         row = await self._repo.get(user_id=nt)
-        result = PatStatusResponse(status=self._classify(row, nt))
-        if row is not None:
-            result.authorized_at = _iso_or_none(row.get("authorized_at"))
-            result.authorization_expires_at = _date_or_none(row.get("authorization_expires_at"))
+        result = PatStatusResponse(
+            status=self._classify(row, nt),
+            authorized_at=_iso_or_none(row.get("authorized_at")) if row else None,
+            authorization_expires_at=(
+                _date_or_none(row.get("authorization_expires_at")) if row else None
+            ),
+        )
         logger.info("pat.status.read", user_id=nt, status=result.status)
         return result
 
@@ -408,7 +411,13 @@ class PatService:
 
 
 def _iso_or_none(value: Any) -> str | None:
-    return value.strftime("%Y-%m-%dT%H:%M:%SZ") if value is not None else None
+    """Serialise a DB datetime the way every other ragent API does.
+
+    `from_db` first: the MariaDB driver hands back **naive** datetimes, and
+    `to_iso`'s `astimezone` would then interpret them as *local* time — correct
+    only by accident on a UTC host, silently wrong by the offset anywhere else.
+    """
+    return to_iso(from_db(value)) if value is not None else None
 
 
 def _date_or_none(value: Any) -> str | None:

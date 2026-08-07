@@ -243,7 +243,7 @@ service-owned header (`X-User-Id`/`X-Brain-Key`) is refused outright.
 
 ```json
 {"status": "none|active|invalid",
- "authorized_at": "2026-08-07T02:14:00Z",
+ "authorized_at": "2026-08-07T02:14:00.000Z",
  "authorization_expires_at": "2027-07-29"}
 ```
 
