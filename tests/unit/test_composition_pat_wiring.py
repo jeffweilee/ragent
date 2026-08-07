@@ -102,8 +102,12 @@ def _fake_build_token_manager(**kwargs):
     )
 
 
-def _build():
-    """Run build_container() with every external dependency stubbed."""
+def _build(*, pat_cache_from_env: MagicMock | None = None):
+    """Run build_container() with every external dependency stubbed.
+
+    `pat_cache_from_env` lets a test hold the `PatCache.from_env` stub so it can
+    assert on the kwargs composition passes it."""
+    pat_cache_from_env = pat_cache_from_env if pat_cache_from_env is not None else MagicMock()
     with (
         patch("ragent.bootstrap.init_schema.patch_aiomysql_ping"),
         patch("sqlalchemy.ext.asyncio.create_async_engine", MagicMock()),
@@ -122,7 +126,7 @@ def _build():
         patch("ragent.repositories.document_repository.DocumentRepository", MagicMock()),
         patch("ragent.storage.minio_registry.MinioSiteRegistry", MagicMock()),
         patch("ragent.clients.rate_limiter.RateLimiter", MagicMock()),
-        patch("ragent.clients.pat_cache.PatCache.from_env", MagicMock()),
+        patch("ragent.clients.pat_cache.PatCache.from_env", pat_cache_from_env),
         patch("ragent.extractors.registry.PluginRegistry", MagicMock()),
         patch("ragent.extractors.stub_graph.StubGraphExtractor", MagicMock()),
         patch("httpx.Client"),
@@ -229,3 +233,27 @@ def test_base_url_without_a_path_aborts_boot(
 
     with pytest.raises(ValueError, match="PAT_INIT_API_URL"):
         _build()
+
+
+def test_tombstone_ttl_tracks_the_wired_refresh_budget(
+    _base_env: None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The revocation tombstone must outlast the longest in-flight refresh, so it
+    is derived from the SAME env values that size the refresh client and the
+    service's retry loop — read once in composition, never re-read by the cache.
+
+    Retuning the budget must move all three together; a second reader carrying
+    its own defaults is exactly the drift this guards against."""
+    _set_pat_env(monkeypatch)
+    monkeypatch.setenv("PAT_REFRESH_TIMEOUT_SECONDS", "10")
+    monkeypatch.setenv("PAT_REFRESH_MAX_RETRIES", "2")
+    monkeypatch.setenv("PAT_REFRESH_BACKOFF_SECONDS", "1")
+
+    from_env = MagicMock()
+    service = _build(pat_cache_from_env=from_env).pat_service
+
+    # 10 * (2 + 1) + 1 * (1 + 2) = 33
+    assert from_env.call_args.kwargs["tombstone_ttl_seconds"] == 33
+    assert service._refresh_client._timeout == 10.0  # noqa: SLF001
+    assert service._max_retries == 2  # noqa: SLF001
+    assert service._backoff_base == 1.0  # noqa: SLF001

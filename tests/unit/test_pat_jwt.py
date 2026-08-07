@@ -119,3 +119,43 @@ def test_import_unescapes_literal_backslash_n_in_pem() -> None:
 def test_import_rejects_garbage() -> None:
     with pytest.raises(ValueError, match="neither a PEM nor a base64 DER"):
         import_pat_public_key("not a key!!!", "RS256")
+
+
+# --- ignore_expiry (T-PAT.27) --------------------------------------------
+
+
+def test_ignore_expiry_accepts_an_expired_but_otherwise_valid_token() -> None:
+    verifier = _verifier()
+    token = _sign(exp=int(time.time()) - 3600)
+
+    with pytest.raises(PatTokenInvalid):
+        verifier.verify(token)
+    assert verifier.verify(token, ignore_expiry=True)["nt"] == "alice"
+
+
+def test_ignore_expiry_still_enforces_signature_issuer_and_audience() -> None:
+    # It relaxes time, nothing else — otherwise `status` would report a
+    # structurally broken PAT as usable.
+    verifier = _verifier()
+    for bad in (
+        _sign(exp=int(time.time()) - 10, iss="https://evil.example"),
+        _sign(exp=int(time.time()) - 10, aud="someone-else"),
+    ):
+        with pytest.raises(PatTokenInvalid):
+            verifier.verify(bad, ignore_expiry=True)
+
+
+def test_ignore_expiry_still_requires_the_exp_claim() -> None:
+    # A PAT with no `exp` must never verify: resolve() would then hold it
+    # forever and never rotate it.
+    no_exp = _jwt.encode({"alg": "RS256"}, {"iss": _ISS, "aud": _AUD, "nt": "alice"}, _KEY)
+    with pytest.raises(PatTokenInvalid):
+        _verifier().verify(no_exp, ignore_expiry=True)
+
+
+def test_ignore_expiry_tolerates_iat_and_nbf() -> None:
+    # Regression guard: pinning `now` to 0 instead of widening the leeway would
+    # make these two claims look like the future and fail.
+    now = int(time.time())
+    token = _sign(exp=now - 10, iat=now, nbf=now - 60)
+    assert _verifier().verify(token, ignore_expiry=True)["nt"] == "alice"

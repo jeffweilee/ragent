@@ -1139,6 +1139,74 @@ Re-authorizing overwrites the stored PAT and reactivates a row previously marked
 
 ---
 
+### `DELETE /pat/v1/authorize` — Revoke the caller's authorization
+
+Removes the stored PAT so ragent stops acting on the user's behalf. **No body, and no `X-Id-Token`** — the upstream PAT service exposes no revoke endpoint, so nothing is called on the user's behalf; requiring an id token here would be a gate with no purpose.
+
+```http
+DELETE /pat/v1/authorize
+X-Auth-Token: <access token>
+```
+
+**Response:** `204 No Content` — **always**, including when the caller never authorized. The PAT is a per-caller singleton (one row per user), not an id-addressed object, so revoking states a target state and repeating it is success. Clients need no branch for "was there anything to revoke"; that fact is logged as `pat.revoke.completed(existed=…)`.
+
+| Status | `error_code` | When |
+|---|---|---|
+| 422 | `MISSING_USER_ID` | No identity header. |
+| 404 | — | The PAT slice is not deployed (`PAT_PUBLIC_KEY` unset). |
+
+**Two things worth knowing:**
+
+- The row is **hard-deleted**, not flagged — the encrypted PAT is removed, not retained.
+- The minted PAT **remains valid upstream** until its `expireDate` (up to 360 days), because no upstream revoke endpoint exists. Once the row is gone nobody holds it — ragent's encrypted copy was the only one — but it is not revoked at the source.
+
+---
+
+### `GET /pat/v1/status` — Read the caller's own authorization state
+
+Answers "is this user authorized, and until when". Call it on page load to decide between a first-time authorize prompt and a re-authorize notice, and after a revoke to confirm it took effect.
+
+```http
+GET /pat/v1/status
+X-Auth-Token: <access token>
+```
+
+**Response `200`** (`Cache-Control: no-store` — per-user credential state must not be cached):
+
+```json
+{
+  "status": "active",
+  "authorized_at": "2026-08-07T02:14:00.000Z",
+  "authorization_expires_at": "2027-07-29"
+}
+```
+
+| `status` | Meaning | Suggested UI |
+|---|---|---|
+| `none` | Never authorized, or revoked | First-time authorize call-to-action |
+| `active` | Authorized and usable | Nothing |
+| `invalid` | Authorization exists but cannot be used | "Your authorization expired — please re-authorize" |
+
+Three states rather than two on purpose: the copy differs, and operationally a spike in `invalid` means the upstream PAT service is failing while a spike in `none` just means new users.
+
+**Fields:**
+
+- `authorized_at` — when the user last authorized **by hand** (ISO 8601 UTC, millisecond precision — the project-wide `to_iso` format). Not the first-ever authorization (re-authorizing restarts the window) and not the last refresh.
+- `authorization_expires_at` — end of the authorization window (`YYYY-MM-DD`). **Unlike the 12-hour token expiry, this deadline is real**: the PAT self-rotates every 12 h with no user involvement, but nothing renews this window. Warn when it is near (~14 days is a reasonable threshold; the server does not impose one). `null` means unknown — a row written before this field existed — not "never expires".
+
+| Status | `error_code` | When |
+|---|---|---|
+| 422 | `MISSING_USER_ID` | No identity header. |
+| 404 | — | **The PAT slice is not deployed** (`PAT_PUBLIC_KEY` unset). Treat as "feature off" and hide the authorization UI entirely — this is not an error. |
+
+**Notes:**
+
+- The endpoint is a pure read: it never refreshes the PAT, never writes, and never calls an upstream. It is safe to call on every page load, though it is not a polling endpoint.
+- `status` is **derived**, not a stored column: a PAT that cannot be decrypted or verified reports `invalid` even though the database row still says active, and a locally-expired PAT still reports `active` because refresh rotates it transparently.
+- It may report `invalid` slightly before a request actually fails — that is deliberate, and is how a closed authorization window surfaces to the user instead of showing up as an unexplained tool failure.
+
+---
+
 ## Operational Endpoints (`/ops/v1`)
 
 ### `POST /ops/v1/retry` — Batch force-retry stuck documents

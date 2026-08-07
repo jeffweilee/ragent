@@ -67,6 +67,7 @@ def _build_service() -> PatService:
             fakeredis.FakeStrictRedis(decode_responses=True),
             ttl_seconds=41400,
             lock_ttl_seconds=10,
+            tombstone_ttl_seconds=123,
         ),
         refresh_client=PatRefreshClient(
             httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(500))),

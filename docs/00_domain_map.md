@@ -82,7 +82,7 @@ Bootstrap (Composition Root) — 唯一組裝點
 | `feedback.py` | `/feedback/v1` | 使用者回饋 HMAC token 驗證與雙寫 |
 | `mcp.py` | `/mcp/v1` | JSON-RPC 2.0 MCP Tool Server（P2.5）|
 | `skill.py` | `/skills/v1` | 使用者 skill preset CRUD（owner-scoped；T-SK）|
-| `pat.py` | `/pat/v1` | PAT 授權寫入(`POST /authorize`,**無 body**;nt 由 identity header 解析,SSO id token 由固定的 `X-Id-Token` header 帶入 —— 與 access token 是不同的兩顆。先以同一組 JWKS 驗簽並要求其 user claim 等於 caller,再轉發給 init service 換發 PAT;驗證+綁定+加密+存 DB/redis;T-PAT)|
+| `pat.py` | `/pat/v1` | PAT 授權寫入(`POST /authorize`,**無 body**;nt 由 identity header 解析,SSO id token 由固定的 `X-Id-Token` header 帶入 —— 與 access token 是不同的兩顆。先以同一組 JWKS 驗簽並要求其 user claim 等於 caller,再轉發給 init service 換發 PAT;驗證+綁定+加密+存 DB/redis)、撤銷(`DELETE /authorize` —— 無 body 亦**不需** `X-Id-Token`(上游無撤銷端點),硬刪 + tombstone,**冪等 204 永不 404**)、狀態查詢(`GET /status` —— `none|active|invalid` + 授權期,`Cache-Control: no-store`,**零副作用**;未掛載時的 404 對 FE 代表「本部署未啟用」而非錯誤);T-PAT)|
 | `mcp_tools/` | —(tool 描述子)| 每個 sub-module 定義一個 MCP tool 的 input model / inputSchema / Tool descriptor |
 | `admin_embedding.py` | `/embedding/v1` | embedding model 生命週期管理（B50；promote/cutover/rollback/commit/abort/state）|
 | `admin_ingest.py` | `/ingest/v1/upload` | multipart 上傳路由（direct route；no `APIRouter` prefix）|
@@ -119,7 +119,7 @@ Bootstrap (Composition Root) — 唯一組裝點
 | `attachment_ingest_service.py` | `upload()`：`IngestService.create_from_upload()` → `session_document_repo.create()`。`get/list_by_thread/list_by_user/delete/delete_by_session`：`session_documents` join `documents`，status 映射到 4-value 合約（PENDING/DELETING→PROCESSING）|
 | `attachment_context_resolver.py` | `resolve(session_id, user_id, attachment_ids)` → `AttachmentContext(files_json, instruction)` または `None`；顯式 ids 做 owner+session 校驗；session fallback 倒序＋latest flag；永不注入文件內容 |
 | `retrieve_v2_service.py` | `assert_owner(user_id, document_ids)`：`document_repo.get_by_document_ids()` 批次查；任一 id 不屬於 user → `DocumentForbidden` |
-| `pat_service.py` | PAT 生命週期協調(T-PAT)：`authorize`(init 換發+驗證+綁定+加密+存)、`resolve`/`resolve_best_effort`(redis→DB→refresh→invalidate)、`_refresh`(per-nt 鎖 + 401/400/429 狀態機)、`_mint`(init 401/400/429/transient 映射)|
+| `pat_service.py` | PAT 生命週期協調(T-PAT)：`authorize`(init 換發+驗證+綁定+加密+存，並寫入授權期欄位)、`revoke`(tombstone→硬刪→evict，冪等)、`status`(**純唯讀**，只讀 DB、不碰 redis、不呼叫上游、絕不走 `resolve`)、`resolve`/`resolve_best_effort`(redis→DB→refresh→invalidate)、`_refresh`(per-nt 鎖 + 401/400/429 狀態機；rotate 前先驗證換發回來的 token)、`_mint`(init 401/400/429/transient 映射)|
 
 ---
 ### 2.4 Repositories（資料持久層）
@@ -140,7 +140,7 @@ Bootstrap (Composition Root) — 唯一組裝點
 | `system_settings_repository.py` | `system_settings` 表 — embedding model config 讀寫 |
 | `session_document_repository.py` | `session_documents` 表 — `create()`（INSERT IGNORE 幂等）、`list_by_session(session_id, create_user)`（create_date DESC）、`get_by_document`、`list_by_user`、`delete_by_document`、`delete_by_session() → list[document_id]` |
 | `skill_repository.py` | `skills` 表 — owner-scoped CRUD（每條語句都以 `user_id` 過濾；T-SK）|
-| `pat_repository.py` | `pat` 表 — 一 user 一 PAT(`user_id` UNIQUE)；`upsert`(INSERT…ON DUPLICATE KEY UPDATE，重設 active)、`get`、`mark_invalid`(T-PAT)|
+| `pat_repository.py` | `pat` 表 — 一 user 一 PAT(`user_id` UNIQUE)；`upsert`(INSERT…ON DUPLICATE KEY UPDATE，重設 active，**唯一**寫 `authorized_at`/`authorization_expires_at` 之處)、`rotate`(**UPDATE-only**，refresh 專用，rowcount 0 = 已撤銷，不得復活該列，且不碰授權期欄位)、`get`、`delete`(硬刪，revoke 用)、`mark_invalid`(T-PAT)|
 
 ---
 ### 2.5 Pipelines（Haystack 管線）
@@ -213,7 +213,7 @@ Bootstrap (Composition Root) — 唯一組裝點
 | `unprotect.py` | `UnprotectClient` — 外部 unprotect API 取回原始 binary(T-UP.3)|
 | `chat_stream_store.py` | `ChatStreamStore`(T-CAv3R) — Redis Stream tee/replay，讓 `/chatagent/v3` SSE run 可斷線重連 |
 | `nats_publisher.py` | `NatsSessionPublisher`(T-CAv3N) — sessionList 即時狀態（running/hasNewReply）發布到 per-user NATS subject；app-flow JWT 換發 + 連線 supervisor，全程 fail-soft |
-| `pat_cache.py` | `PatCache`(T-PAT) — PAT redis 快取(`ragent:pat:{nt}`，TTL 11.5h)+ per-nt refresh 鎖(`SET NX EX`)；全 op fail-soft |
+| `pat_cache.py` | `PatCache`(T-PAT) — PAT redis 快取(`ragent:pat:{nt}`，TTL 11.5h)+ per-nt refresh 鎖(`SET NX EX`)+ 撤銷 tombstone(`ragent:pat:tomb:{nt}`，TTL 由 refresh timeout×重試預算推導)；`put` 在 tombstone 存在時**拒絕寫入**(WATCH/MULTI 原子檢查)——所有回填路徑的唯一咽喉點，`revoke` 的正確性依賴於此；全 op fail-soft |
 | `pat_refresh_client.py` | `PatRefreshClient`(T-PAT) — `PUT {PAT_REFRESH_API}` rotate PAT；401/400/429/transient 映射為 typed error 供 service 狀態機 |
 | `pat_init_client.py` | `PatInitClient`(T-PAT) — `POST {PAT_INIT_API_URL}`(env 即完整 mint endpoint,與 `PAT_REFRESH_API` 同形;無 path 則開機失敗)以使用者 SSO id token 換發新 PAT(三個 header + `{expireDate}` body，日期取 `today + PAT_INIT_EXPIRE_DAYS`，須 < 1 年)；401/400/429/transient 映射為 typed error |
 

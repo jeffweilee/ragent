@@ -1,5 +1,5 @@
 -- schema.sql — consolidated snapshot reflecting alembic head (spec B3).
--- Latest migration folded in: 016_documents_deleted.sql
+-- Latest migration folded in: 018_pat_authorization_window.sql
 -- Updated in lockstep with every NNN_*.sql migration file.
 -- Apply directly: mysql -u user -p ragent < schema.sql
 -- Or via Alembic:  alembic upgrade head  (produces identical schema)
@@ -167,13 +167,20 @@ CREATE TABLE IF NOT EXISTS skills (
 -- user_id UNIQUE (one nt <-> one PAT); pat_cipher is the AES-256-GCM envelope
 -- (never the plaintext); status active|invalid. No physical FK. Point lookups
 -- ride uq_pat_user, so no extra index is needed.
+-- authorized_at / authorization_expires_at (018) record the *current*
+-- authorization window and are written by authorize ONLY — refresh's rotate
+-- leaves them alone, so a rotation never appears to extend the window.
+-- authorization_expires_at is a prediction (the upstream stays authoritative);
+-- DATE because the value sent to init is YYYY/MM/DD in the upstream's timezone.
 CREATE TABLE IF NOT EXISTS pat (
-  id          BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
-  user_id     VARCHAR(64)  NOT NULL,
-  pat_cipher  TEXT         NOT NULL,
-  status      VARCHAR(16)  NOT NULL DEFAULT 'active',
-  created_at  DATETIME(6)  NOT NULL,
-  updated_at  DATETIME(6)  NOT NULL,
+  id                       BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  user_id                  VARCHAR(64)  NOT NULL,
+  pat_cipher               TEXT         NOT NULL,
+  status                   VARCHAR(16)  NOT NULL DEFAULT 'active',
+  authorized_at            DATETIME(6)  NULL,
+  authorization_expires_at DATE         NULL,
+  created_at               DATETIME(6)  NOT NULL,
+  updated_at               DATETIME(6)  NOT NULL,
   PRIMARY KEY (id),
   UNIQUE KEY uq_pat_user (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

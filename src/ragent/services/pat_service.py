@@ -24,6 +24,7 @@ from fastapi.concurrency import run_in_threadpool
 from ragent.auth.pat_jwt import PatTokenInvalid, PatTokenVerifier
 from ragent.clients.pat_cache import PatCache
 from ragent.clients.pat_init_client import (
+    MintedPat,
     PatInitBadRequest,
     PatInitClient,
     PatInitError,
@@ -37,7 +38,9 @@ from ragent.clients.pat_refresh_client import (
     PatRefreshUnauthorized,
 )
 from ragent.errors.codes import HttpErrorCode
+from ragent.schemas.pat import PatStatus, PatStatusResponse
 from ragent.security.pat_cipher import PATCipher, PATDecryptionError
+from ragent.utility.datetime import from_db, to_iso, utcnow
 
 logger = structlog.get_logger(__name__)
 
@@ -116,7 +119,8 @@ class PatService:
         (``PatReauthRequired`` / ``PatInternalError`` / ``PatInitThrottled`` /
         ``PatInitUnavailable``); writes nothing on failure."""
         logger.info("pat.authorize.started", user_id=nt)
-        pat_token = await self._mint(nt, id_token)
+        minted = await self._mint(nt, id_token)
+        pat_token = minted.token
         # A minted PAT that fails verification means the init service handed us
         # something unusable — log the terminal event so `started` is never left
         # dangling without an outcome (00_rule.md §Service Boundary Logs).
@@ -140,11 +144,20 @@ class PatService:
             )
             raise PatTokenInvalid()
         cipher_text = self._cipher.encrypt(pat_token)
-        await self._repo.upsert(user_id=nt, pat_cipher=cipher_text)
+        # The window is the one init was actually asked for (carried on the mint
+        # result, not recomputed here) — authorize is the only writer, so a later
+        # refresh cannot appear to extend it.
+        await self._repo.upsert(
+            user_id=nt,
+            pat_cipher=cipher_text,
+            authorization_expires_at=minted.expire_date,
+        )
         self._cache.put(nt, cipher_text)
-        logger.info("pat.authorize.stored", user_id=nt)
+        logger.info(
+            "pat.authorize.stored", user_id=nt, authorization_expires_at=str(minted.expire_date)
+        )
 
-    async def _mint(self, nt: str, id_token: str) -> str:
+    async def _mint(self, nt: str, id_token: str) -> MintedPat:
         """Call the init service and map its typed HTTP errors to service errors."""
         try:
             return await run_in_threadpool(self._init_client.init, id_token)
@@ -168,6 +181,86 @@ class PatService:
                 "pat.init.unavailable", user_id=nt, error_code=HttpErrorCode.PAT_INIT_UNAVAILABLE
             )
             raise PatInitUnavailable() from exc
+
+    # --- Revoke -----------------------------------------------------------
+    async def revoke(self, *, nt: str) -> None:
+        """Drop the caller's authorization. Idempotent — absent is success.
+
+        Order matters at every step:
+
+        1. **Tombstone first.** From here on `cache.put` refuses, so a refresh
+           that already rotated cannot republish the token after step 3.
+        2. **DB delete before the eviction.** Evicting first would let a
+           concurrent `resolve` miss the cache, read the still-present row, and
+           re-fill redis — a window one DB round-trip wide. Deleting first makes
+           that resolve read `None` and raise instead.
+        3. **Evict** whatever was cached before the tombstone landed.
+
+        Redis is fail-soft throughout: if it is down, neither the tombstone nor
+        the eviction lands and a cached PAT survives to its TTL. The DB row is
+        still gone, so this is bounded and self-healing — it is the one case
+        where revocation is not immediate (`docs/spec/pat.md` §已知限制).
+        """
+        logger.info("pat.revoke.started", user_id=nt)
+        self._cache.mark_revoked(nt)
+        rowcount = await self._repo.delete(user_id=nt)
+        self._cache.evict(nt)
+        logger.info("pat.revoke.completed", user_id=nt, existed=rowcount > 0)
+
+    # --- Status (read-only) -----------------------------------------------
+    async def status(self, *, nt: str) -> PatStatusResponse:
+        """Report the caller's authorization state. **Zero side effects.**
+
+        Deliberately does NOT go through `resolve()`, even though the mapping
+        looks similar: `resolve` refreshes an expired PAT, which means an HTTP
+        round-trip, a DB write and a possible `mark_invalid`. Routing a
+        per-page-load GET through that would turn this endpoint into a request
+        amplifier aimed at the refresh service. Nothing here reads or writes
+        redis or calls an upstream.
+
+        The invariant is **one-directional**: this must never report `active`
+        when `resolve` would fail. The reverse is intended — once past
+        `authorization_expires_at` the answer is `invalid` even though `resolve`
+        can still hand out a locally-valid token, and that is precisely how the
+        window between the upstream dropping the authorization and the next
+        refresh-401 reaches the user.
+        """
+        row = await self._repo.get(user_id=nt)
+        result = PatStatusResponse(
+            status=self._classify(row, nt),
+            authorized_at=_iso_or_none(row.get("authorized_at")) if row else None,
+            authorization_expires_at=(
+                _date_or_none(row.get("authorization_expires_at")) if row else None
+            ),
+        )
+        logger.info("pat.status.read", user_id=nt, status=result.status)
+        return result
+
+    def _classify(self, row: Any, nt: str) -> PatStatus:
+        if row is None:
+            return "none"
+        if row["status"] != "active":
+            return "invalid"
+        # NOT a column read. `_safe_decrypt` failure (key rotation / corruption)
+        # makes `resolve` raise while `pat.status` still says 'active' — no code
+        # path ever flips that column — so returning row["status"] here would
+        # report a healthy authorization that fails on every single request.
+        token = self._safe_decrypt(row["pat_cipher"])
+        if token is None:
+            return "invalid"
+        try:
+            # Expiry ignored on purpose: an expired PAT is refreshable and is the
+            # normal steady state. Only a structurally broken or wrongly-bound
+            # token means the user must act.
+            claims = self._verifier.verify(token, ignore_expiry=True)
+            if self._verifier.nt_of(claims) != nt:
+                return "invalid"
+        except PatTokenInvalid:
+            return "invalid"
+        expires_at = row.get("authorization_expires_at")
+        if expires_at is not None and utcnow().date() > expires_at:
+            return "invalid"
+        return "active"
 
     # --- Request path: resolve a usable PAT ------------------------------
     async def resolve(self, nt: str) -> str:
@@ -248,13 +341,66 @@ class PatService:
                 attempt += 1
                 continue
 
+            # Verify the rotation before it is persisted — the refresh client only
+            # checks the envelope carries a non-empty `patToken`, so without this a
+            # malformed or wrongly-signed token would be stored and cached, leaving
+            # an `active` row holding a PAT nothing downstream can use.
+            try:
+                self._verify_rotation(new_token, nt)
+            except PatReauthRequired:
+                # The raised exception says "re-authorize", so the PERSISTED state
+                # has to agree with it. Leaving the row `active` here would make
+                # `status` report a healthy authorization while every `resolve`
+                # deterministically fails: the stored PAT is already expired (that
+                # is why we are refreshing), and each retry asks the same broken
+                # upstream for a rotation it will reject again. Re-authorizing is
+                # a real remedy — it mints through `init`, not the refresh
+                # service — so `invalid` is the honest state.
+                await self._repo.mark_invalid(user_id=nt)
+                self._cache.evict(nt)
+                raise
             cipher_text = self._cipher.encrypt(new_token)
-            await self._repo.upsert(user_id=nt, pat_cipher=cipher_text)
+            # UPDATE-only: a revoke that landed while this refresh was in flight
+            # deleted the row, and re-creating it would silently undo the user's
+            # revocation. rowcount 0 means the authorization is gone.
+            if await self._repo.rotate(user_id=nt, pat_cipher=cipher_text) == 0:
+                logger.warning(
+                    "pat.refresh.revoked",
+                    user_id=nt,
+                    error_code=HttpErrorCode.PAT_REAUTH_REQUIRED,
+                )
+                raise PatReauthRequired()
             self._cache.put(nt, cipher_text)
             logger.info("pat.refresh.rotated", user_id=nt)
             return new_token
 
     # --- helpers ----------------------------------------------------------
+    def _verify_rotation(self, token: str, nt: str) -> None:
+        """Verify a refreshed PAT and require it to be bound to ``nt``.
+
+        The refresh service is trusted to *issue* a PAT, never to name its owner
+        — the same stance `authorize` takes toward the init service. Any failure
+        raises ``PatReauthRequired``: re-authorization is the single remedy, and
+        nothing is written.
+        """
+        try:
+            bound_nt = self._verifier.nt_of(self._verifier.verify(token))
+        except PatTokenInvalid as exc:
+            self._reject_rotation(nt, "rotated_token_invalid")
+            raise PatReauthRequired() from exc
+        if bound_nt != nt:
+            self._reject_rotation(nt, "nt_mismatch")
+            raise PatReauthRequired()
+
+    @staticmethod
+    def _reject_rotation(nt: str, reason: str) -> None:
+        logger.warning(
+            "pat.refresh.rejected",
+            user_id=nt,
+            error_code=HttpErrorCode.PAT_REAUTH_REQUIRED,
+            reason=reason,
+        )
+
     def _is_valid(self, token: str) -> bool:
         try:
             self._verifier.verify(token)
@@ -275,3 +421,17 @@ class PatService:
             return self._cipher.decrypt(cipher_text)
         except PATDecryptionError:
             return None
+
+
+def _iso_or_none(value: Any) -> str | None:
+    """Serialise a DB datetime the way every other ragent API does.
+
+    `from_db` first: the MariaDB driver hands back **naive** datetimes, and
+    `to_iso`'s `astimezone` would then interpret them as *local* time — correct
+    only by accident on a UTC host, silently wrong by the offset anywhere else.
+    """
+    return to_iso(from_db(value)) if value is not None else None
+
+
+def _date_or_none(value: Any) -> str | None:
+    return value.strftime("%Y-%m-%d") if value is not None else None

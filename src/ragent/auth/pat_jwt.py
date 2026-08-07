@@ -27,6 +27,11 @@ from joserfc.jwt import JWTClaimsRegistry
 
 from ragent.errors.codes import HttpErrorCode
 
+# ~317 years — wide enough that no real `exp`/`nbf`/`iat` can fall outside it,
+# so `verify(..., ignore_expiry=True)` turns off time checks without turning off
+# anything else. Not a tolerance anyone should tune.
+_IGNORE_EXPIRY_LEEWAY_SECONDS = 10**10
+
 
 def import_pat_public_key(value: str, algorithm: str) -> Key:
     """Load the static PAT public key for the configured JWS algorithm.
@@ -81,12 +86,21 @@ class PatTokenVerifier:
     expected_aud: str
     nt_claim: str
 
-    def verify(self, token: str) -> dict[str, Any]:
+    def verify(self, token: str, *, ignore_expiry: bool = False) -> dict[str, Any]:
         """Return the PAT's claims, or raise ``PatTokenInvalid``.
 
         Signature + algorithm are checked by ``jwt.decode``; ``exp``/``aud`` by
         the claims registry; ``iss`` by a direct compare (trailing-slash-tolerant,
-        matching the SSO path)."""
+        matching the SSO path).
+
+        ``ignore_expiry`` checks everything **except** whether ``exp`` has passed
+        (the claim must still be present). This exists for `GET /pat/v1/status`,
+        which has to separate two cases this class otherwise collapses: an
+        expired PAT is the *normal* steady state — refresh rotates it roughly
+        twice a day and the user never sees it — while a bad signature / issuer /
+        audience is unusable and means re-authorize. Reporting the former as
+        broken would prompt a healthy account daily.
+        """
         if not token:
             raise PatTokenInvalid()
         try:
@@ -96,11 +110,19 @@ class PatTokenVerifier:
 
         claims = decoded.claims
         try:
-            # `exp` is essential: joserfc only runs the expiry validator when the
-            # claim is present, so without this a PAT that omits `exp` would
-            # verify forever and resolve() would never refresh it (contradicting
-            # the 12 h lifetime — Codex review r3619473868).
+            # `exp` stays essential in BOTH modes: joserfc only runs the expiry
+            # validator when the claim is present, so without this a PAT that
+            # omits `exp` would verify forever and resolve() would never refresh
+            # it (contradicting the 12 h lifetime — Codex review r3619473868).
+            #
+            # `ignore_expiry` widens the leeway rather than dropping the `exp`
+            # option, because joserfc validates every time-based claim it finds,
+            # not just the ones named here. Pinning `now` to 0 instead would make
+            # `iat`/`nbf` — which real SSO tokens do carry — look like the future
+            # and fail. A leeway this wide neutralises all three uniformly while
+            # signature, `aud` and (below) `iss` are still enforced.
             JWTClaimsRegistry(
+                leeway=_IGNORE_EXPIRY_LEEWAY_SECONDS if ignore_expiry else 0,
                 exp={"essential": True},
                 aud={"essential": True, "value": self.expected_aud},
             ).validate(claims)

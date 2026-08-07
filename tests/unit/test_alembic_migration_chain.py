@@ -61,11 +61,29 @@ def test_verify_and_get_chain_matches_disk(env):
         assert Path(item["down_path"]).exists()
 
 
-def test_chain_head_is_017_pat(env):
+def test_chain_head_is_018_pat_authorization_window(env):
     head = env.MIGRATION_CHAIN[-1]
-    assert head["version"] == 17
-    assert head["upgrade"] == "017_pat.sql"
-    assert head["downgrade"] == "017_pat.sql"
+    assert head["version"] == 18
+    assert head["upgrade"] == "018_pat_authorization_window.sql"
+    assert head["downgrade"] == "018_pat_authorization_window.sql"
+
+
+def test_018_upgrade_adds_nullable_window_columns(env):
+    sql = (env.UPGRADE_DIR / "018_pat_authorization_window.sql").read_text(encoding="utf-8")
+    assert "ALTER TABLE pat" in sql
+    assert "ADD COLUMN authorized_at DATETIME(6) NULL" in sql
+    # DATE, not DATETIME: init takes YYYY/MM/DD evaluated in the upstream's
+    # timezone, so a timestamp would fake precision we do not have.
+    assert "ADD COLUMN authorization_expires_at DATE NULL" in sql
+    # Pre-existing rows must stay NULL = "unknown"; a backfill would be a guess.
+    assert "UPDATE pat" not in sql
+
+
+def test_018_downgrade_drops_only_the_window_columns(env):
+    sql = (env.DOWNGRADE_DIR / "018_pat_authorization_window.sql").read_text(encoding="utf-8")
+    assert "DROP COLUMN authorization_expires_at" in sql
+    assert "DROP COLUMN authorized_at" in sql
+    assert "DROP TABLE" not in sql  # the credential itself is never touched
 
 
 def test_017_upgrade_creates_pat(env):
