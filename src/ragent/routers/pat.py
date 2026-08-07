@@ -18,7 +18,7 @@ client + nt). A failure at any step surfaces as the PAT slice's typed error
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 import structlog
 from fastapi import APIRouter, Depends, Header
@@ -29,6 +29,7 @@ from ragent.auth.jwt import JwtAuthError, VerifyingTokenManager, verify_jwt
 from ragent.auth.pat_jwt import PatTokenInvalid
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
+from ragent.schemas.pat import PatStatusResponse
 from ragent.services.pat_service import (
     PatInitThrottled,
     PatInitUnavailable,
@@ -91,6 +92,30 @@ def create_pat_router(
         except _AUTHORIZE_ERRORS as exc:
             return problem(exc.http_status, exc.error_code, "PAT authorization failed")
         return Response(status_code=204)
+
+    @router.get("/status", response_model=PatStatusResponse)
+    async def status(
+        response: Response,
+        user_id: Annotated[str | None, Depends(get_user_id)] = None,
+    ) -> Any:
+        """Report the caller's own authorization state — a pure read.
+
+        `no-store` because this is per-user credential state: a cached `active`
+        served after a revoke would tell the user they are still authorized.
+
+        A `404` here means the PAT slice is not wired in this deployment
+        (`PAT_PUBLIC_KEY` unset), so the router was never mounted — clients
+        should read that as "feature off" and hide the UI, not as an error.
+        """
+        if not user_id:
+            logger.warning(
+                "pat.status.rejected",
+                reason="missing_user_id",
+                error_code=HttpErrorCode.MISSING_USER_ID,
+            )
+            return problem(422, HttpErrorCode.MISSING_USER_ID, "missing user identity")
+        response.headers["Cache-Control"] = "no-store"
+        return await pat_service.status(nt=user_id)
 
     @router.delete("/authorize", status_code=204)
     async def revoke(

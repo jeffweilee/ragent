@@ -38,7 +38,9 @@ from ragent.clients.pat_refresh_client import (
     PatRefreshUnauthorized,
 )
 from ragent.errors.codes import HttpErrorCode
+from ragent.schemas.pat import PatStatus, PatStatusResponse
 from ragent.security.pat_cipher import PATCipher, PATDecryptionError
+from ragent.utility.datetime import utcnow
 
 logger = structlog.get_logger(__name__)
 
@@ -205,6 +207,58 @@ class PatService:
         self._cache.evict(nt)
         logger.info("pat.revoke.completed", user_id=nt, existed=rowcount > 0)
 
+    # --- Status (read-only) -----------------------------------------------
+    async def status(self, *, nt: str) -> PatStatusResponse:
+        """Report the caller's authorization state. **Zero side effects.**
+
+        Deliberately does NOT go through `resolve()`, even though the mapping
+        looks similar: `resolve` refreshes an expired PAT, which means an HTTP
+        round-trip, a DB write and a possible `mark_invalid`. Routing a
+        per-page-load GET through that would turn this endpoint into a request
+        amplifier aimed at the refresh service. Nothing here reads or writes
+        redis or calls an upstream.
+
+        The invariant is **one-directional**: this must never report `active`
+        when `resolve` would fail. The reverse is intended — once past
+        `authorization_expires_at` the answer is `invalid` even though `resolve`
+        can still hand out a locally-valid token, and that is precisely how the
+        window between the upstream dropping the authorization and the next
+        refresh-401 reaches the user.
+        """
+        row = await self._repo.get(user_id=nt)
+        result = PatStatusResponse(status=self._classify(row, nt))
+        if row is not None:
+            result.authorized_at = _iso_or_none(row.get("authorized_at"))
+            result.authorization_expires_at = _date_or_none(row.get("authorization_expires_at"))
+        logger.info("pat.status.read", user_id=nt, status=result.status)
+        return result
+
+    def _classify(self, row: Any, nt: str) -> PatStatus:
+        if row is None:
+            return "none"
+        if row["status"] != "active":
+            return "invalid"
+        # NOT a column read. `_safe_decrypt` failure (key rotation / corruption)
+        # makes `resolve` raise while `pat.status` still says 'active' — no code
+        # path ever flips that column — so returning row["status"] here would
+        # report a healthy authorization that fails on every single request.
+        token = self._safe_decrypt(row["pat_cipher"])
+        if token is None:
+            return "invalid"
+        try:
+            # Expiry ignored on purpose: an expired PAT is refreshable and is the
+            # normal steady state. Only a structurally broken or wrongly-bound
+            # token means the user must act.
+            claims = self._verifier.verify(token, ignore_expiry=True)
+            if self._verifier.nt_of(claims) != nt:
+                return "invalid"
+        except PatTokenInvalid:
+            return "invalid"
+        expires_at = row.get("authorization_expires_at")
+        if expires_at is not None and utcnow().date() > expires_at:
+            return "invalid"
+        return "active"
+
     # --- Request path: resolve a usable PAT ------------------------------
     async def resolve(self, nt: str) -> str:
         """Return a locally-valid PAT for ``nt`` (redis→DB→refresh→invalidate)."""
@@ -351,3 +405,11 @@ class PatService:
             return self._cipher.decrypt(cipher_text)
         except PATDecryptionError:
             return None
+
+
+def _iso_or_none(value: Any) -> str | None:
+    return value.strftime("%Y-%m-%dT%H:%M:%SZ") if value is not None else None
+
+
+def _date_or_none(value: Any) -> str | None:
+    return value.strftime("%Y-%m-%d") if value is not None else None

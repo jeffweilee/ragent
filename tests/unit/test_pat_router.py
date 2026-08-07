@@ -17,6 +17,7 @@ from structlog.testing import capture_logs
 
 from ragent.auth.pat_jwt import PatTokenInvalid
 from ragent.routers.pat import ID_TOKEN_HEADER, create_pat_router
+from ragent.schemas.pat import PatStatusResponse
 from ragent.services.pat_service import (
     PatInitThrottled,
     PatInitUnavailable,
@@ -32,6 +33,7 @@ class _StubService:
         self.calls: list[tuple[str, str]] = []
 
         self.revoked: list[str] = []
+        self.status_calls: list[str] = []
 
     async def authorize(self, *, nt: str, id_token: str) -> None:
         self.calls.append((nt, id_token))
@@ -40,6 +42,14 @@ class _StubService:
 
     async def revoke(self, *, nt: str) -> None:
         self.revoked.append(nt)
+
+    async def status(self, *, nt: str) -> PatStatusResponse:
+        self.status_calls.append(nt)
+        return PatStatusResponse(
+            status="active",
+            authorized_at="2026-08-07T00:00:00Z",
+            authorization_expires_at="2027-07-29",
+        )
 
 
 def _client(service: _StubService) -> TestClient:
@@ -243,3 +253,44 @@ def test_revoke_without_identity_returns_422_and_never_calls_the_service() -> No
     rejected = [e for e in captured if e.get("event") == "pat.revoke.rejected"]
     assert len(rejected) == 1
     assert rejected[0]["error_code"] == "MISSING_USER_ID"
+
+
+# --- GET /pat/v1/status (T-PAT.27) ---------------------------------------
+
+
+def test_status_returns_the_service_view_with_no_store() -> None:
+    service = _StubService()
+
+    resp = _client(service).get("/pat/v1/status", headers={"X-User-Id": "alice"})
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "status": "active",
+        "authorized_at": "2026-08-07T00:00:00Z",
+        "authorization_expires_at": "2027-07-29",
+    }
+    # Per-user credential state: a cached `active` served after a revoke would
+    # tell the user they are still authorized.
+    assert resp.headers["cache-control"] == "no-store"
+    assert service.status_calls == ["alice"]
+
+
+def test_status_without_identity_returns_422_and_never_calls_the_service() -> None:
+    service = _StubService()
+
+    with capture_logs() as captured:
+        resp = _client(service).get("/pat/v1/status")
+
+    assert resp.status_code == 422
+    assert resp.json()["error_code"] == "MISSING_USER_ID"
+    assert service.status_calls == []
+    assert [e for e in captured if e.get("event") == "pat.status.rejected"]
+
+
+def test_status_is_scoped_to_the_resolved_caller() -> None:
+    # A query parameter must never be able to read another user's state.
+    service = _StubService()
+
+    _client(service).get("/pat/v1/status?user_id=bob", headers={"X-User-Id": "alice"})
+
+    assert service.status_calls == ["alice"]
