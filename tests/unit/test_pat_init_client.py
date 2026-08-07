@@ -56,9 +56,13 @@ def test_success_returns_token_and_sends_expected_shape() -> None:
         seen["body"] = json.loads(request.content)
         return httpx.Response(200, json={"patToken": "NEW"})
 
-    token = _client(handler, expire_days=360, today=date(2026, 8, 3)).init("ID-TOKEN")
+    minted = _client(handler, expire_days=360, today=date(2026, 8, 3)).init("ID-TOKEN")
 
-    assert token == "NEW"
+    assert minted.token == "NEW"
+    # T-PAT.25: the window reported back is the one actually sent, not a second
+    # computation — what gets persisted can never drift from what init was asked
+    # for. Same value as `seen["body"]["expireDate"]` asserted below.
+    assert minted.expire_date == date(2027, 7, 29)
     assert seen["method"] == "POST"
     assert seen["url"] == _URL
     assert seen["api_token"] == "svc-secret"

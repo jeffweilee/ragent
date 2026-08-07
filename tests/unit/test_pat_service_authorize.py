@@ -7,6 +7,8 @@ Init HTTP failures surface as the service's typed exceptions.
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 from structlog.testing import capture_logs
 
@@ -38,6 +40,36 @@ async def test_authorize_mints_via_init_and_writes_active_row() -> None:
     assert cipher.decrypt(repo.rows["alice"]["pat_cipher"]) == minted
     cached = cache.get("alice")
     assert cached is not None and cipher.decrypt(cached) == minted
+
+
+async def test_authorize_persists_the_window_init_granted() -> None:
+    # T-PAT.25: the stored window is the value the mint actually asked init for
+    # (carried on the result), never a second computation that could drift.
+    init = FakeInitClient(sign("alice"), expire_date=date(2027, 7, 29))
+    service, repo, _, _ = build_service(init_client=init)
+
+    await service.authorize(nt="alice", id_token="ID-TOKEN")
+
+    assert repo.rows["alice"]["authorization_expires_at"] == date(2027, 7, 29)
+    assert repo.rows["alice"]["authorized_at"] is not None
+
+
+async def test_reauthorize_restarts_the_window() -> None:
+    # The window is a property of the LAST authorize — this is why neither
+    # created_at (first insert only) nor updated_at (every refresh) can carry it.
+    service, repo, _, _ = build_service(
+        init_client=FakeInitClient(sign("alice"), expire_date=date(2027, 1, 1))
+    )
+    await service.authorize(nt="alice", id_token="ID-TOKEN")
+    first = repo.rows["alice"]["authorized_at"]
+
+    service, repo, _, _ = build_service(
+        repo=repo, init_client=FakeInitClient(sign("alice"), expire_date=date(2028, 1, 1))
+    )
+    await service.authorize(nt="alice", id_token="ID-TOKEN")
+
+    assert repo.rows["alice"]["authorization_expires_at"] == date(2028, 1, 1)
+    assert repo.rows["alice"]["authorized_at"] >= first
 
 
 async def test_authorize_rejects_nt_binding_mismatch() -> None:

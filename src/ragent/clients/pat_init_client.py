@@ -20,6 +20,7 @@ re-called per request — it is rate limited on purpose).
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Any
 from urllib.parse import urlparse
@@ -36,6 +37,21 @@ logger = structlog.get_logger(__name__)
 # service evaluates the ceiling in its own timezone, so `today + 365` can land
 # on the far side of the boundary.
 _MAX_EXPIRE_DAYS = 364
+
+
+@dataclass(frozen=True)
+class MintedPat:
+    """A freshly minted PAT together with the window it was minted for.
+
+    `expire_date` is the value this client actually sent as `expireDate`, not a
+    recomputation — so what `PatService` persists as the authorization window and
+    what the upstream was asked for can never drift apart. A named pair rather
+    than a tuple: both fields are read at the storage site, where positional
+    unpacking would be easy to get backwards.
+    """
+
+    token: str
+    expire_date: date
 
 
 class PatInitError(Exception):
@@ -105,13 +121,14 @@ class PatInitClient:
         self._timeout = timeout
         self._clock = clock
 
-    def init(self, id_token: str) -> str:
-        """Return a freshly minted PAT, or raise a typed ``PatInitError``."""
+    def init(self, id_token: str) -> MintedPat:
+        """Return a freshly minted PAT plus its window, or raise ``PatInitError``."""
         headers = {**self._static_headers, self._authorize_header_key: id_token}
+        expire_date = self._expire_date()
         try:
             resp = self._http.post(
                 self._url,
-                json={"expireDate": self._expire_date()},
+                json={"expireDate": expire_date.strftime("%Y/%m/%d")},
                 headers=headers,
                 timeout=self._timeout,
             )
@@ -120,7 +137,7 @@ class PatInitClient:
             raise PatInitTransient(str(exc)) from exc
 
         if resp.status_code == 200:
-            return self._extract(resp)
+            return MintedPat(token=self._extract(resp), expire_date=expire_date)
         if resp.status_code == 401:
             raise PatInitUnauthorized()
         if resp.status_code == 400:
@@ -130,10 +147,12 @@ class PatInitClient:
         logger.warning("pat.init_unexpected_status", http_status=resp.status_code)
         raise PatInitTransient(f"unexpected status {resp.status_code}")
 
-    def _expire_date(self) -> str:
-        """A date `expire_days` out, formatted `YYYY/MM/DD` per the init contract
-        (a small margin under one year avoids the API's 400-on-`> 1y`)."""
-        return (self._clock() + timedelta(days=self._expire_days)).strftime("%Y/%m/%d")
+    def _expire_date(self) -> date:
+        """The end of the authorization window: `expire_days` out (a small margin
+        under one year avoids the API's 400-on-`> 1y`). Serialised `YYYY/MM/DD`
+        for the wire by the caller, and carried on `MintedPat` so the persisted
+        window is the same value."""
+        return self._clock() + timedelta(days=self._expire_days)
 
     @staticmethod
     def _extract(resp: httpx.Response) -> str:

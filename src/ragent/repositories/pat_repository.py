@@ -11,6 +11,7 @@ refresh overwrite the row in place and reset `status` to `active`. The stored
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 from sqlalchemy import text
@@ -24,11 +25,19 @@ from ragent.utility.datetime import utcnow
 # leaves it untouched.
 _UPSERT_SQL = text(
     """
-    INSERT INTO pat (user_id, pat_cipher, status, created_at, updated_at)
-    VALUES (:user_id, :pat_cipher, 'active', :created_at, :updated_at)
+    INSERT INTO pat (
+        user_id, pat_cipher, status,
+        authorized_at, authorization_expires_at, created_at, updated_at
+    )
+    VALUES (
+        :user_id, :pat_cipher, 'active',
+        :authorized_at, :authorization_expires_at, :created_at, :updated_at
+    )
     ON DUPLICATE KEY UPDATE
         pat_cipher = :pat_cipher,
         status = 'active',
+        authorized_at = :authorized_at,
+        authorization_expires_at = :authorization_expires_at,
         updated_at = :updated_at
     """
 )
@@ -60,8 +69,19 @@ class PatRepository:
     def __init__(self, engine: Any) -> None:
         self._engine = engine
 
-    async def upsert(self, *, user_id: str, pat_cipher: str) -> None:
-        """Insert or overwrite the caller's PAT, (re)setting status to active."""
+    async def upsert(
+        self,
+        *,
+        user_id: str,
+        pat_cipher: str,
+        authorization_expires_at: date | None = None,
+    ) -> None:
+        """Insert or overwrite the caller's PAT, (re)setting status to active.
+
+        Authorize-only, so `authorized_at` is stamped here: re-authorizing
+        restarts the authorization window, and `created_at` (first insert only)
+        cannot express that while `updated_at` is overwritten by every refresh.
+        """
         now = utcnow()
         async with self._engine.begin() as conn:
             await conn.execute(
@@ -69,6 +89,8 @@ class PatRepository:
                 {
                     "user_id": user_id,
                     "pat_cipher": pat_cipher,
+                    "authorized_at": now,
+                    "authorization_expires_at": authorization_expires_at,
                     "created_at": now,
                     "updated_at": now,
                 },

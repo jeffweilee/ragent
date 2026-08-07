@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 from ragent.repositories.pat_repository import PatRepository
@@ -51,6 +51,41 @@ async def test_upsert_overwrites_and_reactivates():
     assert "status = 'active'" in sql  # re-auth / refresh resets an invalid row
     assert params["user_id"] == "alice"
     assert params["pat_cipher"] == "v1.n.c"
+
+
+async def test_upsert_stamps_the_authorization_window():
+    # T-PAT.25: authorize is the ONLY writer of the window. Both branches of the
+    # upsert set it, so re-authorizing restarts it — `created_at` (first insert
+    # only) cannot express that and `updated_at` is overwritten by every refresh.
+    engine, conn = _mock_engine()
+    repo = PatRepository(engine)
+
+    await repo.upsert(
+        user_id="alice", pat_cipher="v1.n.c", authorization_expires_at=date(2027, 7, 29)
+    )
+
+    sql = str(conn.execute.call_args.args[0])
+    params = conn.execute.call_args.args[1]
+    # Present in the UPDATE branch too, not just the INSERT — otherwise
+    # re-authorizing an existing row would leave the old window in place.
+    assert "authorized_at = :authorized_at" in sql
+    assert "authorization_expires_at = :authorization_expires_at" in sql
+    assert params["authorization_expires_at"] == date(2027, 7, 29)
+    assert params["authorized_at"] == params["created_at"]
+
+
+async def test_rotate_never_touches_the_authorization_window():
+    # The regression guard for "a refresh silently moved the window": rotating a
+    # token must not look like a fresh authorization.
+    engine, conn = _mock_engine(rowcount=1)
+    repo = PatRepository(engine)
+
+    await repo.rotate(user_id="alice", pat_cipher="v1.n.c")
+
+    sql = str(conn.execute.call_args.args[0])
+    assert "authorized_at" not in sql
+    assert "authorization_expires_at" not in sql
+    assert "authorized_at" not in conn.execute.call_args.args[1]
 
 
 async def test_rotate_updates_in_place_and_never_inserts():

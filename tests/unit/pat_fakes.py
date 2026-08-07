@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import time
+from datetime import date
 from typing import Any
 
 import fakeredis
@@ -18,8 +19,10 @@ from joserfc.jwk import KeySet, RSAKey
 from ragent.auth.jwt import VerifyingTokenManager
 from ragent.auth.pat_jwt import PatTokenVerifier
 from ragent.clients.pat_cache import PatCache
+from ragent.clients.pat_init_client import MintedPat
 from ragent.security.pat_cipher import PATCipher
 from ragent.services.pat_service import PatService
+from ragent.utility.datetime import utcnow
 
 ISS = "https://sso.example/pat"
 AUD = "ragent-agent"
@@ -82,8 +85,16 @@ class FakeRepo:
         self.rows: dict[str, dict[str, Any]] = {}
         self.mark_invalid_calls: list[str] = []
 
-    async def upsert(self, *, user_id: str, pat_cipher: str) -> None:
-        self.rows[user_id] = {"user_id": user_id, "pat_cipher": pat_cipher, "status": "active"}
+    async def upsert(
+        self, *, user_id: str, pat_cipher: str, authorization_expires_at: date | None = None
+    ) -> None:
+        self.rows[user_id] = {
+            "user_id": user_id,
+            "pat_cipher": pat_cipher,
+            "status": "active",
+            "authorized_at": utcnow(),
+            "authorization_expires_at": authorization_expires_at,
+        }
 
     async def rotate(self, *, user_id: str, pat_cipher: str) -> int:
         """UPDATE-only, mirroring the real repo: a revoked row is NOT recreated."""
@@ -123,17 +134,20 @@ class FakeRefreshClient:
 class FakeInitClient:
     """Returns ``result`` (a minted PAT str) or raises it when it is an Exception.
 
-    Records the forwarded id token so authorize's on-behalf-of wiring is checked."""
+    Records the forwarded id token so authorize's on-behalf-of wiring is checked.
+    A str result is wrapped in `MintedPat` with `expire_date`, mirroring the real
+    client which reports the window it actually asked init for."""
 
-    def __init__(self, result: Any) -> None:
+    def __init__(self, result: Any, *, expire_date: date | None = None) -> None:
         self._result = result
+        self.expire_date = expire_date if expire_date is not None else date(2027, 7, 21)
         self.calls: list[str] = []
 
-    def init(self, id_token: str) -> str:
+    def init(self, id_token: str) -> MintedPat:
         self.calls.append(id_token)
         if isinstance(self._result, Exception):
             raise self._result
-        return self._result
+        return MintedPat(token=self._result, expire_date=self.expire_date)
 
 
 async def _no_sleep(_seconds: float) -> None:

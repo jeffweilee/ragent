@@ -9,6 +9,8 @@ enforced by the schema (migration 017), not merely application code:
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -49,6 +51,60 @@ async def test_upsert_is_one_row_per_user(repo):
     row = await pat_repo.get(user_id=user)
     assert row["pat_cipher"] == "v1.b.b"
     assert row["status"] == "active"
+
+
+async def test_rotate_updates_in_place_and_leaves_the_window_alone(repo):
+    # T-PAT.24/25 against real MariaDB: refresh overwrites the token but must not
+    # move the authorization window — only authorize may do that.
+    pat_repo, engine = repo
+    user = f"alice-{new_id()}"
+    await pat_repo.upsert(
+        user_id=user, pat_cipher="v1.a.a", authorization_expires_at=date(2027, 7, 29)
+    )
+    authorized_at = (await pat_repo.get(user_id=user))["authorized_at"]
+
+    assert await pat_repo.rotate(user_id=user, pat_cipher="v1.b.b") == 1
+
+    row = await pat_repo.get(user_id=user)
+    assert await _count(engine, user) == 1
+    assert row["pat_cipher"] == "v1.b.b"
+    assert row["authorization_expires_at"] == date(2027, 7, 29)
+    assert row["authorized_at"] == authorized_at
+
+
+async def test_rotate_does_not_recreate_a_revoked_row(repo):
+    # The revoke-resurrection guard: UPDATE on a missing row affects 0 rows and
+    # must NOT insert one.
+    pat_repo, engine = repo
+    user = f"ghost-{new_id()}"
+
+    assert await pat_repo.rotate(user_id=user, pat_cipher="v1.a.a") == 0
+    assert await _count(engine, user) == 0
+
+
+async def test_reauthorize_restarts_the_window(repo):
+    pat_repo, _ = repo
+    user = f"carol-{new_id()}"
+
+    await pat_repo.upsert(
+        user_id=user, pat_cipher="v1.a.a", authorization_expires_at=date(2027, 1, 1)
+    )
+    await pat_repo.upsert(
+        user_id=user, pat_cipher="v1.b.b", authorization_expires_at=date(2028, 1, 1)
+    )
+
+    assert (await pat_repo.get(user_id=user))["authorization_expires_at"] == date(2028, 1, 1)
+
+
+async def test_window_is_null_when_not_supplied(repo):
+    # Rows written before 018 (and any caller that omits it) read back as
+    # "unknown" rather than a fabricated date.
+    pat_repo, _ = repo
+    user = f"dave-{new_id()}"
+
+    await pat_repo.upsert(user_id=user, pat_cipher="v1.a.a")
+
+    assert (await pat_repo.get(user_id=user))["authorization_expires_at"] is None
 
 
 async def test_mark_invalid_then_reauthorize_reactivates(repo):

@@ -24,6 +24,7 @@ from fastapi.concurrency import run_in_threadpool
 from ragent.auth.pat_jwt import PatTokenInvalid, PatTokenVerifier
 from ragent.clients.pat_cache import PatCache
 from ragent.clients.pat_init_client import (
+    MintedPat,
     PatInitBadRequest,
     PatInitClient,
     PatInitError,
@@ -116,7 +117,8 @@ class PatService:
         (``PatReauthRequired`` / ``PatInternalError`` / ``PatInitThrottled`` /
         ``PatInitUnavailable``); writes nothing on failure."""
         logger.info("pat.authorize.started", user_id=nt)
-        pat_token = await self._mint(nt, id_token)
+        minted = await self._mint(nt, id_token)
+        pat_token = minted.token
         # A minted PAT that fails verification means the init service handed us
         # something unusable — log the terminal event so `started` is never left
         # dangling without an outcome (00_rule.md §Service Boundary Logs).
@@ -140,11 +142,20 @@ class PatService:
             )
             raise PatTokenInvalid()
         cipher_text = self._cipher.encrypt(pat_token)
-        await self._repo.upsert(user_id=nt, pat_cipher=cipher_text)
+        # The window is the one init was actually asked for (carried on the mint
+        # result, not recomputed here) — authorize is the only writer, so a later
+        # refresh cannot appear to extend it.
+        await self._repo.upsert(
+            user_id=nt,
+            pat_cipher=cipher_text,
+            authorization_expires_at=minted.expire_date,
+        )
         self._cache.put(nt, cipher_text)
-        logger.info("pat.authorize.stored", user_id=nt)
+        logger.info(
+            "pat.authorize.stored", user_id=nt, authorization_expires_at=str(minted.expire_date)
+        )
 
-    async def _mint(self, nt: str, id_token: str) -> str:
+    async def _mint(self, nt: str, id_token: str) -> MintedPat:
         """Call the init service and map its typed HTTP errors to service errors."""
         try:
             return await run_in_threadpool(self._init_client.init, id_token)
