@@ -32,7 +32,7 @@ calls it makes, and annotates each chain with:
 13. [Reconciler: ingest.supersede + stuck-PENDING sweep](#13-reconciler-ingestsupersede--stuck-pending-sweep)
 14. [Token exchange — cross-cutting concern](#14-token-exchange--cross-cutting-concern)
 15. [Summary: exception surface map](#15-summary-exception-surface-map)
-(new: see §19 POST /pat/v1/authorize — PAT authorization)
+(new: see §19 POST /pat/v1/authorize — PAT authorization; §20 DELETE revoke; §21 GET status)
 
 ---
 
@@ -627,3 +627,87 @@ Response: `204`. Failure writes nothing (no DB row, no cache entry).
 
 Init runs **only** here — never on the request path. Steady state is one mint
 per user, after which the PAT self-rotates via `PAT_REFRESH_API` (§`docs/spec/pat.md`).
+
+---
+
+## 20. DELETE /pat/v1/authorize — PAT revocation (local only)
+
+No body and no `X-Id-Token`: the upstream exposes no revoke endpoint, so nothing
+is called on-behalf-of the user.
+
+```
+DELETE /pat/v1/authorize   (no body)
+  └── Middleware: JWT verify → scope[user_id]
+  └── PatRouter.revoke()
+        ├── get_user_id(request)                        → nt      [422 if absent]
+        └── PatService.revoke(nt)
+              ├── log pat.revoke.started
+              ├── PatCache.mark_revoked(nt)          [Redis]  ← FIRST: from here
+              │     ragent:pat:tomb:{nt}, TTL derived from     PatCache.put refuses,
+              │     the refresh timeout + retry budget         so an in-flight refresh
+              │     (~123 s at defaults)                       cannot republish later
+              ├── PatRepository.delete(nt) → rowcount [MariaDB] ← BEFORE the evict:
+              │     hard DELETE                                 evicting first lets a
+              │                                                 concurrent resolve read
+              │                                                 the row and re-fill redis
+              ├── PatCache.evict(nt)                  [Redis]
+              └── log pat.revoke.completed(existed=rowcount > 0)
+```
+
+Response: `204` **always** — the PAT is a per-caller singleton, so revoking a
+non-existent authorization is success, not `404`.
+
+**Exception handling**:
+
+| Exception | Response |
+|---|---|
+| `user_id` is `None` | 422 `MISSING_USER_ID` |
+| Redis unavailable (tombstone or evict) | **still 204** — `PatCache` is fail-soft. The row is deleted; a cached PAT survives to its TTL (≤ 11.5 h). The one case where revocation is not immediate. |
+| MariaDB down | 500 `INTERNAL_ERROR` |
+
+**Interaction with refresh** (why the tombstone exists): `_do_refresh` awaits
+between `rotate` and `cache.put`, so a whole revoke can run in that gap on one
+event loop. `rotate` returns rowcount 1, so §19's revoked-row check does not
+fire — only the tombstone stops the rotated token being republished to a cache
+that every later request reads without consulting the DB.
+
+---
+
+## 21. GET /pat/v1/status — authorization state (pure read)
+
+```
+GET /pat/v1/status
+  └── Middleware: JWT verify → scope[user_id]
+  └── PatRouter.status()
+        ├── get_user_id(request)                        → nt      [422 if absent]
+        └── PatService.status(nt)
+              ├── PatRepository.get(nt)                 [MariaDB — the ONLY I/O]
+              ├── classify:
+              │     row absent                     → "none"
+              │     row.status != 'active'         → "invalid"
+              │     PATCipher.decrypt fails        → "invalid"
+              │     verify(ignore_expiry=True) fails
+              │       or nt binding mismatch       → "invalid"
+              │     now > authorization_expires_at → "invalid"
+              │     otherwise                      → "active"
+              └── log pat.status.read(status=…)
+  └── 200 + Cache-Control: no-store
+```
+
+**No redis, no refresh, no upstream call.** Implementing this as `resolve()` +
+exception mapping is the obvious shortcut and is wrong: `resolve` refreshes an
+expired PAT, so a per-page-load GET would trigger refresh round-trips, DB writes
+and possible `mark_invalid`.
+
+**Exception handling**:
+
+| Exception | Response |
+|---|---|
+| `user_id` is `None` | 422 `MISSING_USER_ID` |
+| Slice unwired (`PAT_PUBLIC_KEY` unset) | 404 — router never mounted; clients read this as "feature off" |
+| MariaDB down | 500 `INTERNAL_ERROR` |
+
+A locally-**expired** PAT still reports `active` (refresh rotates it ~730×/year;
+reporting it broken would prompt a healthy account twice a day). Past
+`authorization_expires_at` it reports `invalid` even while `resolve` could still
+return a token — the invariant is one-directional (`docs/spec/pat.md` §8).
