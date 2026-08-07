@@ -17,5 +17,10 @@ jobs:
         id: pragent
         uses: Codium-ai/pr-agent@main
         env:
+          # pr-agent authenticates to GitHub with this to fetch the diff and post
+          # its review. Without it the action logs "GITHUB_TOKEN not set" and
+          # exits 0 — a green run that reviewed nothing, which is harder to
+          # notice than a red one.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           OPENAI.KEY: ${{ secrets.GEMINI_API_KEY }}
           CONFIG.MODEL: "gemini/gemini-2.5-pro"
