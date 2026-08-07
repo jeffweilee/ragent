@@ -31,10 +31,15 @@ class _StubService:
         self.raise_exc = raise_exc
         self.calls: list[tuple[str, str]] = []
 
+        self.revoked: list[str] = []
+
     async def authorize(self, *, nt: str, id_token: str) -> None:
         self.calls.append((nt, id_token))
         if self.raise_exc is not None:
             raise self.raise_exc
+
+    async def revoke(self, *, nt: str) -> None:
+        self.revoked.append(nt)
 
 
 def _client(service: _StubService) -> TestClient:
@@ -191,3 +196,50 @@ def test_every_rejection_is_logged_with_its_reason(
     assert rejections[0]["reason"] == reason
     assert rejections[0]["error_code"] == error_code
     assert rejections[0]["log_level"] == "warning"
+
+
+# --- DELETE /pat/v1/authorize (T-PAT.26) ---------------------------------
+
+
+def test_revoke_returns_204_and_calls_the_service() -> None:
+    service = _StubService()
+
+    resp = _client(service).delete("/pat/v1/authorize", headers={"X-User-Id": "alice"})
+
+    assert resp.status_code == 204
+    assert service.revoked == ["alice"]
+
+
+def test_revoke_needs_no_id_token() -> None:
+    # The upstream has no revoke endpoint, so nothing is called on-behalf-of the
+    # user — requiring X-Id-Token here would be a gate with no purpose.
+    service = _StubService()
+
+    resp = _client(service).delete("/pat/v1/authorize", headers={"X-User-Id": "alice"})
+
+    assert resp.status_code == 204
+
+
+def test_revoke_is_idempotent_for_a_caller_who_never_authorized() -> None:
+    # The PAT is a per-caller singleton, not an id-addressed object: revoking
+    # states a target state, so repeating it is success, never 404.
+    service = _StubService()
+    client = _client(service)
+
+    assert client.delete("/pat/v1/authorize", headers={"X-User-Id": "ghost"}).status_code == 204
+    assert client.delete("/pat/v1/authorize", headers={"X-User-Id": "ghost"}).status_code == 204
+    assert service.revoked == ["ghost", "ghost"]
+
+
+def test_revoke_without_identity_returns_422_and_never_calls_the_service() -> None:
+    service = _StubService()
+
+    with capture_logs() as captured:
+        resp = _client(service).delete("/pat/v1/authorize")
+
+    assert resp.status_code == 422
+    assert resp.json()["error_code"] == "MISSING_USER_ID"
+    assert service.revoked == []
+    rejected = [e for e in captured if e.get("event") == "pat.revoke.rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["error_code"] == "MISSING_USER_ID"

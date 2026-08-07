@@ -92,6 +92,29 @@ def create_pat_router(
             return problem(exc.http_status, exc.error_code, "PAT authorization failed")
         return Response(status_code=204)
 
+    @router.delete("/authorize", status_code=204)
+    async def revoke(
+        user_id: Annotated[str | None, Depends(get_user_id)] = None,
+    ) -> Response:
+        """Drop the caller's PAT. No body, and no `X-Id-Token`: the upstream has
+        no revoke endpoint, so nothing is called on-behalf-of the user.
+
+        **Idempotent `204`, never `404`** — unlike a skill, the PAT is a
+        per-caller singleton (`uq_pat_user`), not an id-addressed object. Asking
+        to be un-authorized states a target state, so repeating it (or revoking
+        when never authorized) is success; whether a row existed rides
+        `pat.revoke.completed(existed=…)` rather than the status code.
+        """
+        if not user_id:
+            logger.warning(
+                "pat.revoke.rejected",
+                reason="missing_user_id",
+                error_code=HttpErrorCode.MISSING_USER_ID,
+            )
+            return problem(422, HttpErrorCode.MISSING_USER_ID, "missing user identity")
+        await pat_service.revoke(nt=user_id)
+        return Response(status_code=204)
+
     return router
 
 

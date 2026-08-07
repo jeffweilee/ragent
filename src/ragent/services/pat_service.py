@@ -180,6 +180,31 @@ class PatService:
             )
             raise PatInitUnavailable() from exc
 
+    # --- Revoke -----------------------------------------------------------
+    async def revoke(self, *, nt: str) -> None:
+        """Drop the caller's authorization. Idempotent — absent is success.
+
+        Order matters at every step:
+
+        1. **Tombstone first.** From here on `cache.put` refuses, so a refresh
+           that already rotated cannot republish the token after step 3.
+        2. **DB delete before the eviction.** Evicting first would let a
+           concurrent `resolve` miss the cache, read the still-present row, and
+           re-fill redis — a window one DB round-trip wide. Deleting first makes
+           that resolve read `None` and raise instead.
+        3. **Evict** whatever was cached before the tombstone landed.
+
+        Redis is fail-soft throughout: if it is down, neither the tombstone nor
+        the eviction lands and a cached PAT survives to its TTL. The DB row is
+        still gone, so this is bounded and self-healing — it is the one case
+        where revocation is not immediate (`docs/spec/pat.md` §已知限制).
+        """
+        logger.info("pat.revoke.started", user_id=nt)
+        self._cache.mark_revoked(nt)
+        rowcount = await self._repo.delete(user_id=nt)
+        self._cache.evict(nt)
+        logger.info("pat.revoke.completed", user_id=nt, existed=rowcount > 0)
+
     # --- Request path: resolve a usable PAT ------------------------------
     async def resolve(self, nt: str) -> str:
         """Return a locally-valid PAT for ``nt`` (redis→DB→refresh→invalidate)."""

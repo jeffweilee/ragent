@@ -60,6 +60,11 @@ _ROTATE_SQL = text(
 
 _GET_SQL = text("SELECT * FROM pat WHERE user_id = :user_id")
 
+# Hard delete, not a `status='revoked'` third state: the user asked for the
+# credential to be gone, and a soft delete would leave the ciphertext in the row.
+# History lives in the structured logs instead.
+_DELETE_SQL = text("DELETE FROM pat WHERE user_id = :user_id")
+
 _MARK_INVALID_SQL = text(
     "UPDATE pat SET status = 'invalid', updated_at = :updated_at WHERE user_id = :user_id"
 )
@@ -110,6 +115,12 @@ class PatRepository:
         async with self._engine.connect() as conn:
             result = await conn.execute(_GET_SQL, {"user_id": user_id})
             return result.mappings().first()
+
+    async def delete(self, *, user_id: str) -> int:
+        """Remove the caller's PAT. Returns rowcount (0 == nothing to revoke)."""
+        async with self._engine.begin() as conn:
+            result = await conn.execute(_DELETE_SQL, {"user_id": user_id})
+            return result.rowcount
 
     async def mark_invalid(self, *, user_id: str) -> int:
         """Flip the caller's PAT to invalid. Returns rowcount (0 == absent)."""

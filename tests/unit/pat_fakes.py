@@ -108,6 +108,9 @@ class FakeRepo:
     async def get(self, *, user_id: str):
         return self.rows.get(user_id)
 
+    async def delete(self, *, user_id: str) -> int:
+        return 1 if self.rows.pop(user_id, None) is not None else 0
+
     async def mark_invalid(self, *, user_id: str) -> int:
         self.mark_invalid_calls.append(user_id)
         if user_id in self.rows:
@@ -169,7 +172,10 @@ def build_service(
         cache
         if cache is not None
         else PatCache(
-            fakeredis.FakeStrictRedis(decode_responses=True), ttl_seconds=41400, lock_ttl_seconds=10
+            fakeredis.FakeStrictRedis(decode_responses=True),
+            ttl_seconds=41400,
+            lock_ttl_seconds=10,
+            tombstone_ttl_seconds=123,
         )
     )
     verifier = PatTokenVerifier(
