@@ -107,11 +107,27 @@ async def test_revoked_mid_refresh_is_not_resurrected() -> None:
     assert revoked[0]["error_code"] == HttpErrorCode.PAT_REAUTH_REQUIRED
 
 
-async def test_unverifiable_rotation_is_not_persisted() -> None:
-    # T-PAT.24: `PatRefreshClient` only checks the envelope carries a non-empty
-    # `patToken`, so a malformed rotation would otherwise be encrypted and stored
-    # — leaving an `active` row holding a PAT nothing can use.
-    rc = FakeRefreshClient(["not-a-jwt"])
+@pytest.mark.parametrize(
+    "rotation,why",
+    [
+        ("not-a-jwt", "malformed"),
+        # Never trust the refresh service to name the owner — the same binding
+        # check authorize applies to a freshly minted PAT.
+        (sign("mallory"), "bound to another nt"),
+    ],
+)
+async def test_unverifiable_rotation_is_not_persisted_and_invalidates(
+    rotation: str, why: str
+) -> None:
+    """`PatRefreshClient` only checks the envelope carries a non-empty
+    `patToken`, so a malformed rotation would otherwise be encrypted and stored.
+
+    The rejected token is never persisted — but the row IS marked invalid and
+    the cache evicted (PR #243 Codex P1). Raising `PatReauthRequired` while
+    leaving the row `active` would make `status` claim a healthy authorization
+    that `resolve` deterministically fails on: the stored PAT is already
+    expired, so every retry asks the same broken upstream again."""
+    rc = FakeRefreshClient([rotation])
     service, repo, cache, cipher = build_service(refresh_client=rc)
     _seed_expired(repo, cache, cipher)
     before = repo.rows["alice"]["pat_cipher"]
@@ -119,23 +135,21 @@ async def test_unverifiable_rotation_is_not_persisted() -> None:
     with pytest.raises(PatReauthRequired):
         await service.resolve("alice")
 
-    assert repo.rows["alice"]["pat_cipher"] == before  # untouched
-    assert cipher.decrypt(cache.get("alice")) == cipher.decrypt(before)
+    assert repo.rows["alice"]["pat_cipher"] == before, why  # rejection not stored
+    assert repo.rows["alice"]["status"] == "invalid", why
+    assert cache.get("alice") is None, why
 
 
-async def test_rotation_bound_to_another_nt_is_rejected() -> None:
-    # Never trust the refresh service to name the owner — same binding check
-    # authorize applies to a freshly minted PAT.
-    rc = FakeRefreshClient([sign("mallory")])
-    service, repo, cache, cipher = build_service(refresh_client=rc)
+async def test_rejected_rotation_makes_status_agree_with_resolve() -> None:
+    """The invariant this protects, end to end: after a rejected rotation the
+    status endpoint must not still say `active`."""
+    service, repo, cache, cipher = build_service(refresh_client=FakeRefreshClient(["not-a-jwt"]))
     _seed_expired(repo, cache, cipher)
-    before = repo.rows["alice"]["pat_cipher"]
 
     with pytest.raises(PatReauthRequired):
         await service.resolve("alice")
 
-    assert repo.rows["alice"]["pat_cipher"] == before
-    assert repo.rows["alice"]["status"] == "active"  # nothing written on failure
+    assert (await service.status(nt="alice")).status == "invalid"
 
 
 async def test_refresh_lock_loser_uses_freshly_cached_token() -> None:

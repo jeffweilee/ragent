@@ -345,7 +345,20 @@ class PatService:
             # checks the envelope carries a non-empty `patToken`, so without this a
             # malformed or wrongly-signed token would be stored and cached, leaving
             # an `active` row holding a PAT nothing downstream can use.
-            self._verify_rotation(new_token, nt)
+            try:
+                self._verify_rotation(new_token, nt)
+            except PatReauthRequired:
+                # The raised exception says "re-authorize", so the PERSISTED state
+                # has to agree with it. Leaving the row `active` here would make
+                # `status` report a healthy authorization while every `resolve`
+                # deterministically fails: the stored PAT is already expired (that
+                # is why we are refreshing), and each retry asks the same broken
+                # upstream for a rotation it will reject again. Re-authorizing is
+                # a real remedy — it mints through `init`, not the refresh
+                # service — so `invalid` is the honest state.
+                await self._repo.mark_invalid(user_id=nt)
+                self._cache.evict(nt)
+                raise
             cipher_text = self._cipher.encrypt(new_token)
             # UPDATE-only: a revoke that landed while this refresh was in flight
             # deleted the row, and re-creating it would silently undo the user's

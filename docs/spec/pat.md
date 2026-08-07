@@ -207,6 +207,14 @@ body `{"patToken": current}` → response `{"patToken": new}`.
   is gone (revoked mid-refresh) `rotate` affects 0 rows: nothing is written, the
   cache is not published to, and the caller gets `PatReauthRequired`.
 - **Refresh 401** → `status='invalid'`, redis cleared → user re-authorizes.
+- **Rotation fails verification** (refresh returned a malformed / wrongly-signed
+  / wrong-owner token) → the rejected token is **not** stored, but the row is
+  marked `status='invalid'` and redis cleared. The raised error says
+  "re-authorize", so the persisted state must agree: leaving the row `active`
+  would make §8 report a healthy authorization while every `resolve` fails —
+  the stored PAT is already expired (that is why it is refreshing) and each
+  retry asks the same broken upstream again. Re-authorizing genuinely fixes it,
+  because it mints through **init**, not the refresh service.
 - **User revokes** → row **deleted**, tombstone set, redis cleared (§3.2).
 
 ## 7. `/brainagent/v1` attach (all brain-bound calls)
