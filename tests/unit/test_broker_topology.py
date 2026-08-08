@@ -56,3 +56,41 @@ def test_sentinel_missing_hosts_exits(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("REDIS_SENTINEL_HOSTS", raising=False)
     with pytest.raises(SystemExit):
         _make_broker()
+
+
+def test_sentinel_passes_master_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REDIS_MODE", "sentinel")
+    monkeypatch.setenv("REDIS_SENTINEL_HOSTS", "s1:26379")
+    monkeypatch.setenv("REDIS_BROKER_SENTINEL_MASTER", "ragent-broker")
+    monkeypatch.setenv("REDIS_SENTINEL_MASTER_PASSWORD", "masterpass")
+    monkeypatch.delenv("REDIS_SENTINEL_PASSWORD", raising=False)
+    broker = _make_broker()
+    assert isinstance(broker, ListQueueSentinelBroker)
+    # master/replica password lives in Sentinel.connection_kwargs
+    assert broker.sentinel.connection_kwargs.get("password") == "masterpass"
+
+
+def test_sentinel_passes_sentinel_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REDIS_MODE", "sentinel")
+    monkeypatch.setenv("REDIS_SENTINEL_HOSTS", "s1:26379")
+    monkeypatch.setenv("REDIS_BROKER_SENTINEL_MASTER", "ragent-broker")
+    monkeypatch.delenv("REDIS_SENTINEL_MASTER_PASSWORD", raising=False)
+    monkeypatch.setenv("REDIS_SENTINEL_PASSWORD", "sentpass")
+    broker = _make_broker()
+    assert isinstance(broker, ListQueueSentinelBroker)
+    # sentinel-node password lives in each sentinel client's connection pool
+    assert (
+        broker.sentinel.sentinels[0].connection_pool.connection_kwargs.get("password") == "sentpass"
+    )
+
+
+def test_sentinel_no_password_when_env_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REDIS_MODE", "sentinel")
+    monkeypatch.setenv("REDIS_SENTINEL_HOSTS", "s1:26379")
+    monkeypatch.setenv("REDIS_BROKER_SENTINEL_MASTER", "ragent-broker")
+    monkeypatch.delenv("REDIS_SENTINEL_MASTER_PASSWORD", raising=False)
+    monkeypatch.delenv("REDIS_SENTINEL_PASSWORD", raising=False)
+    broker = _make_broker()
+    assert isinstance(broker, ListQueueSentinelBroker)
+    assert broker.sentinel.connection_kwargs.get("password") is None
+    assert broker.sentinel.sentinels[0].connection_pool.connection_kwargs.get("password") is None

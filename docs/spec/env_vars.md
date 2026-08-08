@@ -55,6 +55,8 @@
 | `REDIS_RATELIMIT_URL`                 | `redis://localhost:6379/1` | Rate-limiter URL (mode=standalone). |
 | `REDIS_STREAM_URL`                    | `redis://localhost:6379/2` | Resumable v3 stream buffer URL (mode=standalone). |
 | `REDIS_SENTINEL_HOSTS`                | (required if mode=sentinel) | Comma-separated `host:port` list (≥ 3 nodes recommended). |
+| `REDIS_SENTINEL_MASTER_PASSWORD`      | (unset)          | AUTH password for Redis master/replica data nodes (mode=sentinel only); standalone password is embedded in `*_URL` instead. |
+| `REDIS_SENTINEL_PASSWORD`             | (unset)          | AUTH password for the sentinel-process endpoints (mode=sentinel only); leave empty if sentinels are unauthenticated. |
 | `REDIS_BROKER_SENTINEL_MASTER`        | `ragent-broker`  | Master name for broker instance (mode=sentinel). |
 | `REDIS_RATELIMIT_SENTINEL_MASTER`     | `ragent-ratelimit` | Master name for rate-limiter instance (mode=sentinel). |
 | `REDIS_STREAM_SENTINEL_MASTER`        | `stream-master`  | Master name for v3 stream-buffer instance (mode=sentinel). |

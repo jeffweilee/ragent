@@ -37,6 +37,48 @@ def test_sentinel_ctor(monkeypatch: pytest.MonkeyPatch) -> None:
     assert limiter is not None
 
 
+def test_sentinel_passes_master_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REDIS_MODE", "sentinel")
+    monkeypatch.setenv("REDIS_SENTINEL_HOSTS", "s1:26379")
+    monkeypatch.setenv("REDIS_RATELIMIT_SENTINEL_MASTER", "ratelimit-master")
+    monkeypatch.setenv("REDIS_SENTINEL_MASTER_PASSWORD", "masterpass")
+    monkeypatch.delenv("REDIS_SENTINEL_PASSWORD", raising=False)
+    from ragent.clients.rate_limiter import RateLimiter
+
+    limiter = RateLimiter.from_env()
+    assert (
+        limiter._redis.connection_pool.sentinel_manager.connection_kwargs.get("password")
+        == "masterpass"
+    )
+
+
+def test_sentinel_passes_sentinel_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REDIS_MODE", "sentinel")
+    monkeypatch.setenv("REDIS_SENTINEL_HOSTS", "s1:26379")
+    monkeypatch.setenv("REDIS_RATELIMIT_SENTINEL_MASTER", "ratelimit-master")
+    monkeypatch.delenv("REDIS_SENTINEL_MASTER_PASSWORD", raising=False)
+    monkeypatch.setenv("REDIS_SENTINEL_PASSWORD", "sentpass")
+    from ragent.clients.rate_limiter import RateLimiter
+
+    limiter = RateLimiter.from_env()
+    sent = limiter._redis.connection_pool.sentinel_manager.sentinels[0]
+    assert sent.connection_pool.connection_kwargs.get("password") == "sentpass"
+
+
+def test_sentinel_no_password_when_env_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REDIS_MODE", "sentinel")
+    monkeypatch.setenv("REDIS_SENTINEL_HOSTS", "s1:26379")
+    monkeypatch.setenv("REDIS_RATELIMIT_SENTINEL_MASTER", "ratelimit-master")
+    monkeypatch.delenv("REDIS_SENTINEL_MASTER_PASSWORD", raising=False)
+    monkeypatch.delenv("REDIS_SENTINEL_PASSWORD", raising=False)
+    from ragent.clients.rate_limiter import RateLimiter
+
+    limiter = RateLimiter.from_env()
+    mgr = limiter._redis.connection_pool.sentinel_manager
+    assert mgr.connection_kwargs.get("password") is None
+    assert mgr.sentinels[0].connection_pool.connection_kwargs.get("password") is None
+
+
 # --- behavioral: fixed-window counter ---
 
 

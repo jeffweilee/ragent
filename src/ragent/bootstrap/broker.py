@@ -4,6 +4,7 @@ import sys
 from taskiq_redis import ListQueueBroker, ListQueueSentinelBroker
 
 from ragent.middleware.taskiq_context import StructlogContextMiddleware
+from ragent.utility.env import parse_sentinel_hosts
 
 
 def _make_broker() -> ListQueueBroker | ListQueueSentinelBroker:
@@ -14,12 +15,15 @@ def _make_broker() -> ListQueueBroker | ListQueueSentinelBroker:
         if not hosts_raw:
             print("REDIS_SENTINEL_HOSTS is required when REDIS_MODE=sentinel", file=sys.stderr)
             sys.exit(1)
-        sentinels = [
-            (h.rsplit(":", 1)[0], int(h.rsplit(":", 1)[1]))
-            for h in hosts_raw.split(",")
-            if h.strip()
-        ]
-        return ListQueueSentinelBroker(sentinels=sentinels, master_name=master)
+        sentinels = parse_sentinel_hosts(hosts_raw)
+        master_pw = os.environ.get("REDIS_SENTINEL_MASTER_PASSWORD") or None
+        sentinel_pw = os.environ.get("REDIS_SENTINEL_PASSWORD") or None
+        return ListQueueSentinelBroker(
+            sentinels=sentinels,
+            master_name=master,
+            password=master_pw,
+            sentinel_kwargs={"password": sentinel_pw} if sentinel_pw else None,
+        )
     url = os.environ.get("REDIS_BROKER_URL", "redis://localhost:6379/0")
     return ListQueueBroker(url=url)
 

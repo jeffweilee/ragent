@@ -10,6 +10,8 @@ from typing import Any
 import redis as redis_lib
 import structlog
 
+from ragent.utility.env import parse_sentinel_hosts
+
 logger = structlog.get_logger(__name__)
 
 _KEY_PREFIX = "ratelimit:"
@@ -57,12 +59,13 @@ class RateLimiter:
 
             hosts_raw = os.environ.get("REDIS_SENTINEL_HOSTS", "")
             master = os.environ.get("REDIS_RATELIMIT_SENTINEL_MASTER", "ratelimit-master")
-            sentinels = [
-                (h.rsplit(":", 1)[0], int(h.rsplit(":", 1)[1]))
-                for h in hosts_raw.split(",")
-                if h.strip()
-            ]
-            sentinel = Sentinel(sentinels)
+            master_pw = os.environ.get("REDIS_SENTINEL_MASTER_PASSWORD") or None
+            sentinel_pw = os.environ.get("REDIS_SENTINEL_PASSWORD") or None
+            sentinel = Sentinel(
+                parse_sentinel_hosts(hosts_raw),
+                password=master_pw,
+                sentinel_kwargs={"password": sentinel_pw} if sentinel_pw else None,
+            )
             return cls(redis_client=sentinel.master_for(master))
 
         url = os.environ.get("REDIS_RATELIMIT_URL", "redis://localhost:6379/1")
