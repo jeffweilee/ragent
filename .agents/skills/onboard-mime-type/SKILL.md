@@ -6,11 +6,12 @@ description: Add a new ingest file type / MIME to ragent. Use when the user asks
 # Onboarding a New Ingest MIME Type
 
 The v2 ingest pipeline routes per `meta["mime_type"]` through a single
-`_MimeAwareSplitter` (see `src/ragent/pipelines/factory.py`). Adding a MIME
-means touching every place that enumerates the closed allow-list **and**
-adding one new splitter that satisfies the atom contract. Read
-`docs/00_spec.md` §3.1–§3.2 and `src/ragent/pipelines/factory.py` before
-writing code — every helper described here has a real example there.
+`_MimeAwareSplitter` (see `src/ragent/pipelines/ingest/splitter.py`).
+Adding a MIME means touching every place that enumerates the closed
+allow-list **and** adding one new splitter that satisfies the atom
+contract. Read `docs/00_spec.md` §3.1–§3.2 and
+`src/ragent/pipelines/ingest/{loader,splitter,chunker,embedder}.py`
+before writing code — every helper described here has a real example there.
 
 ---
 
@@ -39,25 +40,27 @@ side-by-side while you work; every step is one real line.
 [ Worker ]
   workers/ingest.py:35       @broker.task("ingest.pipeline") ingest_pipeline_task
   workers/ingest.py:44       repo.claim_for_processing  (TX-A, NOWAIT, status=PENDING)
-  workers/ingest.py:55       head = registry.head_object(site, object_key)   ← runtime mime source
-  workers/ingest.py:56-58    mime = (head[1] or DEFAULT_MIME).split(";",1)[0].strip()
-                               ↳ "text/markdown; charset=utf-8" → "text/markdown"
-                               ↳ NOTE: this is what _MimeAwareSplitter sees.
-                                       documents.mime_type column is NOT consulted here.
+  workers/ingest.py:83       head = registry.head_object(site, doc.object_key)
+  workers/ingest.py:82-88    mime = doc.mime_type or minio_content_type or DEFAULT_MIME
+                               ↳ doc.mime_type (DB column) is AUTHORITATIVE — MinIO head is fallback only for legacy NULL rows
+                               ↳ strip charset suffix: "text/markdown; charset=utf-8" → "text/markdown"
+                               ↳ This is what _MimeAwareSplitter sees (journal rule 2026-05-12 Binary MIME Guard)
   workers/ingest.py:63-80    data = registry.get_object(...); content = data.decode("utf-8")
                                ↳ binary MIMEs need an upstream branch — see Step 1a
   workers/ingest.py:91       container.ingest_pipeline.run({"loader": {content, mime_type, ...}})
 
-[ Haystack pipeline body — pipelines/factory.py ]
+[ Haystack pipeline body — pipelines/ingest/{loader,splitter,chunker,embedder}.py ]
 
-  factory.py:66  _TextLoader.run            wraps str → Document(meta={mime_type, document_id, source_*})
-  factory.py:264 _MimeAwareSplitter.run     dispatch on doc.meta["mime_type"]:
+  loader.py    _TextLoader.run            wraps str → Document(meta={mime_type, document_id, source_*})
+  splitter.py  _MimeAwareSplitter.run     dispatch on doc.meta["mime_type"]:
                    ├ "text/plain"    → Haystack stock DocumentSplitter(split_by="passage")
                    ├ "text/markdown" → _MarkdownASTSplitter   (mistletoe + MarkdownRenderer)
                    ├ "text/html"     → _HtmlASTSplitter       (selectolax HTMLParser)
+                   ├ "text/csv"      → _CsvASTSplitter        (stdlib csv)
+                   ├ DOCX/PPTX/PDF   → _DocxASTSplitter / _PptxASTSplitter / _PdfASTSplitter
                    └ else            → IngestStepError("PIPELINE_UNROUTABLE")
-  factory.py:310 _BudgetChunker.run         greedy-pack ≤ CHUNK_TARGET_CHARS, hard-split > CHUNK_MAX_CHARS
-  factory.py:435 DocumentEmbedder.run       external embedding client → vectors
+  chunker.py   _BudgetChunker.run         greedy-pack ≤ CHUNK_TARGET_CHARS, hard-split > CHUNK_MAX_CHARS
+  embedder.py  DocumentEmbedder.run       external embedding client → vectors
                  DocumentWriter             Haystack stock, DuplicatePolicy.OVERWRITE → ES chunks_v1
 
 [ Worker post-pipeline ]
@@ -84,28 +87,24 @@ recommendations for likely next-onboard targets:
 | `text/plain` | Haystack `DocumentSplitter` (stock) | No AST; passage split is enough |
 | `text/markdown` | `mistletoe` + `MarkdownRenderer` | Pure-Python AST walker; renderer reproduces source for `raw_content` |
 | `text/html` | `selectolax` (C-based) | Fast, low-mem; tolerates real-world malformed HTML; CSS selectors |
-| `text/csv` (if reintroduced) | stdlib `csv` | Row atom = one record; spec §3.2 / B24 / `RowMerger` precedent |
+| `text/csv` (already onboarded — precedent) | stdlib `csv` | Row atom = one record; spec §3.2 / B24 / `RowMerger` precedent |
 | `application/json` | stdlib `json` + custom path-walker | Atoms = top-level array elements or schema-bounded subtrees |
 | `application/xml` | `defusedxml` → ElementTree | XXE-safe; never `xml.etree` directly on untrusted input |
 | `application/pdf` | `pymupdf4llm` | **Already onboarded** (`_PdfASTSplitter`). Pages→Markdown via RapidOCR; binary decode done in pipeline already. |
 | `…openxmlformats…wordprocessingml.document` | `python-docx` | Binary — Step 1a |
 
-**Two MIME sources of truth** — important to internalize before changing
-anything:
+**MIME routing priority (Binary MIME Guard — journal 2026-05-12):**
 
-| Edge | Variable | Used for |
+| Priority | Source | Used for |
 |---|---|---|
-| API insert | `request.mime_type.value` → `documents.mime_type` column | Metric label at terminal-status emission (`record_pipeline_outcome`, `observe_pipeline_duration`); read by `DocumentStatsCollector` |
-| Runtime route | `head[1]` from MinIO `head_object` | What `_MimeAwareSplitter` actually dispatches on |
+| 1st | `doc.mime_type` (DB column, set at API ingest time) | Authoritative routing key for `_MimeAwareSplitter`; always present for new rows |
+| 2nd | `head[1]` from MinIO `head_object` | Fallback for legacy NULL rows only |
+| 3rd | `DEFAULT_MIME` | Last-resort default |
 
-For inline ingests these always agree (`_stage_inline` sets MinIO
-`content-type` from the same enum value). For **file** ingests the caller
-controls the MinIO put — a missing/wrong `content-type` makes the worker
-silently fall back to `text/plain`. If your new MIME has a hard
-parse-shape (binary, JSON, anything where mis-routing produces garbage
-embeddings rather than an obvious error), add a defensive equality check
-between `doc.mime_type` (DB) and the recovered `mime` (HEAD) at
-`workers/ingest.py:58` and fail with `PIPELINE_UNROUTABLE` on mismatch.
+`documents.mime_type` IS consulted by the worker and takes precedence over MinIO's content-type.
+This prevents mis-routing when a caller's MinIO client defaults to `application/octet-stream`.
+Binary MIMEs (DOCX/PPTX/PDF) are rejected at the schema boundary for `ingest_type=inline`
+via `model_validator(mode="after")` in `schemas/ingest.py`.
 
 ---
 
@@ -189,10 +188,10 @@ half-onboard:
 | Site | File | What changes |
 |---|---|---|
 | Closed enum (API gate) | `src/ragent/schemas/ingest.py::IngestMime` | Add a `StrEnum` member — this is what Pydantic enforces |
-| Router branch (real enforcement) | `src/ragent/pipelines/factory.py::_MimeAwareSplitter.run` | Add `elif mime == "<new>": out = self._<x>.run([doc])["documents"]`; the `else` raises `PIPELINE_UNROUTABLE` |
-| Splitter component | `src/ragent/pipelines/factory.py` | New `@component class _<X>Splitter` constructed in `_MimeAwareSplitter.__init__` |
-| Documentation constant | `src/ragent/pipelines/factory.py::ALLOWED_MIMES` | Add to the tuple. **Note**: not imported anywhere — keep in sync as a doc reference, but enforcement is the router branch above |
-| Module docstring + spec | `factory.py` module + `_MimeAwareSplitter` class docstrings + `docs/00_spec.md` §3.1 (allow-list line), §3.2 (graph), §4.2 (converter table) | The §3.2 graph block still names `FileTypeRouter` even though the code is `_MimeAwareSplitter` — update both names while you're there, don't faithfully copy the drift |
+| Router branch (real enforcement) | `src/ragent/pipelines/ingest/splitter.py::_MimeAwareSplitter.run` | Add `elif mime == "<new>": out = self._<x>.run([doc])["documents"]`; the `else` raises `PIPELINE_UNROUTABLE` |
+| Splitter component | `src/ragent/pipelines/ingest/splitter.py` | New `@component class _<X>Splitter` constructed in `_MimeAwareSplitter.__init__` |
+| Documentation constant | `src/ragent/pipelines/ingest/loader.py::ALLOWED_MIMES` | Add to the tuple. **Note**: not imported anywhere — keep in sync as a doc reference, but enforcement is the router branch above |
+| Module docstring + spec | `splitter.py` module + `_MimeAwareSplitter` class docstrings + `docs/00_spec.md` §3.1 (allow-list line), §3.2 (graph), §4.2 (converter table) | The §3.2 graph block still names `FileTypeRouter` even though the code is `_MimeAwareSplitter` — update both names while you're there, don't faithfully copy the drift |
 
 The router is a single `if/elif` chain by design — `_MimeAwareSplitter`
 exists because Haystack's stock `FileTypeRouter` only routes
@@ -218,7 +217,7 @@ takes you to 50 — fine. If already over, push back before adding.
 
 ## Step 5 — Mandatory TDD sequence
 
-Per `CLAUDE.md`, every MIME ships Red → Green → Refactor. **Ordering
+Per `CLAUDE.md`, every MIME ships Red → Green → Refactor. Before writing tests, append task rows to `docs/00_plan.md` under the active track and update its `**Counter: 完成 N / 未完成 N / descope N**` line (mandatory per `docs/00_rule.md §docs/00_plan.md`). **Ordering
 constraint**: the `IngestMime` enum, `ALLOWED_MIMES`, the router `elif`,
 and `_MimeAwareSplitter.__init__` construction must ship in **one
 commit**. Adding the enum alone makes `POST /ingest` accept the new mime
@@ -247,12 +246,12 @@ Two commits, in this order:
    `test_<format>_routes_to_<format>_splitter`; if your new MIME is
    currently used as the negative example in
    `test_unknown_mime_raises_pipeline_unroutable` (currently `image/png`),
-   swap the example to another still-unsupported MIME; same rule for
-   `text/csv` and the schema/router negative tests in Step 6. Green: in one commit add the `IngestMime`
+   swap the example to another still-unsupported MIME — see Step 6 for the
+   full negative-test list. Green: in one commit add the `IngestMime`
    member, append to `ALLOWED_MIMES`, construct the splitter in
    `_MimeAwareSplitter.__init__`, add the `elif` branch, **and** (binary
    only) branch worker decode in `workers/ingest.py:_run_pipeline`. Update
-   the `factory.py` module + `_MimeAwareSplitter` class docstrings and
+   the `splitter.py` module + `_MimeAwareSplitter` class docstrings and
    `docs/00_spec.md` §3.1 / §3.2 / §4.2 in the same commit — they
    describe the new behavior.
 
@@ -278,18 +277,17 @@ extracting shared block-walk code) and ships separately.
 
 ## Step 6 — Negative-test maintenance
 
-Two existing tests pin the closed-enum invariant by example:
+Two existing tests pin the closed-enum invariant by example (`text/csv`
+is already onboarded — it is no longer one of the negative examples):
 
 | Test | Currently asserts | If your new MIME is… |
 |---|---|---|
 | `test_ingest_request_schema_v2.py::test_unknown_mime_rejected` | `image/png` rejected | leave alone (image still rejected) |
-| `test_ingest_request_schema_v2.py::test_csv_mime_rejected_in_v2` | `text/csv` rejected | **update or delete** if onboarding `text/csv`; otherwise leave alone |
 | `test_pipeline_routing_v2.py::test_unknown_mime_raises_pipeline_unroutable` | `image/png` raises `PIPELINE_UNROUTABLE` | **change example** if onboarding `image/png` (follow the same swap pattern) |
 
-Likewise `test_ingest_router_v2.py` has `test_post_ingest_unknown_mime_returns_415`
-(`image/png`) and `test_post_ingest_csv_mime_returns_415_in_v2`. The same
-rule applies — only touch if your new MIME is the one the test uses as
-its negative example.
+Likewise `test_ingest_router_v2.py::test_post_ingest_unknown_mime_returns_415`
+uses `image/png` as its negative example — only touch it if your new
+MIME is `image/png`.
 
 The drift test `tests/unit/test_env_example_drift.py` does NOT gate MIME
 additions (no env var is added — the allow-list is in code), but
@@ -323,11 +321,11 @@ that's two sources of truth and the metric label cardinality stays high.
 
 - [ ] Source classified: text / structured-text / binary (binary requires worker decode change — Step 1a)
 - [ ] Splitter satisfies atom contract: `content` normalized, `raw_content` is the source-format markup (renderer/reserializer output OK), mime + source meta passed through, byte-stable
-- [ ] Five-site update complete: `IngestMime` enum, router `elif`, splitter `@component` + `__init__` construction, `ALLOWED_MIMES` doc constant, factory module + class docstrings
+- [ ] Five-site update complete: `IngestMime` enum, router `elif`, splitter `@component` + `__init__` construction, `ALLOWED_MIMES` doc constant, `splitter.py` module + class docstrings
 - [ ] Spec updated: `docs/00_spec.md` §3.1 allow-list line, §3.2 graph (also fix the stale `FileTypeRouter` name while there), §4.2 converter table
 - [ ] New unit test `test_<format>_ast_splitter.py` covers block-type emission, `raw_content` shape, empty + oversize input
 - [ ] `test_pipeline_routing_v2.py` extended with happy-path routing test; if onboarded MIME was the prior `image/png` "unknown" example, update the negative example to a still-unsupported one
-- [ ] Schema enum test (`test_ingest_mime_enum_values`) updated; remaining unknown / image / (CSV-if-not-onboarded) negatives still pass
+- [ ] Schema enum test (`test_ingest_mime_enum_values`) updated; remaining unknown/image negatives still pass
 - [ ] Cardinality math: `|source_app| × |IngestMime| × 2` ≤ ~200 series per metric
 - [ ] Two `[BEHAVIORAL]` commits: (1) splitter `@component` alone, (2) atomic wire-up (enum + allow-list + router + `__init__` + binary-decode + docstrings + spec). No mid-state where API accepts a mime that doesn't route.
 - [ ] `uv run pytest tests/unit -q` green; `make check` green
