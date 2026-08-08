@@ -27,11 +27,11 @@ jobs:
           # OpenAI with a Google key ("Incorrect API key provided: AIzaSy…") and
           # Gemini itself was never reachable.
           GOOGLE_AI_STUDIO.GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          CONFIG.MODEL: "gemini/gemini-2.5-pro"
+          CONFIG.MODEL: "gemini/gemini-3.6-flash"
           # Without this, pr-agent falls back to its default OpenAI model, for
           # which no key is configured — turning any Gemini hiccup into an
           # OpenAI auth error and sending the Google key to a third party.
-          CONFIG.FALLBACK_MODELS: '["gemini/gemini-2.5-pro"]'
+          CONFIG.FALLBACK_MODELS: '["gemini/gemini-2.5-flash"]'
           # pr-agent's own default pr_actions omits `synchronize`, so it logged
           # "Skipping action: synchronize" and did nothing on every push — even
           # though the workflow's `types:` above asks for it. Listed explicitly so
