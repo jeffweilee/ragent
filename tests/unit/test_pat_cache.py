@@ -150,3 +150,43 @@ def test_tombstone_ttl_is_derived_from_the_refresh_budget() -> None:
     assert PatCache.tombstone_ttl_for(60.0, 3, 0.5) == 244
     # A shrunken budget shrinks the tombstone with it, never independently.
     assert PatCache.tombstone_ttl_for(5.0, 0, 0.5) == 5
+
+
+# --- sentinel password injection ---
+
+
+def _sentinel_manager(cache: PatCache):
+    return cache._redis.connection_pool.sentinel_manager
+
+
+def test_sentinel_passes_master_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REDIS_MODE", "sentinel")
+    monkeypatch.setenv("REDIS_SENTINEL_HOSTS", "s1:26379")
+    monkeypatch.setenv("REDIS_PAT_SENTINEL_MASTER", "pat-master")
+    monkeypatch.setenv("REDIS_SENTINEL_MASTER_PASSWORD", "masterpass")
+    monkeypatch.delenv("REDIS_SENTINEL_PASSWORD", raising=False)
+    cache = PatCache.from_env(tombstone_ttl_seconds=123)
+    assert _sentinel_manager(cache).connection_kwargs.get("password") == "masterpass"
+
+
+def test_sentinel_passes_sentinel_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REDIS_MODE", "sentinel")
+    monkeypatch.setenv("REDIS_SENTINEL_HOSTS", "s1:26379")
+    monkeypatch.setenv("REDIS_PAT_SENTINEL_MASTER", "pat-master")
+    monkeypatch.delenv("REDIS_SENTINEL_MASTER_PASSWORD", raising=False)
+    monkeypatch.setenv("REDIS_SENTINEL_PASSWORD", "sentpass")
+    cache = PatCache.from_env(tombstone_ttl_seconds=123)
+    sent = _sentinel_manager(cache).sentinels[0]
+    assert sent.connection_pool.connection_kwargs.get("password") == "sentpass"
+
+
+def test_sentinel_no_password_when_env_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REDIS_MODE", "sentinel")
+    monkeypatch.setenv("REDIS_SENTINEL_HOSTS", "s1:26379")
+    monkeypatch.setenv("REDIS_PAT_SENTINEL_MASTER", "pat-master")
+    monkeypatch.delenv("REDIS_SENTINEL_MASTER_PASSWORD", raising=False)
+    monkeypatch.delenv("REDIS_SENTINEL_PASSWORD", raising=False)
+    cache = PatCache.from_env(tombstone_ttl_seconds=123)
+    mgr = _sentinel_manager(cache)
+    assert mgr.connection_kwargs.get("password") is None
+    assert mgr.sentinels[0].connection_pool.connection_kwargs.get("password") is None

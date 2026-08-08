@@ -5,6 +5,7 @@ from __future__ import annotations
 from unittest.mock import MagicMock
 
 import fakeredis
+import pytest
 import redis as redis_lib
 
 from ragent.clients.chat_stream_store import ChatStreamStore
@@ -280,3 +281,43 @@ def test_status_many_fail_soft_returns_all_false() -> None:
         "t1": {"running": False, "hasNewReply": False},
         "t2": {"running": False, "hasNewReply": False},
     }
+
+
+# --- sentinel password injection ---
+
+
+def _sentinel_manager(store: ChatStreamStore):
+    return store._redis.connection_pool.sentinel_manager
+
+
+def test_sentinel_passes_master_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REDIS_MODE", "sentinel")
+    monkeypatch.setenv("REDIS_SENTINEL_HOSTS", "s1:26379")
+    monkeypatch.setenv("REDIS_STREAM_SENTINEL_MASTER", "stream-master")
+    monkeypatch.setenv("REDIS_SENTINEL_MASTER_PASSWORD", "masterpass")
+    monkeypatch.delenv("REDIS_SENTINEL_PASSWORD", raising=False)
+    store = ChatStreamStore.from_env()
+    assert _sentinel_manager(store).connection_kwargs.get("password") == "masterpass"
+
+
+def test_sentinel_passes_sentinel_password(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REDIS_MODE", "sentinel")
+    monkeypatch.setenv("REDIS_SENTINEL_HOSTS", "s1:26379")
+    monkeypatch.setenv("REDIS_STREAM_SENTINEL_MASTER", "stream-master")
+    monkeypatch.delenv("REDIS_SENTINEL_MASTER_PASSWORD", raising=False)
+    monkeypatch.setenv("REDIS_SENTINEL_PASSWORD", "sentpass")
+    store = ChatStreamStore.from_env()
+    sent = _sentinel_manager(store).sentinels[0]
+    assert sent.connection_pool.connection_kwargs.get("password") == "sentpass"
+
+
+def test_sentinel_no_password_when_env_unset(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("REDIS_MODE", "sentinel")
+    monkeypatch.setenv("REDIS_SENTINEL_HOSTS", "s1:26379")
+    monkeypatch.setenv("REDIS_STREAM_SENTINEL_MASTER", "stream-master")
+    monkeypatch.delenv("REDIS_SENTINEL_MASTER_PASSWORD", raising=False)
+    monkeypatch.delenv("REDIS_SENTINEL_PASSWORD", raising=False)
+    store = ChatStreamStore.from_env()
+    mgr = _sentinel_manager(store)
+    assert mgr.connection_kwargs.get("password") is None
+    assert mgr.sentinels[0].connection_pool.connection_kwargs.get("password") is None

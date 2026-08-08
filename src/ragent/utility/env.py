@@ -74,3 +74,32 @@ def str_env(var: str, default: str) -> str:
 def list_env(var: str) -> list[str]:
     raw = os.environ.get(var, "")
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def parse_sentinel_hosts(hosts_raw: str) -> list[tuple[str, int]]:
+    """Parse comma-separated 'host:port' sentinel entries.
+
+    Raises SystemExit on malformed input so callers get the same fail-fast
+    behaviour as `require()` / `int_env()`.
+    """
+    result = []
+    for entry in hosts_raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        if ":" not in entry:
+            print(
+                f"[ragent] sentinel host entry {entry!r} missing port (expected host:port)",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        host, _, raw_port = entry.rpartition(":")
+        try:
+            result.append((host, int(raw_port)))
+        except ValueError:
+            print(
+                f"[ragent] sentinel host entry {entry!r} has non-integer port {raw_port!r}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+    return result

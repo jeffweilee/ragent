@@ -24,6 +24,8 @@ from typing import Any
 import redis as redis_lib
 import structlog
 
+from ragent.utility.env import parse_sentinel_hosts
+
 logger = structlog.get_logger(__name__)
 
 _KEY_PREFIX = "chatstream:"
@@ -329,12 +331,13 @@ class ChatStreamStore:
 
             hosts_raw = os.environ.get("REDIS_SENTINEL_HOSTS", "")
             master = os.environ.get("REDIS_STREAM_SENTINEL_MASTER", "stream-master")
-            sentinels = [
-                (h.rsplit(":", 1)[0], int(h.rsplit(":", 1)[1]))
-                for h in hosts_raw.split(",")
-                if h.strip()
-            ]
-            sentinel = Sentinel(sentinels)
+            master_pw = os.environ.get("REDIS_SENTINEL_MASTER_PASSWORD") or None
+            sentinel_pw = os.environ.get("REDIS_SENTINEL_PASSWORD") or None
+            sentinel = Sentinel(
+                parse_sentinel_hosts(hosts_raw),
+                password=master_pw,
+                sentinel_kwargs={"password": sentinel_pw} if sentinel_pw else None,
+            )
             client = sentinel.master_for(master, decode_responses=True)
             return cls(client, ttl_seconds=ttl, maxlen=maxlen, unread_ttl_seconds=unread_ttl)
 
