@@ -22,6 +22,12 @@ class SessionRenameRequest(BaseModel):
     sessionName: str
 
 
+class SessionContinueRequest(BaseModel):
+    """接續一個過長的對話。user 一律取自認證後的 header，不由 client 指定。"""
+    model_config = ConfigDict(extra="forbid")
+    session: str
+
+
 class SessionDeleteRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     session: str

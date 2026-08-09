@@ -28,7 +28,11 @@ from ragent.clients.nats_publisher import NatsSessionPublisher
 from ragent.clients.rate_limiter import RateLimiter
 from ragent.errors.codes import HttpErrorCode
 from ragent.routers._chatagent_proxy import proxy_get, proxy_write
-from ragent.schemas.chatagent import SessionDeleteRequest, SessionRenameRequest
+from ragent.schemas.chatagent import (
+    SessionContinueRequest,
+    SessionDeleteRequest,
+    SessionRenameRequest,
+)
 from ragent.services.chatagent_session import map_session_list_payload, map_session_payload
 from ragent.services.skill_service import SkillNotFoundError, SkillService
 from ragent.utility.id_gen import new_id
@@ -435,6 +439,28 @@ def create_chatagent_v3_router(
                 timeout=timeout,
                 log_prefix="v3.session",
                 transform=map_session_payload,
+            )
+
+        @router.post("/session/continue")
+        async def chatagent_v3_session_continue(
+            body: SessionContinueRequest,
+            x_user_id: Annotated[str | None, Depends(get_user_id)] = None,
+        ) -> Response:
+            """接續一個過長的對話:上游建立新 thread 並寫入前情提要。
+
+            URL 由 session API URL 推導(`…/session` → `…/session/continue`)
+            而非另開一個環境變數 —— 兩者必然指向同一個上游,多一個 env var
+            就多一處部署時會漏設、而且漏設時只會在使用者按下按鈕才發現。
+            """
+            user_id = x_user_id or "anonymous"
+            return await proxy_write(
+                http_client=http_client,
+                method="POST",
+                url=chatagent_session_api_url.rstrip("/") + "/continue",
+                payload={"session": body.session, "apName": chatagent_ap_name, "user": user_id},
+                headers=_headers,
+                timeout=timeout,
+                log_prefix="v3.session.continue",
             )
 
         @router.put("/session")
