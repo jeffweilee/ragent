@@ -940,3 +940,100 @@ def test_v3_router_builds_without_agent_factory_when_post_route_disabled() -> No
         r = client.post("/chatagent/v3", json=_run_input(), headers={"X-User-Id": "alice"})
 
     assert r.status_code == 404  # POST route not registered, no crash building the app
+
+
+# --- session pagination pass-through -----------------------------------------
+#
+# The v3 proxy builds its upstream params explicitly, so a param it does not
+# name is silently dropped. These tests pin the two paging params to the wire:
+# without them the widget can ask for page 2 and get page 1 with no error.
+
+
+def test_v3_sessionlist_forwards_limit_and_offset() -> None:
+    app, http_mock = _make_app(sessionlist_url="http://up/list")
+    http_mock.get.return_value = _json_resp({"totalCount": 0, "sessions": []})
+
+    with TestClient(app) as client:
+        client.get(
+            "/chatagent/v3/sessionList",
+            params={"limit": 30, "offset": 60},
+            headers={"X-User-Id": "alice"},
+        )
+
+    params = http_mock.get.call_args.kwargs["params"]
+    assert params["limit"] == "30"
+    assert params["offset"] == "60"
+
+
+def test_v3_sessionlist_omits_paging_params_when_absent() -> None:
+    # Absent must stay absent, not become "0"/"None" — the store's default page
+    # size is the pre-pagination behaviour every existing caller relies on.
+    app, http_mock = _make_app(sessionlist_url="http://up/list")
+    http_mock.get.return_value = _json_resp({"totalCount": 0, "sessions": []})
+
+    with TestClient(app) as client:
+        client.get("/chatagent/v3/sessionList", headers={"X-User-Id": "alice"})
+
+    params = http_mock.get.call_args.kwargs["params"]
+    assert "limit" not in params
+    assert "offset" not in params
+
+
+def test_v3_session_forwards_limit_and_before_cursor() -> None:
+    app, http_mock = _make_app(session_url="http://up/session")
+    http_mock.get.return_value = _json_resp({"session": "t1", "messages": []})
+
+    with TestClient(app) as client:
+        client.get(
+            "/chatagent/v3/session",
+            params={"session": "t1", "limit": 50, "before": 1234},
+            headers={"X-User-Id": "alice"},
+        )
+
+    params = http_mock.get.call_args.kwargs["params"]
+    assert params["limit"] == "50"
+    assert params["before"] == "1234"
+
+
+def test_v3_session_omits_paging_params_when_absent() -> None:
+    app, http_mock = _make_app(session_url="http://up/session")
+    http_mock.get.return_value = _json_resp({"session": "t1", "messages": []})
+
+    with TestClient(app) as client:
+        client.get(
+            "/chatagent/v3/session",
+            params={"session": "t1"},
+            headers={"X-User-Id": "alice"},
+        )
+
+    params = http_mock.get.call_args.kwargs["params"]
+    assert "limit" not in params
+    assert "before" not in params
+
+
+def test_v3_session_preserves_upstream_paging_metadata() -> None:
+    # hasMore/nextBefore/usage are added by the store; the mapper must not eat
+    # them on the way through, or the client can never request page 2.
+    app, http_mock = _make_app(session_url="http://up/session")
+    http_mock.get.return_value = _json_resp(
+        {
+            "session": "t1",
+            "sessionName": "A",
+            "messages": [],
+            "hasMore": True,
+            "nextBefore": 42,
+            "usage": {"tokens": 100, "messages": 3},
+        }
+    )
+
+    with TestClient(app) as client:
+        r = client.get(
+            "/chatagent/v3/session",
+            params={"session": "t1"},
+            headers={"X-User-Id": "alice"},
+        )
+
+    body = r.json()
+    assert body["hasMore"] is True
+    assert body["nextBefore"] == 42
+    assert body["usage"]["tokens"] == 100

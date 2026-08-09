@@ -364,6 +364,8 @@ def create_chatagent_v3_router(
             startTime: str | None = None,
             endTime: str | None = None,
             project: str | None = None,
+            limit: int | None = None,
+            offset: int | None = None,
         ) -> Response:
             user_id = x_user_id or "anonymous"
             params: dict[str, str] = {"user": user_id, "apName": chatagent_ap_name}
@@ -377,6 +379,13 @@ def create_chatagent_v3_router(
             # unscoped conversation list.
             if project:
                 params["project"] = project
+            # Pagination is opt-in and must stay so: omitted here means the store
+            # applies its own default (the pre-pagination page size), which is
+            # what every existing caller of this route already expects.
+            if limit is not None:
+                params["limit"] = str(limit)
+            if offset:
+                params["offset"] = str(offset)
             # Strip the machine-context wrapper from each session title and enrich
             # each entry with its live {running, hasNewReply} status, batched in one
             # status_many call (no store → list degrades to title-only).
@@ -398,9 +407,23 @@ def create_chatagent_v3_router(
         async def chatagent_v3_session(
             session: str,
             x_user_id: Annotated[str | None, Depends(get_user_id)] = None,
+            limit: int | None = None,
+            before: int | None = None,
         ) -> Response:
             user_id = x_user_id or "anonymous"
             params = {"user": user_id, "apName": chatagent_ap_name, "session": session}
+            # `before` is the store's opaque backward-paging cursor (the client
+            # echoes back the `nextBefore` it was given). Both omitted = the
+            # store's default page, i.e. exactly the pre-pagination behaviour.
+            #
+            # Note the page size the client asked for counts *store rows*, and
+            # the transform below drops interrupt turns — so a page can come
+            # back shorter than `limit`. Paging still terminates correctly
+            # because hasMore/nextBefore are computed upstream over raw rows.
+            if limit is not None:
+                params["limit"] = str(limit)
+            if before is not None:
+                params["before"] = str(before)
             # Pure history load: v3 reshapes the persisted history (twp-ai roles +
             # <hidden> stripped) but does NOT mark the session read — loading history
             # is decoupled from "read", which is an explicit POST /session/read.
