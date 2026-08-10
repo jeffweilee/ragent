@@ -56,15 +56,29 @@ def test_readyz_mariadb_down_returns_503() -> None:
     assert "mariadb" in body["detail"]
 
 
-def test_readyz_es_index_missing_emits_es_index_missing_code() -> None:
-    failing = AsyncMock(side_effect=IndexMissing("chunks_v1"))
-    probes = {
-        "es": failing,
-    }
-    resp = _client(probes).get("/readyz")
-    assert resp.status_code == 503
-    body = resp.json()
-    assert body["error_code"] == "ES_INDEX_MISSING"
+def test_readyz_es_index_missing_is_reported_without_gating(monkeypatch) -> None:
+    """ES is advisory (T-RG.6), so a missing index degrades rather than 503s.
+
+    The distinct ``ES_INDEX_MISSING`` code has not gone away — it moved to where
+    it is still actionable. Keeping the 503 would pull the Pod out of the k8s
+    Service over a dependency chat/retrieve is written to degrade around, so the
+    code is asserted on the failure metric that drives the existing
+    ``ragent_readyz_probe_status`` alert instead of on the HTTP body.
+    """
+    from ragent.bootstrap.metrics import readyz_probe_failures_total
+
+    before = readyz_probe_failures_total.labels(
+        probe="es", error_code="ES_INDEX_MISSING"
+    )._value.get()
+
+    resp = _client({"es": AsyncMock(side_effect=IndexMissing("chunks_v1"))}).get("/readyz")
+
+    assert resp.status_code == 200
+    assert resp.json() == {"status": "degraded", "degraded": ["es"]}
+    after = readyz_probe_failures_total.labels(
+        probe="es", error_code="ES_INDEX_MISSING"
+    )._value.get()
+    assert after == before + 1
 
 
 def test_readyz_probe_timeout_emits_probe_timeout_code(monkeypatch: pytest.MonkeyPatch) -> None:

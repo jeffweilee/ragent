@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from structlog.testing import capture_logs
 
 
 @pytest.fixture
@@ -82,13 +83,24 @@ async def test_check_infra_ready_raises_when_db_probe_fails(fake_container, fake
 
 
 @pytest.mark.asyncio
-async def test_check_infra_ready_raises_when_es_unhealthy(fake_container, fake_broker) -> None:
+async def test_check_infra_ready_boots_degraded_when_es_unhealthy(
+    fake_container, fake_broker
+) -> None:
+    """ES is advisory (T-RG.6) — a red cluster degrades boot, it does not abort it.
+
+    Refusing to boot turned a recoverable ES outage into a crash-looping
+    deployment with no API at all, even though chat/retrieve is written to
+    degrade and every other surface is unaffected. The degradation is logged and
+    surfaces on `/readyz`.
+    """
     from ragent.bootstrap.app import _check_infra_ready
 
     fake_container.es_client.cluster.health.return_value = {"status": "red"}
 
-    with pytest.raises(RuntimeError, match="es"):
+    with capture_logs() as logs:
         await _check_infra_ready(_make_probes(fake_container), fake_broker, fake_container)
+
+    assert any(log["event"] == "api.startup.degraded" and log.get("probe") == "es" for log in logs)
 
 
 @pytest.mark.asyncio

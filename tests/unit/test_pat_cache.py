@@ -7,6 +7,7 @@ import pytest
 import redis as redis_lib
 
 from ragent.clients.pat_cache import PatCache
+from ragent.clients.redis_guard import UNAVAILABLE
 
 
 def _cache(ttl: int = 41400, lock_ttl: int = 10, tombstone_ttl: int = 123) -> PatCache:
@@ -95,8 +96,15 @@ def test_put_evict_are_fail_soft(failing_cache: PatCache) -> None:
     failing_cache.evict("alice")  # must not raise
 
 
-def test_acquire_lock_fail_soft_returns_none(failing_cache: PatCache) -> None:
-    assert failing_cache.acquire_refresh_lock("alice") is None
+def test_acquire_lock_fail_soft_reports_unavailable(failing_cache: PatCache) -> None:
+    """Fail-soft, but distinguishably so (T-RG.3).
+
+    Still no exception reaches the caller. It no longer collapses to ``None``
+    though: ``None`` means "another holder has it", which invites the service's
+    poll loop, while an unreachable Redis makes that loop pure waste — nobody
+    can take a lock that cannot be written.
+    """
+    assert failing_cache.acquire_refresh_lock("alice") is UNAVAILABLE
 
 
 def test_release_lock_is_fail_soft(failing_cache: PatCache) -> None:

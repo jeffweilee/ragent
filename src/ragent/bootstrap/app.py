@@ -91,17 +91,29 @@ _REQUIRED_TASK_LABELS = ("ingest.pipeline", "ingest.supersede")
 
 
 async def _check_infra_ready(probes: dict, broker: Any, container: Any) -> None:
-    """Verify all readiness probes, TaskIQ tasks, and AI token exchange before serving traffic.
+    """Verify required readiness probes, TaskIQ tasks, and AI token exchange.
 
-    Raises ``RuntimeError`` on first failure so the lifespan aborts boot
-    rather than silently degrading on first request.
+    Raises ``RuntimeError`` on the first *required* probe failure so the lifespan
+    aborts boot rather than silently degrading on first request. Advisory
+    dependencies (:data:`ADVISORY_PROBES`) are probed and logged but never abort
+    boot — a Redis that is down at start-up must leave a serving process behind,
+    not a crash-looping one.
     """
-    from ragent.routers.health_probes import run_probe
+    from ragent.routers.health_probes import ADVISORY_PROBES, run_probe
 
     for name, probe_fn in probes.items():
         failure = await run_probe(name, probe_fn)
-        if failure is not None:
-            raise RuntimeError(f"infra not ready: {name} {failure.error_code}: {failure.detail}")
+        if failure is None:
+            continue
+        if name in ADVISORY_PROBES:
+            logger.warning(
+                "api.startup.degraded",
+                probe=name,
+                error_code=failure.error_code,
+                detail=failure.detail,
+            )
+            continue
+        raise RuntimeError(f"infra not ready: {name} {failure.error_code}: {failure.detail}")
 
     for label in _REQUIRED_TASK_LABELS:
         if broker.find_task(label) is None:

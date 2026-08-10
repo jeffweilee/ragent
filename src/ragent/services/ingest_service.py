@@ -15,6 +15,8 @@ from typing import Any
 
 import structlog
 
+from ragent.bootstrap.dispatcher import TaskDispatchUnavailable
+from ragent.bootstrap.metrics import ingest_dispatch_deferred_total
 from ragent.schemas.ingest import (
     SOURCE_URL_MAX,
     FileIngestRequest,
@@ -113,13 +115,8 @@ class IngestService:
             minio_site=minio_site,
             mime_type=request.mime_type.value,
         )
-        await self._broker.enqueue("ingest.pipeline", document_id=document_id)
-        logger.info(
-            "ingest.dispatched",
-            document_id=document_id,
-            source_id=request.source_id,
-            source_app=request.source_app,
-            task_label="ingest.pipeline",
+        await self._dispatch(
+            document_id, source_id=request.source_id, source_app=request.source_app
         )
         logger.info(
             "ingest.received",
@@ -130,6 +127,41 @@ class IngestService:
             source_app=request.source_app,
         )
         return document_id
+
+    async def _dispatch(
+        self, document_id: str, *, event: str = "ingest.dispatched", **log_fields: Any
+    ) -> bool:
+        """Enqueue the pipeline; a queue outage defers rather than fails.
+
+        Every caller has already persisted the row in a re-dispatchable state
+        (UPLOADED from `create`/`create_from_upload`, or reset by
+        `mark_for_rerun`), and the worker's `run_startup_sweep` /
+        `run_maintenance_cycle` pick those rows up once Redis returns. So the
+        work is not lost and the request keeps its 202 — reporting a 500 would
+        tell the caller the upload failed when it is durably stored and queued
+        for the sweep.
+
+        `TaskNotRegisteredError` deliberately still escapes: no sweep can heal a
+        task that was never registered.
+
+        Returns True when the task actually reached the queue. Callers that
+        report a count to an operator (`batch_rerun`) must not treat a deferral
+        as an enqueue.
+        """
+        try:
+            await self._broker.enqueue("ingest.pipeline", document_id=document_id)
+        except TaskDispatchUnavailable as exc:
+            ingest_dispatch_deferred_total.inc()
+            logger.warning(
+                "ingest.dispatch_deferred",
+                document_id=document_id,
+                task_label="ingest.pipeline",
+                reason=str(exc),
+                **log_fields,
+            )
+            return False
+        logger.info(event, document_id=document_id, task_label="ingest.pipeline", **log_fields)
+        return True
 
     def _put_to_default_site(
         self,
@@ -198,8 +230,7 @@ class IngestService:
             raise DocumentNotFound(document_id)
         if outcome == "not_rerunnable":
             raise DocumentNotRerunnable(document_id)
-        await self._broker.enqueue("ingest.pipeline", document_id=document_id)
-        logger.info("ingest.rerun_dispatched", document_id=document_id)
+        await self._dispatch(document_id, event="ingest.rerun_dispatched")
 
     async def batch_rerun(
         self,
@@ -234,22 +265,25 @@ class IngestService:
                 before=before,
                 operator_id=operator_id,
             )
-            return before, before, 0, 0
+            return before, before, 0, 0, 0
 
         docs = await self._repo.list_by_statuses(statuses, **filter_kwargs, limit=limit)
-        queued = skipped = 0
+        queued = skipped = deferred = 0
         for doc in docs:
             outcome = await self._repo.mark_for_rerun(doc.document_id)
-            if outcome == "ok":
-                await self._broker.enqueue("ingest.pipeline", document_id=doc.document_id)
-                logger.info(
-                    "ingest.batch_rerun_item_dispatched",
-                    document_id=doc.document_id,
-                    operator_id=operator_id,
-                )
+            if outcome != "ok":
+                skipped += 1
+                continue
+            # This endpoint's whole value is retrying *now*, so a row that was
+            # only reset for the worker sweep must not be reported as queued.
+            if await self._dispatch(
+                doc.document_id,
+                event="ingest.batch_rerun_item_dispatched",
+                operator_id=operator_id,
+            ):
                 queued += 1
             else:
-                skipped += 1
+                deferred += 1
 
         after = await self._repo.count_by_statuses(statuses, **filter_kwargs)
         logger.info(
@@ -261,9 +295,10 @@ class IngestService:
             after=after,
             queued=queued,
             skipped=skipped,
+            deferred=deferred,
             operator_id=operator_id,
         )
-        return before, after, queued, skipped
+        return before, after, queued, skipped, deferred
 
     async def delete(self, document_id: str) -> None:
         doc = await self._repo.claim_for_deletion(document_id)
@@ -323,14 +358,7 @@ class IngestService:
             # the client; other upload callers keep the column NULL.
             size_bytes=len(data) if persist_size_bytes else None,
         )
-        await self._broker.enqueue("ingest.pipeline", document_id=document_id)
-        logger.info(
-            "ingest.dispatched",
-            document_id=document_id,
-            source_id=source_id,
-            source_app=source_app,
-            task_label="ingest.pipeline",
-        )
+        await self._dispatch(document_id, source_id=source_id, source_app=source_app)
         logger.info(
             "ingest.received",
             document_id=document_id,

@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import fakeredis
 import pytest
+import redis as redis_lib
 from structlog.testing import capture_logs
 
+from ragent.clients.pat_cache import PatCache
 from ragent.clients.pat_refresh_client import (
     PatRefreshBadRequest,
     PatRefreshRateLimited,
     PatRefreshUnauthorized,
 )
+from ragent.clients.redis_guard import RedisCircuit
 from ragent.errors.codes import HttpErrorCode
 from ragent.services.pat_service import (
     PatInternalError,
@@ -210,4 +214,101 @@ async def test_refresh_loser_polls_until_winner_publishes_token() -> None:
     }
 
     assert await service._refresh("alice", sign("alice", exp_delta=-10)) == fresh
+    assert rc.calls == []
+
+
+# --- Redis unavailable: do not poll for a lock nobody can take (T-RG.4) ---
+
+
+def _dead_cache() -> PatCache:
+    """A PatCache whose Redis refuses every command."""
+
+    class _DeadRedis:
+        def __getattr__(self, _name):
+            def _fail(*_a, **_kw):
+                raise redis_lib.ConnectionError("connection refused")
+
+            return _fail
+
+    return PatCache(
+        _DeadRedis(),
+        ttl_seconds=41400,
+        lock_ttl_seconds=10,
+        tombstone_ttl_seconds=123,
+        circuit=RedisCircuit("test", failure_threshold=1, cooldown_seconds=300.0),
+    )
+
+
+def _service_with(cache: PatCache, refresh_client, sleeps: list[float]):
+    from ragent.services.pat_service import PatService
+
+    base, repo, _, cipher = build_service()
+
+    async def _record(seconds: float) -> None:
+        sleeps.append(seconds)
+
+    return PatService(
+        verifier=base._verifier,
+        cipher=cipher,
+        repo=repo,
+        cache=cache,
+        refresh_client=refresh_client,
+        init_client=FakeInitClient(sign()),
+        sleeper=_record,
+    )
+
+
+async def test_refresh_does_not_poll_when_redis_is_unavailable() -> None:
+    """The poll loop exists to let a LOSER wait for the winner's rotation.
+
+    With Redis down there is no winner and never will be: `acquire_refresh_lock`
+    cannot write, so every attempt fails. Polling then burns the full sleep
+    budget (10 x 0.5s by default) plus a blocking Redis call per attempt, on
+    every request — the exact "everything got slow" symptom. Proceed
+    unserialised instead: still correct, just no herd protection while Redis is
+    down.
+    """
+    fresh = sign("alice")
+    sleeps: list[float] = []
+    rc = FakeRefreshClient([fresh])
+    service = _service_with(_dead_cache(), rc, sleeps)
+    service._repo.rows["alice"] = {
+        "user_id": "alice",
+        "pat_cipher": service._cipher.encrypt(sign("alice", exp_delta=-10)),
+        "status": "active",
+    }
+
+    assert await service._refresh("alice", sign("alice", exp_delta=-10)) == fresh
+    assert sleeps == []  # never slept
+    assert rc.calls  # went straight to the refresh service
+
+
+async def test_refresh_still_polls_when_the_lock_is_genuinely_held() -> None:
+    """The fast path must not regress herd protection on a HEALTHY Redis."""
+    fresh = sign("alice")
+    sleeps: list[float] = []
+    cache = PatCache(
+        fakeredis.FakeStrictRedis(decode_responses=True),
+        ttl_seconds=41400,
+        lock_ttl_seconds=10,
+        tombstone_ttl_seconds=123,
+    )
+    rc = FakeRefreshClient([])  # a call would IndexError — the loser must not call
+    service = _service_with(cache, rc, sleeps)
+    cache.acquire_refresh_lock("alice")  # another holder owns it
+
+    cipher = service._cipher
+    service._repo.rows["alice"] = {
+        "user_id": "alice",
+        "pat_cipher": cipher.encrypt(sign("alice", exp_delta=-10)),
+        "status": "active",
+    }
+
+    async def _publish(seconds: float) -> None:
+        sleeps.append(seconds)
+        cache.put("alice", cipher.encrypt(fresh))
+
+    service._sleeper = _publish
+    assert await service._refresh("alice", sign("alice", exp_delta=-10)) == fresh
+    assert sleeps  # it did wait for the winner
     assert rc.calls == []

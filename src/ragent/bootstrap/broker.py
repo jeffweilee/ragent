@@ -3,11 +3,25 @@ import sys
 
 from taskiq_redis import ListQueueBroker, ListQueueSentinelBroker
 
+from ragent.clients.redis_guard import connection_timeouts
 from ragent.middleware.taskiq_context import StructlogContextMiddleware
 from ragent.utility.env import parse_sentinel_hosts
 
 
 def _make_broker() -> ListQueueBroker | ListQueueSentinelBroker:
+    # The producer side (`kiq()` from a FastAPI handler) runs on redis.asyncio, so
+    # an unreachable broker does not block the event loop the way the sync clients
+    # do — but without a connect timeout it still hangs the *request* indefinitely.
+    # A bounded connect makes a dead queue surface as a fast, catchable error that
+    # `IngestService` degrades on (the row is already persisted UPLOADED and the
+    # worker sweep re-dispatches it).
+    #
+    # blocking=True is load-bearing, not a tuning choice: this same broker object
+    # is what the WORKER consumes with, and `listen()` parks in `brpop()` with no
+    # timeout. A read timeout there kills the consumer outright and silently —
+    # see `connection_timeouts` for the mechanism, and journal SRE
+    # "Blocking-Read Timeout" for the outage it caused.
+    timeouts = connection_timeouts(blocking=True)
     mode = os.environ.get("REDIS_MODE", "standalone")
     if mode == "sentinel":
         hosts_raw = os.environ.get("REDIS_SENTINEL_HOSTS", "")
@@ -22,10 +36,17 @@ def _make_broker() -> ListQueueBroker | ListQueueSentinelBroker:
             sentinels=sentinels,
             master_name=master,
             password=master_pw,
-            sentinel_kwargs={"password": sentinel_pw} if sentinel_pw else None,
+            # Discovery issues ordinary commands (never a blocking pop), so it
+            # keeps the full budget — bounding it is exactly what stops a hang
+            # during a failover, which is when the old master goes quiet.
+            sentinel_kwargs={
+                **connection_timeouts(),
+                **({"password": sentinel_pw} if sentinel_pw else {}),
+            },
+            **timeouts,
         )
     url = os.environ.get("REDIS_BROKER_URL", "redis://localhost:6379/0")
-    return ListQueueBroker(url=url)
+    return ListQueueBroker(url=url, **timeouts)
 
 
 broker = _make_broker()

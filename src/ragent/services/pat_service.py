@@ -7,9 +7,18 @@ refresh state machine (per-nt lock, 401→invalidate, 400→internal,
 retried — the init API is rate limited, so a stored PAT is rotated via refresh
 instead. Full flow + contracts: `docs/spec/pat.md`.
 
-Async because the repository rides the async engine; the (fast) redis cache is
-called directly (fail-soft), and the (blocking) init + refresh HTTP calls are
-offloaded with `run_in_threadpool` so they never stall the event loop.
+Async because the repository rides the async engine; the (blocking) init +
+refresh HTTP calls are offloaded with `run_in_threadpool` so they never stall the
+event loop.
+
+The redis cache is still called directly on the loop. That is safe only because
+its calls are *bounded*: `PatCache` carries a socket timeout and a circuit
+breaker (T-RG.1/T-RG.2), so an unreachable Redis costs a bounded stall until the
+circuit opens and nothing at all after. Before those bounds existed a blackholed
+Redis blocked the loop for the kernel's full connect timeout on every request —
+`/brainagent/v1` resolves a PAT on every proxied call, so that stalled the whole
+worker. Moving these to a threadpool is the remaining cleanup; the bounds are
+what make it non-urgent.
 """
 
 from __future__ import annotations
@@ -37,6 +46,7 @@ from ragent.clients.pat_refresh_client import (
     PatRefreshError,
     PatRefreshUnauthorized,
 )
+from ragent.clients.redis_guard import RedisUnavailable
 from ragent.errors.codes import HttpErrorCode
 from ragent.schemas.pat import PatStatus, PatStatusResponse
 from ragent.security.pat_cipher import PATCipher, PATDecryptionError
@@ -300,10 +310,20 @@ class PatService:
         # POLLS (not immediately self-refreshes) — sleeping between tries and
         # returning the winner's rotated token as soon as it lands, so concurrent
         # requests don't stampede the refresh API (gemini review r3619465015).
+        #
+        # UNAVAILABLE is not "someone else holds it": with redis down the lock can
+        # never be written by anyone, so there is no winner to wait for and the
+        # poll would burn its whole sleep budget — plus one redis round-trip per
+        # attempt — on every request. Give up serialising and refresh directly:
+        # still correct, just without herd protection until redis returns.
         lock_token = None
         for _ in range(self._lock_poll_attempts):
-            lock_token = self._cache.acquire_refresh_lock(nt)
-            if lock_token:
+            acquired = self._cache.acquire_refresh_lock(nt)
+            if isinstance(acquired, RedisUnavailable):
+                logger.warning("pat.refresh.unserialised", user_id=nt, reason="redis_unavailable")
+                break
+            if acquired:
+                lock_token = acquired
                 break
             await self._sleeper(self._lock_poll_interval)
             fresh = self._cached_valid(nt)
