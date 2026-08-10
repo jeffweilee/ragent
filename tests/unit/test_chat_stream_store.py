@@ -321,3 +321,42 @@ def test_sentinel_no_password_when_env_unset(monkeypatch: pytest.MonkeyPatch) ->
     mgr = _sentinel_manager(store)
     assert mgr.connection_kwargs.get("password") is None
     assert mgr.sentinels[0].connection_pool.connection_kwargs.get("password") is None
+
+
+def test_status_many_unread_slice_holds_at_every_live_count() -> None:
+    """Pin the pipeline-slicing invariant `status_many` depends on.
+
+    Two independent automated reviewers have read `res[: len(thread_ids)]` as
+    slicing the wrong pipeline. It does not: the `ptr` pipeline holds only the
+    run-id pointers (consumed as `run_ids`), while the unread EXISTS are queued
+    as the FIRST len(thread_ids) commands of `batch`. The confusion is
+    understandable, so make the invariant executable rather than a comment.
+
+    `len(res)` is `N + 3*live`, which differs from `N` at every live count
+    except zero — so if the slice were wrong, `zip(..., strict=True)` would
+    raise for at least one of these cases.
+    """
+    store = _store()
+    threads = ["t1", "t2", "t3"]
+
+    assert store.status_many("alice", threads) == {  # 0 live: len(res) == N
+        t: {"running": False, "hasNewReply": False} for t in threads
+    }
+
+    store.set_current("alice", "t1", "r1")
+    store.append(ChatStreamStore.key("alice", "t1", "r1"), "data: a\n\n")
+    store.mark_unread("alice", "t2")
+    assert store.status_many("alice", threads) == {  # 1 live: len(res) == 6
+        "t1": {"running": True, "hasNewReply": False},
+        "t2": {"running": False, "hasNewReply": True},
+        "t3": {"running": False, "hasNewReply": False},
+    }
+
+    for t in ("t2", "t3"):
+        store.set_current("alice", t, "r")
+        store.append(ChatStreamStore.key("alice", t, "r"), "data: x\n\n")
+    assert store.status_many("alice", threads) == {  # 3 live: len(res) == 12
+        "t1": {"running": True, "hasNewReply": False},
+        "t2": {"running": True, "hasNewReply": True},
+        "t3": {"running": True, "hasNewReply": False},
+    }
