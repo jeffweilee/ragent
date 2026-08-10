@@ -940,3 +940,187 @@ def test_v3_router_builds_without_agent_factory_when_post_route_disabled() -> No
         r = client.post("/chatagent/v3", json=_run_input(), headers={"X-User-Id": "alice"})
 
     assert r.status_code == 404  # POST route not registered, no crash building the app
+
+
+# --- session pagination pass-through -----------------------------------------
+#
+# The v3 proxy builds its upstream params explicitly, so a param it does not
+# name is silently dropped. These tests pin the two paging params to the wire:
+# without them the widget can ask for page 2 and get page 1 with no error.
+
+
+def test_v3_sessionlist_forwards_limit_and_offset() -> None:
+    app, http_mock = _make_app(sessionlist_url="http://up/list")
+    http_mock.get.return_value = _json_resp({"totalCount": 0, "sessions": []})
+
+    with TestClient(app) as client:
+        client.get(
+            "/chatagent/v3/sessionList",
+            params={"limit": 30, "offset": 60},
+            headers={"X-User-Id": "alice"},
+        )
+
+    params = http_mock.get.call_args.kwargs["params"]
+    assert params["limit"] == "30"
+    assert params["offset"] == "60"
+
+
+def test_v3_sessionlist_omits_paging_params_when_absent() -> None:
+    # Absent must stay absent, not become "0"/"None" — the store's default page
+    # size is the pre-pagination behaviour every existing caller relies on.
+    app, http_mock = _make_app(sessionlist_url="http://up/list")
+    http_mock.get.return_value = _json_resp({"totalCount": 0, "sessions": []})
+
+    with TestClient(app) as client:
+        client.get("/chatagent/v3/sessionList", headers={"X-User-Id": "alice"})
+
+    params = http_mock.get.call_args.kwargs["params"]
+    assert "limit" not in params
+    assert "offset" not in params
+
+
+def test_v3_session_forwards_limit_and_before_cursor() -> None:
+    app, http_mock = _make_app(session_url="http://up/session")
+    http_mock.get.return_value = _json_resp({"session": "t1", "messages": []})
+
+    with TestClient(app) as client:
+        client.get(
+            "/chatagent/v3/session",
+            params={"session": "t1", "limit": 50, "before": 1234},
+            headers={"X-User-Id": "alice"},
+        )
+
+    params = http_mock.get.call_args.kwargs["params"]
+    assert params["limit"] == "50"
+    assert params["before"] == "1234"
+
+
+def test_v3_session_omits_paging_params_when_absent() -> None:
+    app, http_mock = _make_app(session_url="http://up/session")
+    http_mock.get.return_value = _json_resp({"session": "t1", "messages": []})
+
+    with TestClient(app) as client:
+        client.get(
+            "/chatagent/v3/session",
+            params={"session": "t1"},
+            headers={"X-User-Id": "alice"},
+        )
+
+    params = http_mock.get.call_args.kwargs["params"]
+    assert "limit" not in params
+    assert "before" not in params
+
+
+def test_v3_session_preserves_upstream_paging_metadata() -> None:
+    # hasMore/nextBefore/usage are added by the store; the mapper must not eat
+    # them on the way through, or the client can never request page 2.
+    app, http_mock = _make_app(session_url="http://up/session")
+    http_mock.get.return_value = _json_resp(
+        {
+            "session": "t1",
+            "sessionName": "A",
+            "messages": [],
+            "hasMore": True,
+            "nextBefore": 42,
+            "usage": {"tokens": 100, "messages": 3},
+        }
+    )
+
+    with TestClient(app) as client:
+        r = client.get(
+            "/chatagent/v3/session",
+            params={"session": "t1"},
+            headers={"X-User-Id": "alice"},
+        )
+
+    body = r.json()
+    assert body["hasMore"] is True
+    assert body["nextBefore"] == 42
+    assert body["usage"]["tokens"] == 100
+
+
+# --- session continue (接續過長對話) -----------------------------------------
+
+
+def _write_resp(payload: dict) -> MagicMock:
+    """proxy_write 用的回應替身。
+
+    與 _json_resp 的差別是多了 status_code / content —— proxy_write 會先看
+    這兩個決定要不要回 204 空身,proxy_get 不看。共用一個 helper 會讓寫入
+    類的測試在 MagicMock 上撞 AttributeError。
+    """
+    resp = _json_resp(payload)
+    resp.status_code = 200
+    resp.content = b"{}"
+    return resp
+
+
+def test_v3_session_continue_derives_the_upstream_url() -> None:
+    # URL 由 session API URL 推導,不是另一個環境變數 —— 推導錯的話這支
+    # route 會 404,而且只有使用者按下按鈕才會發現。
+    app, http_mock = _make_app(session_url="http://up/upstream/session")
+    http_mock.request.return_value = _write_resp({"session": "new1", "sessionName": "x(續)"})
+
+    with TestClient(app) as client:
+        client.post(
+            "/chatagent/v3/session/continue",
+            json={"session": "t1"},
+            headers={"X-User-Id": "alice"},
+        )
+
+    args, kwargs = http_mock.request.call_args
+    assert args[0] == "POST"
+    assert args[1] == "http://up/upstream/session/continue"
+
+
+def test_v3_session_continue_takes_user_from_header_not_body() -> None:
+    # user 由認證後的 header 決定。若接受 body 指定,任何人都能對別人的
+    # 對話發動續談 —— 而續談會把該對話的內容摘要寫進呼叫者能讀的新 thread。
+    app, http_mock = _make_app(session_url="http://up/session")
+    http_mock.request.return_value = _write_resp({"session": "new1"})
+
+    with TestClient(app) as client:
+        r = client.post(
+            "/chatagent/v3/session/continue",
+            json={"session": "t1", "user": "mallory"},   # extra="forbid" 應該擋掉
+            headers={"X-User-Id": "alice"},
+        )
+
+    assert r.status_code == 422, "body 不該能夾帶 user"
+
+
+def test_v3_session_continue_forwards_authenticated_user() -> None:
+    app, http_mock = _make_app(session_url="http://up/session")
+    http_mock.request.return_value = _write_resp({"session": "new1"})
+
+    with TestClient(app) as client:
+        client.post(
+            "/chatagent/v3/session/continue",
+            json={"session": "t1"},
+            headers={"X-User-Id": "alice"},
+        )
+
+    assert http_mock.request.call_args.kwargs["json"]["user"] == "alice"
+    assert http_mock.request.call_args.kwargs["json"]["session"] == "t1"
+
+
+def test_v3_session_continue_returns_the_new_session_and_recap() -> None:
+    # recap 要原樣回到前端 —— 前端靠它顯示「前情提要」,被吃掉的話使用者
+    # 會看到一個空的新對話,不知道脈絡有沒有帶過去。
+    app, http_mock = _make_app(session_url="http://up/session")
+    http_mock.request.return_value = _write_resp({
+        "session": "new1", "sessionName": "專案(續)",
+        "recap": "【前情提要】…", "fromSession": "t1", "segmentCount": 3,
+    })
+
+    with TestClient(app) as client:
+        r = client.post(
+            "/chatagent/v3/session/continue",
+            json={"session": "t1"},
+            headers={"X-User-Id": "alice"},
+        )
+
+    body = r.json()
+    assert body["session"] == "new1"
+    assert body["recap"].startswith("【前情提要】")
+    assert body["segmentCount"] == 3

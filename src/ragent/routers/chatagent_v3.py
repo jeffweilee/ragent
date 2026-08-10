@@ -28,7 +28,11 @@ from ragent.clients.nats_publisher import NatsSessionPublisher
 from ragent.clients.rate_limiter import RateLimiter
 from ragent.errors.codes import HttpErrorCode
 from ragent.routers._chatagent_proxy import proxy_get, proxy_write
-from ragent.schemas.chatagent import SessionDeleteRequest, SessionRenameRequest
+from ragent.schemas.chatagent import (
+    SessionContinueRequest,
+    SessionDeleteRequest,
+    SessionRenameRequest,
+)
 from ragent.services.chatagent_session import map_session_list_payload, map_session_payload
 from ragent.services.skill_service import SkillNotFoundError, SkillService
 from ragent.utility.id_gen import new_id
@@ -364,6 +368,8 @@ def create_chatagent_v3_router(
             startTime: str | None = None,
             endTime: str | None = None,
             project: str | None = None,
+            limit: int | None = None,
+            offset: int | None = None,
         ) -> Response:
             user_id = x_user_id or "anonymous"
             params: dict[str, str] = {"user": user_id, "apName": chatagent_ap_name}
@@ -377,6 +383,13 @@ def create_chatagent_v3_router(
             # unscoped conversation list.
             if project:
                 params["project"] = project
+            # Pagination is opt-in and must stay so: omitted here means the store
+            # applies its own default (the pre-pagination page size), which is
+            # what every existing caller of this route already expects.
+            if limit is not None:
+                params["limit"] = str(limit)
+            if offset:
+                params["offset"] = str(offset)
             # Strip the machine-context wrapper from each session title and enrich
             # each entry with its live {running, hasNewReply} status, batched in one
             # status_many call (no store → list degrades to title-only).
@@ -398,9 +411,23 @@ def create_chatagent_v3_router(
         async def chatagent_v3_session(
             session: str,
             x_user_id: Annotated[str | None, Depends(get_user_id)] = None,
+            limit: int | None = None,
+            before: int | None = None,
         ) -> Response:
             user_id = x_user_id or "anonymous"
             params = {"user": user_id, "apName": chatagent_ap_name, "session": session}
+            # `before` is the store's opaque backward-paging cursor (the client
+            # echoes back the `nextBefore` it was given). Both omitted = the
+            # store's default page, i.e. exactly the pre-pagination behaviour.
+            #
+            # Note the page size the client asked for counts *store rows*, and
+            # the transform below drops interrupt turns — so a page can come
+            # back shorter than `limit`. Paging still terminates correctly
+            # because hasMore/nextBefore are computed upstream over raw rows.
+            if limit is not None:
+                params["limit"] = str(limit)
+            if before is not None:
+                params["before"] = str(before)
             # Pure history load: v3 reshapes the persisted history (twp-ai roles +
             # <hidden> stripped) but does NOT mark the session read — loading history
             # is decoupled from "read", which is an explicit POST /session/read.
@@ -412,6 +439,28 @@ def create_chatagent_v3_router(
                 timeout=timeout,
                 log_prefix="v3.session",
                 transform=map_session_payload,
+            )
+
+        @router.post("/session/continue")
+        async def chatagent_v3_session_continue(
+            body: SessionContinueRequest,
+            x_user_id: Annotated[str | None, Depends(get_user_id)] = None,
+        ) -> Response:
+            """接續一個過長的對話:上游建立新 thread 並寫入前情提要。
+
+            URL 由 session API URL 推導(`…/session` → `…/session/continue`)
+            而非另開一個環境變數 —— 兩者必然指向同一個上游,多一個 env var
+            就多一處部署時會漏設、而且漏設時只會在使用者按下按鈕才發現。
+            """
+            user_id = x_user_id or "anonymous"
+            return await proxy_write(
+                http_client=http_client,
+                method="POST",
+                url=chatagent_session_api_url.rstrip("/") + "/continue",
+                payload={"session": body.session, "apName": chatagent_ap_name, "user": user_id},
+                headers=_headers,
+                timeout=timeout,
+                log_prefix="v3.session.continue",
             )
 
         @router.put("/session")
