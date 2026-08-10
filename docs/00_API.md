@@ -901,8 +901,8 @@ The instructions ride the existing `<hidden>` machine-context block (the upstrea
 | Endpoint | Description |
 |---|---|
 | `GET /livez` | Liveness probe — always 200 if process is up |
-| `GET /startupz` | Startup probe — 503 until every dep probe has been green at least once; then permanently 200 |
-| `GET /readyz` | Readiness probe — checks all dependencies (DB, ES, Redis, MinIO); 503 with problem+json on failure. Emits structlog events `probe.ok` (INFO) / `probe.failed` (WARNING, with `error_code`, `detail`, `duration_ms`) per probe. |
+| `GET /startupz` | Startup probe — 503 until every **required** dep probe has been green at least once; then permanently 200. Advisory probes never hold the latch. |
+| `GET /readyz` | Readiness probe. **Required deps (MariaDB, MinIO)** → 503 with problem+json on failure, naming the failed dep (a required failure outranks any simultaneous advisory one). **Advisory deps (ES, Redis rate-limiter)** → `200 {"status":"degraded","degraded":["es",…]}`, because a 503 makes k8s pull the Pod from the Service (`failureThreshold: 3`) over dependencies the service is written to degrade around (T-RG.6). All green → `200 {"status":"ok"}`. Emits structlog events `probe.ok` (INFO) / `probe.failed` (WARNING, with `error_code`, `detail`, `duration_ms`) per probe regardless of class — advisory is not unobserved. |
 | `GET /metrics` | Prometheus metrics (text/plain) |
 
 ---

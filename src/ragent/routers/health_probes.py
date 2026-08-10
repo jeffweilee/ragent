@@ -21,6 +21,24 @@ from ragent.errors.codes import ProbeErrorCode
 
 logger = structlog.get_logger(__name__)
 
+# Dependencies the process degrades around instead of gating on (T-RG.6).
+#
+# ES: retrieval quality drops and the feedback boost stops — the API still
+# answers. Redis: every surface has a documented fallback (rate limiting fails
+# open, the PAT cache falls through to MariaDB, chat streams drop to
+# connection-bound SSE, ingest rows stay UPLOADED for the worker sweep).
+#
+# Gating on these inverted the design. A red probe made `/readyz` 503, and a k8s
+# readinessProbe at failureThreshold 3 then pulls the Pod out of the Service
+# ~15 s later — taking the whole API down over a dependency the code is written
+# to survive — while `_check_infra_ready` refused to boot at all. They stay fully
+# *observed* (per-probe metrics, the `/readyz` body, the existing
+# ragent_readyz_probe_status alert); they just no longer gate.
+#
+# MariaDB and MinIO are deliberately absent: no read path works without MariaDB,
+# and ingest cannot stage bytes without MinIO.
+ADVISORY_PROBES = frozenset({"es", "redis_rate_limiter"})
+
 
 @dataclass(frozen=True)
 class ProbeFailure:

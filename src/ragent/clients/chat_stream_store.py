@@ -21,12 +21,13 @@ import os
 import re
 from typing import Any
 
-import redis as redis_lib
-import structlog
-
-from ragent.utility.env import parse_sentinel_hosts
-
-logger = structlog.get_logger(__name__)
+from ragent.clients.redis_guard import (
+    RedisCircuit,
+    RedisUnavailable,
+    build_redis_client,
+    circuit_from_env,
+    unwrap,
+)
 
 _KEY_PREFIX = "chatstream:"
 _CURRENT_PREFIX = "chatcurrent:"  # per-thread pointer → the latest run_id
@@ -45,6 +46,7 @@ class ChatStreamStore:
         ttl_seconds: int = 300,
         maxlen: int = 10_000,
         unread_ttl_seconds: int = 2_592_000,
+        circuit: RedisCircuit | None = None,
     ) -> None:
         self._redis = redis_client
         self._ttl = ttl_seconds
@@ -52,6 +54,7 @@ class ChatStreamStore:
         # The new-reply flag outlives a run buffer (which is TTL-bound to resumability);
         # it must survive until the user next opens the session, so it gets its own long TTL.
         self._unread_ttl = unread_ttl_seconds
+        self._circuit = circuit or circuit_from_env("stream")
 
     @staticmethod
     def key(user_id: str, thread_id: str, stream_id: str) -> str:
@@ -103,11 +106,12 @@ class ChatStreamStore:
         ``None`` → the stream Redis is unreachable, so the caller should take the
         legacy connection-bound path instead of breaking the request.
         """
-        try:
-            return bool(self._redis.set(self._lock_key(key), "1", nx=True, ex=self._ttl))
-        except redis_lib.RedisError as exc:
-            logger.warning("chat_stream_store.unavailable", op="try_start", error=str(exc))
+        started = self._circuit.call(
+            "try_start", lambda: self._redis.set(self._lock_key(key), "1", nx=True, ex=self._ttl)
+        )
+        if isinstance(started, RedisUnavailable):
             return None
+        return bool(started)
 
     def set_current(self, user_id: str, thread_id: str, stream_id: str) -> None:
         """Point the thread at its latest run so reconnect resolves it server-side.
@@ -119,17 +123,18 @@ class ChatStreamStore:
         streams longer than the TTL stops being reconnectable mid-flight; once it
         finishes it is served from session history instead.
         """
-        try:
-            self._redis.set(self._current_key(user_id, thread_id), stream_id, ex=self._ttl)
-        except redis_lib.RedisError as exc:
-            logger.warning("chat_stream_store.unavailable", op="set_current", error=str(exc))
+        self._circuit.call(
+            "set_current",
+            lambda: self._redis.set(self._current_key(user_id, thread_id), stream_id, ex=self._ttl),
+        )
 
     def get_current(self, user_id: str, thread_id: str) -> str | None:
-        try:
-            return self._redis.get(self._current_key(user_id, thread_id))
-        except redis_lib.RedisError as exc:
-            logger.warning("chat_stream_store.unavailable", op="get_current", error=str(exc))
-            return None
+        return unwrap(
+            self._circuit.call(
+                "get_current", lambda: self._redis.get(self._current_key(user_id, thread_id))
+            ),
+            None,
+        )
 
     def stash_user_input(self, key: str, text: str) -> None:
         """Keep the run's user turn so reconnect can replay it.
@@ -137,17 +142,16 @@ class ChatStreamStore:
         The live stream only carries the assistant side; without this, a client
         that lost its local state on refresh would see the answer with no question.
         """
-        try:
-            self._redis.set(self._userinput_key(key), text, ex=self._ttl)
-        except redis_lib.RedisError as exc:
-            logger.warning("chat_stream_store.unavailable", op="stash_user_input", error=str(exc))
+        self._circuit.call(
+            "stash_user_input",
+            lambda: self._redis.set(self._userinput_key(key), text, ex=self._ttl),
+        )
 
     def get_user_input(self, key: str) -> str | None:
-        try:
-            return self._redis.get(self._userinput_key(key))
-        except redis_lib.RedisError as exc:
-            logger.warning("chat_stream_store.unavailable", op="get_user_input", error=str(exc))
-            return None
+        return unwrap(
+            self._circuit.call("get_user_input", lambda: self._redis.get(self._userinput_key(key))),
+            None,
+        )
 
     def is_done(self, key: str) -> bool:
         """True once the run has finished — the ``eos`` sentinel is the last entry.
@@ -158,11 +162,12 @@ class ChatStreamStore:
         de-duplicate. The buffer may linger briefly for the live consumer to drain;
         this check, not the buffer's existence, decides reconnect.
         """
-        try:
-            tail = self._redis.xrevrange(key, max="+", min="-", count=1)
-        except redis_lib.RedisError as exc:
-            logger.warning("chat_stream_store.unavailable", op="is_done", error=str(exc))
-            return False
+        tail = unwrap(
+            self._circuit.call(
+                "is_done", lambda: self._redis.xrevrange(key, max="+", min="-", count=1)
+            ),
+            None,
+        )
         return bool(tail) and _FIELD_EOS in tail[0][1]
 
     def is_running(self, user_id: str, thread_id: str) -> bool:
@@ -195,10 +200,10 @@ class ChatStreamStore:
         ``EXISTS`` with no clock comparison. Cleared only by the client's explicit
         mark-read (``POST /session/read``); the backend never infers "read".
         """
-        try:
-            self._redis.set(self._unread_key(user_id, thread_id), "1", ex=self._unread_ttl)
-        except redis_lib.RedisError as exc:
-            logger.warning("chat_stream_store.unavailable", op="mark_unread", error=str(exc))
+        self._circuit.call(
+            "mark_unread",
+            lambda: self._redis.set(self._unread_key(user_id, thread_id), "1", ex=self._unread_ttl),
+        )
 
     def clear_unread(self, user_id: str, thread_id: str) -> bool:
         """Drop the new-reply flag on the client's explicit mark-read (fail-soft).
@@ -208,18 +213,18 @@ class ChatStreamStore:
         delta on repeat mark-reads. False on a Redis blip (safe default: no
         broadcast; the flag, if any, survives for the next attempt).
         """
-        try:
-            return bool(self._redis.delete(self._unread_key(user_id, thread_id)))
-        except redis_lib.RedisError as exc:
-            logger.warning("chat_stream_store.unavailable", op="clear_unread", error=str(exc))
-            return False
+        return bool(
+            self._circuit.call(
+                "clear_unread", lambda: self._redis.delete(self._unread_key(user_id, thread_id))
+            )
+        )
 
     def has_unread(self, user_id: str, thread_id: str) -> bool:
-        try:
-            return bool(self._redis.exists(self._unread_key(user_id, thread_id)))
-        except redis_lib.RedisError as exc:
-            logger.warning("chat_stream_store.unavailable", op="has_unread", error=str(exc))
-            return False
+        return bool(
+            self._circuit.call(
+                "has_unread", lambda: self._redis.exists(self._unread_key(user_id, thread_id))
+            )
+        )
 
     def status_many(self, user_id: str, thread_ids: list[str]) -> dict[str, dict[str, bool]]:
         """Batch ``{running, hasNewReply}`` for a session list in 2 Redis round-trips.
@@ -234,7 +239,8 @@ class ChatStreamStore:
         result = {t: {"running": False, "hasNewReply": False} for t in thread_ids}
         if not thread_ids:
             return result
-        try:
+
+        def _fetch() -> tuple[list[str], list]:
             ptr = self._redis.pipeline()
             for t in thread_ids:
                 ptr.get(self._current_key(user_id, t))
@@ -254,10 +260,12 @@ class ChatStreamStore:
                     batch.exists(self._lock_key(key))
                     batch.xrevrange(key, max="+", min="-", count=1)  # is_done tail
                     live.append(t)
-            res = batch.execute()
-        except redis_lib.RedisError as exc:
-            logger.warning("chat_stream_store.unavailable", op="status_many", error=str(exc))
+            return live, batch.execute()
+
+        fetched = self._circuit.call("status_many", _fetch)
+        if isinstance(fetched, RedisUnavailable):
             return result
+        live, res = fetched
 
         for t, unread in zip(thread_ids, res[: len(thread_ids)], strict=True):
             result[t]["hasNewReply"] = bool(unread)
@@ -270,16 +278,40 @@ class ChatStreamStore:
             result[t]["running"] = resumable and not is_done
         return result
 
-    def append(self, key: str, frame: str) -> str:
-        """Buffer one SSE frame; returns the entry id used as the SSE ``id:``."""
-        return self._redis.xadd(key, {_FIELD_FRAME: frame}, maxlen=self._maxlen, approximate=True)
+    def append(self, key: str, frame: str) -> str | None:
+        """Buffer one SSE frame; returns the entry id used as the SSE ``id:``.
+
+        ``None`` when the buffer is unreachable. Fail-soft matters more here than
+        anywhere else in this class: this runs inside the fire-and-forget producer
+        thread, so an escaping error aborts generation mid-run and the consumer is
+        left to hit its idle timeout — the client sees a truncated answer with no
+        error frame and no way to tell it was cut short.
+        """
+        return unwrap(
+            self._circuit.call(
+                "append",
+                lambda: self._redis.xadd(
+                    key, {_FIELD_FRAME: frame}, maxlen=self._maxlen, approximate=True
+                ),
+            ),
+            None,
+        )
 
     def mark_done(self, key: str) -> None:
-        """Close the stream: an ``eos`` sentinel tells consumers to stop, then bound the TTL."""
-        pipe = self._redis.pipeline()
-        pipe.xadd(key, {_FIELD_EOS: "1"}, maxlen=self._maxlen, approximate=True)
-        pipe.expire(key, self._ttl)
-        pipe.execute()
+        """Close the stream: an ``eos`` sentinel tells consumers to stop, then bound the TTL.
+
+        Fail-soft for the same reason as :meth:`append` — and this one runs in the
+        producer's ``finally``, so raising here would also lose the NATS
+        spinner-off event that already ran before it.
+        """
+
+        def _close() -> None:
+            pipe = self._redis.pipeline()
+            pipe.xadd(key, {_FIELD_EOS: "1"}, maxlen=self._maxlen, approximate=True)
+            pipe.expire(key, self._ttl)
+            pipe.execute()
+
+        self._circuit.call("mark_done", _close)
 
     def is_resumable(self, key: str) -> bool:
         """True if the run has buffered frames OR a producer holds its start lock.
@@ -290,11 +322,9 @@ class ChatStreamStore:
         Fail-soft on a Redis outage so reconnect degrades to STREAM_EXPIRED (the
         client falls back to session history) rather than 500.
         """
-        try:
-            return bool(self._redis.exists(key, self._lock_key(key)))
-        except redis_lib.RedisError as exc:
-            logger.warning("chat_stream_store.unavailable", op="is_resumable", error=str(exc))
-            return False
+        return bool(
+            self._circuit.call("is_resumable", lambda: self._redis.exists(key, self._lock_key(key)))
+        )
 
     def read_after(self, key: str, last_id: str | None) -> list[tuple[str, str | None]]:
         """Entries strictly after ``last_id`` as ``(entry_id, frame)`` pairs.
@@ -305,16 +335,13 @@ class ChatStreamStore:
         Fail-soft on a transient Redis outage (returns no entries) so a blip ends
         the stream via the consumer's idle timeout instead of crashing it.
         """
-        try:
+
+        def _read() -> list:
             if last_id in _FROM_START:
-                entries = self._redis.xrange(key, min="-", max="+")
-            else:
-                entries = [
-                    e for e in self._redis.xrange(key, min=last_id, max="+") if e[0] != last_id
-                ]
-        except redis_lib.RedisError as exc:
-            logger.warning("chat_stream_store.unavailable", op="read_after", error=str(exc))
-            return []
+                return self._redis.xrange(key, min="-", max="+")
+            return [e for e in self._redis.xrange(key, min=last_id, max="+") if e[0] != last_id]
+
+        entries = unwrap(self._circuit.call("read_after", _read), [])
         return [
             (eid, fields.get(_FIELD_FRAME) if _FIELD_EOS not in fields else None)
             for eid, fields in entries
@@ -322,29 +349,15 @@ class ChatStreamStore:
 
     @classmethod
     def from_env(cls) -> ChatStreamStore:
-        ttl = int(os.environ.get("REDIS_STREAM_TTL_SECONDS", "300"))
-        maxlen = int(os.environ.get("REDIS_STREAM_MAXLEN", "10000"))
-        unread_ttl = int(os.environ.get("REDIS_UNREAD_TTL_SECONDS", "2592000"))
-        mode = os.environ.get("REDIS_MODE", "standalone")
-        if mode == "sentinel":
-            from redis.sentinel import Sentinel
-
-            hosts_raw = os.environ.get("REDIS_SENTINEL_HOSTS", "")
-            master = os.environ.get("REDIS_STREAM_SENTINEL_MASTER", "stream-master")
-            master_pw = os.environ.get("REDIS_SENTINEL_MASTER_PASSWORD") or None
-            sentinel_pw = os.environ.get("REDIS_SENTINEL_PASSWORD") or None
-            sentinel = Sentinel(
-                parse_sentinel_hosts(hosts_raw),
-                password=master_pw,
-                sentinel_kwargs={"password": sentinel_pw} if sentinel_pw else None,
-            )
-            client = sentinel.master_for(master, decode_responses=True)
-            return cls(client, ttl_seconds=ttl, maxlen=maxlen, unread_ttl_seconds=unread_ttl)
-
-        url = os.environ.get("REDIS_STREAM_URL", "redis://localhost:6379/2")
         return cls(
-            redis_lib.from_url(url, decode_responses=True),
-            ttl_seconds=ttl,
-            maxlen=maxlen,
-            unread_ttl_seconds=unread_ttl,
+            build_redis_client(
+                master_env="REDIS_STREAM_SENTINEL_MASTER",
+                master_default="stream-master",
+                url_env="REDIS_STREAM_URL",
+                url_default="redis://localhost:6379/2",
+                decode_responses=True,
+            ),
+            ttl_seconds=int(os.environ.get("REDIS_STREAM_TTL_SECONDS", "300")),
+            maxlen=int(os.environ.get("REDIS_STREAM_MAXLEN", "10000")),
+            unread_ttl_seconds=int(os.environ.get("REDIS_UNREAD_TTL_SECONDS", "2592000")),
         )

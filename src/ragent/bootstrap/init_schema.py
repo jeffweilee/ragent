@@ -213,7 +213,15 @@ def auto_init(db_url: str, es_url: str) -> None:
 
     engine = create_engine(to_sync_dsn(db_url))
     init_mariadb(engine)
-    init_es(es_url)
+    # ES is an advisory dependency (T-RG.6): an unreachable cluster must not stop
+    # the api or the worker from starting. Index/pipeline creation is idempotent
+    # and re-runs on the next boot, and `/readyz` reports the degradation
+    # meanwhile — so failing here would trade a degraded process for no process.
+    # MariaDB and MinIO keep raising: nothing works without them.
+    try:
+        init_es(es_url)
+    except Exception:
+        logger.warning("es.init_skipped", reason="elasticsearch unreachable", exc_info=True)
     init_minio_buckets()
 
 

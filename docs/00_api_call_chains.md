@@ -43,10 +43,14 @@ Called from `bootstrap/app.py::create_app()` → `lifespan()` → `_check_infra_
 ```
 lifespan()
   ├── broker.startup()          — TaskIQ Redis Sentinel connection
-  ├── init_schema()             — alembic head check (MariaDB)
-  ├── _check_infra_ready()
-  │     ├── probe_mariadb()     — SELECT 1 on MariaDB engine
-  │     ├── probe_es()          — ES cluster health ping
+  ├── init_schema()             — alembic head check (MariaDB); init_es failure is
+  │                               logged es.init_skipped and swallowed (T-RG.6)
+  ├── _check_infra_ready()      — required probe failure aborts boot; advisory
+  │                               (es, redis_rate_limiter) logs api.startup.degraded
+  │     ├── probe_mariadb()     — SELECT 1 on MariaDB engine            [required]
+  │     ├── probe_minio()       — ListBuckets                           [required]
+  │     ├── probe_es()          — ES cluster health ping                [advisory]
+  │     ├── probe_redis()       — rate-limiter PING                     [advisory]
   │     ├── broker.find_task()  — assert "ingest.pipeline" + "ingest.supersede" registered
   │     └── tm.get_token()      — Auth API token exchange (all token_managers)
   └── embedding_registry.refresh()   — MariaDB read for active model (non-fatal)

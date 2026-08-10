@@ -200,6 +200,30 @@ feedback_es_write_failed_total = Counter(
 )
 
 
+# Ingest enqueued-but-not-queued (T-RG.5). The row is durably UPLOADED and the
+# worker sweep re-dispatches it, so the request still returns 202 — this is the
+# only signal that a backlog is building behind an unreachable broker.
+ingest_dispatch_deferred_total = Counter(
+    "ragent_ingest_dispatch_deferred_total",
+    "Ingest rows persisted but not queued because the TaskIQ broker was unreachable.",
+)
+
+# Redis circuit breaker (T-RG.1). Labelled by CLIENT, not by process: in a
+# sentinel deployment the surfaces are four distinct masters, so a dead
+# `stream-master` must be visible without implicating `pat-master`.
+redis_circuit_state = Gauge(
+    "ragent_redis_circuit_state",
+    "Redis circuit breaker state per client: 0=closed (calls flow), 1=open (short-circuited).",
+    labelnames=("client",),
+)
+
+redis_circuit_trips_total = Counter(
+    "ragent_redis_circuit_trips_total",
+    "Times a Redis circuit breaker opened after consecutive connectivity failures.",
+    labelnames=("client",),
+)
+
+
 DocumentStatsRow = tuple[str, str | None, str | None, int]
 """(status, source_app, mime_type, count)."""
 

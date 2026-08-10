@@ -17,14 +17,32 @@ into `IngestService` / `Reconciler` instead of the raw broker.
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
+import redis as redis_lib
 from anyio.from_thread import run as _run_from_thread
 from taskiq import AsyncBroker
 
 
 class TaskNotRegisteredError(Exception):
     """Raised when a task label has no matching `@broker.task` registration."""
+
+
+class TaskDispatchUnavailable(Exception):
+    """The broker could not be reached, so the task was NOT queued.
+
+    Distinct from `TaskNotRegisteredError` on purpose. A missing registration is
+    a deployment defect that no retry or sweep will heal, so it must keep
+    surfacing as a 500. An unreachable broker is transient, and every ragent
+    dispatch site persists its row *before* enqueuing — the worker's startup
+    sweep and maintenance cycle re-dispatch stale rows once Redis returns — so
+    callers can degrade instead of failing the request.
+
+    Translated here rather than in `services/`: the broker's transport
+    exceptions are a Redis detail, and bootstrap is the layer that owns knowing
+    the queue is Redis-backed.
+    """
 
 
 class TaskiqDispatcher:
@@ -37,7 +55,10 @@ class TaskiqDispatcher:
         task = self._broker.find_task(label)
         if task is None:
             raise TaskNotRegisteredError(f"taskiq task {label!r} is not registered")
-        await task.kiq(**kwargs)
+        try:
+            await task.kiq(**kwargs)
+        except (redis_lib.RedisError, OSError, asyncio.TimeoutError) as exc:
+            raise TaskDispatchUnavailable(f"broker unreachable for {label!r}: {exc}") from exc
 
 
 class BlockingTaskiqDispatcher:

@@ -1,19 +1,26 @@
 """PatCache — Redis cache for encrypted PATs + per-nt refresh lock (T-PAT).
 
 A cache of the `pat` DB row: `ragent:pat:{nt}` → encrypted PAT, TTL 11.5 h (0.5 h
-under the 12 h PAT lifetime). Every operation is **fail-soft**: a `RedisError`
-degrades to a cache miss / no-op (logged `pat.redis_unavailable`) so a Redis blip
-falls back to the DB rather than 500-ing the request — mirroring `RateLimiter` /
-`ChatStreamStore`.
+under the 12 h PAT lifetime). Every operation is **fail-soft**: a connectivity
+failure degrades to a cache miss / no-op so a Redis blip falls back to the DB
+rather than 500-ing the request — mirroring `RateLimiter` / `ChatStreamStore`.
+
+Fail-soft is delegated to a per-client `RedisCircuit` (T-RG.1) rather than a
+per-method `except RedisError`. This surface is the hottest of the three —
+`/brainagent/v1` is a catch-all proxy, so *every* upstream call resolves a PAT —
+which makes it the one where paying a socket timeout per call hurts most. Once
+the circuit opens, calls short-circuit to the miss path with zero I/O.
 
 `acquire_refresh_lock` (`SET NX EX`) serialises refresh per nt so concurrent
-requests don't stampede the refresh API or clobber each other's token rotation;
-a fail-soft `False` on Redis error simply means the caller proceeds unserialised
-(still correct, just no herd protection while Redis is down).
+requests don't stampede the refresh API or clobber each other's token rotation.
+It reports an unreachable Redis as :data:`UNAVAILABLE`, distinct from the `None`
+that means "another holder has it": the caller polls for the latter and must not
+for the former, because a lock nobody can write is a lock nobody will release.
 """
 
 from __future__ import annotations
 
+import contextlib
 import math
 import os
 import uuid
@@ -22,7 +29,14 @@ from typing import Any
 import redis as redis_lib
 import structlog
 
-from ragent.utility.env import parse_sentinel_hosts
+from ragent.clients.redis_guard import (
+    UNAVAILABLE,
+    RedisCircuit,
+    RedisUnavailable,
+    build_redis_client,
+    circuit_from_env,
+    unwrap,
+)
 
 logger = structlog.get_logger(__name__)
 
@@ -39,18 +53,18 @@ class PatCache:
         ttl_seconds: int,
         lock_ttl_seconds: int,
         tombstone_ttl_seconds: int,
+        circuit: RedisCircuit | None = None,
     ) -> None:
         self._redis = redis_client
         self._ttl = ttl_seconds
         self._lock_ttl = lock_ttl_seconds
         self._tombstone_ttl = tombstone_ttl_seconds
+        self._circuit = circuit or circuit_from_env("pat")
 
     def get(self, nt: str) -> str | None:
-        try:
-            return self._redis.get(f"{_KEY_PREFIX}{nt}")
-        except redis_lib.RedisError as exc:
-            self._unavailable("get", exc)
-            return None
+        return unwrap(
+            self._circuit.call("get", lambda: self._redis.get(f"{_KEY_PREFIX}{nt}")), None
+        )
 
     def put(self, nt: str, pat_cipher: str) -> None:
         """Cache ``pat_cipher`` — UNLESS the nt carries a revocation tombstone.
@@ -70,21 +84,30 @@ class PatCache:
         """
         key = f"{_KEY_PREFIX}{nt}"
         tomb = f"{_TOMB_PREFIX}{nt}"
-        try:
+
+        def _write() -> bool:
             with self._redis.pipeline() as pipe:
                 pipe.watch(tomb)
                 if pipe.exists(tomb):
                     pipe.unwatch()
-                    logger.info("pat.cache.put_refused_revoked", user_id=nt)
-                    return
+                    return False
                 pipe.multi()
                 pipe.set(key, pat_cipher, ex=self._ttl)
                 pipe.execute()
+                return True
+
+        try:
+            wrote = self._circuit.call("put", _write)
         except redis_lib.WatchError:
             # A revoke touched the tombstone mid-transaction — do not publish.
+            # Re-raised by the circuit on purpose: a contended key means Redis is
+            # healthy, so it must not count toward a trip.
             logger.info("pat.cache.put_refused_revoked", user_id=nt)
-        except redis_lib.RedisError as exc:
-            self._unavailable("put", exc)
+            return
+        # `is False` — not `not wrote` — because an unavailable Redis is falsy too
+        # and that is an outage, not a refusal.
+        if wrote is False:
+            logger.info("pat.cache.put_refused_revoked", user_id=nt)
 
     def mark_revoked(self, nt: str) -> None:
         """Block cache repopulation for this nt while in-flight work drains.
@@ -93,38 +116,43 @@ class PatCache:
         rotation that started before the revoke has finished (and been refused)
         before the tombstone lapses.
         """
-        try:
-            self._redis.set(f"{_TOMB_PREFIX}{nt}", "1", ex=self._tombstone_ttl)
-        except redis_lib.RedisError as exc:
-            self._unavailable("tombstone", exc)
+        self._circuit.call(
+            "tombstone", lambda: self._redis.set(f"{_TOMB_PREFIX}{nt}", "1", ex=self._tombstone_ttl)
+        )
 
     def evict(self, nt: str) -> None:
-        try:
-            self._redis.delete(f"{_KEY_PREFIX}{nt}")
-        except redis_lib.RedisError as exc:
-            self._unavailable("evict", exc)
+        self._circuit.call("evict", lambda: self._redis.delete(f"{_KEY_PREFIX}{nt}"))
 
-    def acquire_refresh_lock(self, nt: str) -> str | None:
-        """Try to take the per-nt refresh lock. Returns a unique owner token on
-        success (pass it back to :meth:`release_refresh_lock`), or ``None`` if
-        another holder has it / Redis is unavailable.
+    def acquire_refresh_lock(self, nt: str) -> str | RedisUnavailable | None:
+        """Try to take the per-nt refresh lock.
+
+        Three outcomes, and the caller needs all three:
+
+        - a unique owner token → we hold it (pass it back to
+          :meth:`release_refresh_lock`);
+        - ``None`` → another holder has it, so polling is worthwhile;
+        - :data:`UNAVAILABLE` → Redis is unreachable, so polling is pure waste —
+          nobody can take a lock that cannot be written, and the poll loop would
+          burn its full sleep budget on every request.
 
         The token identifies THIS holder: if the lock's TTL expires mid-refresh
         and another request re-acquires it, our release must not delete the new
         owner's lock (Codex review r3619473859)."""
         token = uuid.uuid4().hex
-        try:
-            acquired = self._redis.set(f"{_LOCK_PREFIX}{nt}", token, nx=True, ex=self._lock_ttl)
-        except redis_lib.RedisError as exc:
-            self._unavailable("lock", exc)
-            return None
+        acquired = self._circuit.call(
+            "lock",
+            lambda: self._redis.set(f"{_LOCK_PREFIX}{nt}", token, nx=True, ex=self._lock_ttl),
+        )
+        if isinstance(acquired, RedisUnavailable):
+            return UNAVAILABLE
         return token if acquired else None
 
     def release_refresh_lock(self, nt: str, token: str) -> None:
         """Release the lock only if we still own it (atomic compare-and-delete
         via WATCH/MULTI) — never delete a lock a later holder re-acquired."""
         key = f"{_LOCK_PREFIX}{nt}"
-        try:
+
+        def _release() -> None:
             with self._redis.pipeline() as pipe:
                 pipe.watch(key)
                 if pipe.get(key) == token:
@@ -133,15 +161,10 @@ class PatCache:
                     pipe.execute()
                 else:
                     pipe.unwatch()
-        except redis_lib.WatchError:
-            # Someone changed the key between WATCH and MULTI — not ours to delete.
-            pass
-        except redis_lib.RedisError as exc:
-            self._unavailable("unlock", exc)
 
-    @staticmethod
-    def _unavailable(op: str, exc: redis_lib.RedisError) -> None:
-        logger.warning("pat.redis_unavailable", op=op, error_type=type(exc).__name__)
+        # Someone changed the key between WATCH and MULTI — not ours to delete.
+        with contextlib.suppress(redis_lib.WatchError):
+            self._circuit.call("unlock", _release)
 
     @staticmethod
     def tombstone_ttl_for(timeout: float, max_retries: int, backoff_base: float) -> int:
@@ -164,34 +187,15 @@ class PatCache:
 
     @classmethod
     def from_env(cls, *, tombstone_ttl_seconds: int) -> PatCache:
-        ttl = int(os.environ.get("REDIS_PAT_TTL_SECONDS", "41400"))
-        lock_ttl = int(os.environ.get("REDIS_PAT_LOCK_TTL_SECONDS", "45"))
-        tombstone_ttl = tombstone_ttl_seconds
-        mode = os.environ.get("REDIS_MODE", "standalone")
-        if mode == "sentinel":
-            from redis.sentinel import Sentinel
-
-            hosts_raw = os.environ.get("REDIS_SENTINEL_HOSTS", "")
-            master = os.environ.get("REDIS_PAT_SENTINEL_MASTER", "pat-master")
-            master_pw = os.environ.get("REDIS_SENTINEL_MASTER_PASSWORD") or None
-            sentinel_pw = os.environ.get("REDIS_SENTINEL_PASSWORD") or None
-            sentinel = Sentinel(
-                parse_sentinel_hosts(hosts_raw),
-                password=master_pw,
-                sentinel_kwargs={"password": sentinel_pw} if sentinel_pw else None,
-            )
-            client = sentinel.master_for(master, decode_responses=True)
-            return cls(
-                client,
-                ttl_seconds=ttl,
-                lock_ttl_seconds=lock_ttl,
-                tombstone_ttl_seconds=tombstone_ttl,
-            )
-
-        url = os.environ.get("REDIS_PAT_URL", "redis://localhost:6379/3")
         return cls(
-            redis_lib.from_url(url, decode_responses=True),
-            ttl_seconds=ttl,
-            lock_ttl_seconds=lock_ttl,
-            tombstone_ttl_seconds=tombstone_ttl,
+            build_redis_client(
+                master_env="REDIS_PAT_SENTINEL_MASTER",
+                master_default="pat-master",
+                url_env="REDIS_PAT_URL",
+                url_default="redis://localhost:6379/3",
+                decode_responses=True,
+            ),
+            ttl_seconds=int(os.environ.get("REDIS_PAT_TTL_SECONDS", "41400")),
+            lock_ttl_seconds=int(os.environ.get("REDIS_PAT_LOCK_TTL_SECONDS", "45")),
+            tombstone_ttl_seconds=tombstone_ttl_seconds,
         )
