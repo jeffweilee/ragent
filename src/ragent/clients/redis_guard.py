@@ -192,7 +192,7 @@ def unwrap(value: T | RedisUnavailable, default: Any) -> Any:
     return default if isinstance(value, RedisUnavailable) else value
 
 
-def connection_timeouts() -> dict[str, float]:
+def connection_timeouts(*, blocking: bool = False) -> dict[str, float]:
     """The bounded socket budget every ragent Redis client shares.
 
     ``socket_connect_timeout`` is the one that matters for a blackholed
@@ -201,11 +201,23 @@ def connection_timeouts() -> dict[str, float]:
     — some ops legitimately do work (``XRANGE`` over a full stream buffer,
     pipelined batches in ``status_many``) and a false trip there would disable a
     cache that is fine.
+
+    ``blocking=True`` omits ``socket_timeout`` entirely, and callers that park in
+    a blocking command MUST use it. `ListQueueBroker.listen()` calls
+    ``brpop(queue_name)`` with no timeout argument — it waits indefinitely for a
+    task — so a read timeout tears that socket down mid-wait and raises
+    ``redis.TimeoutError``. That is not a ``ConnectionError`` subclass, so
+    listen()'s ``except ConnectionError`` does not catch it: the generator dies
+    and the worker stops consuming, silently, leaving documents at UPLOADED.
+    The connect timeout is still applied — it only bounds establishing the
+    connection, never a blocking read, so the blackhole case stays covered.
     """
-    return {
+    timeouts = {
         "socket_connect_timeout": float(os.environ.get("REDIS_CONNECT_TIMEOUT_SECONDS", "0.25")),
-        "socket_timeout": float(os.environ.get("REDIS_SOCKET_TIMEOUT_SECONDS", "1")),
     }
+    if not blocking:
+        timeouts["socket_timeout"] = float(os.environ.get("REDIS_SOCKET_TIMEOUT_SECONDS", "1"))
+    return timeouts
 
 
 def circuit_from_env(name: str) -> RedisCircuit:

@@ -104,3 +104,61 @@ def test_sentinel_discovery_connections_have_bounded_timeouts(monkeypatch, build
     sentinel_manager = build().connection_pool.sentinel_manager
     for sentinel in sentinel_manager.sentinels:
         _assert_bounded(_pool_kwargs(sentinel), connect=0.25, op=1.0)
+
+
+# --- the broker consumer parks in BRPOP (T-RG.8) ------------------------
+
+
+def _broker_kwargs(monkeypatch) -> dict:
+    import ragent.bootstrap.broker as mod
+
+    return mod._make_broker().connection_pool.connection_kwargs
+
+
+def test_broker_has_a_connect_timeout(monkeypatch) -> None:
+    """The blackhole case still has to be bounded on the broker."""
+    monkeypatch.delenv("REDIS_MODE", raising=False)
+    assert _broker_kwargs(monkeypatch).get("socket_connect_timeout") == 0.25
+
+
+def test_broker_must_not_set_a_socket_read_timeout(monkeypatch) -> None:
+    """A read timeout breaks the worker outright — it must stay unset.
+
+    `ListQueueBroker.listen()` calls `brpop(queue_name)` with **no timeout
+    argument**, i.e. it parks indefinitely waiting for a task. A
+    `socket_timeout` tears that socket down mid-wait and raises
+    `redis.TimeoutError`, which is NOT a `ConnectionError` subclass — so
+    listen()'s `except ConnectionError` does not catch it, the generator dies,
+    and the worker silently stops consuming. Documents then sit at UPLOADED
+    forever, which is exactly what the E2E suite caught (0/20 reaching READY).
+
+    The connect timeout is safe and is kept: it only bounds establishing the
+    connection, never a blocking read.
+    """
+    monkeypatch.delenv("REDIS_MODE", raising=False)
+    assert _broker_kwargs(monkeypatch).get("socket_timeout") is None
+
+
+def test_sentinel_broker_also_leaves_read_timeout_unset(monkeypatch) -> None:
+    for key, value in _SENTINEL_ENV.items():
+        monkeypatch.setenv(key, value)
+    import ragent.bootstrap.broker as mod
+
+    sentinel = mod._make_broker().sentinel
+    # Master connections (where BRPOP parks) get connect-only.
+    assert sentinel.connection_kwargs.get("socket_timeout") is None
+    assert sentinel.connection_kwargs.get("socket_connect_timeout") == 0.25
+    # Discovery issues plain commands, so it keeps the full budget.
+    for discovery in sentinel.sentinels:
+        assert _pool_kwargs(discovery).get("socket_timeout") == 1.0
+        assert _pool_kwargs(discovery).get("socket_connect_timeout") == 0.25
+
+
+def test_sync_clients_keep_their_read_timeout(monkeypatch) -> None:
+    """Only the blocking consumer is exempt — the request-path clients are not.
+
+    These issue ordinary commands from the event loop, so bounding the read is
+    the entire point (T-RG.2).
+    """
+    monkeypatch.delenv("REDIS_MODE", raising=False)
+    assert _pool_kwargs(RateLimiter.from_env()._redis).get("socket_timeout") == 1.0
