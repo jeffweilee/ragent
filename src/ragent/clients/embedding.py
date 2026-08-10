@@ -1,8 +1,14 @@
-"""T4.4 — EmbeddingClient: bge-m3, batch=32, retry 3×@1s, asymmetric timeouts (P-B, C8)."""
+"""T4.4 — EmbeddingClient: bge-m3, batch=32, asymmetric timeouts (P-B, C8).
+
+**No application-level retry** (T-RETRY.1). The old 3×@1s loop was per *batch*,
+so a document splitting into N batches carried an N × 92 s worst case — and it
+retried poison vectors and bad `returnCode`s, neither of which a second identical
+request can fix. Connection establishment is retried by the shared httpx
+transport (`bootstrap/composition.py`); everything else surfaces at once.
+"""
 
 import math
 import os
-import time as _time
 from collections.abc import Callable
 from typing import Any
 
@@ -24,7 +30,9 @@ def _validate_vectors(vectors: list[list[float]]) -> None:
 
     ES dense_vector cosine indices silently reject zero-magnitude writes
     with a `magnitude_zero` error that is hard to trace back; NaN/Inf
-    poisons downstream similarity scoring. Raise to trigger a retry.
+    poisons downstream similarity scoring. Raising is terminal for this call —
+    the same texts would produce the same poison vector, so there is nothing a
+    second request could fix (T-RETRY.1).
     """
     for i, v in enumerate(vectors):
         if not isinstance(v, list) or not v:
@@ -47,7 +55,6 @@ class EmbeddingClient:
         batch_size: int | None = None,
         ingest_timeout: float | None = None,
         query_timeout: float | None = None,
-        sleep: Callable[[float], None] = _time.sleep,
         auth_header_name: str | None = None,
         model: str | None = None,
     ) -> None:
@@ -57,7 +64,6 @@ class EmbeddingClient:
         self._batch_size = batch_size or int(os.environ.get("EMBEDDER_BATCH_SIZE", "32"))
         self._ingest_timeout = float_env_or(ingest_timeout, "EMBEDDER_INGEST_TIMEOUT_SECONDS", 30.0)
         self._query_timeout = float_env_or(query_timeout, "EMBEDDER_QUERY_TIMEOUT_SECONDS", 10.0)
-        self._sleep = sleep
         self._auth_header_name = auth_header_name or os.environ.get(
             "EMBEDDING_AUTH_HEADER_NAME", "Authorization"
         )
@@ -78,54 +84,47 @@ class EmbeddingClient:
         with _tracer.start_as_current_span("embedding.embed") as span:
             span.set_attribute("peer.service", "embedding")
             span.set_attribute("batch_size", len(texts))
-            last_exc: Exception | None = None
-            for attempt in range(3):
-                if attempt:
-                    self._sleep(1.0)
-                try:
-                    span.set_attribute("retry_attempt", attempt)
-                    resp = self._http.post(
-                        self._url,
-                        json={"model": self._model, "texts": texts, "encoding-format": "float"},
-                        headers={self._auth_header_name: self._get_token()},
-                        timeout=timeout,
+            try:
+                resp = self._http.post(
+                    self._url,
+                    json={"model": self._model, "texts": texts, "encoding-format": "float"},
+                    headers={self._auth_header_name: self._get_token()},
+                    timeout=timeout,
+                )
+                span.set_attribute("http.status_code", getattr(resp, "status_code", 0))
+                resp.raise_for_status()
+                data = resp.json()
+                if data.get("returnCode") != _SUCCESS_CODE:
+                    raise ValueError(
+                        f"Unexpected returnCode: {data.get('returnCode')}. "
+                        f"Message: {data.get('returnMessage')}"
                     )
-                    span.set_attribute("http.status_code", getattr(resp, "status_code", 0))
-                    resp.raise_for_status()
-                    data = resp.json()
-                    if data.get("returnCode") != _SUCCESS_CODE:
-                        raise ValueError(
-                            f"Unexpected returnCode: {data.get('returnCode')}. "
-                            f"Message: {data.get('returnMessage')}"
-                        )
-                    out = [item["embedding"] for item in data["returnData"]]
-                    _validate_vectors(out)
-                    if out and isinstance(out[0], list):
-                        span.set_attribute("dim", len(out[0]))
-                    logger.info(
-                        "embedding.call",
-                        peer_service="embedding",
-                        batch_size=len(texts),
-                        retry_attempt=attempt,
-                    )
-                    return out
-                except Exception as exc:
-                    last_exc = exc
-            span.record_exception(last_exc)  # type: ignore[arg-type]
-            error_code, exc_cls = classify_upstream_error(
-                last_exc,
-                error_code=HttpErrorCode.EMBEDDER_ERROR,
-                timeout_code=HttpErrorCode.EMBEDDER_TIMEOUT,
-            )
-            logger.error(
-                "embedding.error",
+                out = [item["embedding"] for item in data["returnData"]]
+                _validate_vectors(out)
+            except Exception as exc:
+                span.record_exception(exc)
+                error_code, exc_cls = classify_upstream_error(
+                    exc,
+                    error_code=HttpErrorCode.EMBEDDER_ERROR,
+                    timeout_code=HttpErrorCode.EMBEDDER_TIMEOUT,
+                )
+                logger.error(
+                    "embedding.error",
+                    peer_service="embedding",
+                    batch_size=len(texts),
+                    error_type=type(exc).__name__,
+                    error_code=error_code,
+                )
+                raise exc_cls(
+                    f"embedding failed: {exc}",
+                    service="embedding",
+                    error_code=error_code,
+                ) from exc
+            if out and isinstance(out[0], list):
+                span.set_attribute("dim", len(out[0]))
+            logger.info(
+                "embedding.call",
                 peer_service="embedding",
                 batch_size=len(texts),
-                error_type=type(last_exc).__name__ if last_exc else None,
-                error_code=error_code,
             )
-            raise exc_cls(
-                f"embedding failed after retries: {last_exc}",
-                service="embedding",
-                error_code=error_code,
-            ) from last_exc
+            return out

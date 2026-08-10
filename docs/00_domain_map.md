@@ -194,7 +194,7 @@ Bootstrap (Composition Root) — 唯一組裝點
 | 項目 | 說明 |
 |---|---|
 | **路徑** | `src/ragent/clients/` |
-| **責任** | 封裝對 Embedding / LLM / Rerank / Redis rate-limiter 的 HTTP 呼叫；retry、timeout、error mapping。 |
+| **責任** | 封裝對 Embedding / LLM / Rerank / Redis rate-limiter 的 HTTP 呼叫；timeout、error mapping。**不做 application-level retry**（T-RETRY / 決策 B65）——timeout 已經花完預算、4xx 是答案，都不重問；唯一的重試在連線層，由 `bootstrap/composition.py` 的共用 `httpx.HTTPTransport(retries=2)` 負責。 |
 | **允許依賴** | `errors/`、`utility/`；shared `httpx.Client`（由 bootstrap 注入）。 |
 | **禁止事項** | ❌ 不得硬編碼 URL（由 bootstrap 讀取 env 注入）。❌ 不得持有多個 `httpx.Client` 實例（共用 bootstrap 的 `http`）。❌ 禁止使用 `with self._http.post(...) as resp:`（應統一使用 `resp = self._http.post(...); resp.raise_for_status()` 模式）。❌ 不得讀取 `os.environ`。 |
 

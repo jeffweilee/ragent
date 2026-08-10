@@ -118,8 +118,10 @@ def test_stream_timeout_passed():
     assert timeout == 77
 
 
-def test_stream_retries_3_times_on_error():
-    sleep_calls: list[float] = []
+def test_stream_does_not_retry_a_transient_error():
+    """T-RETRY.1 — the stream no longer re-issues the prompt after a failure.
+    At a 120 s timeout the old 3× loop could hold a caller for ~364 s, and a
+    re-issued prompt is a second billed generation for the same request."""
     http = MagicMock()
 
     call_count = [0]
@@ -144,22 +146,19 @@ def test_stream_retries_3_times_on_error():
         api_url="https://llm.example.com",
         http=http,
         get_token=lambda: "tok",
-        sleep=lambda s: sleep_calls.append(s),
     )
-    result = list(client.stream(messages=[{"role": "user", "content": "q"}], model="m"))
-    assert result == ["ok"]
-    assert http.post.call_count == 3
-    assert sleep_calls == [2.0, 2.0]
+    with pytest.raises(UpstreamServiceError):
+        list(client.stream(messages=[{"role": "user", "content": "q"}], model="m"))
+    assert http.post.call_count == 1
 
 
-def test_stream_raises_upstream_service_error_after_3_failures():
+def test_stream_raises_upstream_service_error_on_first_failure():
     http = MagicMock()
     http.post.side_effect = Exception("boom")
     client = LLMClient(
         api_url="https://llm.example.com",
         http=http,
         get_token=lambda: "tok",
-        sleep=lambda s: None,
     )
     with pytest.raises(UpstreamServiceError) as exc_info:
         list(client.stream(messages=[{"role": "user", "content": "q"}], model="m"))
@@ -170,7 +169,7 @@ def test_stream_raises_upstream_service_error_after_3_failures():
     # it's still available server-side via __cause__ for logging/debugging.
     assert "boom" not in str(exc_info.value)
     assert "boom" in str(exc_info.value.__cause__)
-    assert http.post.call_count == 3
+    assert http.post.call_count == 1
 
 
 def test_stream_wraps_timeout_as_upstream_timeout_error():
@@ -180,12 +179,12 @@ def test_stream_wraps_timeout_as_upstream_timeout_error():
         api_url="https://llm.example.com",
         http=http,
         get_token=lambda: "tok",
-        sleep=lambda s: None,
     )
     with pytest.raises(UpstreamTimeoutError) as exc_info:
         list(client.stream(messages=[{"role": "user", "content": "q"}], model="m"))
     assert exc_info.value.error_code == "LLM_TIMEOUT"
     assert exc_info.value.http_status == 504
+    assert http.post.call_count == 1
 
 
 def test_stream_usage_out_populated_when_api_returns_usage():

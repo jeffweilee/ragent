@@ -10,10 +10,45 @@ unit-test mock MUST be verified field-by-field against the samples below — moc
 field drift hides contract drift inside the test layer (see `00_journal.md`
 2026-05-11 QA row).
 
+## Retry policy
+
+**ragent performs no application-level retry against any third-party API**
+(T-RETRY, 2026-08-10). A failed call raises its typed `UpstreamServiceError` /
+`UpstreamTimeoutError` on the first attempt.
+
+- **Timeouts are not retried.** The call already spent its full budget; a second
+  attempt only doubles the wait a caller is holding for, and on an overloaded
+  upstream it is the worst possible response.
+- **4xx is not retried.** The upstream answered. Repeating the question cannot
+  change the answer, and it triples the load on a service that is already
+  refusing. This includes `429`: re-asking a service that just said "slow down"
+  is the one thing it asked us not to do.
+- **5xx / malformed responses are not retried** either — the caller decides what
+  to do with the failure, and each layer's own budget used to multiply with
+  every other layer's (a chat request could spend ~490 s before erroring).
+
+**The single exception is connection establishment**, handled by the shared
+`httpx.HTTPTransport(retries=2)` in `bootstrap/composition.py`. That path is
+categorically different: the server never received the request, so retrying adds
+no load and cannot duplicate a side effect. It covers the common pod-rollover /
+RST blip and nothing else — by construction it can never re-issue a request that
+reached the server.
+
+Two consequences worth knowing:
+
+- **Elasticsearch**: `max_retries=0` is set explicitly, because
+  `elastic_transport` otherwise applies `max_retries=3` with
+  `retry_on_status=(429, 502, 503, 504)` — a retry layer invisible at the call site.
+- **Ingest**: a pipeline failure terminalises the document to `FAILED`, and the
+  reconciler only redispatches stale `UPLOADED`/`PENDING`. A transient upstream
+  blip during ingest therefore needs `POST /ops/v1/retry` rather than healing
+  inline. Retrying belongs at that outer, idempotent, no-user-waiting layer —
+  not inside a client on the request path.
+
 #### Embedding API
 
 **Endpoint:** `EMBEDDING_API_URL` (default: `http://{embed_base_url}/text_embedding`)
-**Timeout:** 60s | **Retry:** 3x @ 1.0s backoff
+**Timeout:** `EMBEDDER_INGEST_TIMEOUT_SECONDS` (30s) / `EMBEDDER_QUERY_TIMEOUT_SECONDS` (10s) | **Retry:** none (see §Retry policy)
 
 **Request:**
 ```json
@@ -42,7 +77,7 @@ field drift hides contract drift inside the test layer (see `00_journal.md`
 #### LLM API
 
 **Endpoint:** `LLM_API_URL` (default: `http://{llm_base_url}/gpt_oss_120b/v1/chat/completions`)
-**Timeout:** 120s | **Retry:** 3x @ 2.0s backoff
+**Timeout:** `LLM_TIMEOUT_SECONDS` (120s) | **Retry:** none (see §Retry policy)
 
 **Request:**
 ```json
@@ -82,7 +117,7 @@ field drift hides contract drift inside the test layer (see `00_journal.md`
 #### Rerank API
 
 **Endpoint:** `RERANK_API_URL` (default: `http://{rerank_url}`)
-**Timeout:** 120s | **Retry:** 3x @ 2.0s backoff
+**Timeout:** `RERANK_TIMEOUT_SECONDS` (30s) | **Retry:** none (see §Retry policy)
 
 **Request:**
 ```json
@@ -117,7 +152,7 @@ field drift hides contract drift inside the test layer (see `00_journal.md`
 #### LLM & Embedding & Re-rank Auth API (Token Exchange)
 
 **Endpoint:** `AI_API_AUTH_URL` (default: `http://{auth-service-url}/auth/api/accesstoken`)
-**Timeout:** `AI_API_AUTH_TIMEOUT` (default: 10s) | **Retry:** 3x @ 1.0s backoff
+**Timeout:** `AI_API_AUTH_TIMEOUT` (default: 10s) | **Retry:** none (see §Retry policy)
 
 Exchanges J1 tokens for J2 tokens. Supports two modes:
 - **Local**: Uses configured J1 token from `AI_LLM_API_J1_TOKEN` or `AI_EMBEDDING_API_J1_TOKEN` or `AI_RERANK_API_J1_TOKEN`

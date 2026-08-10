@@ -143,9 +143,12 @@ cache hits never consult the DB (§4), that credential would ride every brain ca
 for the full 11.5 h TTL. The guard therefore lives in `PatCache.put`, the single
 choke point both repopulation paths (`resolve`'s re-fill, `_do_refresh`'s
 rotation) go through, and runs under `WATCH`/`MULTI` so check-and-write is
-atomic. Its TTL is **derived** from `PAT_REFRESH_TIMEOUT_SECONDS ×
-(PAT_REFRESH_MAX_RETRIES + 1)` plus the summed backoff (~123 s at the defaults),
-so retuning the refresh budget cannot shrink it below the window it covers.
+atomic. Its TTL is **derived** from `PAT_REFRESH_TIMEOUT_SECONDS` plus the
+lock-poll budget (`LOCK_POLL_ATTEMPTS × LOCK_POLL_INTERVAL_SECONDS`, 5 s) —
+35 s at the defaults — so retuning the refresh budget cannot shrink it below the
+window it covers. The poll budget is part of the bound because the longest path
+from "refresh started" to `cache.put` belongs to a request that waited out the
+full poll and then refreshed itself anyway.
 
 The request that already rotated still returns its token — the credential is in
 its memory either way, so failing it closes nothing. The next `resolve` is locked
@@ -195,7 +198,7 @@ body `{"patToken": current}` → response `{"patToken": new}`.
 |---|---|---|
 | **401** | not authorized / cancelled / expired / stale PAT unusable | mark DB `invalid` + evict redis → raise `PatReauthRequired` (`401 PAT_REAUTH_REQUIRED`). **No retry.** |
 | **400** | body / PAT empty → our bug | raise `PatInternalError` (500) + log. PAT state untouched. |
-| **429** | rate limited (transient) | exp-backoff retry ≤ `PAT_REFRESH_MAX_RETRIES` (`PAT_REFRESH_BACKOFF_SECONDS × 2^attempt`); still failing → reject *this* request (`PatRefreshExhausted`). **PAT stays `active` — never invalidated on rate-limit.** |
+| **429** / 5xx / transport | rate limited or transiently unavailable | reject *this* request (`PatRefreshExhausted` → 503). **No retry** (T-RETRY.3) — this runs on the `/brainagent/v1` request path, whose caller is fail-open, so a retry budget only delayed the same outcome while re-asking a service that had just said "slow down". **PAT stays `active` — never invalidated on rate-limit.** |
 
 ## 6. DB state transitions
 

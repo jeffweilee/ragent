@@ -164,7 +164,6 @@ def build_service(
     init_client: FakeInitClient | None = None,
     cache: PatCache | None = None,
     cipher: PATCipher | None = None,
-    max_retries: int = 3,
 ) -> tuple[PatService, FakeRepo, PatCache, PATCipher]:
     repo = repo if repo is not None else FakeRepo()
     cipher = cipher if cipher is not None else PATCipher(_StubKeyManager())
@@ -192,8 +191,8 @@ def build_service(
         cache=cache,
         refresh_client=refresh_client if refresh_client is not None else FakeRefreshClient([]),
         init_client=init_client if init_client is not None else FakeInitClient(sign()),
-        max_retries=max_retries,
-        backoff_base_seconds=0.0,
+        # `sleeper` still exists — it paces the refresh **lock poll**, which waits
+        # for another request's rotation rather than retrying a failed upstream.
         sleeper=_no_sleep,
     )
     return service, repo, cache, cipher

@@ -82,8 +82,8 @@ def test_chat_honours_explicit_zero_timeout(monkeypatch):
     assert http.post.call_args[1]["timeout"] == 0
 
 
-def test_chat_retries_3_times_on_error():
-    sleep_calls: list[float] = []
+def test_chat_does_not_retry_a_transient_error():
+    """T-RETRY.1 — one prompt in, one upstream call out."""
     call_count = [0]
 
     def side_effect(*args, **kwargs):
@@ -104,22 +104,19 @@ def test_chat_retries_3_times_on_error():
         api_url="https://llm.example.com",
         http=http,
         get_token=lambda: "tok",
-        sleep=lambda s: sleep_calls.append(s),
     )
-    result = client.chat(messages=[{"role": "user", "content": "q"}], model="m")
-    assert result["content"] == "ok"
-    assert http.post.call_count == 3
-    assert sleep_calls == [2.0, 2.0]
+    with pytest.raises(UpstreamServiceError):
+        client.chat(messages=[{"role": "user", "content": "q"}], model="m")
+    assert http.post.call_count == 1
 
 
-def test_chat_raises_upstream_service_error_after_3_failures():
+def test_chat_raises_upstream_service_error_on_first_failure():
     http = MagicMock()
     http.post.side_effect = Exception("boom")
     client = LLMClient(
         api_url="https://llm.example.com",
         http=http,
         get_token=lambda: "tok",
-        sleep=lambda s: None,
     )
     with pytest.raises(UpstreamServiceError) as exc_info:
         client.chat(messages=[{"role": "user", "content": "q"}], model="m")
@@ -129,14 +126,17 @@ def test_chat_raises_upstream_service_error_after_3_failures():
     # it's still available server-side via __cause__ for logging/debugging.
     assert "boom" not in str(exc_info.value)
     assert "boom" in str(exc_info.value.__cause__)
-    assert http.post.call_count == 3
+    assert http.post.call_count == 1
 
 
 def test_chat_raises_when_content_is_none() -> None:
     """Null/empty LLM content must raise — silent None reaching answer is hallucination-prone.
 
-    After retry exhaustion the underlying ``ValueError`` is wrapped in
-    ``UpstreamServiceError(LLM_ERROR)`` per `00_rule.md` §API Error Honesty.
+    The underlying ``ValueError`` is wrapped in ``UpstreamServiceError(LLM_ERROR)``
+    per `00_rule.md` §API Error Honesty. **Not retried** (operator decision
+    2026-08-10, T-RETRY.1): re-prompting on an empty completion doubles the
+    generation cost and latency for a request the caller may already have
+    abandoned, and the caller can always ask again.
     """
     http = MagicMock()
     resp = MagicMock()
@@ -150,12 +150,12 @@ def test_chat_raises_when_content_is_none() -> None:
         api_url="https://llm.example.com",
         http=http,
         get_token=lambda: "tok",
-        sleep=lambda s: None,
     )
     with pytest.raises(UpstreamServiceError) as exc_info:
         client.chat(messages=[{"role": "user", "content": "q"}], model="m")
     assert isinstance(exc_info.value.__cause__, ValueError)
     assert "empty" in str(exc_info.value.__cause__)
+    assert http.post.call_count == 1
 
 
 def test_chat_raises_when_content_is_empty_string() -> None:
@@ -171,9 +171,9 @@ def test_chat_raises_when_content_is_empty_string() -> None:
         api_url="https://llm.example.com",
         http=http,
         get_token=lambda: "tok",
-        sleep=lambda s: None,
     )
     with pytest.raises(UpstreamServiceError) as exc_info:
         client.chat(messages=[{"role": "user", "content": "q"}], model="m")
     assert isinstance(exc_info.value.__cause__, ValueError)
     assert "empty" in str(exc_info.value.__cause__)
+    assert http.post.call_count == 1

@@ -167,23 +167,23 @@ class PatCache:
             self._circuit.call("unlock", _release)
 
     @staticmethod
-    def tombstone_ttl_for(timeout: float, max_retries: int, backoff_base: float) -> int:
+    def tombstone_ttl_for(timeout: float, lock_poll_budget: float) -> int:
         """Worst-case in-flight refresh, DERIVED from the refresh budget.
 
         A revoke must keep refusing cache writes until every refresh that started
-        before it has finished. That bound is the refresh timeout across the
-        initial call plus each retry, plus the summed exponential backoff between
-        them (~123 s at the 30/3/0.5 defaults).
+        before it has finished. Since T-RETRY.3 a refresh is a single call, so
+        that bound is one timeout — **plus the lock-poll budget**, because the
+        longest path from "refresh started" to "cache.put" belongs to a request
+        that waited out the full poll for another holder's rotation and then
+        refreshed itself anyway.
 
         Takes the values rather than reading the env itself: the composition root
-        already resolves this exact trio for `PatRefreshClient` and `PatService`,
-        and a second reader would carry its own copy of the defaults — so
-        retuning the refresh budget in one place would silently leave the
-        tombstone sized for the old one, which is the drift deriving it was meant
-        to rule out.
+        already resolves them for `PatRefreshClient` and `PatService`, and a
+        second reader would carry its own copy of the defaults — so retuning the
+        refresh budget in one place would silently leave the tombstone sized for
+        the old one, which is the drift deriving it was meant to rule out.
         """
-        backoff_total = backoff_base * (2**max_retries - 1)  # base * (2^0 + … + 2^(n-1))
-        return math.ceil(timeout * (max_retries + 1) + backoff_total)
+        return math.ceil(timeout + lock_poll_budget)
 
     @classmethod
     def from_env(cls, *, tombstone_ttl_seconds: int) -> PatCache:

@@ -69,9 +69,26 @@ class PatInternalError(Exception):
     http_status = 500
 
 
+# The refresh lock poll: how long a request waits for ANOTHER request's rotation
+# before giving up and refreshing itself. Module-level so the composition root
+# can size the revocation tombstone from the same numbers (`PatCache.
+# tombstone_ttl_for`) instead of carrying its own copy.
+#
+# This is NOT a retry. It waits on work already in flight rather than re-asking
+# a service that just failed, so T-RETRY.3 left it alone.
+LOCK_POLL_ATTEMPTS = 10
+LOCK_POLL_INTERVAL_SECONDS = 0.5
+LOCK_POLL_BUDGET_SECONDS = LOCK_POLL_ATTEMPTS * LOCK_POLL_INTERVAL_SECONDS
+
+
 class PatRefreshExhausted(Exception):
-    """Refresh kept failing transiently (429/5xx) past the retry budget; the PAT
-    stays active and the request is rejected for now."""
+    """Refresh failed transiently (429/5xx); the PAT stays active and the
+    request is rejected for now.
+
+    Not retried (T-RETRY.3): this sits on the `/brainagent/v1` request path,
+    whose caller is fail-open — it drops the PAT either way, so a retry budget
+    only delayed that outcome while re-asking a service that had just said
+    "slow down"."""
 
     http_status = 503
 
@@ -101,11 +118,9 @@ class PatService:
         cache: PatCache,
         refresh_client: PatRefreshClient,
         init_client: PatInitClient,
-        max_retries: int = 3,
-        backoff_base_seconds: float = 0.5,
         sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep,
-        lock_poll_attempts: int = 10,
-        lock_poll_interval_seconds: float = 0.5,
+        lock_poll_attempts: int = LOCK_POLL_ATTEMPTS,
+        lock_poll_interval_seconds: float = LOCK_POLL_INTERVAL_SECONDS,
     ) -> None:
         self._verifier = verifier
         self._cipher = cipher
@@ -113,8 +128,6 @@ class PatService:
         self._cache = cache
         self._refresh_client = refresh_client
         self._init_client = init_client
-        self._max_retries = max_retries
-        self._backoff_base = backoff_base_seconds
         self._sleeper = sleeper
         self._lock_poll_attempts = lock_poll_attempts
         self._lock_poll_interval = lock_poll_interval_seconds
@@ -341,58 +354,59 @@ class PatService:
                 self._cache.release_refresh_lock(nt, lock_token)
 
     async def _do_refresh(self, nt: str, current: str) -> str:
-        attempt = 0
-        while True:
-            try:
-                new_token = await run_in_threadpool(self._refresh_client.refresh, current)
-            except PatRefreshUnauthorized as exc:
-                logger.warning("pat.refresh.unauthorized", user_id=nt)
-                await self._repo.mark_invalid(user_id=nt)
-                self._cache.evict(nt)
-                raise PatReauthRequired() from exc
-            except PatRefreshBadRequest as exc:
-                logger.error("pat.refresh.bad_request", user_id=nt)
-                raise PatInternalError("refresh service rejected our request (400)") from exc
-            except PatRefreshError as exc:  # rate-limited / transient
-                if attempt >= self._max_retries:
-                    logger.warning("pat.refresh.exhausted", user_id=nt, attempts=attempt)
-                    raise PatRefreshExhausted() from exc
-                await self._sleeper(self._backoff_base * (2**attempt))
-                attempt += 1
-                continue
+        """One refresh attempt — no retry budget (T-RETRY.3).
 
-            # Verify the rotation before it is persisted — the refresh client only
-            # checks the envelope carries a non-empty `patToken`, so without this a
-            # malformed or wrongly-signed token would be stored and cached, leaving
-            # an `active` row holding a PAT nothing downstream can use.
-            try:
-                self._verify_rotation(new_token, nt)
-            except PatReauthRequired:
-                # The raised exception says "re-authorize", so the PERSISTED state
-                # has to agree with it. Leaving the row `active` here would make
-                # `status` report a healthy authorization while every `resolve`
-                # deterministically fails: the stored PAT is already expired (that
-                # is why we are refreshing), and each retry asks the same broken
-                # upstream for a rotation it will reject again. Re-authorizing is
-                # a real remedy — it mints through `init`, not the refresh
-                # service — so `invalid` is the honest state.
-                await self._repo.mark_invalid(user_id=nt)
-                self._cache.evict(nt)
-                raise
-            cipher_text = self._cipher.encrypt(new_token)
-            # UPDATE-only: a revoke that landed while this refresh was in flight
-            # deleted the row, and re-creating it would silently undo the user's
-            # revocation. rowcount 0 means the authorization is gone.
-            if await self._repo.rotate(user_id=nt, pat_cipher=cipher_text) == 0:
-                logger.warning(
-                    "pat.refresh.revoked",
-                    user_id=nt,
-                    error_code=HttpErrorCode.PAT_REAUTH_REQUIRED,
-                )
-                raise PatReauthRequired()
-            self._cache.put(nt, cipher_text)
-            logger.info("pat.refresh.rotated", user_id=nt)
-            return new_token
+        401 and 400 were never retryable; 429 and transient failures no longer
+        are either. The caller on the request path is fail-open, so a budget
+        bought nothing except a longer stall and more load on a service that
+        was already failing.
+        """
+        try:
+            new_token = await run_in_threadpool(self._refresh_client.refresh, current)
+        except PatRefreshUnauthorized as exc:
+            logger.warning("pat.refresh.unauthorized", user_id=nt)
+            await self._repo.mark_invalid(user_id=nt)
+            self._cache.evict(nt)
+            raise PatReauthRequired() from exc
+        except PatRefreshBadRequest as exc:
+            logger.error("pat.refresh.bad_request", user_id=nt)
+            raise PatInternalError("refresh service rejected our request (400)") from exc
+        except PatRefreshError as exc:  # rate-limited / transient
+            logger.warning("pat.refresh.unavailable", user_id=nt, error_type=type(exc).__name__)
+            raise PatRefreshExhausted() from exc
+
+        # Verify the rotation before it is persisted — the refresh client only
+        # checks the envelope carries a non-empty `patToken`, so without this a
+        # malformed or wrongly-signed token would be stored and cached, leaving
+        # an `active` row holding a PAT nothing downstream can use.
+        try:
+            self._verify_rotation(new_token, nt)
+        except PatReauthRequired:
+            # The raised exception says "re-authorize", so the PERSISTED state
+            # has to agree with it. Leaving the row `active` here would make
+            # `status` report a healthy authorization while every `resolve`
+            # deterministically fails: the stored PAT is already expired (that
+            # is why we are refreshing), and asking the same broken upstream
+            # again would only get the same rejection. Re-authorizing is a real
+            # remedy — it mints through `init`, not the refresh service — so
+            # `invalid` is the honest state.
+            await self._repo.mark_invalid(user_id=nt)
+            self._cache.evict(nt)
+            raise
+        cipher_text = self._cipher.encrypt(new_token)
+        # UPDATE-only: a revoke that landed while this refresh was in flight
+        # deleted the row, and re-creating it would silently undo the user's
+        # revocation. rowcount 0 means the authorization is gone.
+        if await self._repo.rotate(user_id=nt, pat_cipher=cipher_text) == 0:
+            logger.warning(
+                "pat.refresh.revoked",
+                user_id=nt,
+                error_code=HttpErrorCode.PAT_REAUTH_REQUIRED,
+            )
+            raise PatReauthRequired()
+        self._cache.put(nt, cipher_text)
+        logger.info("pat.refresh.rotated", user_id=nt)
+        return new_token
 
     # --- helpers ----------------------------------------------------------
     def _verify_rotation(self, token: str, nt: str) -> None:

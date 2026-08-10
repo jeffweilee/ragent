@@ -24,6 +24,53 @@ from ragent.utility.env import require as _require
 
 _K8S_SA_TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 
+# The ONLY retry ragent performs against an upstream (T-RETRY.2). httpx's
+# transport-level `retries` covers connection *establishment* and nothing else:
+# the server never received the request, so re-dialling adds no load and cannot
+# duplicate a side effect. Everything past that point — timeouts, 4xx, 5xx —
+# surfaces on the first attempt, because a timeout has already spent its budget
+# and a status code is an answer, not a question worth repeating.
+_CONNECT_RETRIES = 2
+
+
+def _http_client(*, timeout: float, verify: bool) -> Any:
+    """A shared outbound client with connection-only retries.
+
+    `verify` is passed to the **transport**, not the Client: supplying a custom
+    transport makes `httpx.Client(verify=...)` dead config, since the transport
+    owns the TLS context. Leaving it on the Client would silently turn
+    `RAGENT_TLS_VERIFY` into a no-op.
+
+    Imported locally to match `build_container()`'s deferred-import style —
+    composition is on the boot path and keeps heavyweight imports out of module
+    scope.
+    """
+    import httpx
+
+    return httpx.Client(
+        timeout=timeout,
+        transport=httpx.HTTPTransport(retries=_CONNECT_RETRIES, verify=verify),
+    )
+
+
+def _es_client(*, hosts: list[str], basic_auth: Any, verify_certs: bool) -> Any:
+    """The Elasticsearch client, with its retry policy stated rather than inherited.
+
+    `max_retries=0` is not a no-op: left unset, `elastic_transport` applies
+    `max_retries=3, retry_on_status=(429, 502, 503, 504)`, so every ES call
+    carried a retry layer that is invisible at the call site and multiplies with
+    anything wrapping it (T-RETRY.4).
+    """
+    from elasticsearch import Elasticsearch
+
+    return Elasticsearch(
+        hosts=hosts,
+        basic_auth=basic_auth,
+        verify_certs=verify_certs,
+        # verified against elasticsearch 8.19.3 / elastic_transport 8.17.1
+        max_retries=0,
+    )
+
 
 @dataclass
 class Container:
@@ -207,8 +254,6 @@ def _make_heartbeat_tick(sync_engine: Any) -> Any:
 
 
 def build_container() -> Container:
-    import httpx
-    from elasticsearch import Elasticsearch
     from haystack_integrations.document_stores.elasticsearch import ElasticsearchDocumentStore
     from sqlalchemy.ext.asyncio import create_async_engine
 
@@ -243,8 +288,8 @@ def build_container() -> Container:
     # validation (dev/self-signed only) — for prod with a private CA, keep it true
     # and mount the CA via SSL_CERT_FILE instead.
     tls_verify = _bool_env("RAGENT_TLS_VERIFY", True)
-    http = httpx.Client(timeout=60.0, verify=tls_verify)
-    auth_http = httpx.Client(timeout=10.0, verify=tls_verify)  # token exchange (10 s per spec)
+    http = _http_client(timeout=60.0, verify=tls_verify)
+    auth_http = _http_client(timeout=10.0, verify=tls_verify)  # token exchange (10 s per spec)
     install_error_logging(http, client_name="upstream")
     install_error_logging(auth_http, client_name="auth", redact_auth_body=True)
 
@@ -316,7 +361,7 @@ def build_container() -> Container:
         if _es_password is not None
         else None
     )
-    es_client = Elasticsearch(
+    es_client = _es_client(
         hosts=es_hosts,
         basic_auth=es_basic_auth,
         verify_certs=es_verify_certs,
@@ -612,7 +657,7 @@ def build_container() -> Container:
         from ragent.repositories.pat_repository import PatRepository
         from ragent.security.key_manager import KeyManager
         from ragent.security.pat_cipher import PATCipher
-        from ragent.services.pat_service import PatService
+        from ragent.services.pat_service import LOCK_POLL_BUDGET_SECONDS, PatService
 
         # `POST /pat/v1/authorize` verifies the caller-supplied `X-Id-Token`
         # itself, so the slice needs a JWKS verifier in EVERY auth mode — a
@@ -638,13 +683,10 @@ def build_container() -> Container:
             kek_b64=_require("RAGENT_KEK_BASE64"),
             encrypted_dek_b64=_require("RAGENT_ENCRYPTED_DEK_BASE64"),
         )
-        # Resolved once: the refresh budget sizes the refresh client, the service's
-        # retry loop AND the revocation tombstone (which must outlast the longest
-        # in-flight refresh). Reading them in more than one place would let the
-        # three drift apart.
+        # Resolved once: the refresh timeout sizes the refresh client AND the
+        # revocation tombstone (which must outlast the longest in-flight refresh).
+        # Reading it in more than one place would let the two drift apart.
         pat_refresh_timeout = _float_env("PAT_REFRESH_TIMEOUT_SECONDS", 30.0)
-        pat_refresh_retries = _int_env("PAT_REFRESH_MAX_RETRIES", 3)
-        pat_refresh_backoff = _float_env("PAT_REFRESH_BACKOFF_SECONDS", 0.5)
         pat_service = PatService(
             verifier=PatTokenVerifier(
                 key=import_pat_public_key(pat_public_key, pat_alg),
@@ -657,7 +699,7 @@ def build_container() -> Container:
             repo=PatRepository(engine=engine),
             cache=PatCache.from_env(
                 tombstone_ttl_seconds=PatCache.tombstone_ttl_for(
-                    pat_refresh_timeout, pat_refresh_retries, pat_refresh_backoff
+                    pat_refresh_timeout, LOCK_POLL_BUDGET_SECONDS
                 )
             ),
             refresh_client=PatRefreshClient(
@@ -678,8 +720,6 @@ def build_container() -> Container:
                 expire_days=_int_env("PAT_INIT_EXPIRE_DAYS", 360),
                 timeout=_float_env("PAT_INIT_TIMEOUT_SECONDS", 30.0),
             ),
-            max_retries=pat_refresh_retries,
-            backoff_base_seconds=pat_refresh_backoff,
         )
 
     return Container(
