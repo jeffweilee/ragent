@@ -47,67 +47,6 @@ _CLOSED = "closed"
 _OPEN = "open"
 
 
-def connection_timeouts() -> dict[str, float]:
-    """The bounded socket budget every ragent Redis client shares.
-
-    ``socket_connect_timeout`` is the one that matters for a blackholed
-    endpoint; it is tight because establishing a connection to a healthy Redis
-    is a single RTT. ``socket_timeout`` covers command execution and is looser
-    — some ops legitimately do work (``XRANGE`` over a full stream buffer,
-    pipelined batches in ``status_many``) and a false trip there would disable a
-    cache that is fine.
-    """
-    return {
-        "socket_connect_timeout": float(os.environ.get("REDIS_CONNECT_TIMEOUT_SECONDS", "0.25")),
-        "socket_timeout": float(os.environ.get("REDIS_SOCKET_TIMEOUT_SECONDS", "1")),
-    }
-
-
-def circuit_from_env(name: str) -> RedisCircuit:
-    """The breaker for one surface, tuned by the shared operator knobs."""
-    return RedisCircuit(
-        name,
-        failure_threshold=int(os.environ.get("REDIS_CIRCUIT_FAILURE_THRESHOLD", "3")),
-        cooldown_seconds=float(os.environ.get("REDIS_CIRCUIT_COOLDOWN_SECONDS", "5")),
-    )
-
-
-def build_redis_client(
-    *,
-    master_env: str,
-    master_default: str,
-    url_env: str,
-    url_default: str,
-    decode_responses: bool = False,
-) -> Any:
-    """Build the Redis client for one ragent surface (standalone or sentinel).
-
-    Centralised because the sentinel branch is easy to get subtly wrong: the
-    timeout budget has to reach the master connections **and** the sentinel
-    discovery connections. Discovery is the hang that actually bites during a
-    failover — that is precisely when the old master stops answering — and an
-    unbounded ``sentinel_kwargs`` leaves it uncapped no matter what the master
-    connections are configured with.
-    """
-    timeouts = connection_timeouts()
-    if os.environ.get("REDIS_MODE", "standalone") != "sentinel":
-        url = os.environ.get(url_env, url_default)
-        return redis_lib.from_url(url, decode_responses=decode_responses, **timeouts)
-
-    from redis.sentinel import Sentinel
-
-    sentinel_pw = os.environ.get("REDIS_SENTINEL_PASSWORD") or None
-    sentinel = Sentinel(
-        parse_sentinel_hosts(os.environ.get("REDIS_SENTINEL_HOSTS", "")),
-        password=os.environ.get("REDIS_SENTINEL_MASTER_PASSWORD") or None,
-        sentinel_kwargs={**timeouts, **({"password": sentinel_pw} if sentinel_pw else {})},
-        **timeouts,
-    )
-    return sentinel.master_for(
-        os.environ.get(master_env, master_default), decode_responses=decode_responses
-    )
-
-
 class RedisUnavailable:
     """Sentinel returned when a call did not reach Redis.
 
@@ -224,3 +163,64 @@ class RedisCircuit:
 def unwrap(value: T | RedisUnavailable, default: Any) -> Any:
     """Collapse a circuit result to its fail-soft default."""
     return default if isinstance(value, RedisUnavailable) else value
+
+
+def connection_timeouts() -> dict[str, float]:
+    """The bounded socket budget every ragent Redis client shares.
+
+    ``socket_connect_timeout`` is the one that matters for a blackholed
+    endpoint; it is tight because establishing a connection to a healthy Redis
+    is a single RTT. ``socket_timeout`` covers command execution and is looser
+    — some ops legitimately do work (``XRANGE`` over a full stream buffer,
+    pipelined batches in ``status_many``) and a false trip there would disable a
+    cache that is fine.
+    """
+    return {
+        "socket_connect_timeout": float(os.environ.get("REDIS_CONNECT_TIMEOUT_SECONDS", "0.25")),
+        "socket_timeout": float(os.environ.get("REDIS_SOCKET_TIMEOUT_SECONDS", "1")),
+    }
+
+
+def circuit_from_env(name: str) -> RedisCircuit:
+    """The breaker for one surface, tuned by the shared operator knobs."""
+    return RedisCircuit(
+        name,
+        failure_threshold=int(os.environ.get("REDIS_CIRCUIT_FAILURE_THRESHOLD", "3")),
+        cooldown_seconds=float(os.environ.get("REDIS_CIRCUIT_COOLDOWN_SECONDS", "5")),
+    )
+
+
+def build_redis_client(
+    *,
+    master_env: str,
+    master_default: str,
+    url_env: str,
+    url_default: str,
+    decode_responses: bool = False,
+) -> Any:
+    """Build the Redis client for one ragent surface (standalone or sentinel).
+
+    Centralised because the sentinel branch is easy to get subtly wrong: the
+    timeout budget has to reach the master connections **and** the sentinel
+    discovery connections. Discovery is the hang that actually bites during a
+    failover — that is precisely when the old master stops answering — and an
+    unbounded ``sentinel_kwargs`` leaves it uncapped no matter what the master
+    connections are configured with.
+    """
+    timeouts = connection_timeouts()
+    if os.environ.get("REDIS_MODE", "standalone") != "sentinel":
+        url = os.environ.get(url_env, url_default)
+        return redis_lib.from_url(url, decode_responses=decode_responses, **timeouts)
+
+    from redis.sentinel import Sentinel
+
+    sentinel_pw = os.environ.get("REDIS_SENTINEL_PASSWORD") or None
+    sentinel = Sentinel(
+        parse_sentinel_hosts(os.environ.get("REDIS_SENTINEL_HOSTS", "")),
+        password=os.environ.get("REDIS_SENTINEL_MASTER_PASSWORD") or None,
+        sentinel_kwargs={**timeouts, **({"password": sentinel_pw} if sentinel_pw else {})},
+        **timeouts,
+    )
+    return sentinel.master_for(
+        os.environ.get(master_env, master_default), decode_responses=decode_responses
+    )
