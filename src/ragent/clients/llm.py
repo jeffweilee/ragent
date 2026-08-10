@@ -286,7 +286,11 @@ class LLMClient:
                     # hallucination-prone, and re-prompting behind the caller's
                     # back bills a second generation for one request (T-RETRY.1).
                     raise ValueError("LLM returned empty content")
-                usage_raw = data.get("usage", {})
+                # `or {}` not `get("usage", {})` — an explicit JSON `null` is a
+                # real upstream shape, and the reads below sit outside the try,
+                # where an AttributeError would escape as a 500 instead of the
+                # typed 502.
+                usage_raw = data.get("usage") or {}
             except Exception as exc:
                 span.record_exception(exc)
                 error_code, exc_cls = classify_upstream_error(

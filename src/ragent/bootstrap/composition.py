@@ -36,10 +36,20 @@ _CONNECT_RETRIES = 2
 def _http_client(*, timeout: float, verify: bool) -> Any:
     """A shared outbound client with connection-only retries.
 
-    `verify` is passed to the **transport**, not the Client: supplying a custom
-    transport makes `httpx.Client(verify=...)` dead config, since the transport
-    owns the TLS context. Leaving it on the Client would silently turn
-    `RAGENT_TLS_VERIFY` into a no-op.
+    Two things a custom transport silently switches off, both re-supplied here:
+
+    1. **TLS config.** `verify` goes to the transport, not the Client — the
+       transport owns the SSL context, so leaving `verify` on the Client would
+       turn `RAGENT_TLS_VERIFY` into dead config.
+    2. **Environment proxies.** httpx only reads `HTTP_PROXY` / `HTTPS_PROXY` /
+       `NO_PROXY` when `transport is None` (`allow_env_proxies = trust_env and
+       transport is None`), so handing it a transport drops every proxy mount —
+       which in a proxy-only network breaks *all* outbound calls, not just one
+       upstream (Codex review PR #247 P1). The mounts are rebuilt from httpx's
+       own env parsing rather than a hand-rolled one, because `NO_PROXY` pattern
+       semantics are exactly the part not worth reimplementing. A `None` mount
+       means "no proxy for this pattern" and falls through to the default
+       transport, which is how `NO_PROXY` is expressed.
 
     Imported locally to match `build_container()`'s deferred-import style —
     composition is on the boot path and keeps heavyweight imports out of module
@@ -47,28 +57,61 @@ def _http_client(*, timeout: float, verify: bool) -> Any:
     """
     import httpx
 
+    # Private helper by necessity: httpx exposes no public API for "the proxy map
+    # you would have built for me". Pinned and covered by
+    # tests/unit/test_composition_http_transport.py, which fails loudly on an
+    # upgrade that moves it.
+    # verified against httpx 0.28.1
+    from httpx._utils import get_environment_proxies
+
+    def _transport(proxy: str | None = None) -> Any:
+        return httpx.HTTPTransport(retries=_CONNECT_RETRIES, verify=verify, proxy=proxy)
+
     return httpx.Client(
         timeout=timeout,
-        transport=httpx.HTTPTransport(retries=_CONNECT_RETRIES, verify=verify),
+        transport=_transport(),
+        mounts={
+            pattern: None if url is None else _transport(url)
+            for pattern, url in get_environment_proxies().items()
+        },
     )
 
 
-def _es_client(*, hosts: list[str], basic_auth: Any, verify_certs: bool) -> Any:
-    """The Elasticsearch client, with its retry policy stated rather than inherited.
+# `elastic_transport` defaults to `max_retries=3` with
+# `retry_on_status=(429, 502, 503, 504)` — a retry layer invisible at the call
+# site that multiplies with anything wrapping it (T-RETRY.4). Both ES clients
+# must state the policy: the standalone one AND the one
+# `ElasticsearchDocumentStore` builds internally, since the retrieval pipeline
+# searches through the latter (Codex review PR #247 P2).
+# verified against elasticsearch 8.19.3 / elastic_transport 8.17.1
+_ES_RETRY_KWARGS: dict[str, Any] = {"max_retries": 0}
 
-    `max_retries=0` is not a no-op: left unset, `elastic_transport` applies
-    `max_retries=3, retry_on_status=(429, 502, 503, 504)`, so every ES call
-    carried a retry layer that is invisible at the call site and multiplies with
-    anything wrapping it (T-RETRY.4).
-    """
+
+def _es_client(*, hosts: list[str], basic_auth: Any, verify_certs: bool) -> Any:
+    """The standalone Elasticsearch client, retry policy stated not inherited."""
     from elasticsearch import Elasticsearch
 
     return Elasticsearch(
         hosts=hosts,
         basic_auth=basic_auth,
         verify_certs=verify_certs,
-        # verified against elasticsearch 8.19.3 / elastic_transport 8.17.1
-        max_retries=0,
+        **_ES_RETRY_KWARGS,
+    )
+
+
+def _document_store(*, hosts: list[str], index: str, basic_auth: Any, verify_certs: bool) -> Any:
+    """The Haystack document store, whose **internal** ES client is the one the
+    chat retrieval path actually searches through — so it needs the same
+    explicit retry policy as `_es_client`. Extra kwargs are forwarded verbatim
+    to `Elasticsearch(...)`."""
+    from haystack_integrations.document_stores.elasticsearch import ElasticsearchDocumentStore
+
+    return ElasticsearchDocumentStore(
+        hosts=hosts,
+        index=index,
+        verify_certs=verify_certs,
+        basic_auth=basic_auth,
+        **_ES_RETRY_KWARGS,
     )
 
 
@@ -254,7 +297,6 @@ def _make_heartbeat_tick(sync_engine: Any) -> Any:
 
 
 def build_container() -> Container:
-    from haystack_integrations.document_stores.elasticsearch import ElasticsearchDocumentStore
     from sqlalchemy.ext.asyncio import create_async_engine
 
     from ragent.bootstrap.http_logging import install_error_logging
@@ -368,7 +410,7 @@ def build_container() -> Container:
     )
     chunks_index_name = os.environ.get("ES_CHUNKS_INDEX", "chunks_v1")
     chunks_read_alias = f"{chunks_index_name}_active"
-    document_store = ElasticsearchDocumentStore(
+    document_store = _document_store(
         hosts=es_hosts,
         index=chunks_read_alias,
         verify_certs=es_verify_certs,

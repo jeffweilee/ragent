@@ -11,6 +11,10 @@ one thing and do another.
 
 from __future__ import annotations
 
+from haystack_integrations.document_stores.elasticsearch import (
+    document_store as document_store_module,
+)
+
 
 def test_es_client_is_built_with_retries_disabled() -> None:
     """Pins the kwarg, not the library default — an es-py upgrade that changes
@@ -23,6 +27,36 @@ def test_es_client_is_built_with_retries_disabled() -> None:
     # option here and only merges it into the transport at request time, so
     # there is no public surface that reports the effective value.
     assert client._max_retries == 0  # noqa: SLF001
+
+
+def test_document_store_also_disables_retries() -> None:
+    """The retrieval pipeline searches through `ElasticsearchDocumentStore`'s own
+    internally-constructed client, not the standalone `es_client` — so disabling
+    retries on one and not the other leaves the **user-facing** chat path still
+    retrying 429/502/503/504 (Codex review PR #247 P2)."""
+    from unittest.mock import MagicMock, patch
+
+    from elasticsearch import Elasticsearch
+
+    from ragent.bootstrap.composition import _document_store
+
+    store = _document_store(
+        hosts=["http://es.example:9200"],
+        index="chunks_v1_active",
+        basic_auth=None,
+        verify_certs=False,
+    )
+
+    # The store defers client construction to first use, so drive it with the
+    # constructor patched — that proves the kwarg is actually *forwarded*, not
+    # merely parked on `_kwargs` where a future refactor could drop it. No
+    # network: the real `client` property pings ES.
+    with patch.object(
+        document_store_module, "Elasticsearch", MagicMock(spec=Elasticsearch)
+    ) as es_ctor:
+        _ = store.client
+
+    assert es_ctor.call_args.kwargs["max_retries"] == 0
 
 
 def test_es_client_default_would_have_retried() -> None:

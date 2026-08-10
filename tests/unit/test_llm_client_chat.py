@@ -158,6 +158,31 @@ def test_chat_raises_when_content_is_none() -> None:
     assert http.post.call_count == 1
 
 
+def test_chat_survives_explicit_null_usage() -> None:
+    """`{"usage": null}` must not crash. `data.get("usage", {})` returns None for
+    an explicit JSON null, and T-RETRY.1 moved the `usage_raw.get(...)` reads
+    outside the try — so what used to surface as a wrapped 502 would now be an
+    unhandled AttributeError (500). PR #247 review, pr-agent."""
+    http = MagicMock()
+    resp = MagicMock()
+    resp.raise_for_status = MagicMock()
+    resp.json.return_value = {
+        "choices": [{"message": {"content": "ok"}}],
+        "usage": None,
+    }
+    http.post.return_value = resp
+    client = LLMClient(
+        api_url="https://llm.example.com",
+        http=http,
+        get_token=lambda: "tok",
+    )
+
+    result = client.chat(messages=[{"role": "user", "content": "q"}], model="m")
+
+    assert result["content"] == "ok"
+    assert result["usage"] == {"promptTokens": 0, "completionTokens": 0, "totalTokens": 0}
+
+
 def test_chat_raises_when_content_is_empty_string() -> None:
     http = MagicMock()
     resp = MagicMock()
