@@ -267,6 +267,19 @@ def test_run_path_resolved_pat_wins_over_forwarded() -> None:
     assert capture["extra"]["pat"] == "SERVER-PAT"  # resolved wins over the forwarded value
 
 
+def test_run_path_strips_a_forwarded_pat_when_none_resolves() -> None:
+    # The stricter half of "resolved wins": with NO server PAT to overwrite it,
+    # a smuggled one must still be removed, or an unauthorized caller could inject
+    # their own credential. Coverage moved here from the proxy test, which lost its
+    # seam when the proxy stopped attaching (T-PAT.29).
+    capture: dict = {}
+    app = _pat_app(pat_service=_StubPat(token=None), capture=capture)
+    app.dependency_overrides[get_forwarded_headers] = lambda: {"pat": "FORGED"}
+    with TestClient(app) as client:
+        client.post("/brainagent/v1", json=_run_input(), headers={"X-User-Id": "alice"})
+    assert "pat" not in (capture["extra"] or {})
+
+
 def test_run_path_pat_header_colliding_with_a_service_header_is_not_attached() -> None:
     # An operator misconfigures PAT_UPSTREAM_HEADER_NAME as a service-owned
     # header; the PAT must not overwrite the caller identity brain scopes by.
