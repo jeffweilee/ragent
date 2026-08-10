@@ -204,8 +204,8 @@
 #### 4.6.9 PAT — Personal Access Token authorization (T-PAT)
 
 > The whole slice is **feature-gated on `PAT_PUBLIC_KEY`**: unset → the `/pat/v1`
-> router is not mounted and the `/brainagent/v1` proxy attaches no PAT (existing
-> behaviour unchanged). When set, `PAT_ISS` / `PAT_AUD` / `PAT_NT_KEY_NAME` /
+> router is not mounted and the `/brainagent/v1` **run** path attaches no PAT
+> (existing behaviour unchanged). When set, `PAT_ISS` / `PAT_AUD` / `PAT_NT_KEY_NAME` /
 > `PAT_REFRESH_API` / `PAT_API_HEADER_TOKEN_KEY` / `PAT_API_HEADER_TOKEN_VALUE`,
 > the `PAT_INIT_*` mint credentials, and the encryption keys
 > (`RAGENT_KEK_BASE64` / `RAGENT_ENCRYPTED_DEK_BASE64`, §4.6.x) become required.
@@ -233,7 +233,7 @@
 | `PAT_REFRESH_API`                     | (required when enabled) | `PUT` URL of the PAT refresh service (`{"patToken": current}` → `{"patToken": new}`). |
 | `PAT_API_HEADER_TOKEN_KEY`            | (required when enabled) | Header **name** carrying the service credential on the refresh call. |
 | `PAT_API_HEADER_TOKEN_VALUE`          | (required when enabled) | Header **value** (service credential) sent under `PAT_API_HEADER_TOKEN_KEY`. **Never logged.** |
-| `PAT_UPSTREAM_HEADER_NAME`            | `X-Pat-Token`    | Header under which the resolved PAT is attached to the `/brainagent/v1` upstream request (fail-open — omitted when no PAT resolves). |
+| `PAT_UPSTREAM_HEADER_NAME`            | `X-Pat-Token`    | Header under which the resolved PAT is attached to the `POST /brainagent/v1` **run** request — its only consumer, for the drive tool brain invokes during the run (fail-open — omitted when no PAT resolves). The `/upstream/*` proxy and the cancel route attach none (B65), and **must never** carry this name in `BRAIN_FORWARD_HEADERS`. |
 | `PAT_REFRESH_MAX_RETRIES`             | `3`              | Max exp-backoff retries on a `429` from the refresh API before rejecting the request (PAT stays `active`). |
 | `PAT_REFRESH_BACKOFF_SECONDS`         | `0.5`            | Base delay for exp-backoff between `429` refresh retries (`base × 2^attempt`). |
 | `PAT_REFRESH_TIMEOUT_SECONDS`         | `30`             | Per-call timeout for the `PUT PAT_REFRESH_API` refresh request. |

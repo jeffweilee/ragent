@@ -1,12 +1,16 @@
-"""T-PAT.11/12 — production-wiring smoke: the exact assembly composition.py
+"""T-PAT.11/29 — production-wiring smoke: the exact assembly composition.py
 builds, proven end-to-end through the /pat/v1 router and the /brainagent/v1
-proxy (00_rule.md §Composition Root: Production-Wiring Coverage).
+**run** path (00_rule.md §Composition Root: Production-Wiring Coverage).
 
 Builds a real PatService the way `build_container()` does — real `KeyManager`
 + `PATCipher`, real verifier via `import_pat_public_key`, real `PatCache` over
 fakeredis — with only the DB repo and the refresh HTTP client faked, then:
   1. `POST /pat/v1/authorize` stores the PAT, and
-  2. `GET /brainagent/v1/{path}` carries that PAT to the brain upstream.
+  2. `POST /brainagent/v1` carries that PAT to the brain upstream.
+
+The run path is the only PAT consumer (T-PAT.29): it is where brain invokes a
+drive tool on the user's behalf. The `/upstream/*` management proxy resolves no
+PAT at all, so it is not exercised here.
 """
 
 from __future__ import annotations
@@ -18,12 +22,14 @@ import fakeredis
 import httpx
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from twp_ai.agents.brain import BrainAgent
 
 from ragent.auth.pat_jwt import PatTokenVerifier, import_pat_public_key
+from ragent.clients.brain_caller import BrainCaller
 from ragent.clients.pat_cache import PatCache
 from ragent.clients.pat_init_client import PatInitClient
 from ragent.clients.pat_refresh_client import PatRefreshClient
-from ragent.routers.brain_upstream_proxy import create_brain_upstream_proxy_router
+from ragent.routers.brainagent import create_brainagent_v1_router
 from ragent.routers.pat import ID_TOKEN_HEADER, create_pat_router
 from ragent.security.key_manager import KeyManager
 from ragent.security.pat_cipher import PATCipher
@@ -96,6 +102,7 @@ def _build_service() -> PatService:
 
 
 def _app(service: PatService, upstream_handler) -> FastAPI:
+    upstream = httpx.Client(transport=httpx.MockTransport(upstream_handler))
     app = FastAPI()
     app.include_router(
         create_pat_router(
@@ -105,10 +112,22 @@ def _app(service: PatService, upstream_handler) -> FastAPI:
         )
     )
     app.include_router(
-        create_brain_upstream_proxy_router(
-            httpx.Client(transport=httpx.MockTransport(upstream_handler)),
+        create_brainagent_v1_router(
+            http_client=upstream,
             brain_url="http://brain:8100",
             brain_key="k",
+            # Mirrors composition.py's `_build_brain_agent_factory`: the resolved
+            # PAT reaches the upstream only if it survives into BrainCaller's
+            # extra_headers, so the real caller is what makes this a wiring test.
+            agent_factory=lambda user_id, extra_headers=None: BrainAgent(
+                BrainCaller(
+                    http_client=upstream,
+                    brain_url="http://brain:8100",
+                    user_id=user_id,
+                    brain_key="k",
+                    extra_headers=extra_headers,
+                )
+            ),
             pat_service=service,
             pat_header_name="X-Pat-Token",
         )
@@ -116,39 +135,51 @@ def _app(service: PatService, upstream_handler) -> FastAPI:
     return app
 
 
-def test_authorize_then_pat_rides_the_brainagent_path() -> None:
+def _run_body() -> dict:
+    return {
+        "runId": "run_1",
+        "threadId": "thread_1",
+        "messages": [{"id": "m1", "role": "user", "content": "hi"}],
+        "tools": [],
+        "state": None,
+        "context": [],
+        "forwardedProps": None,
+    }
+
+
+def _upstream(seen: dict):
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["pat"] = request.headers.get("X-Pat-Token")
+        return httpx.Response(200, text="", headers={"content-type": "text/event-stream"})
+
+    return handler
+
+
+def test_authorize_then_pat_rides_the_run_path() -> None:
     service = _build_service()
     seen: dict = {}
 
-    def upstream(request: httpx.Request) -> httpx.Response:
-        seen["pat"] = request.headers.get("X-Pat-Token")
-        return httpx.Response(200, json={"ok": True})
-
-    with TestClient(_app(service, upstream)) as client:
+    with TestClient(_app(service, _upstream(seen))) as client:
         auth = client.post(
             "/pat/v1/authorize",
             headers={"X-User-Id": "alice", ID_TOKEN_HEADER: sign_id_token("alice")},
         )
         assert auth.status_code == 204
 
-        proxied = client.get("/brainagent/v1/memory", headers={"X-User-Id": "alice"})
-        assert proxied.status_code == 200
+        run = client.post("/brainagent/v1", json=_run_body(), headers={"X-User-Id": "alice"})
+        assert run.status_code == 200
 
-    # The PAT authorized in step 1 was resolved from cache and rode the upstream call.
+    # The PAT authorized in step 1 was resolved from cache and rode the run call.
     assert seen["pat"] is not None
     assert seen["pat"].startswith("eyJ")  # a JWT, i.e. the stored PAT round-tripped
 
 
-def test_brainagent_path_is_fail_open_without_authorization() -> None:
+def test_run_path_is_fail_open_without_authorization() -> None:
     service = _build_service()
     seen: dict = {}
 
-    def upstream(request: httpx.Request) -> httpx.Response:
-        seen["pat"] = request.headers.get("X-Pat-Token")
-        return httpx.Response(200, json={"ok": True})
-
-    # bob never authorized → no PAT, but the proxy still works.
-    with TestClient(_app(service, upstream)) as client:
-        r = client.get("/brainagent/v1/memory", headers={"X-User-Id": "bob"})
+    # bob never authorized → no PAT, but the run still goes through.
+    with TestClient(_app(service, _upstream(seen))) as client:
+        r = client.post("/brainagent/v1", json=_run_body(), headers={"X-User-Id": "bob"})
     assert r.status_code == 200
     assert seen["pat"] is None

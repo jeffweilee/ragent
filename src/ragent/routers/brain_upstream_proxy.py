@@ -19,12 +19,19 @@ mapped — timeout → 504, unreachable → 502.
 The run surface (``POST /brainagent/v1``, ``/reconnect``, ``/runs/{id}/cancel``)
 is handled by `brainagent.py`; its router is mounted FIRST so those explicit
 routes win over this catch-all.
+
+**No PAT is attached here** (T-PAT.29 / B65). These are brain's own management
+routes; the PAT exists for the drive tool brain invokes *during a run*. Resolving
+one here would also hang a side-effecting call — a DB read, and on an expired PAT
+a refresh that rewrites the row or a 401 that invalidates it — off 33 read-only
+routes that one settings page hits several of at once, which is the fan-out that
+stampedes the refresh service when redis is down.
 """
 
 from __future__ import annotations
 
 import json
-from typing import Annotated, Any
+from typing import Annotated
 
 import httpx
 import structlog
@@ -32,11 +39,7 @@ from fastapi import APIRouter, Depends, Request, Response
 from fastapi.concurrency import run_in_threadpool
 
 from ragent.auth.deps import get_forwarded_headers, get_user_id
-from ragent.clients.brain_caller import (
-    SERVICE_HEADER_NAMES,
-    apply_resolved_pat,
-    build_brain_headers,
-)
+from ragent.clients.brain_caller import build_brain_headers
 from ragent.errors.codes import HttpErrorCode
 from ragent.errors.problem import problem
 
@@ -59,23 +62,9 @@ def create_brain_upstream_proxy_router(
     brain_url: str,
     brain_key: str | None = None,
     timeout: float = 30.0,
-    pat_service: Any = None,
-    pat_header_name: str = "X-Pat-Token",
 ) -> APIRouter:
     router = APIRouter(prefix="/brainagent/v1")
     base = brain_url.rstrip("/")
-
-    # A misconfigured PAT_UPSTREAM_HEADER_NAME that collides with a service-owned
-    # header (X-User-Id / X-Brain-Key) would overwrite the caller identity or the
-    # brain secret AFTER build_brain_headers set them — refuse to attach under
-    # such a name (Codex review r3619473865).
-    _pat_header_safe = pat_header_name.lower() not in SERVICE_HEADER_NAMES
-    if pat_service is not None and not _pat_header_safe:
-        logger.error(
-            "brainagent.proxy.pat_header_rejected",
-            pat_header_name=pat_header_name,
-            reason="collides with a service-owned header",
-        )
 
     def _upstream_headers(user_id: str, forwarded: dict[str, str] | None) -> dict[str, str]:
         # Service-owned X-User-Id / X-Brain-Key always win over any same-named
@@ -114,9 +103,6 @@ def create_brain_upstream_proxy_router(
                 json_body = parsed
 
         headers = _upstream_headers(user_id, forwarded_headers)
-        await apply_resolved_pat(
-            headers, user_id=user_id, pat_service=pat_service, pat_header_name=pat_header_name
-        )
         # Forward content negotiation from the client so binary/artifact downloads
         # negotiate correctly at brain. (Content-Type is forwarded only on the
         # raw-body path below; the json= path lets httpx set application/json.)
