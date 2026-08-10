@@ -8,6 +8,9 @@ cooldown lapses.
 
 from __future__ import annotations
 
+import threading
+import time
+
 import redis as redis_lib
 
 from ragent.clients.redis_guard import UNAVAILABLE, RedisCircuit
@@ -166,3 +169,57 @@ def test_failed_half_open_probe_restarts_the_cooldown() -> None:
     clock.advance(1.0)  # well inside the restarted cooldown
     circuit.call("get", lambda: calls.append(1))
     assert calls == []
+
+
+# --- half-open must admit exactly one probe (Codex P2, PR #246) ---------
+
+
+def test_only_one_caller_probes_when_the_cooldown_lapses() -> None:
+    """The contract is "one probe per cooldown" — enforce it under concurrency.
+
+    `ChatStreamStore` is shared by request handlers and the producer pool, so an
+    open circuit has many concurrent callers. Checking `now - opened_at >=
+    cooldown` without reserving lets every one of them through in the window
+    between the check and the first result, and each pays the full socket
+    timeout — exactly the per-request tax the breaker exists to remove.
+    """
+    clock = _Clock()
+    circuit = _circuit(clock, threshold=1, cooldown=5.0)
+    circuit.call("get", _boom)
+    assert circuit.state == "open"
+    clock.advance(5.0)
+
+    attempts: list[int] = []
+    lock = threading.Lock()
+    ready = threading.Barrier(8)
+
+    def _slow_probe() -> str:
+        with lock:
+            attempts.append(1)
+        time.sleep(0.05)  # hold the probe open so the race window is real
+        return "value"
+
+    def _worker() -> None:
+        ready.wait()
+        circuit.call("get", _slow_probe)
+
+    threads = [threading.Thread(target=_worker) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len(attempts) == 1  # seven callers short-circuited
+
+
+def test_probe_reservation_still_lets_the_next_window_through() -> None:
+    """Reserving must not wedge the circuit permanently open."""
+    clock = _Clock()
+    circuit = _circuit(clock, threshold=1, cooldown=5.0)
+    circuit.call("get", _boom)
+
+    clock.advance(5.0)
+    assert circuit.call("get", _boom) is UNAVAILABLE  # probe 1 fails, re-stamps
+    clock.advance(5.0)
+    assert circuit.call("get", lambda: "value") == "value"  # probe 2 succeeds
+    assert circuit.state == "closed"

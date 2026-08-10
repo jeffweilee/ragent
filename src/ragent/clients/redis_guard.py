@@ -29,6 +29,7 @@ ordinary write contention disable the cache.
 from __future__ import annotations
 
 import os
+import threading
 import time
 from collections.abc import Callable
 from typing import Any, TypeVar
@@ -70,13 +71,15 @@ UNAVAILABLE = RedisUnavailable()
 
 
 class RedisCircuit:
-    """Guards one Redis client. Not thread-safe by design — see note below.
+    """Guards one Redis client.
 
-    The counters are plain ints mutated without a lock. Under concurrent access
-    the worst case is an off-by-a-few failure count, which shifts *when* the
-    circuit trips by at most a couple of calls; it cannot produce a wrong state.
-    A lock here would put contention on the hot path to protect a number whose
-    exact value carries no meaning.
+    Deliberately mixed locking. The failure counter is a plain int mutated
+    without a lock: the worst case is an off-by-a-few count, which shifts *when*
+    the circuit trips by a call or two and cannot produce a wrong state, so a
+    lock there would contend the hot path to protect a number whose exact value
+    carries no meaning. The half-open reservation IS locked — admitting every
+    concurrent caller instead of one costs a real socket timeout each, every
+    cooldown, which is the tax this class exists to remove.
     """
 
     def __init__(
@@ -93,6 +96,12 @@ class RedisCircuit:
         self._clock = clock
         self._failures = 0
         self._opened_at: float | None = None
+        # Guards the half-open reservation only. The failure counter stays
+        # lock-free: an off-by-a-few count merely shifts *when* the circuit trips
+        # by a call or two and cannot produce a wrong state, so it is not worth
+        # contending the hot path for. Admitting N concurrent probes instead of
+        # one is not in that category — it has a real, repeating latency cost.
+        self._lock = threading.Lock()
         redis_circuit_state.labels(client=name).set(0)
 
     @property
@@ -120,10 +129,28 @@ class RedisCircuit:
         return result
 
     def _may_call(self) -> bool:
-        """True when closed, or when an open circuit is due for its probe."""
+        """True when closed, or for the ONE caller that reserves the probe.
+
+        The reservation matters: `ChatStreamStore` is shared by request handlers
+        and the producer pool, so an open circuit has many concurrent callers.
+        A bare ``now - opened_at >= cooldown`` check lets all of them through in
+        the window between the check and the first result, and each pays the
+        full socket timeout — reinstating exactly the per-request tax the
+        breaker exists to remove.
+
+        Reserving is just re-stamping the cooldown: the winner probes while
+        everyone else sees a fresh window and short-circuits. `_record_success` /
+        `_record_failure` then set the real outcome.
+        """
         if self._opened_at is None:
+            return True  # closed — the hot path stays lock-free
+        with self._lock:
+            if self._opened_at is None:
+                return True
+            if self._clock() - self._opened_at < self._cooldown:
+                return False
+            self._opened_at = self._clock()
             return True
-        return self._clock() - self._opened_at >= self._cooldown
 
     def _record_success(self) -> None:
         if self._opened_at is not None:

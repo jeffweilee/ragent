@@ -130,7 +130,7 @@ class IngestService:
 
     async def _dispatch(
         self, document_id: str, *, event: str = "ingest.dispatched", **log_fields: Any
-    ) -> None:
+    ) -> bool:
         """Enqueue the pipeline; a queue outage defers rather than fails.
 
         Every caller has already persisted the row in a re-dispatchable state
@@ -143,6 +143,10 @@ class IngestService:
 
         `TaskNotRegisteredError` deliberately still escapes: no sweep can heal a
         task that was never registered.
+
+        Returns True when the task actually reached the queue. Callers that
+        report a count to an operator (`batch_rerun`) must not treat a deferral
+        as an enqueue.
         """
         try:
             await self._broker.enqueue("ingest.pipeline", document_id=document_id)
@@ -155,8 +159,9 @@ class IngestService:
                 reason=str(exc),
                 **log_fields,
             )
-            return
+            return False
         logger.info(event, document_id=document_id, task_label="ingest.pipeline", **log_fields)
+        return True
 
     def _put_to_default_site(
         self,
@@ -260,21 +265,25 @@ class IngestService:
                 before=before,
                 operator_id=operator_id,
             )
-            return before, before, 0, 0
+            return before, before, 0, 0, 0
 
         docs = await self._repo.list_by_statuses(statuses, **filter_kwargs, limit=limit)
-        queued = skipped = 0
+        queued = skipped = deferred = 0
         for doc in docs:
             outcome = await self._repo.mark_for_rerun(doc.document_id)
-            if outcome == "ok":
-                await self._dispatch(
-                    doc.document_id,
-                    event="ingest.batch_rerun_item_dispatched",
-                    operator_id=operator_id,
-                )
+            if outcome != "ok":
+                skipped += 1
+                continue
+            # This endpoint's whole value is retrying *now*, so a row that was
+            # only reset for the worker sweep must not be reported as queued.
+            if await self._dispatch(
+                doc.document_id,
+                event="ingest.batch_rerun_item_dispatched",
+                operator_id=operator_id,
+            ):
                 queued += 1
             else:
-                skipped += 1
+                deferred += 1
 
         after = await self._repo.count_by_statuses(statuses, **filter_kwargs)
         logger.info(
@@ -286,9 +295,10 @@ class IngestService:
             after=after,
             queued=queued,
             skipped=skipped,
+            deferred=deferred,
             operator_id=operator_id,
         )
-        return before, after, queued, skipped
+        return before, after, queued, skipped, deferred
 
     async def delete(self, document_id: str) -> None:
         doc = await self._repo.claim_for_deletion(document_id)

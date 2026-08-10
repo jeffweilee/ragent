@@ -13,6 +13,7 @@ must keep surfacing loudly.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -106,3 +107,48 @@ async def test_rerun_still_succeeds_when_the_queue_is_unreachable() -> None:
     repo.mark_for_rerun.return_value = "ok"
 
     await service.rerun("d1")  # must not raise
+
+
+# --- batch rerun must not report deferred items as queued (Codex P2) ----
+
+
+async def test_batch_rerun_reports_deferred_items_separately() -> None:
+    """`/ops/v1/retry` exists to re-queue *immediately*; say so honestly.
+
+    The documented contract is `queued` = "documents marked PENDING + enqueued".
+    With the broker down nothing is enqueued — the rows are only reset for the
+    worker sweep — so counting them as queued tells the operator an immediate
+    retry happened when it did not. They are not `skipped` either (that means
+    "raced out of a rerunnable state"), so they get their own counter and every
+    document stays accounted for.
+    """
+    broker = AsyncMock()
+    broker.enqueue.side_effect = TaskDispatchUnavailable("broker unreachable")
+    service, repo = _service(broker)
+    repo.count_by_statuses.return_value = {"FAILED": 2}
+    repo.list_by_statuses.return_value = [
+        SimpleNamespace(document_id="d1"),
+        SimpleNamespace(document_id="d2"),
+    ]
+    repo.mark_for_rerun.return_value = "ok"
+
+    _before, _after, queued, skipped, deferred = await service.batch_rerun(statuses=["FAILED"])
+
+    assert queued == 0
+    assert deferred == 2
+    assert skipped == 0
+
+
+async def test_batch_rerun_counts_real_enqueues_as_queued() -> None:
+    broker = AsyncMock()
+    service, repo = _service(broker)
+    repo.count_by_statuses.return_value = {"FAILED": 2}
+    repo.list_by_statuses.return_value = [
+        SimpleNamespace(document_id="d1"),
+        SimpleNamespace(document_id="d2"),
+    ]
+    repo.mark_for_rerun.return_value = "ok"
+
+    _before, _after, queued, skipped, deferred = await service.batch_rerun(statuses=["FAILED"])
+
+    assert (queued, skipped, deferred) == (2, 0, 0)

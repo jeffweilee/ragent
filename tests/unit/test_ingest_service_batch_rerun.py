@@ -52,7 +52,9 @@ async def test_dry_run_returns_before_counts_twice():
     before_counts = {"FAILED": 3}
     repo.count_by_statuses.return_value = before_counts
 
-    before, after, queued, skipped = await svc.batch_rerun(statuses=["FAILED"], dry_run=True)
+    before, after, queued, skipped, _deferred = await svc.batch_rerun(
+        statuses=["FAILED"], dry_run=True
+    )
 
     assert before == before_counts
     assert after == before_counts
@@ -83,7 +85,7 @@ async def test_all_ok_queues_all():
     repo.mark_for_rerun.return_value = "ok"
     repo.count_by_statuses.side_effect = [{"FAILED": 3}, {"FAILED": 0}]
 
-    before, after, queued, skipped = await svc.batch_rerun(statuses=["FAILED"])
+    before, after, queued, skipped, _deferred = await svc.batch_rerun(statuses=["FAILED"])
 
     assert queued == 3
     assert skipped == 0
@@ -97,7 +99,7 @@ async def test_skips_not_rerunnable():
     repo.mark_for_rerun.side_effect = ["ok", "not_rerunnable"]
     repo.count_by_statuses.side_effect = [{"FAILED": 2}, {"FAILED": 1}]
 
-    before, after, queued, skipped = await svc.batch_rerun(statuses=["FAILED"])
+    before, after, queued, skipped, _deferred = await svc.batch_rerun(statuses=["FAILED"])
 
     assert queued == 1
     assert skipped == 1
@@ -110,7 +112,7 @@ async def test_skips_not_found():
     repo.mark_for_rerun.side_effect = ["not_found", "ok"]
     repo.count_by_statuses.side_effect = [{"FAILED": 2}, {"FAILED": 1}]
 
-    before, after, queued, skipped = await svc.batch_rerun(statuses=["FAILED"])
+    before, after, queued, skipped, _deferred = await svc.batch_rerun(statuses=["FAILED"])
 
     assert queued == 1
     assert skipped == 1
@@ -122,7 +124,7 @@ async def test_empty_list_returns_zeros():
     before_counts = {"FAILED": 0}
     repo.count_by_statuses.return_value = before_counts
 
-    before, after, queued, skipped = await svc.batch_rerun(statuses=["FAILED"])
+    before, after, queued, skipped, _deferred = await svc.batch_rerun(statuses=["FAILED"])
 
     assert queued == 0
     assert skipped == 0
@@ -156,7 +158,7 @@ async def test_after_count_queried_after_mutations():
     )
     repo.mark_for_rerun.side_effect = lambda *a, **k: call_order.append("mark") or "ok"
 
-    before, after, _, _ = await svc.batch_rerun(statuses=["FAILED"])
+    before, after, _, _, _ = await svc.batch_rerun(statuses=["FAILED"])
 
     # count is called twice; mark happens between the two counts
     assert call_order.index("mark") > call_order.index("count")

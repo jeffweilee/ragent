@@ -35,6 +35,10 @@ class OpsRetryResponse(BaseModel):
     counts: dict[str, OpsStatusCount]
     queued: int
     skipped: int
+    # Rows reset for retry but NOT enqueued because the broker was unreachable
+    # (T-RG.5). Separate from `queued` because this endpoint's contract is an
+    # *immediate* re-queue: the worker sweep will still pick these up, later.
+    deferred: int = 0
 
 
 def create_admin_ops_router(svc: IngestService) -> APIRouter:
@@ -45,7 +49,7 @@ def create_admin_ops_router(svc: IngestService) -> APIRouter:
         body: OpsRetryRequest,
         user_id: Annotated[str, Depends(get_user_id)],
     ) -> OpsRetryResponse:
-        before, after, queued, skipped = await svc.batch_rerun(
+        before, after, queued, skipped, deferred = await svc.batch_rerun(
             statuses=body.statuses,
             source_app=body.source_app,
             source_id=body.source_id,
@@ -62,6 +66,7 @@ def create_admin_ops_router(svc: IngestService) -> APIRouter:
             counts=counts,
             queued=queued,
             skipped=skipped,
+            deferred=deferred,
         )
 
     return router

@@ -1235,14 +1235,16 @@ Immediately re-queues documents in `UPLOADED`, `PENDING`, or `FAILED` states wit
     "FAILED":  {"before": 5, "after": 0},
     "PENDING": {"before": 2, "after": 0}
   },
-  "queued": 7,    // documents marked PENDING + enqueued (always 0 when dry_run)
-  "skipped": 0    // documents that transitioned between list and mark (always 0 when dry_run)
+  "queued": 7,    // documents marked PENDING + actually enqueued (always 0 when dry_run)
+  "skipped": 0,   // documents that transitioned between list and mark (always 0 when dry_run)
+  "deferred": 0   // marked PENDING but NOT enqueued — broker unreachable (always 0 when dry_run)
 }
 ```
 
 **Notes:**
 - When `dry_run: true`, `counts.before == counts.after` and `queued == skipped == 0`. `limit` is ignored — `counts.before` reflects the **total** matching rows across the whole DB, letting the operator see full scope before choosing a batch size.
 - When `dry_run: false`, documents are processed FIFO (oldest `created_at` first). Each document is atomically claimed via `mark_for_rerun` before enqueueing; documents that transition state between the list scan and the mark are counted as `skipped` (race-safe).
+- **`deferred` (T-RG.5):** when the TaskIQ broker is unreachable the row is still reset to a re-dispatchable state, but nothing is queued *now* — and immediacy is this endpoint's whole purpose, so those documents are reported here rather than inflating `queued`. The worker's startup sweep / maintenance cycle picks them up once Redis returns. Every listed document is accounted for: `queued + deferred + skipped`.
 - `limit` caps the number of documents retried in one call; run multiple times to drain a large backlog.
 
 **Notes on `counts`:** all statuses listed in `statuses` always appear as keys, even if their count is 0 in both before and after snapshots.

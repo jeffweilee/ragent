@@ -119,34 +119,6 @@ class _StubContainer:
 # --- boot-time schema init ----------------------------------------------
 
 
-def test_auto_init_survives_an_unreachable_elasticsearch(monkeypatch) -> None:
-    """A2: init_es ran urlopen against ES on every boot of api AND worker.
-
-    An unreachable cluster raised URLError straight out of the lifespan, so ES
-    being down meant no process at all. Index/pipeline creation is idempotent and
-    retried on the next boot, so skipping is strictly better than crash-looping.
-    """
-    import ragent.bootstrap.init_schema as mod
-
-    calls: list[str] = []
-    monkeypatch.setattr(mod, "create_engine", None, raising=False)
-    monkeypatch.setattr(mod, "init_mariadb", lambda _e: calls.append("mariadb"))
-    monkeypatch.setattr(mod, "init_minio_buckets", lambda: calls.append("minio"))
-
-    def _boom(_url: str) -> None:
-        calls.append("es")
-        raise OSError("connection refused")
-
-    monkeypatch.setattr(mod, "init_es", _boom)
-    monkeypatch.setattr(mod, "to_sync_dsn", lambda dsn: dsn)
-    monkeypatch.setattr("sqlalchemy.create_engine", lambda _dsn: object())
-
-    mod.auto_init(db_url="mysql+pymysql://x/y", es_url="http://es:9200")
-
-    # MinIO still initialised — the ES failure must not short-circuit the rest.
-    assert calls == ["mariadb", "es", "minio"]
-
-
 def test_auto_init_still_raises_when_mariadb_is_unreachable(monkeypatch) -> None:
     import ragent.bootstrap.init_schema as mod
 
@@ -159,3 +131,67 @@ def test_auto_init_still_raises_when_mariadb_is_unreachable(monkeypatch) -> None
 
     with pytest.raises(OSError):
         mod.auto_init(db_url="mysql+pymysql://x/y", es_url="http://es:9200")
+
+
+# --- ES degradation is for AVAILABILITY only (Codex P1, PR #246) --------
+
+
+def _patch_init(monkeypatch, es_side_effect):
+    import ragent.bootstrap.init_schema as mod
+
+    calls: list[str] = []
+    monkeypatch.setattr(mod, "init_mariadb", lambda _e: calls.append("mariadb"))
+    monkeypatch.setattr(mod, "init_minio_buckets", lambda: calls.append("minio"))
+    monkeypatch.setattr(mod, "to_sync_dsn", lambda dsn: dsn)
+    monkeypatch.setattr("sqlalchemy.create_engine", lambda _dsn: object())
+
+    def _es(_url: str) -> None:
+        calls.append("es")
+        raise es_side_effect
+
+    monkeypatch.setattr(mod, "init_es", _es)
+    return mod, calls
+
+
+def test_boot_survives_an_unreachable_elasticsearch(monkeypatch) -> None:
+    """Transport failure = the advisory case; skip and serve."""
+    from urllib.error import URLError
+
+    mod, calls = _patch_init(monkeypatch, URLError("connection refused"))
+    mod.auto_init(db_url="mysql+pymysql://x/y", es_url="http://es:9200")
+    assert calls == ["mariadb", "es", "minio"]  # MinIO still runs
+
+
+def test_boot_still_aborts_on_a_malformed_es_resource(monkeypatch) -> None:
+    """A malformed resources/es/*.json is a deployment defect, not an outage.
+
+    Swallowing it would let the process boot with a required ingest pipeline
+    never created. `probe_es` only checks cluster health plus index existence —
+    an index left over from a previous deploy keeps the probe green while writes
+    fail on the missing pipeline. Nothing self-heals that, so it must abort.
+    """
+    import json
+
+    mod, _ = _patch_init(monkeypatch, json.JSONDecodeError("bad", "{", 0))
+    with pytest.raises(json.JSONDecodeError):
+        mod.auto_init(db_url="mysql+pymysql://x/y", es_url="http://es:9200")
+
+
+def test_boot_still_aborts_when_es_rejects_the_request(monkeypatch) -> None:
+    """A 4xx means ES answered — bad mapping, bad auth. Config defect, not availability."""
+    from urllib.error import HTTPError
+
+    mod, _ = _patch_init(monkeypatch, HTTPError("http://es:9200/x", 403, "Forbidden", {}, None))
+    with pytest.raises(HTTPError):
+        mod.auto_init(db_url="mysql+pymysql://x/y", es_url="http://es:9200")
+
+
+def test_boot_survives_an_es_5xx(monkeypatch) -> None:
+    """5xx (incl. a proxy in front of ES) is an availability signal — degrade."""
+    from urllib.error import HTTPError
+
+    mod, calls = _patch_init(
+        monkeypatch, HTTPError("http://es:9200/x", 503, "Service Unavailable", {}, None)
+    )
+    mod.auto_init(db_url="mysql+pymysql://x/y", es_url="http://es:9200")
+    assert calls == ["mariadb", "es", "minio"]

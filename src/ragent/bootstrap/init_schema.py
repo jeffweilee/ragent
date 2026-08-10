@@ -11,7 +11,7 @@ import os
 import ssl
 from collections.abc import Iterator
 from pathlib import Path
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import structlog
@@ -213,15 +213,32 @@ def auto_init(db_url: str, es_url: str) -> None:
 
     engine = create_engine(to_sync_dsn(db_url))
     init_mariadb(engine)
-    # ES is an advisory dependency (T-RG.6): an unreachable cluster must not stop
-    # the api or the worker from starting. Index/pipeline creation is idempotent
-    # and re-runs on the next boot, and `/readyz` reports the degradation
-    # meanwhile — so failing here would trade a degraded process for no process.
-    # MariaDB and MinIO keep raising: nothing works without them.
+    # ES is an advisory dependency (T-RG.6): an *unreachable* cluster must not
+    # stop the api or the worker from starting. Index/pipeline creation is
+    # idempotent and re-runs on the next boot, and `/readyz` reports the
+    # degradation meanwhile — so failing here would trade a degraded process for
+    # no process. MariaDB and MinIO keep raising: nothing works without them.
+    #
+    # Scoped to AVAILABILITY failures only. A malformed `resources/es/*.json`, a
+    # missing resource file, or a 4xx (bad mapping, bad credentials) is a
+    # deployment defect that no retry heals, and swallowing it would be actively
+    # dangerous: `probe_es` checks cluster health plus index existence but NOT
+    # pipeline existence, so an index left over from a previous deploy keeps
+    # /readyz green while every write fails on the pipeline that was never
+    # created. Those must still abort boot.
     try:
         init_es(es_url)
-    except Exception:
-        logger.warning("es.init_skipped", reason="elasticsearch unreachable", exc_info=True)
+    except HTTPError as exc:
+        # HTTPError subclasses URLError, so it must be handled first. ES answered,
+        # so this is not an availability problem — unless it is a 5xx (which also
+        # covers a proxy in front of ES).
+        if exc.code < 500:
+            raise
+        logger.warning("es.init_skipped", reason=f"elasticsearch {exc.code}", exc_info=True)
+    except (URLError, TimeoutError, ConnectionError) as exc:
+        logger.warning(
+            "es.init_skipped", reason="elasticsearch unreachable", error=str(exc), exc_info=True
+        )
     init_minio_buckets()
 
 

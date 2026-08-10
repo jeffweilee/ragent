@@ -13,20 +13,21 @@ def _make_app(svc=None):
 
     if svc is None:
         svc = AsyncMock(spec=IngestService)
-        svc.batch_rerun.return_value = ({}, {}, 0, 0)
+        svc.batch_rerun.return_value = ({}, {}, 0, 0, 0)
 
     app = FastAPI()
     app.include_router(create_admin_ops_router(svc=svc))
     return TestClient(app)
 
 
-def _default_svc(before=None, after=None, queued=0, skipped=0):
+def _default_svc(before=None, after=None, queued=0, skipped=0, deferred=0):
     svc = AsyncMock(spec=IngestService)
     svc.batch_rerun.return_value = (
         before or {"FAILED": 5},
         after or {"FAILED": 0},
         queued,
         skipped,
+        deferred,
     )
     return svc
 
@@ -273,3 +274,19 @@ def test_operator_id_forwarded_from_user_header():
 
     call_kwargs = svc.batch_rerun.call_args.kwargs
     assert call_kwargs["operator_id"] == "alice"
+
+
+def test_retry_surfaces_deferred_when_the_broker_is_unreachable() -> None:
+    """`queued` promises an immediate re-queue; deferred rows must not inflate it.
+
+    Every listed document stays accounted for: queued + deferred + skipped.
+    """
+    svc = _default_svc(queued=0, skipped=0, deferred=7)
+    resp = _make_app(svc).post(
+        "/ops/v1/retry", json={"statuses": ["FAILED"]}, headers={"x-user-id": "ops"}
+    )
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["queued"] == 0
+    assert body["deferred"] == 7
