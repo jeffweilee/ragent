@@ -208,7 +208,7 @@ def test_session_read_is_noop_204_without_store() -> None:
     http_mock.request.assert_not_called()  # never leaked to the brain proxy
 
 
-# --- T-PAT.15: PAT attach on the run + cancel paths -------------------------
+# --- T-PAT.29: PAT attach on the RUN path only ------------------------------
 
 from ragent.auth.deps import get_forwarded_headers  # noqa: E402
 
@@ -267,7 +267,33 @@ def test_run_path_resolved_pat_wins_over_forwarded() -> None:
     assert capture["extra"]["pat"] == "SERVER-PAT"  # resolved wins over the forwarded value
 
 
-def test_cancel_path_attaches_resolved_pat() -> None:
+def test_run_path_strips_a_forwarded_pat_when_none_resolves() -> None:
+    # The stricter half of "resolved wins": with NO server PAT to overwrite it,
+    # a smuggled one must still be removed, or an unauthorized caller could inject
+    # their own credential. Coverage moved here from the proxy test, which lost its
+    # seam when the proxy stopped attaching (T-PAT.29).
+    capture: dict = {}
+    app = _pat_app(pat_service=_StubPat(token=None), capture=capture)
+    app.dependency_overrides[get_forwarded_headers] = lambda: {"pat": "FORGED"}
+    with TestClient(app) as client:
+        client.post("/brainagent/v1", json=_run_input(), headers={"X-User-Id": "alice"})
+    assert "pat" not in (capture["extra"] or {})
+
+
+def test_run_path_pat_header_colliding_with_a_service_header_is_not_attached() -> None:
+    # An operator misconfigures PAT_UPSTREAM_HEADER_NAME as a service-owned
+    # header; the PAT must not overwrite the caller identity brain scopes by.
+    capture: dict = {}
+    app = _pat_app(pat_service=_StubPat(token="PAT-EVIL"), capture=capture, header_name="X-User-Id")
+    with TestClient(app) as client:
+        r = client.post("/brainagent/v1", json=_run_input(), headers={"X-User-Id": "alice"})
+    assert r.status_code == 200
+    assert "X-User-Id" not in (capture["extra"] or {})
+
+
+def test_cancel_path_attaches_no_pat() -> None:
+    # Cancelling a run is brain-internal bookkeeping — it invokes no drive tool,
+    # so it needs no PAT and must not pay a side-effecting resolve.
     seen: dict = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -279,4 +305,4 @@ def test_cancel_path_attaches_resolved_pat() -> None:
     with TestClient(app) as client:
         r = client.post("/brainagent/v1/runs/run_1/cancel", headers={"X-User-Id": "alice"})
     assert r.status_code == 200
-    assert seen["pat"] == "SERVER-PAT"
+    assert seen["pat"] is None

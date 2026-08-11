@@ -132,7 +132,9 @@ ragent and new brain `/upstream/*` routes are covered automatically. ragent path
 
 **Proxy contract:**
 1. **Auth.** `get_user_id` resolves the caller from the JWT; the proxy attaches
-   `X-Brain-Key: {BRAIN_KEY}` server-to-server.
+   `X-Brain-Key: {BRAIN_KEY}` server-to-server. **No PAT** — these are brain's own
+   management routes and invoke no drive tool, so the proxy resolves none
+   (B65; `docs/spec/pat.md` §7). Only `POST /brainagent/v1` (run) carries a PAT.
 2. **User override (security-critical).** The resolved `user_id` is written into
    the outbound request as `user`, **overriding any client-supplied value**, in
    **both** places brain reads it: the query string `?user=` **and** (when the
