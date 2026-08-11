@@ -270,6 +270,14 @@ Update this counter whenever an item status changes. The counts cover all items 
 
 ---
 
+### Weak Dependencies: Bound Latency AND Outcome
+
+- **Rule**: Any optional/non-critical-path infra client (Redis rate-limiter, cache, broker, stream store) MUST bound **both** outcome and latency. `except RedisError` alone only bounds outcome — against a blackholed endpoint (mid-failover master, dropped packets) the default `socket_timeout`/`socket_connect_timeout=None` waits out the kernel (~127 s), stalling every other in-flight request on the same event loop.
+- **Action**: (a) explicit connect + socket timeouts on every client, including Sentinel `sentinel_kwargs` (discovery hangs during failover too); (b) never apply a read timeout to a connection parked in a blocking command (e.g. `brpop()`) — it raises `TimeoutError`, not `ConnectionError`, silently killing a consumer whose handler only catches the latter; give blocking-command connections connect-only timeouts; (c) a **per-client circuit breaker** so a sustained outage costs one open/half-open cycle, not a per-request timeout tax, excluding healthy-server conflict signals (e.g. `redis.WatchError`) from the failure count; (d) a **documented degraded value per operation** (allow / miss / no-op / defer) — never let it propagate as a 5xx on a path that doesn't need it.
+- **Verification**: bounded-timeout test per topology + a breaker-open test asserting zero I/O. Source: SRE journal 2026-08-10 "Weak-Dep Latency Bound"; landed in Track T-RG (`docs/00_plan_done.md`).
+
+---
+
 ### Composition Root: Production-Wiring Coverage
 
 - **Rule**: Every composition-root factory with multiple constructor branches or kwargs (env-gated optional deps, registry vs legacy retriever branches) MUST have at least one test that calls it with the **exact kwargs `composition.py` passes in production** — not a simplified subset. Recurred 3+ times: a registry/legacy branch left untested, backfill wiring args never passed, an env→composition handoff untested. New constructor branches in `build_container()` ship with a paired production-wiring test in the same commit. (Journal QA 2026-05-19, 2026-05-22, Process 2026-05-16)
@@ -297,14 +305,7 @@ Update this counter whenever an item status changes. The counts cover all items 
 
 ### Shell Hook Testing
 
-- **Rule: Every `.claude/hooks/` behaviour path must have an automated subprocess test.** Hooks are load-bearing quality gates; the "harness-level scaffolding exempt from TDD" assumption is rescinded. Minimum coverage for any hook (new or modified):
-  - Stamp script rejects when `RAGENT_SKILL_INVOCATION_TOKEN` is unset.
-  - Stamp script rejects invalid skill name argument.
-  - Stamp script appends a valid JSON-line to the audit log on success.
-  - Gate accepts when both fresh `/simplify` and `/review` audit entries exist for the current `diff_sha`.
-  - Gate rejects when audit log is missing.
-  - Gate rejects when only one skill's entry is present.
-  - Gate rejects when the audit entry's `ts` is older than the freshness window.
+- **Rule: Every `.claude/hooks/` behaviour path must have an automated subprocess test.** Hooks are load-bearing quality gates; the "harness-level scaffolding exempt from TDD" assumption is rescinded. Minimum coverage for any hook (new or modified): stamp script rejects when `RAGENT_SKILL_INVOCATION_TOKEN` is unset, rejects an invalid skill name, and appends a valid JSON-line to the audit log on success; gate accepts when both fresh `/simplify` and `/review` audit entries exist for the current `diff_sha`, and rejects when the audit log is missing, only one skill's entry is present, or the entry's `ts` is older than the freshness window.
 - **Test location**: `tests/unit/test_quality_gate_hooks.py` using `subprocess.run` against a temporary git repo fixture. Every new hook branch is a behavioural change and requires a corresponding test before commit.
 
 ---

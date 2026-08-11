@@ -90,7 +90,7 @@ Bootstrap (Composition Root) — 唯一組裝點
 | `admin_ops.py` | `/ops/v1` | 維運操作(retry)|
 | `health.py` | `/livez`, `/readyz`, `/startupz`, `/metrics` | 健康探針、Prometheus 指標 |
 | `health_probes.py` | —(probe 實作)| `/readyz` 的 MariaDB / ES / Redis / MinIO probe 實作,由 `health.py` 注入 |
-| `mcp_transport.py` | —(共用 helper)| `/mcp/v1` 的 JSON-RPC 2.0 傳輸層（body-size cap、parse/invalid-request 映射、`tools/list`/`tools/call` 派送）；router 註冊自己的 tool set（`retrieve`、`create_skill`）。⚠️ module docstring 誤寫「/mcp/v1, /mcp/v2」— 目前只掛載 `/mcp/v1`，未曾有獨立的 `/mcp/v2` router/mount（`retrieve_documents.py` docstring 內部稱其 schema 為「v2 contract」是指 zero-trust 合約版本，非 HTTP path）|
+| `mcp_transport.py` | —(共用 helper)| `/mcp/v1` 的 JSON-RPC 2.0 傳輸層（body-size cap、parse/invalid-request 映射、`tools/list`/`tools/call` 派送）；router 註冊自己的 tool set（`retrieve`、`create_skill`）|
 
 > 另有 `/twp/v1` router 由 `packages/twp-ai`(repo 內獨立 package)提供,於 `bootstrap/app.py` 掛載;`/chatagent/v3` 依賴該 package 的 `twp_ai.agent.Agent` Protocol 與 schemas,具體實作(`ADKAgent` + ragent 端 `clients/adk_caller.py`)由 `bootstrap/composition.py::_build_chatagent_agent_factory()` 組裝成 `agent_factory` 後注入,router 本身不 import 具體類別。詳見 `docs/spec/chatagent_agent_backend.md`。
 
@@ -332,7 +332,7 @@ Bootstrap (Composition Root) — 唯一組裝點
 | 檔案 | 職責 |
 |---|---|
 | `archive_guard.py` | DOCX / PPTX zip preflight — members、ratio、expanded bytes 檢查（`INGEST_MAX_ARCHIVE_MEMBERS` / `_RATIO` / `_EXPANDED_BYTES`）|
-| `key_manager.py` | `KeyManager` — 用 `RAGENT_KEK_BASE64` 解開 `RAGENT_ENCRYPTED_DEK_BASE64` 持有 DEK；⚠️ 僅供離線 CLI（`scripts/gen_attachment_keys.py`、`scripts/decrypt_artifact.py`）使用，attachment pipeline 已改走標準 ingest，不再於 request path 加密（issue #224）|
+| `key_manager.py` | `KeyManager` — 用 `RAGENT_KEK_BASE64` 解開 `RAGENT_ENCRYPTED_DEK_BASE64` 持有 DEK；離線 CLI（`scripts/gen_attachment_keys.py`、`scripts/decrypt_artifact.py`）沿用，且自 T-PAT 起由 `composition.py` 在 `PAT_PUBLIC_KEY` 設定時於 production 構造，供 `PATCipher` 取用同一 DEK（issue #224 的 attachment 加密路徑仍已移除；`KeyManager` 本身不再是死碼）|
 | `ast_cipher.py` | `ASTCipher` — AES-256-GCM `encrypt_ast()`/`decrypt_ast()`；⚠️ **零 import 者，死碼**（同上，attachment 加密路徑已移除，issue #224）|
 | `pat_cipher.py` | `PATCipher`(T-PAT) — AES-256-GCM `encrypt()`/`decrypt()` 字串信封(`v1.<nonce>.<ct>`)，複用 `KeyManager.dek`;用於 `pat.pat_cipher` 與 redis 快取值 |
 
