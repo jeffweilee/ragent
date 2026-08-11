@@ -68,11 +68,9 @@ def test_llm_chat_emits_single_span(exporter):
     assert any(e.get("event") == "llm.call" for e in logs)
 
 
-def test_llm_chat_records_error_on_retry_exhaustion(exporter):
+def test_llm_chat_records_error_on_upstream_failure(exporter):
     http = _FakeHttp(_FakeResp(500))
-    client = LLMClient(
-        api_url="http://llm", http=http, get_token=lambda: "t", timeout=1.0, sleep=lambda _s: None
-    )
+    client = LLMClient(api_url="http://llm", http=http, get_token=lambda: "t", timeout=1.0)
     with structlog.testing.capture_logs() as logs, pytest.raises(UpstreamServiceError):
         client.chat(messages=[{"role": "user", "content": "hi"}], model="m")
     assert "llm.chat" in _names(exporter)
@@ -93,7 +91,6 @@ def test_embedding_emits_span_per_call(exporter):
         batch_size=32,
         ingest_timeout=1.0,
         query_timeout=1.0,
-        sleep=lambda _s: None,
     )
     with structlog.testing.capture_logs() as logs:
         result = client.embed(["a"])

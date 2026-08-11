@@ -458,7 +458,14 @@ All non-2xx responses use **RFC 9457 Problem Details** (`Content-Type: applicati
 | `RerankClient`    | `RERANK_API_URL/`                               | J2 | P1 unit / P2 wired |
 | `HRClient`        | `HR_API_URL/v3/employees`                       | `Authorization` | P2 |
 
-All 3rd-party calls: timeout/retry/backoff per `00_rule.md`; circuit-breaker on client.
+All 3rd-party calls: per-call timeout per `00_rule_third_party_api.md`, and **no
+application-level retry** (T-RETRY) — a timeout has already spent its budget and
+a 4xx is an answer, so neither is re-asked. The sole retry is connection
+establishment, at the shared `httpx.HTTPTransport(retries=2)`, which can never
+re-issue a request that reached the server. See `00_rule_third_party_api.md
+§Retry policy` for the rationale and the two consequences (ES `max_retries=0`;
+ingest blips need `POST /ops/v1/retry`). Redis surfaces additionally carry a
+per-client circuit breaker (`clients/redis_guard.py`, T-RG.1).
 
 **TokenManager refresh discipline (P-F):** each `TokenManager` instance has its own `threading.Lock`; concurrent callers around the `expiresAt − 5 min` boundary share one in-flight refresh per manager. Local mode: three independent managers (`AI_LLM/EMBEDDING/RERANK_API_J1_TOKEN`), each caching its own J2. K8s mode (`AI_USE_K8S_SERVICE_ACCOUNT_TOKEN=true`): one shared manager reads the SA token file per refresh and its J2 is shared across all three clients.
 

@@ -24,6 +24,96 @@ from ragent.utility.env import require as _require
 
 _K8S_SA_TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 
+# The ONLY retry ragent performs against an upstream (T-RETRY.2). httpx's
+# transport-level `retries` covers connection *establishment* and nothing else:
+# the server never received the request, so re-dialling adds no load and cannot
+# duplicate a side effect. Everything past that point — timeouts, 4xx, 5xx —
+# surfaces on the first attempt, because a timeout has already spent its budget
+# and a status code is an answer, not a question worth repeating.
+_CONNECT_RETRIES = 2
+
+
+def _http_client(*, timeout: float, verify: bool) -> Any:
+    """A shared outbound client with connection-only retries.
+
+    Two things a custom transport silently switches off, both re-supplied here:
+
+    1. **TLS config.** `verify` goes to the transport, not the Client — the
+       transport owns the SSL context, so leaving `verify` on the Client would
+       turn `RAGENT_TLS_VERIFY` into dead config.
+    2. **Environment proxies.** httpx only reads `HTTP_PROXY` / `HTTPS_PROXY` /
+       `NO_PROXY` when `transport is None` (`allow_env_proxies = trust_env and
+       transport is None`), so handing it a transport drops every proxy mount —
+       which in a proxy-only network breaks *all* outbound calls, not just one
+       upstream (Codex review PR #247 P1). The mounts are rebuilt from httpx's
+       own env parsing rather than a hand-rolled one, because `NO_PROXY` pattern
+       semantics are exactly the part not worth reimplementing. A `None` mount
+       means "no proxy for this pattern" and falls through to the default
+       transport, which is how `NO_PROXY` is expressed.
+
+    Imported locally to match `build_container()`'s deferred-import style —
+    composition is on the boot path and keeps heavyweight imports out of module
+    scope.
+    """
+    import httpx
+
+    # Private helper by necessity: httpx exposes no public API for "the proxy map
+    # you would have built for me". Pinned and covered by
+    # tests/unit/test_composition_http_transport.py, which fails loudly on an
+    # upgrade that moves it.
+    # verified against httpx 0.28.1
+    from httpx._utils import get_environment_proxies
+
+    def _transport(proxy: str | None = None) -> Any:
+        return httpx.HTTPTransport(retries=_CONNECT_RETRIES, verify=verify, proxy=proxy)
+
+    return httpx.Client(
+        timeout=timeout,
+        transport=_transport(),
+        mounts={
+            pattern: None if url is None else _transport(url)
+            for pattern, url in get_environment_proxies().items()
+        },
+    )
+
+
+# `elastic_transport` defaults to `max_retries=3` with
+# `retry_on_status=(429, 502, 503, 504)` — a retry layer invisible at the call
+# site that multiplies with anything wrapping it (T-RETRY.4). Both ES clients
+# must state the policy: the standalone one AND the one
+# `ElasticsearchDocumentStore` builds internally, since the retrieval pipeline
+# searches through the latter (Codex review PR #247 P2).
+# verified against elasticsearch 8.19.3 / elastic_transport 8.17.1
+_ES_RETRY_KWARGS: dict[str, Any] = {"max_retries": 0}
+
+
+def _es_client(*, hosts: list[str], basic_auth: Any, verify_certs: bool) -> Any:
+    """The standalone Elasticsearch client, retry policy stated not inherited."""
+    from elasticsearch import Elasticsearch
+
+    return Elasticsearch(
+        hosts=hosts,
+        basic_auth=basic_auth,
+        verify_certs=verify_certs,
+        **_ES_RETRY_KWARGS,
+    )
+
+
+def _document_store(*, hosts: list[str], index: str, basic_auth: Any, verify_certs: bool) -> Any:
+    """The Haystack document store, whose **internal** ES client is the one the
+    chat retrieval path actually searches through — so it needs the same
+    explicit retry policy as `_es_client`. Extra kwargs are forwarded verbatim
+    to `Elasticsearch(...)`."""
+    from haystack_integrations.document_stores.elasticsearch import ElasticsearchDocumentStore
+
+    return ElasticsearchDocumentStore(
+        hosts=hosts,
+        index=index,
+        verify_certs=verify_certs,
+        basic_auth=basic_auth,
+        **_ES_RETRY_KWARGS,
+    )
+
 
 @dataclass
 class Container:
@@ -208,9 +298,6 @@ def _make_heartbeat_tick(sync_engine: Any) -> Any:
 
 
 def build_container() -> Container:
-    import httpx
-    from elasticsearch import Elasticsearch
-    from haystack_integrations.document_stores.elasticsearch import ElasticsearchDocumentStore
     from sqlalchemy.ext.asyncio import create_async_engine
 
     from ragent.bootstrap.http_logging import install_error_logging
@@ -244,8 +331,8 @@ def build_container() -> Container:
     # validation (dev/self-signed only) — for prod with a private CA, keep it true
     # and mount the CA via SSL_CERT_FILE instead.
     tls_verify = _bool_env("RAGENT_TLS_VERIFY", True)
-    http = httpx.Client(timeout=60.0, verify=tls_verify)
-    auth_http = httpx.Client(timeout=10.0, verify=tls_verify)  # token exchange (10 s per spec)
+    http = _http_client(timeout=60.0, verify=tls_verify)
+    auth_http = _http_client(timeout=10.0, verify=tls_verify)  # token exchange (10 s per spec)
     install_error_logging(http, client_name="upstream")
     install_error_logging(auth_http, client_name="auth", redact_auth_body=True)
 
@@ -317,14 +404,14 @@ def build_container() -> Container:
         if _es_password is not None
         else None
     )
-    es_client = Elasticsearch(
+    es_client = _es_client(
         hosts=es_hosts,
         basic_auth=es_basic_auth,
         verify_certs=es_verify_certs,
     )
     chunks_index_name = os.environ.get("ES_CHUNKS_INDEX", "chunks_v1")
     chunks_read_alias = f"{chunks_index_name}_active"
-    document_store = ElasticsearchDocumentStore(
+    document_store = _document_store(
         hosts=es_hosts,
         index=chunks_read_alias,
         verify_certs=es_verify_certs,
@@ -613,7 +700,7 @@ def build_container() -> Container:
         from ragent.repositories.pat_repository import PatRepository
         from ragent.security.key_manager import KeyManager
         from ragent.security.pat_cipher import PATCipher
-        from ragent.services.pat_service import PatService
+        from ragent.services.pat_service import LOCK_POLL_BUDGET_SECONDS, PatService
 
         # `POST /pat/v1/authorize` verifies the caller-supplied `X-Id-Token`
         # itself, so the slice needs a JWKS verifier in EVERY auth mode — a
@@ -639,13 +726,10 @@ def build_container() -> Container:
             kek_b64=_require("RAGENT_KEK_BASE64"),
             encrypted_dek_b64=_require("RAGENT_ENCRYPTED_DEK_BASE64"),
         )
-        # Resolved once: the refresh budget sizes the refresh client, the service's
-        # retry loop AND the revocation tombstone (which must outlast the longest
-        # in-flight refresh). Reading them in more than one place would let the
-        # three drift apart.
+        # Resolved once: the refresh timeout sizes the refresh client AND the
+        # revocation tombstone (which must outlast the longest in-flight refresh).
+        # Reading it in more than one place would let the two drift apart.
         pat_refresh_timeout = _float_env("PAT_REFRESH_TIMEOUT_SECONDS", 30.0)
-        pat_refresh_retries = _int_env("PAT_REFRESH_MAX_RETRIES", 3)
-        pat_refresh_backoff = _float_env("PAT_REFRESH_BACKOFF_SECONDS", 0.5)
         pat_service = PatService(
             verifier=PatTokenVerifier(
                 key=import_pat_public_key(pat_public_key, pat_alg),
@@ -658,7 +742,7 @@ def build_container() -> Container:
             repo=PatRepository(engine=engine),
             cache=PatCache.from_env(
                 tombstone_ttl_seconds=PatCache.tombstone_ttl_for(
-                    pat_refresh_timeout, pat_refresh_retries, pat_refresh_backoff
+                    pat_refresh_timeout, LOCK_POLL_BUDGET_SECONDS
                 )
             ),
             refresh_client=PatRefreshClient(
@@ -679,8 +763,6 @@ def build_container() -> Container:
                 expire_days=_int_env("PAT_INIT_EXPIRE_DAYS", 360),
                 timeout=_float_env("PAT_INIT_TIMEOUT_SECONDS", 30.0),
             ),
-            max_retries=pat_refresh_retries,
-            backoff_base_seconds=pat_refresh_backoff,
         )
 
     return Container(

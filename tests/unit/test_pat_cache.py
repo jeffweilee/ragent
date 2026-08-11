@@ -153,11 +153,17 @@ def test_tombstone_ttl_is_derived_from_the_refresh_budget() -> None:
     # must not silently shrink the tombstone below the window it covers. Takes
     # the values rather than re-reading env, so the composition root stays the
     # single reader (a second one would carry its own copy of the defaults).
-    # 30 * (3 + 1) + 0.5 * (1 + 2 + 4) = 123.5 -> 124
-    assert PatCache.tombstone_ttl_for(30.0, 3, 0.5) == 124
-    assert PatCache.tombstone_ttl_for(60.0, 3, 0.5) == 244
+    #
+    # T-RETRY.3: a refresh is now ONE call, so the retry terms are gone — but
+    # the lock-poll budget is not. A request that polls the full budget and then
+    # self-refreshes is the longest path from "refresh started" to "cache.put",
+    # and that is exactly the window the tombstone has to outlast.
+    assert PatCache.tombstone_ttl_for(30.0, 5.0) == 35
+    assert PatCache.tombstone_ttl_for(60.0, 5.0) == 65
     # A shrunken budget shrinks the tombstone with it, never independently.
-    assert PatCache.tombstone_ttl_for(5.0, 0, 0.5) == 5
+    assert PatCache.tombstone_ttl_for(5.0, 0.0) == 5
+    # Fractional seconds round up — never down, or the window would be short.
+    assert PatCache.tombstone_ttl_for(30.0, 0.5) == 31
 
 
 # --- sentinel password injection ---

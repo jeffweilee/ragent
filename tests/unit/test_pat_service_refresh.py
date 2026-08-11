@@ -53,19 +53,25 @@ async def test_401_invalidates_and_clears() -> None:
     assert repo.mark_invalid_calls == ["alice"]
 
 
-async def test_429_then_success_within_budget() -> None:
+async def test_429_is_not_retried() -> None:
+    """T-RETRY.3 — a rate-limited refresh fails this request instead of
+    retrying. The old budget (30 s × 4 + backoff ≈ 123 s) sat on the
+    `/brainagent/v1` request path, where the caller is fail-open: it would give
+    up on the PAT anyway, just two minutes later and after four calls to a
+    service that was already saying "slow down"."""
     new_pat = sign("alice")
-    rc = FakeRefreshClient([PatRefreshRateLimited(), PatRefreshRateLimited(), new_pat])
-    service, repo, cache, cipher = build_service(refresh_client=rc, max_retries=3)
+    rc = FakeRefreshClient([PatRefreshRateLimited(), new_pat])
+    service, repo, cache, cipher = build_service(refresh_client=rc)
     _seed_expired(repo, cache, cipher)
 
-    assert await service.resolve("alice") == new_pat
-    assert len(rc.calls) == 3  # two 429s then success
+    with pytest.raises(PatRefreshExhausted):
+        await service.resolve("alice")
+    assert len(rc.calls) == 1
 
 
-async def test_429_exhausted_rejects_but_keeps_active() -> None:
+async def test_429_rejects_but_keeps_active() -> None:
     rc = FakeRefreshClient([PatRefreshRateLimited()] * 10)
-    service, repo, cache, cipher = build_service(refresh_client=rc, max_retries=3)
+    service, repo, cache, cipher = build_service(refresh_client=rc)
     _seed_expired(repo, cache, cipher)
 
     with pytest.raises(PatRefreshExhausted):
@@ -74,7 +80,7 @@ async def test_429_exhausted_rejects_but_keeps_active() -> None:
     # rate-limit must NEVER invalidate the user's authorization.
     assert repo.rows["alice"]["status"] == "active"
     assert repo.mark_invalid_calls == []
-    assert len(rc.calls) == 4  # initial + 3 retries
+    assert len(rc.calls) == 1
 
 
 async def test_400_is_internal_error_and_leaves_state() -> None:

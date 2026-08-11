@@ -1,4 +1,9 @@
-"""T4.7 — RerankClient: POST shape, bge-reranker-base, top_k=2 (P2 wired)."""
+"""T4.7 — RerankClient: POST shape, bge-reranker-base, top_k=2 (P2 wired).
+
+T-RETRY.1: no application-level retry — every failure surfaces on the first
+attempt. Rerank is an *optional* pipeline stage that already fails open, so
+spending 94 s of retries before degrading was strictly worse than degrading now.
+"""
 
 from unittest.mock import MagicMock
 
@@ -79,17 +84,13 @@ def test_rerank_custom_auth_header_name():
     assert headers["X-API-Key"] == "secret"
 
 
-def test_rerank_raises_upstream_service_error_after_3_failed_retries():
-    """Phase B — rerank retries 3× @ 2s (parity with embedding/llm) before
-    wrapping the last failure in UpstreamServiceError."""
+def test_rerank_raises_upstream_service_error_on_first_failure():
     http = MagicMock()
     http.post.side_effect = Exception("network error")
-    sleep_calls: list[float] = []
     client = RerankClient(
         api_url="https://rerank.example.com",
         http=http,
         get_token=lambda: "tok",
-        sleep=lambda s: sleep_calls.append(s),
     )
     with pytest.raises(UpstreamServiceError) as exc_info:
         client.rerank(query="q", texts=["x"], top_k=1)
@@ -97,8 +98,7 @@ def test_rerank_raises_upstream_service_error_after_3_failed_retries():
     assert exc_info.value.error_code == "RERANK_ERROR"
     assert exc_info.value.http_status == 502
     assert "network error" in str(exc_info.value)
-    assert http.post.call_count == 3
-    assert sleep_calls == [2.0, 2.0]
+    assert http.post.call_count == 1
 
 
 def test_rerank_wraps_timeout_as_upstream_timeout_error():
@@ -108,13 +108,12 @@ def test_rerank_wraps_timeout_as_upstream_timeout_error():
         api_url="https://rerank.example.com",
         http=http,
         get_token=lambda: "tok",
-        sleep=lambda s: None,
     )
     with pytest.raises(UpstreamTimeoutError) as exc_info:
         client.rerank(query="q", texts=["x"], top_k=1)
     assert exc_info.value.error_code == "RERANK_TIMEOUT"
     assert exc_info.value.http_status == 504
-    assert http.post.call_count == 3
+    assert http.post.call_count == 1
 
 
 def test_rerank_unexpected_return_code_raises():
@@ -127,14 +126,16 @@ def test_rerank_unexpected_return_code_raises():
         api_url="https://rerank.example.com",
         http=http,
         get_token=lambda: "tok",
-        sleep=lambda s: None,
     )
     with pytest.raises(UpstreamServiceError):
         client.rerank(query="q", texts=["x"], top_k=1)
+    assert http.post.call_count == 1
 
 
-def test_rerank_retries_3_times_on_error():
-    """Successful retry on 3rd attempt returns result without raising."""
+def test_rerank_does_not_retry_a_transient_error():
+    """T-RETRY.1 — a transient failure is no longer papered over by two more
+    attempts; it surfaces so the caller (a fail-open pipeline stage) can degrade
+    immediately instead of after 94 s."""
     http = MagicMock()
     ok_resp = MagicMock()
     ok_resp.raise_for_status = MagicMock()
@@ -143,15 +144,12 @@ def test_rerank_retries_3_times_on_error():
         "returnMessage": "success",
         "returnData": [{"index": 0, "score": 0.9}],
     }
-    http.post.side_effect = [Exception("transient"), Exception("transient"), ok_resp]
-    sleep_calls: list[float] = []
+    http.post.side_effect = [Exception("transient"), ok_resp]
     client = RerankClient(
         api_url="https://rerank.example.com",
         http=http,
         get_token=lambda: "tok",
-        sleep=lambda s: sleep_calls.append(s),
     )
-    result = client.rerank(query="q", texts=["x"], top_k=1)
-    assert result == [{"index": 0, "score": 0.9}]
-    assert http.post.call_count == 3
-    assert sleep_calls == [2.0, 2.0]
+    with pytest.raises(UpstreamServiceError):
+        client.rerank(query="q", texts=["x"], top_k=1)
+    assert http.post.call_count == 1

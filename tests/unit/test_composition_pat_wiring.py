@@ -239,21 +239,17 @@ def test_tombstone_ttl_tracks_the_wired_refresh_budget(
     _base_env: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The revocation tombstone must outlast the longest in-flight refresh, so it
-    is derived from the SAME env values that size the refresh client and the
-    service's retry loop — read once in composition, never re-read by the cache.
+    is derived from the SAME values that size the refresh client and the lock
+    poll — read once in composition, never re-read by the cache.
 
-    Retuning the budget must move all three together; a second reader carrying
-    its own defaults is exactly the drift this guards against."""
+    Retuning the budget must move both together; a second reader carrying its
+    own defaults is exactly the drift this guards against."""
     _set_pat_env(monkeypatch)
     monkeypatch.setenv("PAT_REFRESH_TIMEOUT_SECONDS", "10")
-    monkeypatch.setenv("PAT_REFRESH_MAX_RETRIES", "2")
-    monkeypatch.setenv("PAT_REFRESH_BACKOFF_SECONDS", "1")
 
     from_env = MagicMock()
     service = _build(pat_cache_from_env=from_env).pat_service
 
-    # 10 * (2 + 1) + 1 * (1 + 2) = 33
-    assert from_env.call_args.kwargs["tombstone_ttl_seconds"] == 33
+    # One refresh call (10 s) plus the full lock-poll budget (10 × 0.5 s).
+    assert from_env.call_args.kwargs["tombstone_ttl_seconds"] == 15
     assert service._refresh_client._timeout == 10.0  # noqa: SLF001
-    assert service._max_retries == 2  # noqa: SLF001
-    assert service._backoff_base == 1.0  # noqa: SLF001
