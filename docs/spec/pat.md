@@ -220,32 +220,50 @@ body `{"patToken": current}` → response `{"patToken": new}`.
   because it mints through **init**, not the refresh service.
 - **User revokes** → row **deleted**, tombstone set, redis cleared (§3.2).
 
-## 7. `/brainagent/v1` attach (all brain-bound calls)
+## 7. `/brainagent/v1` attach — the **run path only**
 
-**Every** ragent → brain call under `/brainagent/v1` attaches the resolved PAT
-under `PAT_UPSTREAM_HEADER_NAME` (default `X-Pat-Token`), via the shared
-`clients/brain_caller.py::apply_resolved_pat` helper:
+**Exactly one** ragent → brain call attaches the resolved PAT: the twp-ai **run**
+path (`POST /brainagent/v1` → brain `/run`), under `PAT_UPSTREAM_HEADER_NAME`
+(default `X-Pat-Token`), merged into `BrainCaller`'s extra headers via
+`clients/brain_caller.py::apply_resolved_pat` so a **drive tool invoked during
+the run** carries it. That drive tool is the PAT's only consumer.
 
-- the twp-ai **run** path (`POST /brainagent/v1` → brain `/run`) — merged into
-  `BrainCaller`'s extra headers, so a drive tool invoked *during* the run
-  carries it;
-- the **cancel** path (`POST /brainagent/v1/runs/{id}/cancel`);
-- the **reverse proxy** (`/brainagent/v1/{path}` → brain `/upstream/{path}`).
+Nothing else resolves a PAT:
 
-(`/reconnect` and `/session/read` make no upstream call — nothing to attach.)
+| Surface | PAT | Why |
+|---|---|---|
+| `POST /brainagent/v1` (run) | **yes** | brain invokes the drive tool on the user's behalf |
+| `/brainagent/v1/{path}` → `/upstream/{path}` | no | brain's own management CRUD; no drive call |
+| `POST /runs/{id}/cancel` | no | brain-internal bookkeeping |
+| `/reconnect`, `/session/read` | no | make no upstream call at all |
+
+**Why the surface is narrow (B65).** `resolve()` is *side-effecting* — a DB read,
+and on a locally-expired PAT a refresh round-trip that rewrites the row (or, on a
+401, invalidates it). Attaching on the catch-all proxy hung that off 33 read-only
+management routes, so a single settings page fanned out several concurrent
+`resolve()` calls. With redis down the refresh lock cannot be taken and `_refresh`
+stops serialising (§5), turning that fan-out into a refresh stampede whose losing
+requests get a 401 on their now-stale token and mark the whole authorization
+`invalid` — after which *every* brain-backed page reports a PAT error until the
+user re-authorizes. Keeping the PAT on the one route that needs it bounds a PAT
+fault to that route.
 
 **Fail-open**: no PAT / invalid / redis miss / resolve error → the header is
-omitted and the request is byte-for-byte what it is today. brain needs no
-change; the drive/upstream side trusts the PAT and checks
-`PAT[PAT_NT_KEY_NAME] == sso user`.
+omitted and the run proceeds unchanged. brain needs no change; the drive/upstream
+side trusts the PAT and checks `PAT[PAT_NT_KEY_NAME] == sso user`.
 
-**A client cannot supply its own PAT.** Inbound headers only reach brain if
-they are in the `BRAIN_FORWARD_HEADERS` allowlist, so by default a client-sent
-`X-Pat-Token` is dropped at the edge. Even if an operator mistakenly allowlists
-that name, the attach step strips any case-variant of `PAT_UPSTREAM_HEADER_NAME`
-before setting the server-resolved value, so exactly one PAT header (the
-server's) ever reaches brain. And a header name that collides with a
-service-owned header (`X-User-Id`/`X-Brain-Key`) is refused outright.
+**A client cannot supply its own PAT.** Inbound headers only reach brain if they
+are in the `BRAIN_FORWARD_HEADERS` allowlist, so by default a client-sent
+`X-Pat-Token` is dropped at the edge. On the run path the attach additionally
+strips any case-variant of `PAT_UPSTREAM_HEADER_NAME` before setting the
+server-resolved value, so exactly one PAT header (the server's) ever reaches
+brain, and a name colliding with a service-owned header
+(`X-User-Id`/`X-Brain-Key`) is refused outright.
+
+> **Operator constraint:** never put `PAT_UPSTREAM_HEADER_NAME` in
+> `BRAIN_FORWARD_HEADERS`. The routes that no longer attach a PAT no longer strip
+> a forwarded one either, so allowlisting that name would let a client's value
+> ride through to brain on the management surface.
 
 ## 8. Status — `GET /pat/v1/status`
 

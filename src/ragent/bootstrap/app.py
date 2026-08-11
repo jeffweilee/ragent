@@ -565,7 +565,8 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
                 chat_stream_store=container.chat_stream_store,
                 nats_publisher=container.nats_publisher,
                 stream_idle_timeout=_float_env("CHATAGENT_STREAM_IDLE_TIMEOUT_SECONDS", 30.0),
-                # T-PAT.15 — attach the resolved PAT on the run + cancel paths too.
+                # T-PAT.29 — the run path is the PAT's sole consumer (brain invokes
+                # the drive tool on the user's behalf during a run).
                 pat_service=container.pat_service,
                 pat_header_name=container.pat_upstream_header_name,
             )
@@ -576,10 +577,6 @@ def create_app() -> FastAPI:  # pragma: no cover — composition root, tested by
                 brain_url=container.brain_api_url,
                 brain_key=container.brain_key,
                 timeout=container.brain_timeout,
-                # T-PAT.12 — attach the caller's PAT for the upstream (drive tool via
-                # brain). Fail-open + None when PAT_PUBLIC_KEY is unset.
-                pat_service=container.pat_service,
-                pat_header_name=container.pat_upstream_header_name,
             )
         )
     app.include_router(

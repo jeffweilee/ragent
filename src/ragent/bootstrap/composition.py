@@ -181,7 +181,8 @@ class Container:
     # T-BRAIN.DIP — user_id -> twp_ai.agent.Agent (BrainAgent(BrainCaller)).
     brain_agent_factory: BrainAgentFactory | None = None
     # T-PAT — Personal Access Token slice. None when PAT_PUBLIC_KEY is unset
-    # (the /pat/v1 router is not mounted and the /brainagent/v1 proxy attaches no PAT).
+    # (the /pat/v1 router is not mounted and the /brainagent/v1 run path attaches
+    # no PAT). The run path is the only consumer — see T-PAT.29.
     pat_service: Any = None
     pat_upstream_header_name: str = "X-Pat-Token"
     # JWKS verifier for the caller-supplied X-Id-Token on POST /pat/v1/authorize.

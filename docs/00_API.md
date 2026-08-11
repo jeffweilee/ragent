@@ -1111,7 +1111,7 @@ curl -X POST "http://localhost:8000/chatagent/v3/attachments/01J9ABCDEFGHJKMNPQR
 
 ### `POST /pat/v1/authorize` — Authorize ragent to act on the user's behalf
 
-Mounted only when the PAT slice is wired (`PAT_PUBLIC_KEY` set). ragent mints a Personal Access Token by calling the init service on-behalf-of the caller's SSO id token, then encrypts and stores it (one row per user) so every `/brainagent/v1` call can carry it. Full flow: [`docs/spec/pat.md`](spec/pat.md).
+Mounted only when the PAT slice is wired (`PAT_PUBLIC_KEY` set). ragent mints a Personal Access Token by calling the init service on-behalf-of the caller's SSO id token, then encrypts and stores it (one row per user) so the `POST /brainagent/v1` **run** call can carry it — that run is the PAT's only consumer, since it is where brain invokes a drive tool on the user's behalf; the `/upstream/*` management routes and the cancel route carry none (B65). Full flow: [`docs/spec/pat.md`](spec/pat.md).
 
 **Headers:** the usual identity credential for the active auth mode (`X-Auth-Token` access token, or `X-User-Id`) **plus `X-Id-Token`** carrying the SSO **id token**. These are two different tokens: ragent authenticates you with the access token, while the init service mints against the id token (whose `aud` is `OIDC_AUDIENCE`, unlike the access token's). **No request body** — the client never handles a PAT.
 
