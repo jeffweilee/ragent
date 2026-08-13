@@ -584,3 +584,31 @@ def test_non_list_cards_dropped() -> None:
     )
     out = map_session_payload(payload)
     assert "cards" not in out["messages"][0]
+
+
+def test_pending_interrupt_passes_through_envelope() -> None:
+    # pendingInterrupt is set by brain's session endpoint when a run is awaiting
+    # approval. It must survive the mapping transform so the client can restore
+    # the HIL card after a page refresh.
+    pending = {
+        "id": "run-1",
+        "reason": "tool_call",
+        "message": "大腦想呼叫工具 search:search_web",
+        "toolCallId": "call-abc",
+        "metadata": {"toolName": "search", "args": {"q": "test"}},
+    }
+    payload = {**_session([]), "pendingInterrupt": pending}
+
+    out = map_session_payload(payload)
+
+    assert out["pendingInterrupt"] == pending
+
+
+def test_null_pending_interrupt_passes_through_envelope() -> None:
+    # The brain returns pendingInterrupt=null when no run is awaiting input.
+    # The null must pass through unchanged so the client can clear the card.
+    payload = {**_session([]), "pendingInterrupt": None}
+
+    out = map_session_payload(payload)
+
+    assert out["pendingInterrupt"] is None
